@@ -413,6 +413,17 @@ impl Instance {
         }
     }
 
+    /// Forgets what was derived from input `slot`, whose value is a handle to
+    /// something that changed behind it, as a navigator's stack does.
+    ///
+    /// # Panics
+    ///
+    /// If `slot` is out of range.
+    pub fn touch_input(&mut self, slot: usize) {
+        assert!(slot < self.inputs.len(), "input {slot} is out of range");
+        self.forget(|graph| graph.input_readers(slot));
+    }
+
     /// Sets state `slot` from outside a transaction, as a host that keeps the
     /// authoritative copy of a state elsewhere does before a call. Neither marks
     /// the slot written nor raises the revision.

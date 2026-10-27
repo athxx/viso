@@ -1,0 +1,20 @@
+[package]
+name = "viso-example-04-navigation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Typed navigation: a Rust route enum, the router view that keeps a page per
+# route on its back stack, and a `.vs` shell that reads and drives it. The
+# shell imports the route enum from the app's own native library, which the
+# manifest declares below and `natives.json` describes.
+[dependencies]
+viso = { workspace = true }
+
+[package.metadata.viso.natives]
+schema = "natives.json"
+library = "NATIVES"
+
+[lints]
+workspace = true

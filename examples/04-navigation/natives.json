@@ -1,0 +1,12 @@
+{
+  "format": "viso-natives",
+  "version": 1,
+  "libraries": [
+    {"path":"mail","version":1,"derives":[],
+      "functions": [],
+      "types": [
+        {"name":"Route","variants":["inbox","message","settings"],"ownership":"shared","thread":"any","value":false,"fields":[],"payloads":[{"named":false,"fields":[]},{"named":true,"fields":[{"name":"id","ty":"I64"}]},{"named":false,"fields":[]}], "methods": []}
+      ]
+    }
+  ]
+}

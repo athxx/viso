@@ -152,7 +152,7 @@ Rules (as for `todo_features.md`):
   - Verified: `game_persist` mounts a packaged game granted `storage.persist`, runs it five
     ticks, and suspends the store. Nothing is durable before; the session still runs; a second
     launch loads the value from the suspend. Without `Scheduler::suspend` the test fails.
-- [ ] Typed routes: a Rust `Route` enum, `Navigator<R>`, `RouterView` and `routes!` (DSL U11),
+- [x] Typed routes: a Rust `Route` enum, `Navigator<R>`, `RouterView` and `routes!` (DSL U11),
   serving `NavigationStack` and `on_open_url`. Verify with a DSL test and a UI scenario that push,
   pop, system back and a deep link keep the back-stack page's state.
   - Rust side built: `viso_ui::router` provides `Navigator<R>` (a `Copy` control handle; reads
@@ -171,6 +171,21 @@ Rules (as for `todo_features.md`):
     `Ty::Native(id, args)`; `Navigator<R>` (in scope without an import) with `current`,
     `can_pop`, `depth`, `push`, `replace`, `pop`, `reset` over a host `RouteStack`. ADR 0055
     (Proposed). Verified by `crates/dsl/tests/navigator.rs`.
+  - DSL side built: `view!("shell.vs", nav: router, ...)` passes root inputs through
+    `viso_view::ViewInput` (scalars by value; a `RouterView<R>` becomes the `Navigator<R>`, its
+    slot tracked through the navigator's revision cell; a value of another type, an unknown name
+    or a missing required input does not compile). The `RouterView` node (`ControlKind::Router`)
+    builds the Rust router view inside itself once and fires `back_requested(BackRequest)` before
+    a system back pops; `e.prevent_default()` keeps the page. Native package discovery takes the
+    app's own `[package.metadata.viso.natives]` (`crate::NATIVES` in its library). `routes!`
+    arms may return anything, so a page may be a `view!`. Docs: DSL U11, Architecture §6.1.
+  - Verified: `examples/04-navigation/tests/navigation.rs` — the `.vs` shell pushes and pops
+    the Rust router, its title and back button follow the route, a system back is kept while
+    editing (fails without `prevent_default`), a deep link resets the stack over the inbox, and
+    the inbox's draft survives every turn. Discovery of the app's own natives by a
+    `native_package` unit test. An `InputMap<E>` constant is found again now that native types
+    carry type arguments (`game_acceptance`, `game_input`); the cross-platform snapshot hashes
+    are repinned to the rebuilt modules.
 - [ ] Typed Rust access to named nodes from `view!`/`component!` (`nodes.save_button:
   Handle<Button>`). Verify with a trybuild test that a wrong-type use fails to compile.
 - [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have

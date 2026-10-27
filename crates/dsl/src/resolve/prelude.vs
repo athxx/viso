@@ -151,6 +151,8 @@ export record TextChanged { value: String; }
 export record NumberChanged { value: F64; }
 export record LinkEvent { url: String; }
 export record SelectionChanged { value: U32; }
+// A system back action about to pop a `RouterView`'s page.
+export record BackRequest {}
 
 export record Rect { x: Dp; y: Dp; width: Dp; height: Dp; }
 export record Insets { top: Dp; right: Dp; bottom: Dp; left: Dp; }

@@ -124,11 +124,14 @@ pub enum EventRoute {
     /// came back — from its controls, the keys or the window; it writes back
     /// a two-way `fullscreen`.
     FullscreenChanged = 41,
+    /// A `RouterView`'s `back_requested` (`BackRequest`): a system back
+    /// action is about to pop its page; `e.prevent_default()` keeps it.
+    BackRequested = 42,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 42] = [
+    pub const ALL: [EventRoute; 43] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -171,6 +174,7 @@ impl EventRoute {
         EventRoute::Ended,
         EventRoute::PlayingChanged,
         EventRoute::FullscreenChanged,
+        EventRoute::BackRequested,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -227,6 +231,7 @@ impl EventRoute {
             EventRoute::Ended => "ended",
             EventRoute::PlayingChanged => "playing_changed",
             EventRoute::FullscreenChanged => "fullscreen_changed",
+            EventRoute::BackRequested => "back_requested",
         }
     }
 
@@ -275,6 +280,7 @@ impl EventRoute {
             EventRoute::Ended => "Ended",
             EventRoute::PlayingChanged => "PlayingChanged",
             EventRoute::FullscreenChanged => "FullscreenChanged",
+            EventRoute::BackRequested => "BackRequested",
         }
     }
 
@@ -357,6 +363,7 @@ impl EventRoute {
                 | EventRoute::CurrentChanged
                 | EventRoute::DetentChanged
                 | EventRoute::Removed
+                | EventRoute::BackRequested
         )
     }
 }
@@ -395,6 +402,7 @@ pub const PAYLOAD_RECORDS: &[(&str, &[&str])] = &[
     ("AnimationEnd", &["target", "finished"]),
     ("LinkEvent", &["url"]),
     ("SelectionChanged", &["value"]),
+    ("BackRequest", &[]),
     ("FullSwipeEvent", &["edge"]),
     ("ReorderEvent", &["from", "to"]),
     (

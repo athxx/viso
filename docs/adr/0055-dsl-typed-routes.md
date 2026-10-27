@@ -49,10 +49,17 @@ missing:
     navigator's own revision cell, so every binding and computed value that reads `nav`
     depends on the navigation, with no dynamic dependency.
   - An input the macro is not given, and that has no default, is a compile error naming it.
+  - A Rust value of another type than the input's does not compile (a `const` assertion
+    on the value's `ViewInput::TY`).
+- **The app's own native libraries.** The route enum is the app's. Native package
+  discovery takes the app's own package as well when its manifest declares
+  `[package.metadata.viso.natives]`: its library target names the libraries `crate::NATIVES`,
+  its other targets (the binary, the tests) through the library crate, and a package of
+  binaries alone in each binary.
 - **`RouterView` node.** It takes `navigator: Navigator<_>` and reports
   `back_requested(BackRequest)`.
-  - It builds the navigator's Rust outlet inside itself, so pages come from the Rust
-    `routes!` table and may be `view!`s.
+  - It builds the navigator's Rust outlet inside itself, once, so pages come from the Rust
+    `routes!` table and may be `view!`s (an arm's page may return anything).
   - A system back action fires `back_requested` first; `e.prevent_default()` keeps the page.
 
 ## Alternatives
@@ -74,5 +81,7 @@ missing:
   stored values from before the change load as mismatched once.
 - A library-qualified path to a native variant (`game::Key::Space`) no longer resolves.
   The enum is imported and named instead.
+- The DSL node's `back_requested` takes the place of the Rust outlet's own
+  `on_back_requested`.
 - A root input exists only for the `view!` mount. A view mounted from a release package, or
   re-mounted by the development runtime, still gets each input's default.

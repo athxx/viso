@@ -48,7 +48,7 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let report = Report::Inline(&source, compiled.base);
         let Mounted {
             allocations, root, ..
-        } = mount(&compiled, &report, None, None, &[])?;
+        } = mount(&compiled, &report, None, None, &[], &[])?;
         Ok(quote! {
             |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
                 #allocations
@@ -76,7 +76,14 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             states,
             allocations,
             root,
-        } = mount(&compiled, &report, None, asset_dir(&profile), &packages)?;
+        } = mount(
+            &compiled,
+            &report,
+            None,
+            asset_dir(&profile),
+            &packages,
+            &[],
+        )?;
         let name = rust_ident(&component.schema.name)
             .map_err(|message| report.at(Some(component.source_origin), message))?;
         let imported = compiled
@@ -115,7 +122,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let expansion = (|| {
-        let literal: LitStr = syn::parse(input)?;
+        let ViewArgs { literal, inputs } = syn::parse(input)?;
         let span = literal.span();
         let root_dir = package::root()?;
         let base = package::invoking_file()
@@ -185,6 +192,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             Some((dependency, &origin, build)),
             asset_dir(&profile),
             &packages,
+            &inputs,
         )?;
         // The modules the file imports are compile dependencies too: editing
         // one rebuilds every view that reads it.
@@ -197,7 +205,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 const _: &str = ::core::include_str!(#dependency);
                 #(const _: &str = ::core::include_str!(#imported);)*
                 #catalogs
-                |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
+                move |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
                     #allocations
                     #root
                 }
@@ -205,6 +213,26 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         })
     })();
     finish(expansion, true)
+}
+
+/// `view!`'s arguments: the `.vs` path, then the root component's inputs as
+/// `name: value`.
+struct ViewArgs {
+    literal: LitStr,
+    inputs: Vec<(Ident, syn::Expr)>,
+}
+
+impl syn::parse::Parse for ViewArgs {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let literal = input.parse()?;
+        let mut inputs = Vec::new();
+        while input.parse::<Option<syn::Token![,]>>()?.is_some() && !input.is_empty() {
+            let name: Ident = input.parse()?;
+            input.parse::<syn::Token![:]>()?;
+            inputs.push((name, input.parse()?));
+        }
+        Ok(ViewArgs { literal, inputs })
+    }
 }
 
 /// `asset!("images/logo.png")`: the file of the package's `assets/` the path
@@ -359,6 +387,7 @@ fn mount<'a>(
     record: Option<(&str, &Origin, TokenStream)>,
     assets: Option<&Path>,
     packages: &[NativePackage],
+    inputs: &[(Ident, syn::Expr)],
 ) -> syn::Result<Mounted<'a>> {
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
@@ -418,6 +447,17 @@ fn mount<'a>(
         idents.insert(source.symbol, local.clone());
         states.push((field, local));
     }
+    let given = match mount_inputs(compiled, component, behavior.as_ref(), report, inputs) {
+        Ok(given) => given,
+        Err(error) => {
+            errors.push(error);
+            Vec::new()
+        }
+    };
+    for input in &given {
+        allocations.extend(input.tokens.clone());
+        idents.insert(input.symbol, input.cell.clone());
+    }
     let mut unmounted = BTreeSet::new();
     for edge in compiled.bindings.static_edges() {
         let Some(source) = compiled.source(edge.source) else {
@@ -425,7 +465,10 @@ fn mount<'a>(
         };
         // A binding through a computed or a function names the states beneath it,
         // so only a root input, which no caller supplies here, is left unmounted.
-        if source.kind == SourceKind::Input && unmounted.insert(source.symbol) {
+        if source.kind == SourceKind::Input
+            && !idents.contains_key(&source.symbol)
+            && unmounted.insert(source.symbol)
+        {
             errors.push(report.at(
                 declared_at(component, source),
                 format!(
@@ -446,7 +489,7 @@ fn mount<'a>(
         let libraries = package_libraries(behavior, packages)
             .map_err(|message| report.at(component.schema.view, message))?;
         allocations.extend(host_tokens(
-            behavior, &idents, &tracked, embedded, libraries,
+            behavior, &idents, &tracked, embedded, libraries, &given,
         ));
     }
     let record = record.map(|(file, origin, build)| {
@@ -480,7 +523,12 @@ fn host_tokens(
     tracked: &BTreeSet<SymbolId>,
     assets: TokenStream,
     libraries: TokenStream,
+    inputs: &[GivenInput],
 ) -> TokenStream {
+    let given = inputs.iter().map(|input| {
+        let (name, value) = (&input.name, &input.value);
+        quote! { (#name, #value) }
+    });
     let bytecode = aligned_bytes(&behavior.bytes);
     let compiled = aligned_bytes(&behavior.compiled_bytes());
     let component = &behavior.component;
@@ -511,6 +559,7 @@ fn host_tokens(
             #component,
             __viso_native,
             #libraries,
+            ::std::vec![#(#given),*],
         );
         {
             let mut __viso_view = __viso_host.borrow_mut();
@@ -547,13 +596,15 @@ fn package_libraries(
     packages: &[NativePackage],
 ) -> Result<TokenStream, String> {
     let natives = behavior.module.natives();
+    let krate = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
     let mut libraries = Vec::new();
     for package in packages {
         if natives.iter().any(|import| package.holds(&import.path)) {
-            let path: TokenStream = package.library.parse().map_err(|_| {
+            let library = package.library_in(&krate);
+            let path: TokenStream = library.parse().map_err(|_| {
                 format!(
-                    "the libraries of `{}` are not a Rust path: `{}`",
-                    package.name, package.library
+                    "the libraries of `{}` are not a Rust path: `{library}`",
+                    package.name
                 )
             })?;
             libraries.push(path);
@@ -748,4 +799,127 @@ fn finish(expansion: syn::Result<TokenStream>, expression: bool) -> proc_macro::
             }
         }
     }
+}
+
+/// A root input `view!` was given: the tokens mounting it, the local its cell
+/// is in and the local holding the mounted input.
+struct GivenInput {
+    symbol: SymbolId,
+    name: String,
+    tokens: TokenStream,
+    cell: Ident,
+    value: Ident,
+}
+
+/// Mounts each of `inputs` as the root component's input of its name,
+/// checked at compile time to be a Rust value of the input's type. A name the
+/// component does not declare, an input of a type no Rust value gives, and an
+/// input without a default the macro is not given are errors.
+fn mount_inputs(
+    compiled: &Compiled,
+    component: &HirComponent,
+    behavior: Option<&ViewBehavior>,
+    report: &Report<'_>,
+    inputs: &[(Ident, syn::Expr)],
+) -> syn::Result<Vec<GivenInput>> {
+    let mut errors = Vec::new();
+    let mut given = Vec::new();
+    for (at, (name, value)) in inputs.iter().enumerate() {
+        let text = name.to_string();
+        let Some(input) = component.schema.inputs.iter().find(|i| i.name == text) else {
+            errors.push(syn::Error::new(
+                name.span(),
+                format!("the view's component has no input `{text}`"),
+            ));
+            continue;
+        };
+        let Some(symbol) = input.meta.resolved_symbol else {
+            continue;
+        };
+        let Some(ty) = input_ty(compiled, &input.meta.inferred_type) else {
+            errors.push(report.at(
+                Some(input.meta.source_origin),
+                format!("input `{text}` has a type no Rust value gives a view"),
+            ));
+            continue;
+        };
+        let expect = format_ident!("__VisoInput{at}");
+        let (local, cell) = (
+            format_ident!("__viso_in{at}"),
+            format_ident!("__viso_ic{at}"),
+        );
+        let tokens = quote! {
+            struct #expect;
+            impl ::viso::__private::viso_view::__InputType for #expect {
+                const TY: ::viso::__private::viso_view::InputTy = #ty;
+            }
+            let #local = ::viso::__private::viso_view::__mount_input::<#expect, _>(cx, #value);
+            let #cell = #local.__cell();
+        };
+        given.push(GivenInput {
+            symbol,
+            name: text,
+            tokens,
+            cell,
+            value: local,
+        });
+    }
+    // An input without a default needs a value.
+    if let Some(behavior) = behavior
+        && let Some(index) = behavior.module.component(&behavior.component)
+    {
+        let layout = behavior.module.layout(index);
+        for (slot, default) in layout.input_defaults.iter().enumerate() {
+            let name = &layout.inputs[slot];
+            if default.is_none() && !given.iter().any(|g| *g.name == **name) {
+                let declared = component
+                    .schema
+                    .inputs
+                    .iter()
+                    .find(|i| *i.name == **name)
+                    .map(|i| i.meta.source_origin);
+                errors.push(report.at(
+                    declared,
+                    format!(
+                        "input `{name}` has no default: give it as `view!(\"..\", {name}: value)`"
+                    ),
+                ));
+            }
+        }
+    }
+    combine(errors)?;
+    Ok(given)
+}
+
+/// The `InputTy` a Rust value of an input of type `ty` must have, or `None`
+/// for a type no Rust value gives.
+fn input_ty(compiled: &Compiled, ty: &viso_dsl::hir::Ty) -> Option<TokenStream> {
+    use viso_dsl::hir::Ty;
+    let base = quote! { ::viso::__private::viso_view::InputTy };
+    Some(match ty {
+        Ty::Bool => quote! { #base::Bool },
+        Ty::I32 => quote! { #base::I32 },
+        Ty::F32 => quote! { #base::F32 },
+        Ty::I64 => quote! { #base::I64 },
+        Ty::F64 => quote! { #base::F64 },
+        Ty::String => quote! { #base::String },
+        Ty::Native(id, args) => {
+            let navigator = viso_dsl::schema::NativeId::of(viso_dsl::schema::NAVIGATOR_PATH);
+            let [Ty::Named(route, _)] = args.as_slice() else {
+                return None;
+            };
+            if *id != navigator {
+                return None;
+            }
+            let path = compiled
+                .natives
+                .types()
+                .iter()
+                .find(|t| t.ty.is_enum() && viso_dsl::resolve::native_enum(&t.path) == *route)?
+                .path
+                .to_string();
+            quote! { #base::Navigator(#path) }
+        }
+        _ => return None,
+    })
 }

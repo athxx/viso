@@ -18,7 +18,8 @@ use std::sync::Arc;
 use viso_behavior::native::{
     NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry, NativeWidgetEntry, SlotCardinality,
 };
-pub use viso_behavior::native::{NativeKind, Natives, Ownership, ThreadDomain};
+pub use viso_behavior::native::{NativeId, NativeKind, Natives, Ownership, ThreadDomain};
+pub use viso_behavior::nav::NAVIGATOR_PATH;
 use viso_ende::JsonWriter;
 
 use crate::diag::Diagnostic;

@@ -45,6 +45,10 @@
 //! The app depends on the package, and its views import the library as
 //! they import the standard ones (`import api::double;`).
 //!
+//! The app's own package may declare libraries the same way, for types of
+//! its own its views read (its route enum): its library target holds
+//! `pub static NATIVES`, and its views, its binary and its tests name them.
+//!
 //! A record a native returns or takes is a Rust struct deriving
 //! [`NativeData`](macro@NativeData), its type in the library's `types`;
 //! `.vs` reads its fields as a record's, and a failure a native reports is a

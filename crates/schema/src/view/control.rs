@@ -158,11 +158,15 @@ pub enum ControlKind {
     /// lies behind it as its `backdrop` says, the standard glass without
     /// one; it has no built-in response.
     Glass = 36,
+    /// `RouterView`: shows the Rust router view behind its `navigator` —
+    /// parts the framework builds inside it, once — and reports
+    /// `back_requested` before a system back action pops a page.
+    Router = 37,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 37] = [
+    pub const ALL: [ControlKind; 38] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -200,6 +204,7 @@ impl ControlKind {
         ControlKind::Video,
         ControlKind::Camera,
         ControlKind::Glass,
+        ControlKind::Router,
     ];
 
     /// The kind native widget `widget` is.
@@ -241,6 +246,7 @@ impl ControlKind {
             "Video" => ControlKind::Video,
             "CameraView" => ControlKind::Camera,
             "BlurView" => ControlKind::Glass,
+            "RouterView" => ControlKind::Router,
             _ => ControlKind::Plain,
         }
     }
@@ -255,6 +261,7 @@ impl ControlKind {
             "current_changed" => EventRoute::CurrentChanged,
             "detent_changed" => EventRoute::DetentChanged,
             "removed" => EventRoute::Removed,
+            "back_requested" => EventRoute::BackRequested,
             _ => return None,
         };
         self.reports(route).then_some(route)
@@ -283,6 +290,7 @@ impl ControlKind {
                 | ControlKind::ColorPicker
                 | ControlKind::ComboBox
                 | ControlKind::SearchField
+                | ControlKind::Router
         )
     }
 
@@ -291,7 +299,10 @@ impl ControlKind {
     pub fn builds_parts(self) -> bool {
         matches!(
             self,
-            ControlKind::ColorPicker | ControlKind::ComboBox | ControlKind::SearchField
+            ControlKind::ColorPicker
+                | ControlKind::ComboBox
+                | ControlKind::SearchField
+                | ControlKind::Router
         )
     }
 
@@ -313,6 +324,7 @@ impl ControlKind {
                     | ControlKind::ComboBox
                     | ControlKind::SearchField
                     | ControlKind::Glass
+                    | ControlKind::Router
             )
     }
 
@@ -346,6 +358,7 @@ impl ControlKind {
                 | (ControlKind::Sheet, EventRoute::DetentChanged)
                 | (ControlKind::Button | ControlKind::Chip, EventRoute::Click)
                 | (ControlKind::Chip, EventRoute::Removed)
+                | (ControlKind::Router, EventRoute::BackRequested)
         )
     }
 
@@ -353,6 +366,7 @@ impl ControlKind {
     /// group member is named by its dotted path (`transition.opacity`).
     pub fn input(self, property: &str) -> Option<ControlInput> {
         Some(match (self, property) {
+            (ControlKind::Router, "navigator") => ControlInput::Value,
             (_, "background") => ControlInput::Background,
             (_, "opacity") => ControlInput::Opacity,
             (_, "corner_radius") => ControlInput::CornerRadius,
@@ -632,6 +646,7 @@ impl ControlKind {
             ControlKind::Video => "Video",
             ControlKind::Camera => "Camera",
             ControlKind::Glass => "Glass",
+            ControlKind::Router => "Router",
         }
     }
 
@@ -656,7 +671,7 @@ pub fn widget_role(widget: &str) -> Option<Role> {
         "Text" | "LinkLabel" | "Badge" => Role::Label,
         "Image" | "Svg" | "Video" | "CameraView" | "GameViewport" | "Avatar" => Role::Image,
         "VirtualList" => Role::List,
-        "NavigationStack" => Role::Navigation,
+        "NavigationStack" | "RouterView" => Role::Navigation,
         "Modal" | "Sheet" => Role::Dialog,
         "Toast" => Role::Status,
         "ProgressBar" | "ProgressRing" | "Spinner" => Role::ProgressIndicator,

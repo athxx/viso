@@ -3137,6 +3137,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-04-navigation"
+version = "0.0.0"
+dependencies = [
+ "viso",
+]
+
+[[package]]
 name = "viso-example-10-custom-shader"
 version = "0.0.0"
 dependencies = [

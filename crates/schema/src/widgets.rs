@@ -244,6 +244,8 @@ const KNOB: &[WidgetProperty] = &[
 
 /// A `ColorPicker`'s `value`, whether it picks an opacity (`alpha`), whether
 /// its hue goes round a ring (`wheel`), and the `label` that names it.
+const ROUTER: &[WidgetProperty] = &[prop("navigator", "viso::nav::Navigator")];
+
 const COLOR_PICKER: &[WidgetProperty] = &[
     two_way("value", "Color"),
     prop("alpha", "Bool"),
@@ -517,6 +519,7 @@ const CHIP_EVENTS: &[WidgetEvent] = &[
 ];
 const SLIDER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "SliderChanged")];
 const COLOR_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "ColorChanged")];
+const ROUTER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("back_requested", "BackRequest")];
 const TEXT_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "TextChanged")];
 const NUMBER_EVENTS: &[WidgetEvent] = &[WidgetEvent::new("changed", "NumberChanged")];
 const TEXT_INPUT_EVENTS: &[WidgetEvent] = &[
@@ -775,6 +778,8 @@ pub const STANDARD: &[NativeWidget] = &[
     )
     .events(&[COLOR_EVENTS, STANDARD_EVENTS])
     .interactive(),
+    layout("RouterView", COLUMN, &[ROUTER, LAYOUT, TRANSFORM, FOCUS])
+        .events(&[ROUTER_EVENTS, STANDARD_EVENTS]),
     layout(
         "Image",
         WidgetNode::Leaf,

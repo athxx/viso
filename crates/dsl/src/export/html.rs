@@ -516,14 +516,21 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
                 return;
             }
-            (NodeKind::Component, _) => {
+            (NodeKind::Component, _) | (_, ControlKind::Router) => {
                 self.need(
                     Need::Unsupported,
                     self.own(node.instance, node.origin),
-                    format!(
-                        "`{}` is a Rust component, which only the Viso runtime mounts",
-                        node.type_name
-                    ),
+                    if kind == ControlKind::Router {
+                        format!(
+                            "a `{}` shows pages a Rust router builds, which only the Viso runtime mounts",
+                            node.type_name
+                        )
+                    } else {
+                        format!(
+                            "`{}` is a Rust component, which only the Viso runtime mounts",
+                            node.type_name
+                        )
+                    },
                     Vec::new(),
                 );
                 for child in &node.children {
@@ -2385,7 +2392,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ControlKind::Plain
             | ControlKind::Glass
             | ControlKind::Shader
-            | ControlKind::Viewport => {}
+            | ControlKind::Viewport
+            | ControlKind::Router => {}
         }
 
         if let Some(fixed) = self.bind(

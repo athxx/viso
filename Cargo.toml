@@ -39,6 +39,7 @@ members = [
     "libs/woff2",
     "examples/hello_world",
     "examples/01-counter",
+    "examples/04-navigation",
     "examples/i18n",
     "examples/persist",
     "examples/links",

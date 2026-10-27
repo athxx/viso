@@ -69,7 +69,7 @@ pub(super) fn collect_map(
     scope: &ModuleScope,
     decls: &mut Declarations,
 ) {
-    if *ty != Ty::native(input_map()) {
+    if !matches!(ty, Ty::Native(id, _) if *id == input_map()) {
         return;
     }
     let (Some(module), Some(name)) = (scope.home, decl.name()) else {

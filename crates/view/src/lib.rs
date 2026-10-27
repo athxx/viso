@@ -29,6 +29,7 @@ mod effects;
 mod env;
 mod game;
 mod host;
+mod input;
 pub mod inspect;
 mod layout_values;
 #[cfg(feature = "inspect")]
@@ -61,6 +62,7 @@ pub use game::{
     mount_view_game, take_game_faults,
 };
 pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
+pub use input::{__InputType, __mount_input, InputTy, MountedInput, ViewInput};
 #[cfg(feature = "inspect")]
 pub use mounts::{__mounted_view, MountRecord, take_mounts};
 pub use nodes::{__mount_nodes, mount_nodes};

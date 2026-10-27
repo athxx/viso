@@ -418,7 +418,7 @@ facade 的 feature 少而稳定，普通应用不手工设置任何 feature：�
 宏            ui!
 ```
 
-其余宏在 crate 根：`viso::component!`、`viso::view!`、`viso::asset!`、`viso::packaged_fonts!`，以及 `viso::print!` / `println!` / `eprint!` / `eprintln!`（Web 上写入页面 console）。目标（尚未实现）：`routes!`（与 `Navigator<R>` / `RouterView` 一起，§6.1）。
+其余宏在 crate 根：`viso::component!`、`viso::view!`、`viso::asset!`、`viso::packaged_fonts!`，以及 `viso::print!` / `println!` / `eprint!` / `eprintln!`（Web 上写入页面 console）。`routes!` 与 `Navigator<R>` / `router_view` 在 prelude 中（§6.1）。
 
 高级模块必须显式进入：
 
@@ -539,7 +539,7 @@ nav.push(ev, Route::Message { id: 7 }); // 任意 StateWriter：handler、task�
 - 深链接在 `Application::on_open_url` 中把 URL 解析为路由，再 `reset` / `push`；
 - `routes!` 展开为一个 `match`，缺少页面的路由是编译错误。
 
-DSL 侧的 `Navigator<R>` 类型与 `RouterView` 出口见 `Viso_DSL_1.0.md` §U11。Viso 不提供全局 `Store` 类型；跨 feature 的共享状态是应用自己的 Rust 类型。
+DSL 侧：`.vs` 的 `input nav: Navigator<Route>` 由 `view!("shell.vs", nav: router)` 传入 Rust 的 `RouterView<R>`（`viso_view::ViewInput`），`.vs` 的 `RouterView { navigator: nav; }` 节点在自身内部构建这个 Rust router view，`back_requested` 先于系统返回派发（`Viso_DSL_1.0.md` §U11，ADR 0055）。Viso 不提供全局 `Store` 类型；跨 feature 的共享状态是应用自己的 Rust 类型。
 
 ### 6.2 推荐但不强制的应用分层
 
@@ -3616,7 +3616,7 @@ Source → Tokenizer（viso-lexer）→ Lossless CST → AST → Name Resolution
 Viso DSL compiler 只读纯数据的 schema，不直接操作 Rust 对象内存布局，也不链接 widget 实现（ADR 0042）：
 
 - **Widget**：`viso_schema::widget::NativeWidget`（properties、property groups、events、slots，以及它 lower 到的 retained node 种类 `WidgetNode`）是 `'static` 数据；标准表 `viso_schema::widgets` 即 `viso::widgets`。
-- **Native 函数与类型**：`viso_behavior::native` 的 `NativeLibrary` / `NativeFunction` / `NativeType`（effect kind、thread domain、capability、ownership）与 `Natives` 注册表（ADR 0036）。框架外的 native package 在 manifest 旁携带同一 schema 的 JSON（`natives.json`），compiler 经 `cargo metadata` 发现，不构建 app 的 Rust（ADR 0051）；native 数据类型由 `#[derive(NativeData)]` 生成。
+- **Native 函数与类型**：`viso_behavior::native` 的 `NativeLibrary` / `NativeFunction` / `NativeType`（effect kind、thread domain、capability、ownership）与 `Natives` 注册表（ADR 0036）。框架外的 native package 在 manifest 旁携带同一 schema 的 JSON（`natives.json`），compiler 经 `cargo metadata` 发现，不构建 app 的 Rust（ADR 0051）；app 自己的包也可以这样声明 native library（例如它的路由 enum），库 target 中称为 `crate::NATIVES`，其余 target 经库 crate 引用；native 数据类型由 `#[derive(NativeData)]` 生成。
 - **Component**：`.vs` 组件的 input/state/event/slot 由 compiler 从源码得到（HIR 的 `ComponentSchema`）；`viso schema <symbol>` 输出上述任一对象（DSL 规范 §139）。
 
 不做 `#[derive(Component, Reflect)]` 式从 Rust 类型反射 schema：Rust 能力以 native schema 数据进入 DSL。目标（尚未实现）：native package 携带 widget（与 trait）schema，使 app 或扩展的 Rust widget 可在 `.vs` 中使用（ADR 0051 目前只携带函数与类型）。
@@ -3796,7 +3796,7 @@ DSL `ComboBox` 与 `SearchField` 同样如此：逻辑在 `viso_ui::combo_box::C
 | adaptive | DSL 的 `SafeArea`、`KeyboardAvoiding`、`AdaptiveScope`（`viso-ui` 的 layout 节点）；`LazyGrid` 的 `Columns::Adaptive` |
 | desktop | caption_bar、menu_bar、dock、file_tree、data_grid |
 
-目标（尚未实现）：`adaptive_split`（list-detail，窄屏时变为导航栈）与 `adaptive_navigation`（底栏 / rail / 侧栏随 size class 切换）。路由由 `NavigationStack` 与 `Application::on_open_url` 承担，不另设 router view；自绘标题栏窗口的缩放边框由 platform 提供，不另设 resize region。
+目标（尚未实现）：`adaptive_split`（list-detail，窄屏时变为导航栈）与 `adaptive_navigation`（底栏 / rail / 侧栏随 size class 切换）。路由由 typed router（§6.1，`RouterView`）、`NavigationStack` 与 `Application::on_open_url` 承担；自绘标题栏窗口的缩放边框由 platform 提供，不另设 resize region。
 
 ---
 
@@ -5180,7 +5180,7 @@ Tier 6: Markdown, PDF, Browser, Charts, Map, Video
 
 ## 72. Phase 8 — Platform Services / Async / App Framework
 
-**状态**：核心部分已完成：clipboard（`viso-platform`）、haptics / launcher / app data（`viso-services`，ADR 0031）、async task（ADR 0032，`cx.spawn_then`）、NavigationStack、safe area / keyboard inset / adaptive（facade `environment`）、lifecycle（§77）。非 UI 服务按设计不进核心，是 `viso-ext` 插件 crate：file picker、share、本地通知与 push、secure storage、定位、相机 provider（ADR 0050）、打印，权限随各插件；HTTP/WebSocket 的 `viso-ext/viso-net` 进行中（`todo_features.md` W11）。Rust 侧 typed route（`Navigator<R>`、`RouterView`、`routes!`，§6.1）与 `Application::on_lifecycle` 已实现；未实现：DSL 侧的 `Navigator<R>` 与 `RouterView`（`Viso_DSL_1.0.md` U11）。
+**状态**：核心部分已完成：clipboard（`viso-platform`）、haptics / launcher / app data（`viso-services`，ADR 0031）、async task（ADR 0032，`cx.spawn_then`）、NavigationStack、safe area / keyboard inset / adaptive（facade `environment`）、lifecycle（§77）。非 UI 服务按设计不进核心，是 `viso-ext` 插件 crate：file picker、share、本地通知与 push、secure storage、定位、相机 provider（ADR 0050）、打印，权限随各插件；HTTP/WebSocket 的 `viso-ext/viso-net` 进行中（`todo_features.md` W11）。Rust 侧 typed route（`Navigator<R>`、`RouterView`、`routes!`，§6.1）与 `Application::on_lifecycle` 已实现；DSL 侧的 `Navigator<R>` 与 `RouterView`（`Viso_DSL_1.0.md` U11）亦已实现。
 
 ### 工作
 

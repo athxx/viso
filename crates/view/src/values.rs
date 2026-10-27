@@ -61,6 +61,7 @@ use crate::control::{
     Control, ControlInput, ControlKind, Holds, LayoutSlot, Switched, When, field,
 };
 use crate::host::ViewHost;
+use crate::input::BackSink;
 use crate::layout_values::{alignment, layout_value, length};
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
@@ -858,6 +859,7 @@ impl Shown {
                 };
                 show_combo(&mut self.parts, self.node, cx, host, spec, stale, value);
             }
+            ControlKind::Router => show_router(&mut self.parts, self.node, cx, host, value),
             ControlKind::Video if first || changed(CONTROLS) => {
                 show_video_controls(&mut self.parts, self.node, cx, truth(controls, false));
             }
@@ -1103,7 +1105,8 @@ impl Shown {
             | ControlKind::Toast
             | ControlKind::ColorPicker
             | ControlKind::ComboBox
-            | ControlKind::SearchField => {}
+            | ControlKind::SearchField
+            | ControlKind::Router => {}
             // A viewer clips its content unless its `clip` says, and keeps
             // the content within its limits as they change.
             ControlKind::Viewer => {
@@ -1864,6 +1867,41 @@ fn show_picker(
     }
 }
 
+/// A router view node places the Rust router view its `navigator` — a
+/// navigator handle `host` was given — inside node `node`, once. A system
+/// back action runs the node's `back_requested` routes first, and keeps the
+/// page when one of them prevents its default.
+fn show_router(
+    parts: &mut Option<Parts>,
+    node: NodeId,
+    cx: &mut StructureCx<'_>,
+    host: &mut ViewHost,
+    navigator: &Value,
+) {
+    if parts.is_some() {
+        return;
+    }
+    let Some(routes) = host.navigator(navigator) else {
+        return;
+    };
+    let this = host.this.clone();
+    let on_back: BackSink = Box::new(move |ev, request| {
+        let Some(host) = this.upgrade() else { return };
+        let Ok(mut host) = host.try_borrow_mut() else {
+            return;
+        };
+        host.fire(node, EventRoute::BackRequested, Value::record([]), ev);
+        if host.take_event_asks().prevent_default {
+            request.prevent_default();
+        }
+    });
+    if routes.place(cx, node, on_back)
+        && let Some(root) = cx.store.arena().links(node).and_then(|l| l.first_child)
+    {
+        *parts = Some(Parts::Router(root));
+    }
+}
+
 /// The parts the framework builds inside a node.
 #[derive(Clone)]
 enum Parts {
@@ -1871,6 +1909,8 @@ enum Parts {
     Combo(ComboParts),
     Search(SearchParts),
     Video(VideoControls),
+    /// The root of a placed router view.
+    Router(NodeId),
 }
 
 impl Parts {
@@ -1881,6 +1921,7 @@ impl Parts {
             Parts::Combo(parts) => parts.root().id(),
             Parts::Search(parts) => parts.root().id(),
             Parts::Video(parts) => parts.root(),
+            Parts::Router(root) => *root,
         }
     }
 

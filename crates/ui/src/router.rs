@@ -123,62 +123,131 @@ impl<R: Clone + PartialEq + 'static> Navigator<R> {
 
     /// Shows `route` over the current page, which keeps its state below it.
     pub fn push(self, cx: &mut (impl StateWriter + ?Sized), route: R) {
-        self.navigate(cx, |stack| {
-            stack.push(route);
-            true
-        });
+        self.navigate(cx, RouteEdit::Push(route));
     }
 
     /// Shows `route` in place of the current page, which goes.
     pub fn replace(self, cx: &mut (impl StateWriter + ?Sized), route: R) {
-        self.navigate(cx, |stack| {
-            if stack.last() == Some(&route) {
-                return false;
-            }
-            stack.pop();
-            stack.push(route);
-            true
-        });
+        self.navigate(cx, RouteEdit::Replace(route));
     }
 
     /// Reveals the page below the current one, which goes; whether there was
     /// one. The root page stays.
     pub fn pop(self, cx: &mut (impl StateWriter + ?Sized)) -> bool {
-        self.navigate(cx, |stack| stack.len() > 1 && stack.pop().is_some())
+        self.navigate(cx, RouteEdit::Pop)
     }
 
     /// Makes `route` the only page, as a deep link does: a page of the stack
     /// with that route is kept, every other goes.
     pub fn reset(self, cx: &mut (impl StateWriter + ?Sized), route: R) {
-        self.navigate(cx, |stack| {
-            if stack.len() == 1 && stack[0] == route {
-                return false;
-            }
-            stack.clear();
-            stack.push(route);
-            true
-        });
+        self.navigate(cx, RouteEdit::Reset(route));
     }
 
-    /// Edits the stack with `edit` and, when it changed it, raises the
-    /// revision; whether it did.
-    fn navigate(
-        self,
-        cx: &mut (impl StateWriter + ?Sized),
-        edit: impl FnOnce(&mut Vec<R>) -> bool,
-    ) -> bool {
+    /// Applies `edit` and, when it changed the stack, raises the revision;
+    /// whether it did.
+    fn navigate(self, cx: &mut (impl StateWriter + ?Sized), edit: RouteEdit<R>) -> bool {
         let Some(parts) = cx.controls().get::<NavigatorParts<R>>(self.id) else {
             return false;
         };
-        if !edit(&mut parts.stack.borrow_mut()) {
+        if !parts.edit(edit) {
             return false;
         }
-        let revision = match cx.read(parts.revision) {
-            Some(StateValue::Int(n)) => n.wrapping_add(1),
-            _ => 0,
-        };
-        cx.set(parts.revision, StateValue::Int(revision));
+        raise(cx, parts.revision);
         true
+    }
+}
+
+/// Raises the revision cell `revision`.
+fn raise(cx: &mut (impl StateWriter + ?Sized), revision: StateId) {
+    let next = match cx.read(revision) {
+        Some(StateValue::Int(n)) => n.wrapping_add(1),
+        _ => 0,
+    };
+    cx.set(revision, StateValue::Int(next));
+}
+
+/// A change to a back stack, as the navigator's methods name them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RouteEdit<R> {
+    /// [`Navigator::push`].
+    Push(R),
+    /// [`Navigator::replace`].
+    Replace(R),
+    /// [`Navigator::pop`].
+    Pop,
+    /// [`Navigator::reset`].
+    Reset(R),
+}
+
+impl<R: PartialEq> NavigatorParts<R> {
+    /// Applies `edit` to the stack; whether it changed it.
+    fn edit(&self, edit: RouteEdit<R>) -> bool {
+        let mut stack = self.stack.borrow_mut();
+        match edit {
+            RouteEdit::Push(route) => stack.push(route),
+            RouteEdit::Replace(route) => {
+                if stack.last() == Some(&route) {
+                    return false;
+                }
+                stack.pop();
+                stack.push(route);
+            }
+            RouteEdit::Pop => return stack.len() > 1 && stack.pop().is_some(),
+            RouteEdit::Reset(route) => {
+                if stack.len() == 1 && stack[0] == route {
+                    return false;
+                }
+                stack.clear();
+                stack.push(route);
+            }
+        }
+        true
+    }
+}
+
+/// The back stack of a [`RouterView`] that is not built yet, for a host that
+/// drives it from outside an event — a compiled view whose input it is, which
+/// places the view later. Reads answer at once; [`edit`](Self::edit) changes
+/// the stack and leaves raising [`revision`](Self::revision) to the caller,
+/// which does it through its state writes, as a navigator's methods do.
+pub struct SharedRoutes<R> {
+    parts: Rc<NavigatorParts<R>>,
+    navigator: Navigator<R>,
+}
+
+impl<R: Clone + PartialEq + 'static> SharedRoutes<R> {
+    /// The route on top.
+    pub fn current(&self) -> Option<R> {
+        self.parts.stack.borrow().last().cloned()
+    }
+
+    /// How many routes the stack holds.
+    pub fn depth(&self) -> usize {
+        self.parts.stack.borrow().len()
+    }
+
+    /// Applies `edit`; whether it changed the stack.
+    pub fn edit(&self, edit: RouteEdit<R>) -> bool {
+        self.parts.edit(edit)
+    }
+
+    /// The cell every read of the stack depends on.
+    pub fn revision(&self) -> StateId {
+        self.parts.revision
+    }
+
+    /// The navigator over this stack.
+    pub fn navigator(&self) -> Navigator<R> {
+        self.navigator
+    }
+}
+
+impl<R> Clone for SharedRoutes<R> {
+    fn clone(&self) -> Self {
+        SharedRoutes {
+            parts: Rc::clone(&self.parts),
+            navigator: self.navigator,
+        }
     }
 }
 
@@ -264,6 +333,8 @@ pub struct RouterView<R> {
     size: Sizing,
     transition: PageTransition,
     navigator: Option<Navigator<R>>,
+    /// Its back stack, made before the build by [`share`](RouterView::share).
+    parts: Option<Rc<NavigatorParts<R>>>,
 }
 
 /// A [`RouterView`] starting at `initial`, building each route's page with
@@ -283,6 +354,7 @@ pub fn router_view<R: Clone + PartialEq + 'static>(
         },
         transition: PageTransition::Native,
         navigator: None,
+        parts: None,
     }
 }
 
@@ -316,6 +388,27 @@ impl<R: Clone + PartialEq + 'static> RouterView<R> {
         self
     }
 
+    /// Makes its back stack now, before the view is built, and shares it:
+    /// for a host that hands the stack to code built ahead of the view. `None`
+    /// for a `cx` without states, whose build makes no navigator.
+    pub fn share(&mut self, cx: &mut BuildCx<'_>) -> Option<SharedRoutes<R>> {
+        if !cx.is_reactive() {
+            return None;
+        }
+        let navigator = *self.navigator.get_or_insert_with(|| cx.handle());
+        let initial = self.initial.clone();
+        let parts = self.parts.get_or_insert_with(|| {
+            Rc::new(NavigatorParts {
+                stack: RefCell::new(vec![initial]),
+                revision: cx.state(StateValue::Int(0)),
+            })
+        });
+        Some(SharedRoutes {
+            parts: Rc::clone(parts),
+            navigator,
+        })
+    }
+
     /// Builds the view into `cx` and returns its navigator.
     pub fn build(mut self, cx: &mut BuildCx<'_>) -> Navigator<R> {
         let navigator = *self.navigator.get_or_insert_with(|| cx.handle());
@@ -326,8 +419,9 @@ impl<R: Clone + PartialEq + 'static> RouterView<R> {
 
 /// Maps each route of an enum to the builder of its page: a `match` whose
 /// arms are `pattern => page`, `page` a function or closure taking the
-/// [`BuildCx`]; the pattern's bindings are in scope for it. A route without
-/// an arm is a compile error.
+/// [`BuildCx`], whatever it returns (a `view!` returns its root); the
+/// pattern's bindings are in scope for it. A route without an arm is a
+/// compile error.
 ///
 /// ```
 /// # use viso_ui::{BuildCx, LeafStyle, router_view, routes};
@@ -345,7 +439,9 @@ impl<R: Clone + PartialEq + 'static> RouterView<R> {
 macro_rules! routes {
     ($($route:pat => $page:expr),+ $(,)?) => {
         move |cx: &mut $crate::BuildCx<'_>, route: &_| match route {
-            $($route => ($page)(cx),)+
+            $($route => {
+                ($page)(cx);
+            })+
         }
     };
 }
@@ -526,9 +622,16 @@ impl<R: Clone + PartialEq + 'static> Component for RouterView<R> {
             templates: Vec::new(),
             transition: self.transition,
         };
-        let first = cx.inside(root, |cx| router.mount(cx, &self.initial));
-        router.pages.push((self.initial.clone(), first));
-        cx.page(root, Some(0));
+        // A shared stack may have moved on before the build.
+        let routes = match &self.parts {
+            Some(parts) => parts.stack.borrow().clone(),
+            None => vec![self.initial.clone()],
+        };
+        for route in &routes {
+            let page = cx.inside(root, |cx| router.mount(cx, route));
+            router.pages.push((route.clone(), page));
+        }
+        cx.page(root, Some(routes.len() - 1));
         cx.clip(root, true);
         cx.semantics(root, Semantics::role(Role::Navigation));
 
@@ -538,11 +641,14 @@ impl<R: Clone + PartialEq + 'static> Component for RouterView<R> {
         if !cx.is_reactive() {
             return;
         }
-        let revision = cx.state(StateValue::Int(0));
-        let parts = Rc::new(NavigatorParts {
-            stack: RefCell::new(vec![self.initial.clone()]),
-            revision,
-        });
+        let parts = match &self.parts {
+            Some(parts) => Rc::clone(parts),
+            None => Rc::new(NavigatorParts {
+                stack: RefCell::new(routes),
+                revision: cx.state(StateValue::Int(0)),
+            }),
+        };
+        let revision = parts.revision;
         cx.bind_control(navigator.id, stack, Rc::clone(&parts));
 
         // The flush shows what the transaction's navigations left.

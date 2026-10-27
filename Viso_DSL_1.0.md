@@ -5228,25 +5228,26 @@ Text { text: tr("inbox.unread", count: unread); }
 
 ## U11. 导航
 
-> **状态**：Rust 侧已实现（`viso_ui::router`：`Navigator<R>`、`RouterView`、`routes!`，Architecture §6.1）；DSL 侧（`.vs` 中的 `Navigator<R>` 类型与 `RouterView` 出口）尚未实现。本节是 DSL 侧的设计合同。
+> **状态**：已实现（Rust 侧 `viso_ui::router`，Architecture §6.1；DSL 侧 `viso::nav` 与 `RouterView`，ADR 0055 Proposed）。示例：`examples/04-navigation`。
 
 路由是 **Rust 中定义的类型化路由**（CLAUDE.md §32）。DSL 不声明路由表，只使用经 Native Schema 导入的 `Route` Enum 与宿主提供的句柄 `Navigator<R>`：
 
-`Navigator<R>` 的方法：响应式读取 `current() -> R`、`can_pop() -> Bool`；命令 `push(route)`、`replace(route)`、`pop()`、`reset(route)`。
+- `Route` 是 Rust enum 派生 `#[derive(NativeData)]`，放进某个 Native Library 的 `types`；`.vs` 把它当作该 Library 声明的普通 Enum：构造、比较、穷尽 `match`，variant 名是 Rust 名的 snake case（`Route::message { id }`）。Library 可以在依赖的 native package 中，也可以在 app 自己的包里（manifest 的 `[package.metadata.viso.natives]`，库 target 中写 `pub static NATIVES`）；
+- `Navigator<R>`（`viso::nav`，无需 import）的方法：响应式读取 `current() -> R`、`can_pop() -> Bool`、`depth() -> I64`；命令 `push(route)`、`replace(route)`、`pop() -> Bool`、`reset(route)`。
 
 ```viso
-import app::routes::Route;
+import mail::Route;
 
 export component Shell {
     input nav: Navigator<Route>;
-    input has_unsaved_changes: Bool = false;
+    state has_unsaved_changes = false;
 
     view {
         Column {
             Button { text: tr("nav.settings"); on click { nav.push(Route::settings); } }
             RouterView {
                 navigator: nav;
-                height: Sizing::fill {};
+                height: 100%;
                 on back_requested(e) { if has_unsaved_changes { e.prevent_default(); } }
             }
         }
@@ -5254,12 +5255,24 @@ export component Shell {
 }
 ```
 
-- `push`、`replace`、`pop`、`reset` 只能在 Action 与 Handler 中调用；一个 Transaction 内的多次导航在提交时合并为一次；
-- `current()`、`can_pop()` 可在 View 与 Computed 中读取，产生 `STRUCTURE` 依赖；
-- `RouterView` 是导航出口：按 `navigator.current()` 与 Rust 注册的 Route→Page 映射挂载页面，页面切换是 `STRUCTURE`；页面节点以路由值为 Key，返回栈中已有页面时保留其状态；
-- 系统返回（Android Back、Escape、边缘手势）先派发 `back_requested` 给最内层 `RouterView`，未被 `prevent_default()` 时执行 `pop()`；`can_pop()` 为假时事件交给宿主；
-- 路由参数经 Route Variant 字段传递，URL 与深链接解析在 Rust 中完成；
-- 页面切换后焦点移到新页面首个 `heading`，没有时移到页面根节点；转场动画推迟。
+```rust
+let router = router_view(Route::Inbox, routes! {
+    Route::Inbox => viso::view!("inbox.vs"),
+    Route::Message { id } => viso::view!("message.vs", id: *id),
+    Route::Settings => settings,
+})
+.navigator(nav); // 先 cx.handle() 铸造，留给 on_open_url
+viso::view!("shell.vs", nav: router)(cx);
+```
+
+- 根组件的 Input 由 `view!("x.vs", name: expr, ...)` 传入：标量（`Bool`、`I32`、`F32`、`I64`、`F64`、`String`）按值，`RouterView<R>` 成为 `Navigator<R>`；Rust 值的类型与 Input 类型不符、未知 Input 名、缺少无默认值的 Input 都是编译错误；
+- `push`、`replace`、`pop`、`reset` 只能在 Action 与 Handler 中调用；导航立即改动返回栈，调用返回后宿主抬高 navigator 的 revision cell，一个 Transaction 内的多次导航在 flush 时一起生效；
+- `current()`、`can_pop()`、`depth()` 可在 View 与 Computed 中读取：读 `nav` 的 binding 依赖 navigator 的 revision cell，Rust 侧（如 `on_open_url`）的导航同样触发它们；
+- `RouterView` 是导航出口：它在自身内部构建一次 `navigator` 背后的 Rust `RouterView`，页面来自 Rust 的 `routes!` 表（可以是 `view!`）；页面节点以路由值为 Key，返回栈中已有页面时保留其状态；
+- 系统返回（Android Back、Escape、鼠标后退键）先派发 `back_requested(BackRequest)` 给最内层显示多于一页的 `RouterView`，未被 `prevent_default()` 时执行 `pop()`；只剩根页时事件交给宿主；
+- 路由参数经 Route Variant 字段传递，URL 与深链接解析在 Rust 中完成（`Application::on_open_url` 中 `reset` / `push`）；
+- 页面切换的转场与 `NavigationStack` 相同；切换后焦点移到新页面首个 `heading`，没有时移到页面根节点；
+- 开发运行时重新挂载与 release package 挂载的视图，根 Input 取其默认值。
 
 ---
 

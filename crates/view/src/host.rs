@@ -29,6 +29,7 @@ use viso_ui::{
 
 use crate::env::env_value;
 use crate::game::GameSession;
+use crate::input::{HostRoutes, MountedInput};
 use crate::regions::{LocalTemplate, Mounted, RegionNode};
 use crate::scope::{Locals, Scope};
 use crate::tasks::Tasks;
@@ -294,6 +295,18 @@ pub struct ViewHost {
     /// The routes each node whose parts the framework builds reports
     /// through, and the scope they run in: its parts fire them.
     sinks: Vec<Sink>,
+    /// The root inputs Rust gave the view, each read through its cell.
+    inputs: Vec<InputLink>,
+}
+
+/// A root input: the cell its readers depend on and, for a navigator, the
+/// stack behind it.
+struct InputLink {
+    slot: u32,
+    cell: StateId,
+    navigator: Option<Rc<dyn HostRoutes>>,
+    /// The navigator's revision the instance last derived from.
+    seen: Option<StateValue>,
 }
 
 /// The routes a node whose parts the framework builds reports through.
@@ -407,6 +420,19 @@ impl ViewHost {
         capabilities: &[&str],
         native: Option<&'static NativeCode>,
     ) -> Result<ViewHost, HostError> {
+        ViewHost::linked_with(module, component, natives, capabilities, native, Vec::new())
+    }
+
+    /// [`linked`](Self::linked), the component instantiated with `inputs`,
+    /// each an input slot and its value.
+    pub fn linked_with(
+        module: Rc<Module>,
+        component: &str,
+        natives: Arc<Natives>,
+        capabilities: &[&str],
+        native: Option<&'static NativeCode>,
+        inputs: Vec<(usize, Value)>,
+    ) -> Result<ViewHost, HostError> {
         let index = module
             .component(component)
             .ok_or_else(|| HostError::NoComponent(component.to_owned()))?;
@@ -418,7 +444,7 @@ impl ViewHost {
         if let Some(native) = native {
             vm.install_native(native).map_err(HostError::Native)?;
         }
-        let (instance, broken) = match vm.instantiate(index, []) {
+        let (instance, broken) = match vm.instantiate(index, inputs) {
             Ok(instance) => (instance, None),
             Err(fault) => (Instance::detached(), Some(fault)),
         };
@@ -454,6 +480,7 @@ impl ViewHost {
             shaders: Vec::new(),
             nodes: crate::nodes::NodeRefs::default(),
             sinks: Vec::new(),
+            inputs: Vec::new(),
         })
     }
 
@@ -640,6 +667,30 @@ impl ViewHost {
         self.link(slot, Link::Track(id))
     }
 
+    /// Reads root input `slot` through `input`'s cell. Returns `false`,
+    /// linking nothing, for a slot out of range.
+    pub(crate) fn link_input(&mut self, slot: usize, input: &MountedInput) -> bool {
+        if slot >= self.instance.inputs().len() {
+            return false;
+        }
+        self.inputs.push(InputLink {
+            slot: slot as u32,
+            cell: input.cell,
+            navigator: input.navigator.clone(),
+            seen: None,
+        });
+        true
+    }
+
+    /// The navigator input `value` is a handle to.
+    pub(crate) fn navigator(&self, value: &Value) -> Option<Rc<dyn HostRoutes>> {
+        self.inputs
+            .iter()
+            .filter_map(|i| i.navigator.as_ref())
+            .find(|n| n.is(value))
+            .cloned()
+    }
+
     /// Fills state slot `slot` with `env` field `field`, resolved for an
     /// anchored field at `anchor`, the root of the component instance that
     /// reads it. Returns `false`, linking nothing, for a slot out of range or
@@ -817,6 +868,19 @@ impl ViewHost {
             }
             self.synced = now;
         }
+        for link in &mut self.inputs {
+            if link.navigator.is_none() {
+                continue;
+            }
+            let revision = cells.get(link.cell);
+            if revision.is_some() && revision == link.seen {
+                continue;
+            }
+            link.seen = revision;
+            if (link.slot as usize) < self.instance.inputs().len() {
+                self.instance.touch_input(link.slot as usize);
+            }
+        }
         for link in &mut self.env {
             let revision = cells.get(link.cell);
             if revision.is_some() && revision == link.seen {
@@ -895,11 +959,20 @@ impl ViewHost {
         };
         if reads.opaque {
             out.extend((0..self.mirror.len()).filter_map(linked));
+            out.extend(self.inputs.iter().map(|i| i.cell));
             out.extend(scope.locals.iter().flat_map(|locals| locals.cells.iter()));
             return;
         }
         for slot in reads.states {
             out.extend(scope.cell(slot).or_else(|| linked(slot as usize)));
+        }
+        for slot in reads.inputs {
+            out.extend(
+                self.inputs
+                    .iter()
+                    .filter(|i| i.slot == slot)
+                    .map(|i| i.cell),
+            );
         }
     }
 
@@ -1189,6 +1262,18 @@ impl ViewHost {
         let mut exact = true;
         for &slot in &self.written {
             exact &= self.push_slot(slot, scope, cells);
+        }
+        // A navigation the call made lands with its writes.
+        for link in &self.inputs {
+            let Some(navigator) = &link.navigator else {
+                continue;
+            };
+            if navigator.take_changed()
+                && let Some(StateValue::Int(revision)) = cells.get(link.cell)
+            {
+                cells.set(link.cell, StateValue::Int(revision.wrapping_add(1)));
+                exact = false;
+            }
         }
         self.synced = match cells.epoch() {
             Some(epoch) if matched && exact => Some((epoch, self.instance.revision())),
@@ -1587,6 +1672,7 @@ pub fn __embedded(
     component: &str,
     native: Option<&'static NativeCode>,
     libraries: &[&'static [&'static NativeLibrary]],
+    inputs: Vec<(&'static str, MountedInput)>,
 ) -> Rc<RefCell<ViewHost>> {
     thread_local! {
         static MODULES: RefCell<Vec<(usize, Rc<Module>)>> = const { RefCell::new(Vec::new()) };
@@ -1605,13 +1691,39 @@ pub fn __embedded(
         module
     });
     let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+    let layout = module
+        .component(component)
+        .map(|index| module.layout(index));
+    let slots: Vec<Option<usize>> = inputs
+        .iter()
+        .map(|(name, _)| layout.and_then(|l| l.input(name)))
+        .collect();
+    let values = slots
+        .iter()
+        .zip(&inputs)
+        .filter_map(|(slot, (_, input))| Some(((*slot)?, input.value.clone())))
+        .collect();
     let host = package_natives(libraries)
         .map_err(HostError::Link)
         .and_then(|natives| {
-            ViewHost::linked(Rc::clone(&module), component, natives, &grant, native)
+            ViewHost::linked_with(
+                Rc::clone(&module),
+                component,
+                natives,
+                &grant,
+                native,
+                values,
+            )
         });
     match host {
-        Ok(host) => host.shared(),
+        Ok(mut host) => {
+            for (slot, (_, input)) in slots.iter().zip(&inputs) {
+                if let Some(slot) = *slot {
+                    host.link_input(slot, input);
+                }
+            }
+            host.shared()
+        }
         Err(error) => panic!("an embedded view does not mount: {error}"),
     }
 }

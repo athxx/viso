@@ -219,7 +219,7 @@ pub use reactive::{
     ProjectId, SemanticProjector,
 };
 pub use refresh::RefreshStyle;
-pub use router::{BackRequest, Navigator, RouterView, router_view};
+pub use router::{BackRequest, Navigator, RouteEdit, RouterView, SharedRoutes, router_view};
 pub use scenes::{SceneSlots, SceneSync, SceneTarget};
 pub use scroll_bar::{ScrollBarStyle, ScrollBars};
 pub use scroll_motion::{FlingCurve, OverscrollStyle, ScrollPhysics};

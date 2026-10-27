@@ -1559,6 +1559,12 @@ pub(super) fn compatible(a: &Ty, b: &Ty) -> bool {
         }
         // A nominal type spelled without its arguments (a pattern's, a
         // variant's) agrees with any arguments.
+        (Ty::Native(a, xs), Ty::Native(b, ys)) => {
+            a == b
+                && (xs.is_empty()
+                    || ys.is_empty()
+                    || xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| compatible(x, y)))
+        }
         (Ty::Named(a, xs), Ty::Named(b, ys)) | (Ty::Dyn(a, xs), Ty::Dyn(b, ys)) => {
             a == b
                 && (xs.is_empty()

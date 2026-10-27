@@ -18,7 +18,12 @@
 //! and the host links the module to the Rust libraries, where another
 //! signature is `E6101` again.
 //!
-//! [`discover`] finds the packages among the app's direct dependencies
+//! The app's own package may declare them too, so a `.vs` view of the app
+//! reads its own native types (its route enum): the package's library
+//! target names them `crate::NATIVES`, its other targets through the
+//! library, and a package of binaries alone names them in each binary.
+//!
+//! [`discover`] finds the packages among the app and its direct dependencies
 //! through `cargo metadata`, once per manifest and lock file for the
 //! process; [`registry`] is the standard libraries and theirs, and
 //! [`compile_linked`] compiles against them once a source needs them.
@@ -43,11 +48,34 @@ pub struct NativePackage {
     /// The Rust path of its libraries, as the app's crate names them:
     /// `::viso_net::NATIVES`.
     pub library: String,
+    /// For the app's own package, where its libraries are its own items.
+    pub own: Option<OwnLibraries>,
     /// Their schemas.
     pub libraries: Vec<&'static NativeLibrary>,
 }
 
+/// The native libraries of the app's own package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnLibraries {
+    /// The crate of its library target, where they are declared; none for a
+    /// package of binaries alone, each of which declares them.
+    pub krate: Option<String>,
+    /// The item they are: `NATIVES`.
+    pub item: String,
+}
+
 impl NativePackage {
+    /// The Rust path of its libraries as crate `krate` of the app names
+    /// them: `crate::NATIVES` in the crate that declares them.
+    pub fn library_in(&self, krate: &str) -> String {
+        match &self.own {
+            Some(own) if own.krate.as_deref().is_none_or(|k| k == krate) => {
+                format!("crate::{}", own.item)
+            }
+            _ => self.library.clone(),
+        }
+    }
+
     /// Whether one of its libraries holds the native at `path`.
     pub fn holds(&self, path: &str) -> bool {
         self.libraries.iter().any(|library| {
@@ -226,8 +254,12 @@ pub fn link_with<T>(
     }
 }
 
-/// The native packages `metadata` says the root package depends on
-/// directly, each schema read through `read_file`.
+/// A package's declared libraries: its name, their item, their schemas.
+type Declared = (String, String, Vec<&'static NativeLibrary>);
+
+/// The native packages of `metadata`: the root package itself when it
+/// declares libraries, then those it depends on directly, each schema read
+/// through `read_file`.
 fn packages(
     metadata: &JsonValue,
     read_file: impl Fn(&Path) -> Result<String, String>,
@@ -255,11 +287,77 @@ fn packages(
         all.iter()
             .find(|p| p.get("id").and_then(JsonValue::as_str) == Some(id))
     };
+    // The libraries package `id` declares, if any, and if its feature for
+    // them is on: its name, their item, and their schemas.
+    let declared = |id: &str| -> Result<Option<Declared>, String> {
+        let Some(declared) = package(id)
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("viso"))
+            .and_then(|v| v.get("natives"))
+        else {
+            return Ok(None);
+        };
+        let name = package(id)
+            .and_then(|p| p.get("name"))
+            .and_then(JsonValue::as_str)
+            .unwrap_or(id)
+            .to_owned();
+        if let Some(feature) = declared.get("feature").and_then(JsonValue::as_str) {
+            let enabled = node(id)
+                .and_then(|n| n.get("features"))
+                .and_then(JsonValue::as_array)
+                .is_some_and(|f| f.iter().any(|f| f.as_str() == Some(feature)));
+            if !enabled {
+                return Ok(None);
+            }
+        }
+        let manifest = package(id)
+            .and_then(|p| p.get("manifest_path"))
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| format!("`{name}` has no manifest path"))?;
+        let dir = Path::new(manifest).parent().unwrap_or(Path::new("."));
+        let member = |member: &str| {
+            declared
+                .get(member)
+                .and_then(JsonValue::as_str)
+                .ok_or_else(|| format!("`{name}`: `{member}` is not a string"))
+        };
+        let file = dir.join(member("schema")?);
+        let library = member("library")?.to_owned();
+        let libraries =
+            schema::read(&read_file(&file)?).map_err(|e| format!("`{}`: {e}", file.display()))?;
+        Ok(Some((name, library, libraries)))
+    };
+    let mut found = Vec::new();
+    if let Some((name, item, libraries)) = declared(root)? {
+        // The crate of its library target, which its other targets name.
+        let krate = package(root)
+            .and_then(|p| p.get("targets"))
+            .and_then(JsonValue::as_array)
+            .unwrap_or(&[])
+            .iter()
+            .find(|t| {
+                t.get("kind")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|k| k.iter().any(|k| matches!(k.as_str(), Some("lib" | "rlib"))))
+            })
+            .and_then(|t| t.get("name"))
+            .and_then(JsonValue::as_str)
+            .map(|n| n.replace('-', "_"));
+        found.push(NativePackage {
+            name,
+            library: match &krate {
+                Some(krate) => format!("::{krate}::{item}"),
+                None => format!("crate::{item}"),
+            },
+            own: Some(OwnLibraries { krate, item }),
+            libraries,
+        });
+    }
     let deps = node(root)
         .and_then(|n| n.get("deps"))
         .and_then(JsonValue::as_array)
         .unwrap_or(&[]);
-    let mut found = Vec::new();
     for dep in deps {
         // A normal dependency: a kind of `null`, for any platform.
         let normal = dep
@@ -276,47 +374,16 @@ fn packages(
         ) else {
             continue;
         };
-        let Some(declared) = package(id)
-            .and_then(|p| p.get("metadata"))
-            .and_then(|m| m.get("viso"))
-            .and_then(|v| v.get("natives"))
-        else {
-            continue;
-        };
         if !normal {
             continue;
         }
-        let name = package(id)
-            .and_then(|p| p.get("name"))
-            .and_then(JsonValue::as_str)
-            .unwrap_or(extern_name);
-        if let Some(feature) = declared.get("feature").and_then(JsonValue::as_str) {
-            let enabled = node(id)
-                .and_then(|n| n.get("features"))
-                .and_then(JsonValue::as_array)
-                .is_some_and(|f| f.iter().any(|f| f.as_str() == Some(feature)));
-            if !enabled {
-                continue;
-            }
-        }
-        let manifest = package(id)
-            .and_then(|p| p.get("manifest_path"))
-            .and_then(JsonValue::as_str)
-            .ok_or_else(|| format!("`{name}` has no manifest path"))?;
-        let dir = Path::new(manifest).parent().unwrap_or(Path::new("."));
-        let member = |member: &str| {
-            declared
-                .get(member)
-                .and_then(JsonValue::as_str)
-                .ok_or_else(|| format!("`{name}`: `{member}` is not a string"))
+        let Some((name, item, libraries)) = declared(id)? else {
+            continue;
         };
-        let file = dir.join(member("schema")?);
-        let library = member("library")?;
-        let libraries =
-            schema::read(&read_file(&file)?).map_err(|e| format!("`{}`: {e}", file.display()))?;
         found.push(NativePackage {
-            name: name.to_owned(),
-            library: format!("::{extern_name}::{library}"),
+            name,
+            library: format!("::{extern_name}::{item}"),
+            own: None,
             libraries,
         });
     }
@@ -400,5 +467,54 @@ mod tests {
             natives.function("net::get").is_some()
                 && natives.function("viso::text::upper").is_some()
         );
+    }
+
+    static OWN: NativeLibrary = NativeLibrary {
+        path: "mail",
+        version: 1,
+        functions: &[],
+        types: &[],
+        traits: &[],
+        derives: &[],
+        widgets: &[],
+    };
+
+    /// `cargo metadata` for an app `app` declaring its own natives, with the
+    /// targets `targets`.
+    fn own(targets: &str) -> JsonValue {
+        JsonValue::parse(&format!(
+            r#"{{
+              "packages": [
+                {{"id": "app", "name": "my-app", "manifest_path": "/w/app/Cargo.toml",
+                  "targets": {targets},
+                  "metadata": {{"viso": {{"natives": {{"schema": "natives.json", "library": "NATIVES"}}}}}}}}
+              ],
+              "resolve": {{"root": "app", "nodes": [{{"id": "app", "deps": [], "features": []}}]}}
+            }}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_apps_own_natives_are_its_crates_items() {
+        let schema = write(&[&OWN]).unwrap();
+        let read = |path: &Path| {
+            assert_eq!(path, Path::new("/w/app/natives.json"));
+            Ok(schema.clone())
+        };
+        let found = packages(
+            &own(
+                r#"[{"name": "my-app", "kind": ["lib"]}, {"name": "my-app", "kind": ["bin"]},
+                    {"name": "routes", "kind": ["test"]}]"#,
+            ),
+            read,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].holds("mail::Route"));
+        assert_eq!(found[0].library_in("my_app"), "crate::NATIVES");
+        assert_eq!(found[0].library_in("routes"), "::my_app::NATIVES");
+        let bins = packages(&own(r#"[{"name": "my-app", "kind": ["bin"]}]"#), read).unwrap();
+        assert_eq!(bins[0].library_in("my_app"), "crate::NATIVES");
     }
 }
