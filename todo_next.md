@@ -554,8 +554,18 @@ Rules (as for `todo_features.md`):
   - Verified: runtime chain tests cover cancels and finishes from the middle, slot reuse, and a
     key sharer being spared. The ui test checks that freeing a subtree drops exactly its nodes'
     tasks, including on a reused slot. viso `task_loop`/`dsl_tasks` pass, and clippy is clean.
-- [ ] Rust fragment functions generated at build time from Shader IR for CpuRaster user programs.
+- [x] Rust fragment functions generated at build time from Shader IR for CpuRaster user programs.
   Verify that they are bit-exact against `CpuShader` and faster in the `cpu_raster` bench.
+  - Built: the interpreter's ops and control flow moved into a shared `rt` module; `native::emit`
+    writes a program's entries as Rust calling the same fns with constant registers, into a
+    `NativeKernel` checked by program hash and register count. `view!` emits it for the CPU
+    backend only (`__per_backend!`'s `none` arm); `__embedded_shader` hands it to
+    `CpuShader::with_native`. A hidden `__shader_kernel!` builds one from a source literal.
+  - Verified: shader_golden draws both scenes with the kernel and the interpreter and compares them
+    byte for byte; a mutated kernel fails the test. dsl_shaders checks that `view!` runs the kernel
+    under `headless` and not on GPU builds. cpu_raster 800×480 user shaders: rounded 12.4 → 7.3 ms,
+    ripple (function + loop) 78.5 → 15.5 ms, with identical pixels. Clippy is clean (host,
+    headless, wasm).
 - [ ] The missing benches:
   - `layout_10k_dirty_{1pct,100pct}`, `hit_test_100k`, `state_update_1k_bindings`;
   - `startup_*`, `hot_reload_*`, `ende_*`, `identity_*`;

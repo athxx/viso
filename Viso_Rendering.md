@@ -492,7 +492,7 @@ Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是
 - 只被区域合成（Image / ColorTransform，clamp-to-edge）读取的 offscreen pass（opacity < 1 的 group、融合的色彩滤镜）推迟到 tile 内求值：合成它的每个 tile 把要读的 texel 区域求值到 worker 本地窗口，不分配 target，结果与整张 target 逐位一致；被 blur、advanced blend、backdrop 或用户 program 读取的 layer 照常整块绘制（`set_layer_deferral` 可关闭推迟，供对照）；
 - 无 alpha 的面板（RGB565）上，layer 要保存 coverage，中间目标为 `Bgra8Unorm`（按面板的编码选 sRGB 变体，`Renderer` 的 `intermediate_format`）；
 - `Blitter` capability seam（`viso_gpu::cpu::Blitter`，`CpuRaster::set_blitter`）：板卡的 2D 加速器（i.MX PXP、Allwinner G2D、STM32 DMA2D 类）只接 solid fill（pass clear），拒绝的工作留在 CPU，像素不变；
-- 每个 brush 都打包了 `ShaderLang::None` 程序（寄存器码解释器 `CpuShader`），custom shader 没有缺失 CPU 路径的可能；从 Shader IR 构建期生成 Rust 片元函数是后续性能目标；
+- 每个 brush 都打包了 `ShaderLang::None` 程序（寄存器码解释器 `CpuShader`），custom shader 没有缺失 CPU 路径的可能；以 CPU 绘制的构建（`cpu`/`headless`）中，`view!` 在构建期把每个 brush 的 Program 生成 Rust（`NativeKernel`），`CpuShader` 只用它替换 Vertex/Fragment 入口的执行体，Setup、Varying 与颜色提取不变；生成代码与解释器调用同一组运算函数（`interp::rt`），常量寄存器下标，所以结果逐位相同（Golden 逐字节比对），按 Program 编码的哈希与寄存器数核对，不匹配（如热重载后的新 Program）即回退解释器；`cpu_raster` bench 上 800×480 用户 Shader：圆角矩形 12.4→7.3 ms，带函数与循环的 Ripple 78.5→15.5 ms；
 - 3D scene lane 的 CPU 光栅（`viso_gpu::cpu::scene`）：实例三角形经 place、投影、near/far 裁剪、按 winding 剔除，在像素中心光栅（top-left fill rule），深度按屏幕空间线性插值，varying 透视校正，片元按 `viso_gpu::scene` 中与 GPU program 相同的表达式着色（§21.5）；
 - 测量：`pixel_bytes()`（目标与 surface 像素）、`scratch_bytes()`（worker 窗口）、`deferred_layers()`；bench `cpu_raster_800x480_{full,damage_5pct}_{xrgb8888,xrgb8888_srgb,xrgb8888_4t,rgb565}`（`crates/render/benches/cpu_raster.rs`）；
 - 呈现到 `RawWindowHandle::Scanout`：KMS dumb buffer 双缓冲，或桌面窗口的 layer（embedded profile 仿真）。

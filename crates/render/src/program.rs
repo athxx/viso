@@ -42,6 +42,7 @@ use viso_gpu::{
     PROGRAM_TEXTURES, PipelineId, ProgramAbi, ProgramCode, ProgramDesc, SamplerId, ShaderLang,
     TextureFormat, TextureId,
 };
+use viso_shader::program::interp::NativeKernel;
 use viso_shader::program::{BrushLayout, FRAGMENT_ENTRY, PackedBrush, VERTEX_ENTRY};
 
 use crate::batch::BatchKey;
@@ -62,11 +63,23 @@ pub struct BrushProgram {
 impl From<PackedBrush> for BrushProgram {
     /// The brush a package carries, its code moved over as built.
     fn from(packed: PackedBrush) -> BrushProgram {
+        BrushProgram::unpacked(packed, None)
+    }
+}
+
+impl BrushProgram {
+    /// The brush a package carries, its code moved over as built and its
+    /// program run by `native`, the Rust the app built from it, where that
+    /// is what it was built from.
+    pub fn unpacked(packed: PackedBrush, native: Option<&'static NativeKernel>) -> BrushProgram {
         let PackedBrush { name, layout, code } = packed;
         BrushProgram {
             name,
             layout,
-            code: code.into_iter().map(|code| code.unpack()).collect(),
+            code: code
+                .into_iter()
+                .map(|code| code.unpack_with(native))
+                .collect(),
         }
     }
 }

@@ -5,7 +5,11 @@
 //! backend's code from `program::code`. Every image
 //! agrees with the reference, and Vulkan with Metal, within a small
 //! per-channel tolerance; the headless one on every platform. The GLSL ES
-//! code of each passes glslang's GLSL ES 3.00 front end, both stages.
+//! code of each passes glslang's GLSL ES 3.00 front end, both stages. The
+//! headless raster running the Rust built from the program draws exactly
+//! what it draws interpreting it.
+
+use std::sync::Arc;
 
 use viso_dsl::frontend::{Origin, compile_file};
 use viso_gpu::{
@@ -14,10 +18,21 @@ use viso_gpu::{
     ProgramCode, ProgramCompiler, ProgramDesc, RenderPass, RenderTarget, SamplerDesc, ShaderLang,
     TextureDesc, TextureFormat, TextureId,
 };
+use viso_shader::program::interp::NativeKernel;
 use viso_shader::program::{
-    Bindings, BrushLayout, FRAGMENT_ENTRY, ParamValue, Program, Raster, ShaderInterface,
+    Bindings, BrushLayout, CpuShader, FRAGMENT_ENTRY, ParamValue, Program, Raster, ShaderInterface,
     VERTEX_ENTRY, Value, code,
 };
+
+/// A shader's source and the Rust built from it at build time.
+macro_rules! shader {
+    ($source:literal) => {
+        (
+            $source,
+            viso_ui_macros::__shader_kernel!(::viso_shader, $source),
+        )
+    };
+}
 
 const W: u32 = 64;
 const H: u32 = 64;
@@ -48,17 +63,19 @@ fn pattern() -> Vec<u8> {
 
 struct Scene<'a> {
     source: &'a str,
+    kernel: &'static NativeKernel,
     uniforms: Vec<Value>,
     instances: Vec<Vec<Value>>,
     texture: bool,
 }
 
-/// The pictures of one scene: the CPU reference's, the headless raster's,
-/// Metal's on macOS, and Vulkan's when a Vulkan device exists; all BGRA8,
-/// top-left.
+/// The pictures of one scene: the CPU reference's, the headless raster's
+/// interpreting the program and running its Rust, Metal's on macOS, and
+/// Vulkan's when a Vulkan device exists; all BGRA8, top-left.
 struct Pictures {
     cpu: Vec<u8>,
     headless: Vec<u8>,
+    native: Vec<u8>,
     metal: Option<Vec<u8>>,
     vulkan: Option<Vec<u8>>,
 }
@@ -67,6 +84,7 @@ struct Pictures {
 /// encoded uniform and instance bytes.
 struct Encoded {
     program: Program,
+    kernel: &'static NativeKernel,
     interface: ShaderInterface,
     uniforms: Vec<u8>,
     instances: Vec<u8>,
@@ -94,6 +112,7 @@ fn render(scene: &Scene<'_>) -> Pictures {
         .collect();
     pictures(&Encoded {
         program: p,
+        kernel: scene.kernel,
         interface,
         uniforms,
         instances,
@@ -105,7 +124,8 @@ fn render(scene: &Scene<'_>) -> Pictures {
 fn pictures(encoded: &Encoded) -> Pictures {
     Pictures {
         cpu: cpu(encoded),
-        headless: headless(encoded),
+        headless: headless(encoded, None),
+        native: headless(encoded, Some(encoded.kernel)),
         metal: metal(encoded),
         vulkan: vulkan(encoded),
     }
@@ -149,15 +169,27 @@ const SAMPLER: SamplerDesc = SamplerDesc {
 };
 
 /// The program on the headless raster, run on the CPU from the bytes the GPU
-/// backends read.
-fn headless(e: &Encoded) -> Vec<u8> {
+/// backends read: interpreted, or as `native`, the Rust built from it.
+fn headless(e: &Encoded, native: Option<&'static NativeKernel>) -> Vec<u8> {
     let p = &e.program;
     let mut gpu = CpuRaster::new();
+    let program = match native {
+        Some(kernel) => {
+            let shader = CpuShader::with_native(p.clone(), kernel);
+            assert!(
+                shader.is_native(),
+                "{}: the kernel is the program's",
+                p.name
+            );
+            ProgramCode::Cpu(Arc::new(shader))
+        }
+        None => code(p, &e.interface, ShaderLang::None).expect("CPU"),
+    };
     let compiled = gpu
         .program_compiler()
         .compile(&ProgramDesc {
             label: &p.name,
-            code: &code(p, &e.interface, ShaderLang::None).expect("CPU"),
+            code: &program,
             vertex_entry: VERTEX_ENTRY,
             fragment_entry: FRAGMENT_ENTRY,
             color_format: TextureFormat::Bgra8Unorm,
@@ -306,8 +338,13 @@ fn draw<B: GpuBackend>(gpu: &mut B, pipeline: PipelineId, e: &Encoded) -> Textur
     target
 }
 
-/// Each picture against the CPU reference, and Vulkan against Metal.
+/// Each picture against the CPU reference, Vulkan against Metal, and the
+/// Rust's against the interpreter's, bit for bit.
 fn compare_all(name: &str, pictures: &Pictures) {
+    assert!(
+        pictures.native == pictures.headless,
+        "{name}: the Rust draws what the interpreter draws"
+    );
     compare(
         &format!("{name} headless"),
         &pictures.headless,
@@ -415,7 +452,8 @@ fn check_glsl(source: &str, name: &str) {
 
 #[test]
 fn the_spec_example_matches_the_reference() {
-    let source = r#"
+    let (source, kernel) = shader!(
+        r#"
 export shader RoundedRect {
     uniform viewport_size: Vec2F32;
     instance rect_pos: Vec2F32;
@@ -441,7 +479,8 @@ export shader RoundedRect {
         return color.to_vec4() * alpha;
     }
 }
-"#;
+"#
+    );
     let rect = |x: f32, y: f32, w: f32, h: f32, r: f32, c: [f32; 4]| {
         vec![
             Value::floats(&[x, y]),
@@ -457,6 +496,7 @@ export shader RoundedRect {
     ];
     let scene = Scene {
         source,
+        kernel,
         uniforms: vec![Value::floats(&[W as f32, H as f32])],
         instances: rects
             .iter()
@@ -487,6 +527,7 @@ export shader RoundedRect {
     brush.write_uniforms(&mut uniforms, [W as f32, H as f32], 0.0);
     let encoded = Encoded {
         program,
+        kernel,
         interface,
         uniforms,
         instances,
@@ -517,7 +558,8 @@ export shader RoundedRect {
 
 #[test]
 fn records_matrices_loops_textures_and_discard_match_the_reference() {
-    let source = r#"
+    let (source, kernel) = shader!(
+        r#"
 @shader_value
 record Light { dir: Vec3F32; strength: F32; }
 
@@ -583,7 +625,8 @@ shader Fancy {
         return Vec4F32(clamp(rgb, 0.0, 1.0) * alpha, alpha);
     }
 }
-"#;
+"#
+    );
     let (c, s) = (0.5f32.cos(), 0.5f32.sin());
     let row = |x: f32, y: f32, w: f32, h: f32, tint: [f32; 4], seed: u32| {
         vec![
@@ -595,6 +638,7 @@ shader Fancy {
     };
     let scene = Scene {
         source,
+        kernel,
         uniforms: vec![
             Value::floats(&[W as f32, H as f32]),
             Value::Matrix(2, [[c, s, 0.0, 0.0], [-s, c, 0.0, 0.0], [0.0; 4], [0.0; 4]]),

@@ -3427,6 +3427,7 @@ dependencies = [
  "criterion",
  "naga",
  "naga-types",
+ "viso-dsl",
  "viso-ende",
  "viso-gpu",
  "viso-image",
@@ -3435,6 +3436,7 @@ dependencies = [
  "viso-shader",
  "viso-svg",
  "viso-text",
+ "viso-ui-macros",
  "wasm-bindgen-test",
 ]
 
@@ -3529,6 +3531,7 @@ dependencies = [
  "syn 2.0.119",
  "toml_edit",
  "viso-dsl",
+ "viso-shader",
 ]
 
 [[package]]

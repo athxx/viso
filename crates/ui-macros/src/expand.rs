@@ -35,6 +35,7 @@ use viso_dsl::resolve::SymbolId;
 use viso_dsl::schema::Natives;
 use viso_dsl::syntax::{LineIndex, TextRange, TextSize};
 use viso_dsl::view_behavior::{MountError, UNMOUNTED_HANDLER, ViewBehavior, view_behavior};
+use viso_shader::program::Program;
 
 use crate::emit::{Named, aligned_bytes, aligned_file, emit_view, overlay_dependency};
 use crate::package;
@@ -804,18 +805,81 @@ fn embedded_shaders(behavior: &ViewBehavior) -> Result<TokenStream, String> {
             pack(ShaderLang::Wgsl)?,
             pack(ShaderLang::None)?,
         );
+        let kernel = native_kernel(&brush.program, quote! { ::viso::__private::viso_shader })?;
         entries.push(quote! {
-            ::viso::__private::viso_view::__embedded_shader(::viso::__private::viso_view::__per_backend!(
-                msl: #msl,
-                hlsl: #hlsl,
-                spirv: #spirv,
-                glsl: #glsl,
-                wgsl: #wgsl,
-                none: #none,
-            ))
+            ::viso::__private::viso_view::__embedded_shader(
+                ::viso::__private::viso_view::__per_backend!(
+                    msl: #msl,
+                    hlsl: #hlsl,
+                    spirv: #spirv,
+                    glsl: #glsl,
+                    wgsl: #wgsl,
+                    none: #none,
+                ),
+                ::viso::__private::viso_view::__per_backend!(
+                    msl: ::core::option::Option::None,
+                    hlsl: ::core::option::Option::None,
+                    spirv: ::core::option::Option::None,
+                    glsl: ::core::option::Option::None,
+                    wgsl: ::core::option::Option::None,
+                    none: ::core::option::Option::Some(#kernel),
+                ),
+            )
         });
     }
     Ok(quote! { __viso_view.set_shaders([#(#entries),*]); })
+}
+
+/// `program` as Rust the CPU raster runs in place of interpreting it: an
+/// expression of the `&'static NativeKernel` generated from it, naming the
+/// shader crate by `shader`.
+fn native_kernel(program: &Program, shader: TokenStream) -> Result<TokenStream, String> {
+    let krate = format!("{shader}::program::interp").replace(' ', "");
+    let items: TokenStream = viso_shader::program::interp::native::emit(program, &krate)
+        .parse()
+        .map_err(|error| format!("internal: a shader's Rust does not parse: {error}"))?;
+    Ok(quote! {{
+        mod __viso_kernel {
+            #items
+        }
+        &__viso_kernel::KERNEL
+    }})
+}
+
+/// `__shader_kernel!(shader_crate_path, "source")`: the `&'static
+/// NativeKernel` of the only shader `source` declares, the shader crate
+/// named by the path.
+pub fn shader_kernel(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let expansion = (|| {
+        let parser = |input: syn::parse::ParseStream<'_>| {
+            let path: syn::Path = input.parse()?;
+            input.parse::<syn::Token![,]>()?;
+            let source: LitStr = input.parse()?;
+            let _ = input.parse::<Option<syn::Token![,]>>()?;
+            Ok((path, source))
+        };
+        let (path, source) = syn::parse::Parser::parse(parser, input)?;
+        let fail = |message: String| syn::Error::new(source.span(), message);
+        let origin = Origin {
+            package: "app".to_owned(),
+            module: vec!["main".to_owned()],
+            language: None,
+            ..Default::default()
+        };
+        let compiled = frontend::compile_file(&source.value(), &origin);
+        if let Some(error) = compiled.errors().next() {
+            return Err(fail(format!("the shader does not compile: {error:?}")));
+        }
+        let program = compiled
+            .shaders
+            .into_iter()
+            .find_map(|shader| shader.program)
+            .ok_or_else(|| fail("the source declares no shader".to_owned()))?;
+        native_kernel(&program, quote! { #path }).map_err(fail)
+    })();
+    expansion
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 /// The fields of a `view!` mount record the expansion knows before the tree is

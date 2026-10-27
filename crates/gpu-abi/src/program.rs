@@ -162,6 +162,11 @@ pub trait ProgramCompiler: Clone + Send + 'static {
 pub trait CpuProgram: Send + Sync + 'static {
     /// Draws `draw.count` instances into `target`, blending with `blend`.
     fn draw(&self, target: &mut CpuTarget<'_>, draw: &CpuDraw<'_>, blend: BlendMode);
+
+    /// Whether it runs as machine code built for it rather than interpreted.
+    fn is_native(&self) -> bool {
+        false
+    }
 }
 
 /// A window of a premultiplied linear RGBA framebuffer a [`CpuProgram`] draws

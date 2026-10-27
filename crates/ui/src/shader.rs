@@ -18,8 +18,8 @@
 use std::sync::Arc;
 
 pub use viso_render::{
-    __per_backend, BrushLayout, BrushProgram, PackedBrush, ParamKind, ParamValue, ProgramSlot,
-    ShaderLang,
+    __per_backend, BrushLayout, BrushProgram, NativeKernel, PackedBrush, ParamKind, ParamValue,
+    ProgramSlot, ShaderLang,
 };
 
 /// The programs of one node store, by slot.

@@ -23,9 +23,16 @@
 //! [`CpuShader`] is a program as the headless raster runs it: the
 //! [`CpuProgram`] its [`ProgramCode::Cpu`](viso_gpu_abi::ProgramCode::Cpu) carries,
 //! binding the draw's uniform and instance bytes through the program's layout.
+//! Its entries can run as Rust generated from it when the app built
+//! ([`native`]) instead of interpreted, to the same bits.
 
 mod code;
 mod exec;
+pub mod native;
+#[doc(hidden)]
+pub mod rt;
+
+pub use native::NativeKernel;
 
 use viso_gpu_abi::{
     AddressMode, BlendMode, CpuDraw, CpuProgram, CpuTarget, CpuTexture, FilterMode, SamplerDesc,
@@ -48,6 +55,8 @@ pub struct Bindings<'a> {
 #[derive(Debug, Clone)]
 pub struct CpuShader {
     code: Code,
+    /// Its entries compiled to Rust, when the app was built with them.
+    native: Option<&'static NativeKernel>,
     /// The uniform block's words.
     uniforms: Vec<Word>,
     /// An instance record's words, and the bytes one takes.
@@ -75,13 +84,31 @@ impl CpuShader {
             ),
             stride: interface.instance.size as usize,
             code,
+            native: None,
         }
+    }
+
+    /// `program` run by `kernel`, the Rust generated from it
+    /// ([`native::emit`]); interpreted when `kernel` was generated from
+    /// another program.
+    pub fn with_native(program: Program, kernel: &'static NativeKernel) -> CpuShader {
+        let hash = native::program_hash(&program);
+        let mut shader = CpuShader::new(program);
+        if kernel.program == hash && kernel.regs == shader.code.regs {
+            shader.native = Some(kernel);
+        }
+        shader
+    }
+
+    /// Whether its entries run as generated Rust.
+    pub fn is_native(&self) -> bool {
+        self.native.is_some()
     }
 }
 
 impl CpuProgram for CpuShader {
     fn draw(&self, target: &mut CpuTarget<'_>, draw: &CpuDraw<'_>, blend: BlendMode) {
-        let mut machine = Machine::new(&self.code, draw.textures, draw.samplers);
+        let mut machine = Machine::new(&self.code, draw.textures, draw.samplers, self.native);
         machine.bind_words(&self.uniforms, draw.uniforms);
         let count = draw
             .instances
@@ -94,6 +121,10 @@ impl CpuProgram for CpuShader {
                 m.bind_words(&self.instance, &draw.instances[at..at + self.stride]);
             }
         });
+    }
+
+    fn is_native(&self) -> bool {
+        CpuShader::is_native(self)
     }
 }
 
@@ -143,7 +174,7 @@ impl Raster {
             scissor: [0, 0, self.width, self.height],
             unorm8: true,
         };
-        let mut machine = Machine::new(&code, bindings.textures, bindings.samplers);
+        let mut machine = Machine::new(&code, bindings.textures, bindings.samplers, None);
         machine.bind_values(&code.uniforms, bindings.uniforms);
         draw_into(
             &mut target,

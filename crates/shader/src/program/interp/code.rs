@@ -9,6 +9,7 @@
 //! parameters, locals, return value and temporaries take registers of their
 //! own for the whole program, and a call needs no frame.
 
+use super::rt;
 use crate::program::layout::BlockLayout;
 use crate::program::{
     BinaryOp, Binding, Block, Builtin, Expr, ExprKind, Function, Intrinsic, Loop, Place, Program,
@@ -145,12 +146,16 @@ pub(super) enum Op {
     },
     Math1 {
         f: fn(f32) -> f32,
+        /// `f`'s name in [`rt::math`](super::rt::math).
+        name: &'static str,
         dst: Reg,
         src: Reg,
         n: u8,
     },
     Math2 {
         f: fn(f32, f32) -> f32,
+        /// `f`'s name in [`rt::math`](super::rt::math).
+        name: &'static str,
         dst: Reg,
         a: Reg,
         b: Reg,
@@ -254,7 +259,7 @@ pub(super) enum Op {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Un {
+pub enum Un {
     NegF,
     NegI,
     Not,
@@ -265,7 +270,7 @@ pub(super) enum Un {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Bin {
+pub enum Bin {
     FAdd,
     FSub,
     FMul,
@@ -302,7 +307,7 @@ pub(super) enum Bin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Cmp {
+pub enum Cmp {
     Eq,
     Ne,
     Lt,
@@ -312,7 +317,7 @@ pub(super) enum Cmp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Derivative {
+pub enum Derivative {
     X,
     Y,
     Width,
@@ -1076,14 +1081,16 @@ impl<'p> Compiler<'p> {
         let n = shape(ty).1;
         let one = |k: usize| shape(args[k].ty).1 == 1 && n > 1;
         let dst = self.temp(ty);
-        let math1 = |f: fn(f32) -> f32| Op::Math1 {
+        let math1 = |name: &'static str, f: fn(f32) -> f32| Op::Math1 {
             f,
+            name,
             dst,
             src: reg(0),
             n,
         };
-        let math2 = |f: fn(f32, f32) -> f32| Op::Math2 {
+        let math2 = |name: &'static str, f: fn(f32, f32) -> f32| Op::Math2 {
             f,
+            name,
             dst,
             a: reg(0),
             b: reg(1),
@@ -1111,30 +1118,30 @@ impl<'p> Compiler<'p> {
                 src: reg(0),
                 n,
             },
-            I::Floor => math1(f32::floor),
-            I::Ceil => math1(f32::ceil),
-            I::Round => math1(f32::round_ties_even),
-            I::Trunc => math1(f32::trunc),
-            I::Fract => math1(|x| x - x.floor()),
-            I::Sqrt => math1(f32::sqrt),
-            I::InverseSqrt => math1(|x| 1.0 / x.sqrt()),
-            I::Exp => math1(f32::exp),
-            I::Exp2 => math1(f32::exp2),
-            I::Log => math1(f32::ln),
-            I::Log2 => math1(f32::log2),
-            I::Sin => math1(f32::sin),
-            I::Cos => math1(f32::cos),
-            I::Tan => math1(f32::tan),
-            I::Asin => math1(f32::asin),
-            I::Acos => math1(f32::acos),
-            I::Atan => math1(f32::atan),
-            I::Sinh => math1(f32::sinh),
-            I::Cosh => math1(f32::cosh),
-            I::Tanh => math1(f32::tanh),
-            I::Radians => math1(|x| x * 0.017_453_292),
-            I::Degrees => math1(|x| x * 57.295_78),
-            I::Atan2 => math2(f32::atan2),
-            I::Pow => math2(f32::powf),
+            I::Floor => math1("floor", rt::math::floor),
+            I::Ceil => math1("ceil", rt::math::ceil),
+            I::Round => math1("round", rt::math::round),
+            I::Trunc => math1("trunc", rt::math::trunc),
+            I::Fract => math1("fract", rt::math::fract),
+            I::Sqrt => math1("sqrt", rt::math::sqrt),
+            I::InverseSqrt => math1("inverse_sqrt", rt::math::inverse_sqrt),
+            I::Exp => math1("exp", rt::math::exp),
+            I::Exp2 => math1("exp2", rt::math::exp2),
+            I::Log => math1("log", rt::math::log),
+            I::Log2 => math1("log2", rt::math::log2),
+            I::Sin => math1("sin", rt::math::sin),
+            I::Cos => math1("cos", rt::math::cos),
+            I::Tan => math1("tan", rt::math::tan),
+            I::Asin => math1("asin", rt::math::asin),
+            I::Acos => math1("acos", rt::math::acos),
+            I::Atan => math1("atan", rt::math::atan),
+            I::Sinh => math1("sinh", rt::math::sinh),
+            I::Cosh => math1("cosh", rt::math::cosh),
+            I::Tanh => math1("tanh", rt::math::tanh),
+            I::Radians => math1("radians", rt::math::radians),
+            I::Degrees => math1("degrees", rt::math::degrees),
+            I::Atan2 => math2("atan2", rt::math::atan2),
+            I::Pow => math2("pow", rt::math::pow),
             I::Step => Op::Binary {
                 kind: Bin::FStep,
                 dst,

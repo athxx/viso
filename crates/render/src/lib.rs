@@ -105,6 +105,7 @@ pub use program::{BrushProgram, IDLE_PIPELINES, ProgramError};
 // crate's program API.
 pub use renderer::{BackdropDependency, FrameStats, Renderer, Splice};
 pub use transform::TransformUpdate;
+pub use viso_shader::program::interp::NativeKernel;
 pub use viso_shader::program::{
     BrushLayout, BrushParam, PackedBrush, PackedCode, ParamKind, ParamValue,
 };

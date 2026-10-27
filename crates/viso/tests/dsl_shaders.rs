@@ -1,7 +1,8 @@
 //! A `view!` painting with a shader embeds it packed at build time: the
 //! target backend's code beside the reference interpreter's program, loaded
 //! once and shared by every mount, its node painting with the program and
-//! the value's parameters.
+//! the value's parameters. A build drawing on the CPU runs the program as the
+//! Rust `view!` built from it.
 
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use viso::ui::{
     BindingTable, BuildCx, Content, NodeId, NodeStore, SemanticProjector, StateStore, TextEdits,
     VirtualLists,
 };
-use viso_gpu::{Backend, GpuBackend, ShaderLang};
+use viso_gpu::{Backend, GpuBackend, ProgramCode, ShaderLang};
 
 /// `build` built into a fresh store: the store and the root.
 fn mount<H: Into<viso::ui::Handle>>(
@@ -61,6 +62,14 @@ fn an_embedded_shader_paints_its_view_with_the_targets_code() {
     } else {
         assert_eq!(langs, [target, ShaderLang::None]);
     }
+    let Some(ProgramCode::Cpu(cpu)) = program.code_for(ShaderLang::None) else {
+        panic!("the interpreter's program");
+    };
+    assert_eq!(
+        cpu.is_native(),
+        target == ShaderLang::None,
+        "the CPU runs the Rust built from it where it draws"
+    );
 
     let (again, root) = mount(viso::view!("fixtures/shader_card.vs"));
     assert!(

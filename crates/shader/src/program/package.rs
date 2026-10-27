@@ -19,6 +19,7 @@ use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
 use viso_gpu_abi::{AddressMode, FilterMode, SamplerDesc};
 pub use viso_gpu_abi::{ProgramCode, ShaderLang};
 
+use super::interp::NativeKernel;
 use super::ops::{BinaryOp, Intrinsic, UnaryOp};
 use super::{
     Binding, Block, BrushLayout, BrushParam, BrushTexture, Builtin, CpuShader, Expr, ExprKind,
@@ -97,7 +98,16 @@ impl PackedBrush {
 
     /// Its code as a backend's program compiler takes it, once per language.
     pub fn unpack(self) -> Vec<ProgramCode> {
-        self.code.into_iter().map(PackedCode::unpack).collect()
+        self.unpack_with(None)
+    }
+
+    /// [`unpack`](Self::unpack), its program run by `native` where that was
+    /// generated from it.
+    pub fn unpack_with(self, native: Option<&'static NativeKernel>) -> Vec<ProgramCode> {
+        self.code
+            .into_iter()
+            .map(|code| code.unpack_with(native))
+            .collect()
     }
 }
 
@@ -140,13 +150,22 @@ impl PackedCode {
 
     /// It as a backend's program compiler takes it.
     pub fn unpack(self) -> ProgramCode {
+        self.unpack_with(None)
+    }
+
+    /// [`unpack`](Self::unpack), the program run by `native`, the Rust
+    /// generated from it, when that is what it was generated from.
+    pub fn unpack_with(self, native: Option<&'static NativeKernel>) -> ProgramCode {
         match self {
             PackedCode::Text(ShaderLang::Msl, t) => ProgramCode::Msl(t),
             PackedCode::Text(ShaderLang::Wgsl, t) => ProgramCode::Wgsl(t),
             PackedCode::Text(ShaderLang::Glsl, t) => ProgramCode::Glsl(t),
             PackedCode::Text(_, t) => ProgramCode::Hlsl(t),
             PackedCode::SpirV(b) => ProgramCode::SpirV(b),
-            PackedCode::Program(p) => ProgramCode::Cpu(Arc::new(CpuShader::new(*p))),
+            PackedCode::Program(p) => ProgramCode::Cpu(Arc::new(match native {
+                Some(kernel) => CpuShader::with_native(*p, kernel),
+                None => CpuShader::new(*p),
+            })),
         }
     }
 }

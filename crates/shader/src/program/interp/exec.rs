@@ -4,211 +4,22 @@
 //! neighbours as the GPU's helpers give them; only writes to locals,
 //! varyings and return values keep to the lanes still running.
 
-use std::cmp::Ordering;
-
 use viso_gpu_abi::{CpuTexture, SamplerDesc};
 
-use super::code::{
-    Bin, CFunction, CLoop, CStmt, Cmp, Code, Derivative, Op, Reg, Run, Target, Un, Word,
-};
-use super::sample;
-use crate::program::{Builtin, Scalar, Value};
+use super::code::{CFunction, CLoop, CStmt, Code, Op, Reg, Run, Target, Word};
+use super::native::NativeKernel;
+use super::rt::{self, Env, Flow, Mask};
+use crate::program::{Builtin, Value};
 
-/// A register: four components by four lanes, each the bits of its scalar.
-pub(super) type Cell = [[u32; 4]; 4];
-
-pub(super) const ZERO: Cell = [[0; 4]; 4];
-
-/// Which lanes run.
-type Mask = [bool; 4];
-
-/// How the lanes of one function's run ended.
-struct Flow {
-    /// The function's value's first register.
-    ret: Reg,
-    returned: Mask,
-    discarded: Mask,
-    broke: Mask,
-    continued: Mask,
-}
-
-impl Flow {
-    fn finished(&self, lane: usize) -> bool {
-        self.returned[lane] || self.discarded[lane]
-    }
-}
+pub(super) use super::rt::{Cell, ZERO};
 
 /// A program's registers and the textures a draw binds.
 pub(super) struct Machine<'a> {
     code: &'a Code,
-    textures: &'a [CpuTexture<'a>],
-    samplers: &'a [SamplerDesc],
+    env: Env<'a>,
     regs: Vec<Cell>,
-}
-
-#[inline(always)]
-fn f(bits: u32) -> f32 {
-    f32::from_bits(bits)
-}
-
-#[inline(always)]
-fn b(v: f32) -> u32 {
-    v.to_bits()
-}
-
-#[inline(always)]
-fn i(bits: u32) -> i32 {
-    bits.cast_signed()
-}
-
-#[inline(always)]
-fn u(v: i32) -> u32 {
-    v.cast_unsigned()
-}
-
-/// `g` component by component of `x` and `y`, a one-component operand
-/// spread, on the first `n` components; the rest zero.
-#[inline(always)]
-fn zip(x: &Cell, y: &Cell, n: u8, x1: bool, y1: bool, g: impl Fn(u32, u32) -> u32) -> Cell {
-    let mut out = ZERO;
-    for (c, o) in out.iter_mut().enumerate().take(usize::from(n)) {
-        let (a, b) = (&x[if x1 { 0 } else { c }], &y[if y1 { 0 } else { c }]);
-        *o = std::array::from_fn(|l| g(a[l], b[l]));
-    }
-    out
-}
-
-/// `g` on each of the first `n` components of `x`; the rest zero.
-#[inline(always)]
-fn map(x: &Cell, n: u8, g: impl Fn(u32) -> u32) -> Cell {
-    let mut out = ZERO;
-    for (o, a) in out.iter_mut().zip(x).take(usize::from(n)) {
-        *o = a.map(&g);
-    }
-    out
-}
-
-/// The sum of the products of the first `n` components of `x` and `y` in
-/// `lane`.
-#[inline(always)]
-fn dot(x: &Cell, y: &Cell, n: u8, lane: usize) -> f32 {
-    (0..usize::from(n))
-        .map(|c| f(x[c][lane]) * f(y[c][lane]))
-        .sum()
-}
-
-fn order(c: Cmp, o: Option<Ordering>) -> u32 {
-    // A comparison with NaN is false; `!=` with NaN is true.
-    let Some(o) = o else {
-        return u32::from(c == Cmp::Ne);
-    };
-    u32::from(match c {
-        Cmp::Eq => o == Ordering::Equal,
-        Cmp::Ne => o != Ordering::Equal,
-        Cmp::Lt => o == Ordering::Less,
-        Cmp::Le => o != Ordering::Greater,
-        Cmp::Gt => o == Ordering::Greater,
-        Cmp::Ge => o != Ordering::Less,
-    })
-}
-
-pub(super) fn binary(kind: Bin, x: &Cell, y: &Cell, n: u8, x1: bool, y1: bool) -> Cell {
-    let z = |g: fn(u32, u32) -> u32| zip(x, y, n, x1, y1, g);
-    match kind {
-        Bin::FAdd => z(|a, c| b(f(a) + f(c))),
-        Bin::FSub => z(|a, c| b(f(a) - f(c))),
-        Bin::FMul => z(|a, c| b(f(a) * f(c))),
-        Bin::FDiv => z(|a, c| b(f(a) / f(c))),
-        Bin::FRem => z(|a, c| b(f(a) % f(c))),
-        Bin::FMin => z(|a, c| b(f(a).min(f(c)))),
-        Bin::FMax => z(|a, c| b(f(a).max(f(c)))),
-        Bin::FStep => z(|edge, x| b(if f(x) < f(edge) { 0.0 } else { 1.0 })),
-        Bin::IAdd | Bin::UAdd => z(u32::wrapping_add),
-        Bin::ISub | Bin::USub => z(u32::wrapping_sub),
-        Bin::IMul | Bin::UMul => z(u32::wrapping_mul),
-        Bin::IDiv => z(|a, c| {
-            if c == 0 {
-                a
-            } else {
-                u(i(a).wrapping_div(i(c)))
-            }
-        }),
-        Bin::IRem => z(|a, c| {
-            if c == 0 {
-                0
-            } else {
-                u(i(a).wrapping_rem(i(c)))
-            }
-        }),
-        Bin::UDiv => z(|a, c| a.checked_div(c).unwrap_or(a)),
-        Bin::URem => z(|a, c| a.checked_rem(c).unwrap_or(0)),
-        Bin::IMin => z(|a, c| u(i(a).min(i(c)))),
-        Bin::IMax => z(|a, c| u(i(a).max(i(c)))),
-        Bin::UMin => z(u32::min),
-        Bin::UMax => z(u32::max),
-        Bin::And => z(|a, c| a & c),
-        Bin::Or => z(|a, c| a | c),
-        Bin::Xor => z(|a, c| a ^ c),
-        Bin::Shl => z(|a, c| a.wrapping_shl(c & 31)),
-        Bin::IShr => z(|a, c| u(i(a).wrapping_shr(c & 31))),
-        Bin::UShr => z(|a, c| a.wrapping_shr(c & 31)),
-        Bin::FCmp(c) => zip(x, y, n, x1, y1, |a, d| order(c, f(a).partial_cmp(&f(d)))),
-        Bin::ICmp(c) => zip(x, y, n, x1, y1, |a, d| order(c, Some(i(a).cmp(&i(d))))),
-        Bin::UCmp(c) => zip(x, y, n, x1, y1, |a, d| order(c, Some(a.cmp(&d)))),
-    }
-}
-
-fn unary(kind: Un, x: &Cell, n: u8) -> Cell {
-    match kind {
-        Un::NegF => map(x, n, |a| b(-f(a))),
-        Un::NegI => map(x, n, |a| u(i(a).wrapping_neg())),
-        Un::Not => map(x, n, |a| a ^ 1),
-        Un::BitNot => map(x, n, |a| !a),
-        Un::AbsF => map(x, n, |a| b(f(a).abs())),
-        Un::AbsI => map(x, n, |a| u(i(a).wrapping_abs())),
-        Un::Sign => map(x, n, |a| {
-            let a = f(a);
-            b(if a > 0.0 {
-                1.0
-            } else if a < 0.0 {
-                -1.0
-            } else {
-                0.0
-            })
-        }),
-    }
-}
-
-pub(super) fn convert(x: &Cell, from: Scalar, to: Scalar, n: u8) -> Cell {
-    match (from, to) {
-        (Scalar::F32, Scalar::F32) => *x,
-        (Scalar::F32, Scalar::I32) => map(x, n, |a| u(f(a) as i32)),
-        (Scalar::F32, Scalar::U32) => map(x, n, |a| f(a) as u32),
-        (Scalar::F32, Scalar::Bool) => map(x, n, |a| u32::from(f(a) != 0.0)),
-        (Scalar::I32, Scalar::F32) => map(x, n, |a| b(i(a) as f32)),
-        (Scalar::U32 | Scalar::Bool, Scalar::F32) => map(x, n, |a| b(a as f32)),
-        (_, Scalar::Bool) => map(x, n, |a| u32::from(a != 0)),
-        // Between `I32`, `U32` and `Bool` to integers the bits stay.
-        _ => *x,
-    }
-}
-
-/// A fine derivative of `x` across the quad, its lanes (0,0) (1,0) (0,1)
-/// (1,1).
-fn derivative(kind: Derivative, x: &Cell, n: u8) -> Cell {
-    let dx = |c: &[u32; 4], l: usize| f(c[l | 1]) - f(c[l & !1]);
-    let dy = |c: &[u32; 4], l: usize| f(c[(l & 1) | 2]) - f(c[l & 1]);
-    let mut out = ZERO;
-    for (o, c) in out.iter_mut().zip(x).take(usize::from(n)) {
-        *o = std::array::from_fn(|l| {
-            b(match kind {
-                Derivative::X => dx(c, l),
-                Derivative::Y => dy(c, l),
-                Derivative::Width => dx(c, l).abs() + dy(c, l).abs(),
-            })
-        });
-    }
-    out
+    /// The entries compiled to Rust, run in place of interpreting them.
+    native: Option<&'static NativeKernel>,
 }
 
 impl<'a> Machine<'a> {
@@ -216,12 +27,13 @@ impl<'a> Machine<'a> {
         code: &'a Code,
         textures: &'a [CpuTexture<'a>],
         samplers: &'a [SamplerDesc],
+        native: Option<&'static NativeKernel>,
     ) -> Machine<'a> {
         Machine {
             code,
-            textures,
-            samplers,
+            env: Env { textures, samplers },
             regs: vec![ZERO; code.regs as usize],
+            native,
         }
     }
 
@@ -303,7 +115,11 @@ impl<'a> Machine<'a> {
         for &(reg, _) in &self.code.varyings {
             self.regs[reg as usize] = ZERO;
         }
-        let (ret, _) = self.enter(f, std::array::from_fn(|l| l < count));
+        let mask = std::array::from_fn(|l| l < count);
+        let ret = match self.native {
+            Some(k) => (k.vertex)(&mut self.regs, &self.env, mask).ret,
+            None => self.enter(f, mask).0,
+        };
         let clip = &self.regs[ret as usize];
         std::array::from_fn(|l| std::array::from_fn(|c| f32::from_bits(clip[c][l])))
     }
@@ -334,7 +150,13 @@ impl<'a> Machine<'a> {
             }
             self.regs[reg as usize] = cell;
         }
-        let (ret, flow) = self.enter(f, [true; 4]);
+        let (ret, flow) = match self.native {
+            Some(k) => {
+                let flow = (k.fragment)(&mut self.regs, &self.env, [true; 4]);
+                (flow.ret, flow)
+            }
+            None => self.enter(f, [true; 4]),
+        };
         let color = &self.regs[ret as usize];
         std::array::from_fn(|l| {
             (flow.returned[l] && !flow.discarded[l])
@@ -346,13 +168,7 @@ impl<'a> Machine<'a> {
     fn enter(&mut self, f: &'a CFunction, mut mask: Mask) -> (Reg, Flow) {
         let ret = f.ret as usize;
         self.regs[ret..ret + f.ret_width as usize].fill(ZERO);
-        let mut flow = Flow {
-            ret: f.ret,
-            returned: [false; 4],
-            discarded: [false; 4],
-            broke: [false; 4],
-            continued: [false; 4],
-        };
+        let mut flow = Flow::new(f.ret);
         self.block(&f.body, &mut mask, &mut flow);
         (f.ret, flow)
     }
@@ -361,72 +177,28 @@ impl<'a> Machine<'a> {
     /// breaks or continues leaves it.
     fn block(&mut self, stmts: &'a [CStmt], mask: &mut Mask, flow: &mut Flow) {
         for stmt in stmts {
-            if !mask.iter().any(|m| *m) {
+            if !rt::any(mask) {
                 return;
             }
             self.stmt(stmt, mask, flow);
         }
     }
 
-    /// `count` registers from `src` to `dst` in the lanes of `mask`.
-    fn masked(&mut self, dst: Reg, src: Reg, count: u32, mask: Mask) {
-        if mask == [true; 4] {
-            let src = src as usize;
-            self.regs
-                .copy_within(src..src + count as usize, dst as usize);
-            return;
-        }
-        for k in 0..count as usize {
-            let from = self.regs[src as usize + k];
-            for (t, s) in self.regs[dst as usize + k].iter_mut().zip(&from) {
-                for l in 0..4 {
-                    if mask[l] {
-                        t[l] = s[l];
-                    }
-                }
-            }
-        }
-    }
-
-    /// Takes the lanes of `mask` out of it, flagging them in `flags`.
-    fn leave(mask: &mut Mask, flags: &mut Mask) {
-        for (m, flag) in mask.iter_mut().zip(flags) {
-            *flag |= *m;
-            *m = false;
-        }
-    }
-
     fn stmt(&mut self, stmt: &'a CStmt, mask: &mut Mask, flow: &mut Flow) {
+        let r = &mut self.regs;
         match stmt {
             CStmt::Let { run, dst, count } => {
                 self.run(*run);
-                self.masked(*dst, run.value, *count, *mask);
+                rt::masked(&mut self.regs, *dst, run.value, *count, *mask);
             }
-            CStmt::Declare { dst, count } => {
-                for k in 0..*count as usize {
-                    for c in &mut self.regs[*dst as usize + k] {
-                        for l in 0..4 {
-                            if mask[l] {
-                                c[l] = 0;
-                            }
-                        }
-                    }
-                }
-            }
+            CStmt::Declare { dst, count } => rt::declare(r, *dst, *count, *mask),
             CStmt::Assign { run, target } => {
                 self.run(*run);
+                let r = &mut self.regs;
                 match *target {
-                    Target::Regs { reg, count } => self.masked(reg, run.value, count, *mask),
+                    Target::Regs { reg, count } => rt::masked(r, reg, run.value, count, *mask),
                     Target::Components { reg, at, n } => {
-                        let from = self.regs[run.value as usize];
-                        let to = &mut self.regs[reg as usize][usize::from(at)..];
-                        for (t, s) in to.iter_mut().zip(&from).take(usize::from(n)) {
-                            for l in 0..4 {
-                                if mask[l] {
-                                    t[l] = s[l];
-                                }
-                            }
-                        }
+                        rt::assign_components(r, reg, at, n, run.value, *mask);
                     }
                 }
             }
@@ -436,24 +208,22 @@ impl<'a> Machine<'a> {
                 otherwise,
             } => {
                 self.run(*cond);
-                let truth = self.regs[cond.value as usize][0];
-                let mut then_mask: Mask = std::array::from_fn(|l| mask[l] && truth[l] != 0);
-                let mut else_mask: Mask = std::array::from_fn(|l| mask[l] && truth[l] == 0);
+                let (mut then_mask, mut else_mask) = rt::split(&self.regs, cond.value, mask);
                 self.block(then, &mut then_mask, flow);
                 self.block(otherwise, &mut else_mask, flow);
-                *mask = std::array::from_fn(|l| then_mask[l] || else_mask[l]);
+                *mask = rt::join(&then_mask, &else_mask);
             }
             CStmt::For(l) => self.for_loop(l, mask, flow),
-            CStmt::Break => Self::leave(mask, &mut flow.broke),
-            CStmt::Continue => Self::leave(mask, &mut flow.continued),
+            CStmt::Break => rt::leave(mask, &mut flow.broke),
+            CStmt::Continue => rt::leave(mask, &mut flow.continued),
             CStmt::Return { run, count } => {
                 if let Some(run) = run {
                     self.run(*run);
-                    self.masked(flow.ret, run.value, *count, *mask);
+                    rt::masked(&mut self.regs, flow.ret, run.value, *count, *mask);
                 }
-                Self::leave(mask, &mut flow.returned);
+                rt::leave(mask, &mut flow.returned);
             }
-            CStmt::Discard => Self::leave(mask, &mut flow.discarded),
+            CStmt::Discard => rt::leave(mask, &mut flow.discarded),
         }
     }
 
@@ -463,42 +233,28 @@ impl<'a> Machine<'a> {
         flow.broke = [false; 4];
         let mut running = entered;
         self.run(lp.start);
-        self.masked(lp.var, lp.start.value, 1, running);
+        rt::masked(&mut self.regs, lp.var, lp.start.value, 1, running);
         for _ in 0..lp.max {
             if lp.guarded {
                 self.run(lp.end);
-                let (var, end) = (
-                    self.regs[lp.var as usize][0],
-                    self.regs[lp.end.value as usize][0],
+                rt::loop_guard(
+                    &self.regs,
+                    lp.var,
+                    lp.end.value,
+                    lp.signed,
+                    lp.inclusive,
+                    &mut running,
                 );
-                for l in 0..4 {
-                    if running[l] {
-                        let o = if lp.signed {
-                            i(var[l]).cmp(&i(end[l]))
-                        } else {
-                            var[l].cmp(&end[l])
-                        };
-                        running[l] = o.is_lt() || (lp.inclusive && o.is_eq());
-                    }
-                }
             }
-            if !running.iter().any(|r| *r) {
+            if !rt::any(&running) {
                 break;
             }
             flow.continued = [false; 4];
             let mut body = running;
             self.block(&lp.body, &mut body, flow);
-            let var = &mut self.regs[lp.var as usize][0];
-            for l in 0..4 {
-                running[l] = (body[l] || flow.continued[l]) && !flow.broke[l] && !flow.finished(l);
-                if running[l] {
-                    var[l] = var[l].wrapping_add(1);
-                }
-            }
+            rt::loop_next(&mut self.regs, lp.var, &mut running, &body, flow);
         }
-        for l in 0..4 {
-            mask[l] = entered[l] && !flow.finished(l);
-        }
+        rt::loop_exit(mask, &entered, flow);
         (flow.broke, flow.continued) = saved;
     }
 
@@ -510,48 +266,22 @@ impl<'a> Machine<'a> {
         }
     }
 
-    #[inline(always)]
-    fn reg(&self, reg: Reg) -> Cell {
-        self.regs[reg as usize]
-    }
-
     fn op(&mut self, op: &'a Op) {
-        let (dst, out) = match *op {
-            Op::Const { dst, bits } => (dst, bits.map(|c| [c; 4])),
-            Op::Copy { dst, src, count } => {
-                let src = src as usize;
-                self.regs
-                    .copy_within(src..src + count as usize, dst as usize);
-                return;
-            }
+        let r = &mut self.regs[..];
+        match *op {
+            Op::Const { dst, bits } => rt::constant(r, dst, bits),
+            Op::Copy { dst, src, count } => rt::copy(r, dst, src, count),
             Op::Place {
                 dst,
                 to,
                 src,
                 at,
                 n,
-            } => {
-                let from = self.reg(src);
-                let (to, at, n) = (usize::from(to), usize::from(at), usize::from(n));
-                self.regs[dst as usize][to..to + n].copy_from_slice(&from[at..at + n]);
-                return;
-            }
-            Op::Clear { dst } => (dst, ZERO),
-            Op::Splat { dst, src, n } => {
-                let from = self.reg(src);
-                let mut out = ZERO;
-                out[..usize::from(n)].fill(from[0]);
-                (dst, out)
-            }
-            Op::Swizzle { dst, src, lanes, n } => {
-                let from = self.reg(src);
-                let mut out = ZERO;
-                for (o, &k) in out.iter_mut().zip(&lanes).take(usize::from(n)) {
-                    *o = from[usize::from(k)];
-                }
-                (dst, out)
-            }
-            Op::Unary { kind, dst, src, n } => (dst, unary(kind, &self.reg(src), n)),
+            } => rt::place(r, dst, to, src, at, n),
+            Op::Clear { dst } => rt::clear(r, dst),
+            Op::Splat { dst, src, n } => rt::splat(r, dst, src, n),
+            Op::Swizzle { dst, src, lanes, n } => rt::swizzle(r, dst, src, lanes, n),
+            Op::Unary { kind, dst, src, n } => rt::unary_op(r, kind, dst, src, n),
             Op::Binary {
                 kind,
                 dst,
@@ -560,137 +290,44 @@ impl<'a> Machine<'a> {
                 n,
                 a1,
                 b1,
-            } => (dst, binary(kind, &self.reg(a), &self.reg(b), n, a1, b1)),
-            Op::MatMul { n, dst, a, b: m } => {
-                let n = usize::from(n);
-                for c in 0..n {
-                    let column = self.reg(m + c as u32);
-                    let mut out = ZERO;
-                    for (row, o) in out.iter_mut().enumerate().take(n) {
-                        *o = std::array::from_fn(|l| {
-                            b((0..n)
-                                .map(|j| f(self.regs[a as usize + j][row][l]) * f(column[j][l]))
-                                .sum())
-                        });
-                    }
-                    self.regs[dst as usize + c] = out;
-                }
-                return;
-            }
-            Op::MatVec { n, dst, m, v } => {
-                let (v, n) = (self.reg(v), usize::from(n));
-                let mut out = ZERO;
-                for (row, o) in out.iter_mut().enumerate().take(n) {
-                    *o = std::array::from_fn(|l| {
-                        b((0..n)
-                            .map(|c| f(self.regs[m as usize + c][row][l]) * f(v[c][l]))
-                            .sum())
-                    });
-                }
-                (dst, out)
-            }
-            Op::VecMat { n, dst, v, m } => {
-                let (v, n) = (self.reg(v), usize::from(n));
-                let mut out = ZERO;
-                for (c, o) in out.iter_mut().enumerate().take(n) {
-                    let column = self.reg(m + c as u32);
-                    *o = std::array::from_fn(|l| {
-                        b((0..n).map(|row| f(v[row][l]) * f(column[row][l])).sum())
-                    });
-                }
-                (dst, out)
-            }
-            Op::MatAdd {
-                n,
-                dst,
-                a,
-                b: m,
-                sub,
-            } => {
-                let kind = if sub { Bin::FSub } else { Bin::FAdd };
-                for c in 0..u32::from(n) {
-                    let out = binary(kind, &self.reg(a + c), &self.reg(m + c), n, false, false);
-                    self.regs[(dst + c) as usize] = out;
-                }
-                return;
-            }
-            Op::MatScale { n, dst, m, s } => {
-                let s = self.reg(s);
-                for c in 0..u32::from(n) {
-                    let out = binary(Bin::FMul, &self.reg(m + c), &s, n, false, true);
-                    self.regs[(dst + c) as usize] = out;
-                }
-                return;
-            }
-            Op::MatNeg { n, dst, m } => {
-                for c in 0..u32::from(n) {
-                    let out = unary(Un::NegF, &self.reg(m + c), n);
-                    self.regs[(dst + c) as usize] = out;
-                }
-                return;
-            }
-            Op::Transpose { n, dst, m } => {
-                let n = usize::from(n);
-                for c in 0..n {
-                    let mut out = ZERO;
-                    for (row, o) in out.iter_mut().enumerate().take(n) {
-                        *o = self.regs[m as usize + row][c];
-                    }
-                    self.regs[dst as usize + c] = out;
-                }
-                return;
-            }
+            } => rt::binary_op(r, kind, dst, a, b, n, a1, b1),
+            Op::MatMul { n, dst, a, b } => rt::mat_mul(r, n, dst, a, b),
+            Op::MatVec { n, dst, m, v } => rt::mat_vec(r, n, dst, m, v),
+            Op::VecMat { n, dst, v, m } => rt::vec_mat(r, n, dst, v, m),
+            Op::MatAdd { n, dst, a, b, sub } => rt::mat_add(r, n, dst, a, b, sub),
+            Op::MatScale { n, dst, m, s } => rt::mat_scale(r, n, dst, m, s),
+            Op::MatNeg { n, dst, m } => rt::mat_neg(r, n, dst, m),
+            Op::Transpose { n, dst, m } => rt::transpose(r, n, dst, m),
             Op::Convert {
                 dst,
                 src,
                 from,
                 to,
                 n,
-            } => (dst, convert(&self.reg(src), from, to, n)),
+            } => rt::convert_op(r, dst, src, from, to, n),
             Op::IndexLane {
                 dst,
                 src,
                 index,
                 len,
-            } => {
-                let (x, at) = (self.reg(src), self.reg(index));
-                let last = usize::from(len) - 1;
-                let mut out = ZERO;
-                out[0] = std::array::from_fn(|l| x[(at[0][l] as usize).min(last)][l]);
-                (dst, out)
-            }
+            } => rt::index_lane(r, dst, src, index, len),
             Op::IndexColumn {
                 dst,
                 base,
                 index,
                 n,
-            } => {
-                let at = self.reg(index);
-                let last = usize::from(n) - 1;
-                let mut out = ZERO;
-                for l in 0..4 {
-                    let column = &self.regs[base as usize + (at[0][l] as usize).min(last)];
-                    for (o, c) in out.iter_mut().zip(column).take(usize::from(n)) {
-                        o[l] = c[l];
-                    }
-                }
-                (dst, out)
-            }
-            Op::Math1 { f: g, dst, src, n } => (dst, map(&self.reg(src), n, |x| b(g(f(x))))),
+            } => rt::index_column(r, dst, base, index, n),
+            Op::Math1 { f, dst, src, n, .. } => rt::math1(r, f, dst, src, n),
             Op::Math2 {
-                f: g,
+                f,
                 dst,
                 a,
-                b: c,
+                b,
                 n,
                 a1,
                 b1,
-            } => (
-                dst,
-                zip(&self.reg(a), &self.reg(c), n, a1, b1, |x, y| {
-                    b(g(f(x), f(y)))
-                }),
-            ),
+                ..
+            } => rt::math2(r, f, dst, a, b, n, a1, b1),
             Op::Clamp {
                 scalar,
                 dst,
@@ -700,34 +337,15 @@ impl<'a> Machine<'a> {
                 n,
                 lo1,
                 hi1,
-            } => {
-                let (up, down) = match scalar {
-                    Scalar::I32 => (Bin::IMax, Bin::IMin),
-                    Scalar::U32 => (Bin::UMax, Bin::UMin),
-                    _ => (Bin::FMax, Bin::FMin),
-                };
-                let raised = binary(up, &self.reg(x), &self.reg(lo), n, false, lo1);
-                (dst, binary(down, &raised, &self.reg(hi), n, false, hi1))
-            }
+            } => rt::clamp(r, scalar, dst, x, lo, hi, n, lo1, hi1),
             Op::Mix {
                 dst,
                 a,
-                b: c,
+                b,
                 t,
                 n,
                 t1,
-            } => {
-                let (x, y, t) = (self.reg(a), self.reg(c), self.reg(t));
-                let mut out = ZERO;
-                for (k, o) in out.iter_mut().enumerate().take(usize::from(n)) {
-                    let tk = &t[if t1 { 0 } else { k }];
-                    *o = std::array::from_fn(|l| {
-                        let (x, y) = (f(x[k][l]), f(y[k][l]));
-                        b(x + (y - x) * f(tk[l]))
-                    });
-                }
-                (dst, out)
-            }
+            } => rt::mix(r, dst, a, b, t, n, t1),
             Op::Smoothstep {
                 dst,
                 e0,
@@ -736,121 +354,28 @@ impl<'a> Machine<'a> {
                 n,
                 e01,
                 e11,
-            } => {
-                let (e0, e1, x) = (self.reg(e0), self.reg(e1), self.reg(x));
-                let mut out = ZERO;
-                for (k, o) in out.iter_mut().enumerate().take(usize::from(n)) {
-                    let (lo, hi) = (&e0[if e01 { 0 } else { k }], &e1[if e11 { 0 } else { k }]);
-                    *o = std::array::from_fn(|l| {
-                        let (lo, hi) = (f(lo[l]), f(hi[l]));
-                        let t = ((f(x[k][l]) - lo) / (hi - lo)).clamp(0.0, 1.0);
-                        b(t * t * (3.0 - 2.0 * t))
-                    });
-                }
-                (dst, out)
-            }
-            Op::Dot { dst, a, b: c, n } => {
-                let (x, y) = (self.reg(a), self.reg(c));
-                let mut out = ZERO;
-                out[0] = std::array::from_fn(|l| b(dot(&x, &y, n, l)));
-                (dst, out)
-            }
-            Op::Length { dst, src, n } => {
-                let x = self.reg(src);
-                let mut out = ZERO;
-                out[0] = std::array::from_fn(|l| b(dot(&x, &x, n, l).sqrt()));
-                (dst, out)
-            }
-            Op::Distance { dst, a, b: c, n } => {
-                let d = binary(Bin::FSub, &self.reg(a), &self.reg(c), n, false, false);
-                let mut out = ZERO;
-                out[0] = std::array::from_fn(|l| b(dot(&d, &d, n, l).sqrt()));
-                (dst, out)
-            }
-            Op::Normalize { dst, src, n } => {
-                let x = self.reg(src);
-                let len: [f32; 4] = std::array::from_fn(|l| dot(&x, &x, n, l).sqrt());
-                let mut out = ZERO;
-                for (o, c) in out.iter_mut().zip(&x).take(usize::from(n)) {
-                    *o = std::array::from_fn(|l| b(f(c[l]) / len[l]));
-                }
-                (dst, out)
-            }
-            Op::Cross { dst, a, b: c } => {
-                let (x, y) = (self.reg(a), self.reg(c));
-                let mut out = ZERO;
-                for (k, o) in out.iter_mut().enumerate().take(3) {
-                    let (p, q) = ((k + 1) % 3, (k + 2) % 3);
-                    *o = std::array::from_fn(|l| {
-                        b(f(x[p][l]) * f(y[q][l]) - f(x[q][l]) * f(y[p][l]))
-                    });
-                }
-                (dst, out)
-            }
-            Op::Derivative { kind, dst, src, n } => (dst, derivative(kind, &self.reg(src), n)),
+            } => rt::smoothstep(r, dst, e0, e1, x, n, e01, e11),
+            Op::Dot { dst, a, b, n } => rt::dot_op(r, dst, a, b, n),
+            Op::Length { dst, src, n } => rt::length(r, dst, src, n),
+            Op::Distance { dst, a, b, n } => rt::distance(r, dst, a, b, n),
+            Op::Normalize { dst, src, n } => rt::normalize(r, dst, src, n),
+            Op::Cross { dst, a, b } => rt::cross(r, dst, a, b),
+            Op::Derivative { kind, dst, src, n } => rt::derivative_op(r, kind, dst, src, n),
             Op::Sample {
                 dst,
                 texture,
                 sampler,
                 uv,
                 scalar,
-            } => {
-                let uv = self.reg(uv);
-                let mut out = ZERO;
-                // A binding the draw left out samples as zero.
-                if let (Some(texture), Some(sampler)) = (
-                    self.textures.get(texture as usize),
-                    self.samplers.get(sampler as usize),
-                ) {
-                    let take = if scalar { 1 } else { 4 };
-                    for l in 0..4 {
-                        let texel = sample(texture, sampler, f(uv[0][l]), f(uv[1][l]));
-                        for (o, t) in out.iter_mut().zip(texel).take(take) {
-                            o[l] = b(t);
-                        }
-                    }
-                }
-                (dst, out)
-            }
-            Op::QuadVertex { dst, src } => {
-                // Two triangles, (0,0) (1,0) (0,1) and (1,0) (1,1) (0,1).
-                const X: [f32; 6] = [0.0, 1.0, 0.0, 1.0, 1.0, 0.0];
-                const Y: [f32; 6] = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0];
-                let vid = self.reg(src)[0];
-                let mut out = ZERO;
-                out[0] = vid.map(|v| b(X[(v % 6) as usize]));
-                out[1] = vid.map(|v| b(Y[(v % 6) as usize]));
-                (dst, out)
-            }
-            Op::ToClip { dst, pos, viewport } => {
-                let (p, v) = (self.reg(pos), self.reg(viewport));
-                let mut out = ZERO;
-                out[0] = std::array::from_fn(|l| b(f(p[0][l]) / f(v[0][l]) * 2.0 - 1.0));
-                out[1] = std::array::from_fn(|l| b(1.0 - f(p[1][l]) / f(v[1][l]) * 2.0));
-                out[3] = [b(1.0); 4];
-                (dst, out)
-            }
+            } => rt::sample_op(r, &self.env, dst, texture, sampler, uv, scalar),
+            Op::QuadVertex { dst, src } => rt::quad_vertex(r, dst, src),
+            Op::ToClip { dst, pos, viewport } => rt::to_clip(r, dst, pos, viewport),
             Op::RoundedRectSdf {
                 dst,
                 p,
                 size,
                 radius,
-            } => {
-                let (p, size, radius) = (self.reg(p), self.reg(size), self.reg(radius));
-                let mut out = ZERO;
-                out[0] = std::array::from_fn(|l| {
-                    let extent = [f(size[0][l]) * 0.5, f(size[1][l]) * 0.5];
-                    let r = f(radius[0][l]).clamp(0.0, extent[0].min(extent[1]));
-                    let q = [
-                        (f(p[0][l]) - extent[0]).abs() - (extent[0] - r),
-                        (f(p[1][l]) - extent[1]).abs() - (extent[1] - r),
-                    ];
-                    let outside = [q[0].max(0.0), q[1].max(0.0)];
-                    let length = (outside[0] * outside[0] + outside[1] * outside[1]).sqrt();
-                    b(length + q[0].max(q[1]).min(0.0) - r)
-                });
-                (dst, out)
-            }
+            } => rt::rounded_rect_sdf(r, dst, p, size, radius),
             Op::Call {
                 function,
                 args,
@@ -859,23 +384,21 @@ impl<'a> Machine<'a> {
             } => {
                 let code = self.code;
                 for &(src, param, w) in &code.args[args.0 as usize..args.1 as usize] {
-                    let src = src as usize;
-                    self.regs.copy_within(src..src + w as usize, param as usize);
+                    rt::copy(&mut self.regs, param, src, w);
                 }
                 let (ret, _) = self.enter(&code.functions[function as usize], [true; 4]);
-                let ret = ret as usize;
-                self.regs
-                    .copy_within(ret..ret + width as usize, dst as usize);
-                return;
+                rt::copy(&mut self.regs, dst, ret, width);
             }
-        };
-        self.regs[dst as usize] = out;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::program::Scalar;
+    use crate::program::interp::code::{Bin, Cmp, Derivative};
+    use crate::program::interp::rt::{binary, convert, derivative};
 
     /// `bits` in component 0 of every lane.
     fn scalar(bits: u32) -> Cell {
@@ -932,7 +455,7 @@ mod tests {
             ops,
             ..Code::default()
         };
-        let mut m = Machine::new(&code, &[], &[]);
+        let mut m = Machine::new(&code, &[], &[], None);
         m.regs[0] = floats(&[1.0, 2.0]);
         m.regs[1] = floats(&[3.0, 4.0]);
         m.regs[2] = floats(&[1.0, 10.0]);

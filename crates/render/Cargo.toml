@@ -40,6 +40,9 @@ vulkan = ["viso-gpu/vulkan"]
 # wasm32 (the web path is verified by the WebGPU tests instead).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.7"
+# The CPU raster bench's user shader, interpreted and as the Rust built from it.
+viso-dsl = { workspace = true }
+viso-ui-macros = { workspace = true }
 
 # The Vulkan backend tests draw on the native Vulkan device on Linux and
 # Android.

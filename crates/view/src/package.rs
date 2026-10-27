@@ -211,7 +211,9 @@ fn mount<'a>(
         )
         .map_err(ViewLoadError::Host)?;
         host.set_assets(view.assets().map(|(id, bytes)| (id, (keep.asset)(bytes))));
-        let shaders = view.shaders().map(|bytes| load_kept(bytes, keep.asset));
+        let shaders = view
+            .shaders()
+            .map(|bytes| load_kept(bytes, keep.asset, None));
         let shaders: Vec<_> = shaders
             .collect::<Result<_, _>>()
             .map_err(ViewLoadError::Shader)?;

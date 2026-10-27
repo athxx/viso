@@ -111,6 +111,7 @@ pub mod __private {
     pub use viso_behavior;
     pub use viso_ende;
     pub use viso_platform;
+    pub use viso_shader;
     pub use viso_ui;
     pub use viso_view;
 }

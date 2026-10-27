@@ -23,13 +23,16 @@ use viso_ende::{Decode, DecodeError, content_hash};
 use viso_ui::AssetBytes;
 use viso_ui::Srgb;
 use viso_ui::resource::ResourceId;
-use viso_ui::shader::{BrushLayout, BrushProgram, PackedBrush, ParamKind, ParamValue};
+use viso_ui::shader::{
+    BrushLayout, BrushProgram, NativeKernel, PackedBrush, ParamKind, ParamValue,
+};
 
 use crate::package::ViewShader;
 
 /// A program loaded and still held: the hash of its bytes, the bytes —
-/// borrowed where they are embedded — and it.
-type Loaded = (u64, AssetBytes, Weak<BrushProgram>);
+/// borrowed where they are embedded — whether it runs on the CPU as Rust
+/// built from it, and it.
+type Loaded = (u64, AssetBytes, bool, Weak<BrushProgram>);
 
 /// Every program loaded and still held.
 static LOADED: Mutex<Vec<Loaded>> = Mutex::new(Vec::new());
@@ -41,27 +44,31 @@ static LOADED: Mutex<Vec<Loaded>> = Mutex::new(Vec::new());
 ///
 /// Bytes that are not a packed brush.
 pub fn load_shader(bytes: &[u8]) -> Result<Arc<BrushProgram>, DecodeError> {
-    load_kept(bytes, |bytes| AssetBytes::Shared(bytes.into()))
+    load_kept(bytes, |bytes| AssetBytes::Shared(bytes.into()), None)
 }
 
 /// [`load_shader`], keeping the bytes a new program is held by as `keep`
-/// says: borrowed when they are `'static`, else copied.
+/// says: borrowed when they are `'static`, else copied. The CPU runs the
+/// program as `native`, the Rust built from it, when that is given; a
+/// program already held without it is not shared then.
 pub(crate) fn load_kept<'a>(
     bytes: &'a [u8],
     keep: fn(&'a [u8]) -> AssetBytes,
+    native: Option<&'static NativeKernel>,
 ) -> Result<Arc<BrushProgram>, DecodeError> {
     let key = content_hash(bytes);
     let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(program) = loaded
         .iter()
-        .filter(|(k, held, _)| *k == key && **held == *bytes)
-        .find_map(|(_, _, program)| program.upgrade())
+        .filter(|(k, held, built, _)| *k == key && **held == *bytes && (*built || native.is_none()))
+        .find_map(|(_, _, _, program)| program.upgrade())
     {
         return Ok(program);
     }
-    let program = Arc::new(BrushProgram::from(PackedBrush::decode_from_slice(bytes)?));
-    loaded.retain(|(_, _, program)| program.strong_count() > 0);
-    loaded.push((key, keep(bytes), Arc::downgrade(&program)));
+    let packed = PackedBrush::decode_from_slice(bytes)?;
+    let program = Arc::new(BrushProgram::unpacked(packed, native));
+    loaded.retain(|(_, _, _, program)| program.strong_count() > 0);
+    loaded.push((key, keep(bytes), native.is_some(), Arc::downgrade(&program)));
     Ok(program)
 }
 
@@ -78,15 +85,19 @@ pub fn load_shaders(shaders: &[ViewShader]) -> Result<Vec<Arc<BrushProgram>>, De
 }
 
 /// [`load_shader`] for the bytes `view!` embeds, which the program is held
-/// by where they lie.
+/// by where they lie, run on the CPU as `native`, the Rust `view!` built
+/// from it, where the build has a CPU backend.
 ///
 /// # Panics
 ///
 /// If they are not a packed brush. The macro packs them at build time, so
 /// this does not happen for bytes it produced.
 #[doc(hidden)]
-pub fn __embedded_shader(bytes: &'static [u8]) -> Arc<BrushProgram> {
-    load_kept(bytes, AssetBytes::Static)
+pub fn __embedded_shader(
+    bytes: &'static [u8],
+    native: Option<&'static NativeKernel>,
+) -> Arc<BrushProgram> {
+    load_kept(bytes, AssetBytes::Static, native)
         .unwrap_or_else(|error| panic!("an embedded shader does not load: {error}"))
 }
 

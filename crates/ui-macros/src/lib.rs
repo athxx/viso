@@ -72,6 +72,15 @@ pub fn asset(input: TokenStream) -> TokenStream {
 /// with, as a `u128` literal: what a dev runtime introduces itself with,
 /// whether or not it mounts a view.
 #[doc(hidden)]
+/// `__shader_kernel!(shader_crate_path, "source")`: the Rust the CPU raster
+/// runs for the only shader `source` declares, as a `&'static NativeKernel`.
+/// Not an API: what tests and benchmarks compare with the interpreter.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __shader_kernel(input: TokenStream) -> TokenStream {
+    expand::shader_kernel(input)
+}
+
 #[proc_macro]
 pub fn __schema_fingerprint(_: TokenStream) -> TokenStream {
     let fingerprint = viso_dsl::hotreload::schema_fingerprint();

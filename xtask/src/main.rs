@@ -116,12 +116,13 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
         // so it MAY carry an ordinary library dependency: it drives the shared
         // DSL frontend via `viso-dsl` and
         // emits `viso_ui::` builder tokens, which resolve in the app that
-        // expands them; it links no runtime itself.
+        // expands them; it links no runtime itself. It writes a shader's
+        // Rust for the CPU raster with the shader crate's generator.
         (
             "viso-ui-macros",
             Allowed {
                 dir: "crates/ui-macros",
-                deps: &["viso-dsl"],
+                deps: &["viso-dsl", "viso-shader"],
                 dev: &[],
             },
         ),
@@ -335,7 +336,9 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-shader",
                     "viso-gpu",
                 ],
-                dev: &[],
+                // The CPU raster bench compiles a `.vs` shader and the Rust
+                // built from it.
+                dev: &["viso-dsl", "viso-ui-macros"],
             },
         ),
         // The SVG input lane: the dependency-free parser to a normalized

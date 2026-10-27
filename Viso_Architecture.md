@@ -3256,7 +3256,7 @@ ADR 0001 固定的最小 primitive 合同是 `Quad` / `GlyphRun` / `Image` / `Pa
 
 `CpuRaster`（`viso_gpu::cpu`）是唯一的 CPU 后端：Embedded-CPU 的 Tier-1 后端、没有原生 GPU 后端时的兼容路径、golden test / headless 的确定性参考。它消费与 GPU 后端相同的 `DrawList`，不新增 primitive 类型，不另起一套 renderer：
 
-- 每个 built-in pipeline 由 `BuiltinShader` 标签选择其 shader IR 的 CPU 复述（SDF、AA ramp、采样约定），blend state 照常生效；用户 program 运行打包时附带的 `ShaderLang::None` 寄存器码（`CpuShader`），不存在缺 CPU 路径的 program；`embedded-cpu` profile 把包的 shader 语言固定为 `None`（§50A.3），缺少 CPU 代码的包在构建期即不满足 profile；
+- 每个 built-in pipeline 由 `BuiltinShader` 标签选择其 shader IR 的 CPU 复述（SDF、AA ramp、采样约定），blend state 照常生效；用户 program 运行打包时附带的 `ShaderLang::None` 寄存器码（`CpuShader`），不存在缺 CPU 路径的 program；`view!` 内嵌的 program 在构建期另生成 Rust 入口（`NativeKernel`，与解释器逐位一致），CPU 构建以它代替解释执行，热重载换入的 program 与之哈希不符即回退解释器；`embedded-cpu` profile 把包的 shader 语言固定为 `None`（§50A.3），缺少 CPU 代码的包在构建期即不满足 profile；
 - 64×64 tile binning，只访问被 draw 触及的 tile，`LoadOp::Load` 的 partial redraw 只花 damage 的代价（§30.3）；band 在常驻 worker pool 上并行，输出与 worker 数无关；SSE2 / NEON / SIMD128 行 kernel 与 scalar bit-exact；
 - 只被区域合成读取的 offscreen layer 推迟到 tile 内求值，不分配整块 target，像素与整目标绘制 bit-exact；
 - 3D scene lane 同样执行：每个 target 一个 `f32` depth buffer、透视校正的三角形光栅化，着色与 GPU program 同一表达式（`viso_gpu::scene`）；
