@@ -446,9 +446,22 @@ Rules (as for `todo_features.md`):
     Tracked below.
   - The ui lib and integration tests, viso lib, dsl `virtual_list`/`hot_reload`/`node_refs` tests
     and clippy pass.
-- [ ] Fix the incremental repaint splice that places a re-shown stack child after a later row's
+- [x] Fix the incremental repaint splice that places a re-shown stack child after a later row's
   primitives. Verify with the twin-store stacks/absolutes test checking `repaint_dirty` against
   `paint_tree` every frame.
+  - Cause: a node that paints nothing (every child hidden, no own drawables) has an empty record
+    at one stream position. When a splice inserted primitives at exactly that position for a node
+    after it in paint order, the record shift moved the empty record past the inserted run. A
+    later child shown under that node was then spliced after the other node's primitives.
+  - Built: when moving the records of unvisited nodes, an empty record at a position where an edit
+    inserted primitives is forgotten. Whether it sat before or after them is not known. A later
+    change there finds no record and paints whole.
+  - Verified: the twin-store stacks/absolutes test (now
+    `kept_sizes_relayout_and_repaint_as_whole_ones_over_stacks_and_absolutes`) checks
+    `repaint_dirty` against `paint_tree` every frame and passes.
+  - Verified: a focused splice test fails without the fix and passes with it. Two boxes paint
+    nothing but a hidden child each; the second's child is shown, then the first's.
+  - The ui lib tests, including the splice fuzz tests' spliced/patched/whole ratios, and clippy pass.
 - [ ] Drive glyph representation promotion at runtime: MTSDF for runs under sustained scale or
   rotation, settling back to A8, with real MTSDF pages. Verify with:
   - a scaled/rotated text golden;

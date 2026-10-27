@@ -1298,6 +1298,16 @@ fn splice(
         if s.edits.get(k).is_some_and(|e| e.at <= start) {
             continue;
         }
+        // A node that painted nothing sits where an edit put primitives in:
+        // whether it came before them or after is not known, so it is
+        // forgotten, and a change there paints whole.
+        if start == record.end
+            && k > 0
+            && s.edits[k - 1].at + s.edits[k - 1].removed == start
+            && s.edits[k - 1].inserted > 0
+        {
+            continue;
+        }
         let by = splices
             .get(k)
             .map_or(shift, |sp| i64::from(sp.at) - i64::from(s.edits[k].at));
@@ -1496,6 +1506,41 @@ mod tests {
             spliced > 3000 && patched > 2000 && whole < 1000,
             "{spliced} spliced, {patched} patched, {whole} whole"
         );
+    }
+
+    #[test]
+    fn a_box_painting_nothing_where_a_child_after_it_is_shown_keeps_its_place() {
+        // Two boxes that paint nothing but a hidden child each sit at one
+        // place in the stream; showing the second's child puts primitives
+        // there, after the first box.
+        let mut store = NodeStore::new();
+        let mut kids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                for k in 0..2 {
+                    cx.flex(FlexStyle::default(), |cx| {
+                        let leaf = cx.leaf(LeafStyle {
+                            size: Sizing::fixed(10.0, 10.0),
+                            style: BoxStyle::solid(color(k)),
+                        });
+                        kids.push(leaf.id());
+                    });
+                }
+            })
+            .id()
+        };
+        for &kid in &kids {
+            store.set_hidden(kid, true);
+        }
+        store.layout(root, SURFACE, &mut Vec::new());
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+        store.set_hidden(kids[1], false);
+        frame(&mut store, root, &mut out);
+        store.set_hidden(kids[0], false);
+        frame(&mut store, root, &mut out);
     }
 
     #[test]

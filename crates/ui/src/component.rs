@@ -9285,7 +9285,7 @@ mod tests {
     }
 
     #[test]
-    fn a_relayout_keeping_sizes_across_frames_places_stacks_and_absolutes_as_a_whole_one() {
+    fn kept_sizes_relayout_and_repaint_as_whole_ones_over_stacks_and_absolutes() {
         let mut lcg = 0x2545_f491_4f6c_dd1du64;
         let mut below = |n: u32| {
             lcg = lcg
@@ -9371,7 +9371,9 @@ mod tests {
             }
             let mut scratch = Vec::new();
             let mut roots = Vec::new();
+            let mut out = Vec::new();
             kept.0.layout(kept.1, screen, &mut scratch);
+            kept.0.repaint(kept.1, &mut out);
             kept.0.clear_dirty();
             whole.0.layout(whole.1, screen, &mut scratch);
             whole.0.clear_dirty();
@@ -9427,6 +9429,10 @@ mod tests {
                 }
                 let (store, root, nodes) = (&mut kept.0, kept.1, &kept.2);
                 store.relayout_dirty(root, screen, &mut scratch, &mut roots);
+                store.repaint_dirty(root, &mut out);
+                let mut painted = Vec::new();
+                crate::paint_tree(store, root, &mut painted);
+                assert_eq!(out, painted, "seed {seed} frame {frame}: the paint");
                 whole.0.layout(whole.1, screen, &mut scratch);
                 for (&node, &twin) in nodes.iter().zip(&whole.2) {
                     if store.parent(node).is_some_and(|p| !store.shows(p)) {
