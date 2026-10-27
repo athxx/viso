@@ -767,8 +767,23 @@ Rules (as for `todo_features.md`):
     - The Android Java compiles. Clippy is clean on host, iOS, Android, Windows, Linux and wasm.
     - Not yet seen with a real Japanese IME: this Mac has no Japanese input source and the
       emulator has no Vulkan.
-- [ ] Merge the labels of a node marked as one element (such as a list row) into one semantics
+- [x] Merge the labels of a node marked as one element (such as a list row) into one semantics
   node. Verify in the headless semantics tree.
+  - Built:
+    - `Semantics::merged` (DSL `semantics.merge`, a constant flag). With no label of its own, a
+      merged node is named by the labels of its subtree in tree order, joined by commas.
+    - `read_children` skips the absorbed nodes. It yields in their place the nodes in the
+      subtree that act on their own (focusable, handling input, holding links, or merged
+      themselves), and those keep their labels.
+    - The view module carries the flag in the live setting's high bit, so older modules still
+      decode.
+  - Verified:
+    - A ui unit test: an icon, title and subtitle read as "Starred, Inbox, 3 new"; a hidden one
+      is left out; a focusable button stays the only child; an authored label wins.
+    - The bridge's differential test publishes the same tree incrementally as a whole re-derive
+      when a group is merged, a label it absorbs changes, a node in it becomes focusable, and
+      it is unmerged.
+    - DSL tests: `semantics.merge: true` reaches the node, and a non-constant value is refused.
 - [ ] A wrapping Flow layout (`LayoutInput::Flow`, DSL `Wrap`). Verify with layout unit tests
   (gap, RTL, hidden children) and the differential layout.
 - [ ] Typed `ShapedGlyph` cluster and glyph ids, and per-locale kinsoku for zh-Hans, zh-Hant, ja

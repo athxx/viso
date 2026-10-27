@@ -6703,11 +6703,15 @@ impl NodeStore {
         };
         // A text of links holds the focus on one of them.
         let focused = self.focused == Some(id) && self.links(id).is_empty();
+        let label = match authored {
+            Some(s) if s.label.is_none() && s.merged => self.merged_label(id),
+            _ => authored.and_then(|s| s.label.clone()),
+        };
         SemanticsNode {
             id,
             link: None,
             role,
-            label: authored.and_then(|s| s.label.clone()),
+            label,
             hint: authored.and_then(|s| s.hint.clone()),
             value: authored.and_then(|s| s.value.clone()),
             live: authored.map(|s| s.live).unwrap_or_default(),
@@ -6763,10 +6767,67 @@ impl NodeStore {
     /// The children of `id` the derived tree reads, in order: a subtree
     /// authored hidden is shown but not read, and one folded out of layout
     /// is neither. Its links' rows follow them.
+    /// A node merged into one element reads, in their place, the nodes
+    /// of its subtree that act on their own.
     pub fn read_children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        let merged = self.semantics(id).is_some_and(|s| s.merged);
+        let mut apart = Vec::new();
+        if merged {
+            self.walk_merged(id, &mut |c, own| {
+                if own {
+                    apart.push(c);
+                }
+            });
+        }
+        let direct = (!merged).then(|| self.readable_children(id));
+        direct.into_iter().flatten().chain(apart)
+    }
+
+    /// The children of `id` read at all: not authored hidden, not folded
+    /// out of layout.
+    fn readable_children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         self.arena.children(id).filter(|&c| {
             !self.concealed(c.index() as usize) && !self.semantics(c).is_some_and(|s| s.hidden)
         })
+    }
+
+    /// Whether node `id`, inside one merged into one element, is still read
+    /// as its own: it takes the focus or input, holds links, or is merged
+    /// itself.
+    fn reads_on_its_own(&self, id: NodeId) -> bool {
+        self.focusable(id)
+            || self.has_handler(id)
+            || self.has_key_handler(id)
+            || !self.links(id).is_empty()
+            || self.semantics(id).is_some_and(|s| s.merged)
+    }
+
+    /// Visit the read subtree of `id` in tree order, each node with whether
+    /// it reads on its own; the subtree of one that does is not entered.
+    fn walk_merged(&self, id: NodeId, visit: &mut impl FnMut(NodeId, bool)) {
+        for c in self.readable_children(id) {
+            let own = self.reads_on_its_own(c);
+            visit(c, own);
+            if !own {
+                self.walk_merged(c, visit);
+            }
+        }
+    }
+
+    /// The label of `id` merged into one element: the labels of the nodes
+    /// it absorbs, in tree order, joined by commas so a reader pauses.
+    fn merged_label(&self, id: NodeId) -> Option<String> {
+        let mut label = String::new();
+        self.walk_merged(id, &mut |c, own| {
+            let said = self.semantics(c).and_then(|s| s.label.as_deref());
+            if let Some(said) = said.filter(|s| !own && !s.is_empty()) {
+                if !label.is_empty() {
+                    label.push_str(", ");
+                }
+                label.push_str(said);
+            }
+        });
+        (!label.is_empty()).then_some(label)
     }
 
     /// Re-derive the accessibility tree only when a SEMANTICS invalidation is
@@ -10404,6 +10465,51 @@ mod tests {
         let n = node.root().unwrap();
         assert_eq!(n.role, Role::Label);
         assert_eq!(n.label.as_deref(), Some("Hi"));
+    }
+
+    #[test]
+    fn a_node_merged_into_one_element_reads_its_labels_as_its_own() {
+        use crate::semantics::{Role, Semantics};
+        let mut store = NodeStore::new();
+        let mut ids = Vec::new();
+        let row = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                ids.push(cx.leaf(LeafStyle::default()).id());
+                cx.flex(FlexStyle::default(), |cx| {
+                    ids.push(cx.leaf(LeafStyle::default()).id());
+                    ids.push(cx.leaf(LeafStyle::default()).id());
+                    ids.push(cx.leaf(LeafStyle::default()).id());
+                });
+                ids.push(cx.leaf(LeafStyle::default()).id());
+            })
+            .id()
+        };
+        let [icon, title, hidden, subtitle, more] = ids[..] else {
+            unreachable!()
+        };
+        let say = |role, label: &str| Semantics::role(role).with_label(label);
+        store.set_semantics(row, Semantics::default().with_merged(true));
+        store.set_semantics(icon, say(Role::Image, "Starred"));
+        store.set_semantics(title, say(Role::Label, "Inbox"));
+        store.set_semantics(hidden, say(Role::Label, "draft").with_hidden(true));
+        store.set_semantics(subtitle, say(Role::Label, "3 new"));
+        store.set_semantics(more, say(Role::Button, "More"));
+        store.set_focusable(more, true);
+        let tree = store.derive_semantics(row);
+        let root = tree.root().unwrap();
+        assert_eq!(root.label.as_deref(), Some("Starred, Inbox, 3 new"));
+        let children: Vec<NodeId> = root.children.iter().map(|&c| tree.nodes[c].id).collect();
+        assert_eq!(children, [more], "only what acts on its own stays apart");
+        assert_eq!(tree.len(), 2);
+
+        // A label of its own names it instead.
+        store.set_semantics(
+            row,
+            Semantics::default().with_merged(true).with_label("Mail"),
+        );
+        let tree = store.derive_semantics(row);
+        assert_eq!(tree.root().unwrap().label.as_deref(), Some("Mail"));
     }
 
     #[test]

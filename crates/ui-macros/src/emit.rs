@@ -798,6 +798,7 @@ fn control_tokens(control: Control) -> TokenStream {
         None => quote! { ::core::option::Option::None },
     };
     let live = Ident::new(&format!("{:?}", semantics.live), Span::call_site());
+    let merged = semantics.merged;
     let (label, hint, spoken) = (
         entry(semantics.label),
         entry(semantics.hint),
@@ -988,6 +989,7 @@ fn control_tokens(control: Control) -> TokenStream {
             semantics: ::viso::__private::viso_view::SemanticEntries {
                 role: #role,
                 live: ::viso::__private::viso_ui::LiveRegion::#live,
+                merged: #merged,
                 label: #label,
                 hint: #hint,
                 value: #spoken,

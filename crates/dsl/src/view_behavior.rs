@@ -292,6 +292,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         let mut control = Control::new(kind);
         control.semantics.role = node_role(node, item);
         control.semantics.live = node.live.unwrap_or_default();
+        control.semantics.merged = node.merged;
         for (property, at, instance) in &node.control_reads {
             let input = kind.input(property);
             let slot = LayoutSlot::of(property).filter(|_| input.is_none());

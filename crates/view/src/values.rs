@@ -772,6 +772,7 @@ impl Shown {
             let said = Said {
                 role,
                 live: semantics.live,
+                merged: semantics.merged,
                 name,
                 hint: hint
                     .as_str()
@@ -1683,6 +1684,7 @@ impl Shown {
 struct Said<'a> {
     role: Role,
     live: LiveRegion,
+    merged: bool,
     name: Option<&'a str>,
     hint: Option<&'a str>,
     value: Option<&'a str>,
@@ -1705,6 +1707,7 @@ fn describe_node(store: &mut NodeStore, node: NodeId, said: &Said<'_>) {
             && s.live == said.live
             && s.hidden == said.hidden
             && s.heading_level == said.heading_level
+            && s.merged == said.merged
     });
     if unchanged {
         return;
@@ -1719,6 +1722,7 @@ fn describe_node(store: &mut NodeStore, node: NodeId, said: &Said<'_>) {
             live: said.live,
             hidden: said.hidden,
             heading_level: said.heading_level,
+            merged: said.merged,
         },
     );
 }

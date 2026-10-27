@@ -3168,7 +3168,7 @@ animation dirty 按属性限定：
 ```rust
 // 作者写的：冷列（viso_ui::Semantics）
 struct Semantics { role: Role, label: Option<String>, hint: Option<String>, value: Option<String>,
-                   live: LiveRegion, hidden: bool, heading_level: Option<u8> }
+                   live: LiveRegion, hidden: bool, heading_level: Option<u8>, merged: bool }
 // 控件投影的实时状态：侧列（viso_schema::SemanticState，ADR 0021）
 struct SemanticState { checked, value, range, expanded, selected, position: Option<(u32, u32)> }
 // 派生的：focused、disabled（含祖先）、由 handler 推出的动作、active descendant、validity、table facts、bounds
@@ -3183,7 +3183,7 @@ Semantics tree 与 UI tree 不完全一一对应：
 - 隐藏、折叠 / 分页移出、`semantics.hidden` 的子树不进入；无名 `Group` 发布为 generic container，辅助技术跳过它；
 - 一段文本中的每个链接是该节点下独立的 `link` 节点；
 - 虚拟列表只发布挂载的行，每行带 `position`（1 起的序号与总数）；表格以 `TableFacts::extent` 报告含未构建行的行列数；
-- 目标（尚未实现）：把多个视觉节点合并为一个语义节点（例如列表行的图标、标题、副标题读作一项）。
+- `Semantics::merged`（DSL `semantics.merge`）把一个节点的子树读作一项（例如列表行的图标、标题、副标题）：没有 label 时，被吸收节点的 label 按树序以逗号连接为它的 label，`read_children` 跳过它们，只给出子树里自己能行动的节点（focusable、有 handler、含链接或自身合并），这些节点的子树照常派生。被吸收节点的 label 变化沿 SEMANTICS 冒泡到合并节点，增量路径重派生它的行。
 
 平台 adapter（ADR 0030；边界格式为 Viso 自有的 `SemanticsDelta`，ADR 0042）：
 

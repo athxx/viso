@@ -92,6 +92,7 @@ static SEMANTICS: PropertyGroup = PropertyGroup {
         prop("live", "LiveRegion"),
         prop("hidden", "Bool"),
         prop("heading_level", "Option<U8>"),
+        prop("merge", "Bool"),
     ],
 };
 

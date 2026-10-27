@@ -638,6 +638,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut padding_at = None;
         let mut role = None;
         let mut live = None;
+        let mut merged = false;
         // Each binding left to a runtime value, by property and value span,
         // and where this file reports it.
         let mut bound = Vec::new();
@@ -686,6 +687,15 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         match authored_live(&value) {
                             Ok(authored) => live = Some(authored),
                             Err(reason) => self.unmount((at, reason)),
+                        }
+                    }
+                    if name == "semantics.merge" {
+                        match fold_bool(&value) {
+                            Some(authored) => merged = authored,
+                            None => self.unmount((
+                                at,
+                                "`semantics.merge` is a constant `true` or `false`".to_string(),
+                            )),
                         }
                     }
                     if control.input(&name).is_some() || name == "list.full_line" {
@@ -900,6 +910,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             styles,
             role,
             live,
+            merged,
             children,
             origin,
             instance: self.instance(),
@@ -1134,6 +1145,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             styles: Vec::new(),
             role: None,
             live: None,
+            merged: false,
             children: Vec::new(),
             origin,
             instance: self.instance(),
@@ -1548,7 +1560,7 @@ fn unapplied(
         return None;
     }
     match name {
-        "semantics.role" | "semantics.live" => None,
+        "semantics.role" | "semantics.live" | "semantics.merge" => None,
         // A list reads it of each of its rows.
         "list.full_line" => None,
         "checked" | "invalid" | "expanded" if selected() => None,

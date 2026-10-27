@@ -203,6 +203,8 @@ pub struct UiNode {
     /// The live setting its `semantics.live` names, `None` when it names
     /// none.
     pub live: Option<viso_schema::LiveRegion>,
+    /// Whether its `semantics.merge` reads it as one element.
+    pub merged: bool,
     /// The node's children, in source order.
     pub children: Vec<UiItem>,
     /// The node declaration's source span.

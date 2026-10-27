@@ -339,6 +339,7 @@ export component Said {
             semantics.role: Role::heading;
             semantics.heading_level: 2;
             semantics.label: "Settings";
+            semantics.merge: true;
             Text {
                 text: "x";
                 semantics.hint: "Opens the details";
@@ -396,12 +397,14 @@ fn nodes_say_their_hint_value_live_setting_level_and_hiding() {
     assert_eq!(heading.role, Role::Heading);
     assert_eq!(heading.heading_level, Some(2));
     assert_eq!(heading.label.as_deref(), Some("Settings"));
+    assert!(heading.merged, "it reads as one element");
     let detail = store.semantics(ids[1]).expect("the text says");
     assert_eq!(detail.role, Role::Label);
     assert_eq!(detail.hint.as_deref(), Some("Opens the details"));
     assert_eq!(detail.value.as_deref(), Some("Step 1"));
     assert_eq!(detail.live, LiveRegion::Polite);
     assert!(!store.semantics(ids[2]).expect("says").hidden);
+    assert!(!store.semantics(ids[2]).expect("says").merged);
     let role = |store: &NodeStore, id| store.semantics(id).map(|s| s.role);
     assert_eq!(role(&store, ids[3]), Some(Role::TabList));
     assert_eq!(role(&store, ids[4]), Some(Role::Tab), "a page is a tab");
@@ -429,6 +432,26 @@ fn nodes_say_their_hint_value_live_setting_level_and_hiding() {
     let detail = store.semantics(ids[1]).expect("the text says");
     assert_eq!(detail.value.as_deref(), Some("Step 2"));
     assert!(store.semantics(ids[2]).expect("says").hidden);
+}
+
+#[test]
+fn merging_is_a_constant_flag() {
+    for (merge, says) in [
+        ("true", ""),
+        ("false", ""),
+        ("1 > 0", "`semantics.merge` is a constant `true` or `false`"),
+    ] {
+        let source = format!(
+            "export component C {{\n    view {{ Row {{ semantics.merge: {merge}; Text {{ text: \"x\"; }} }} }}\n}}\n"
+        );
+        match plan_view(&source, &origin()) {
+            Ok(_) => assert!(says.is_empty(), "{merge} is rejected"),
+            Err(errors) => {
+                let all = format!("{errors:?}");
+                assert!(!says.is_empty() && all.contains(says), "{merge}: {all}");
+            }
+        }
+    }
 }
 
 #[test]

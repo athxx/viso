@@ -1393,6 +1393,8 @@ pub struct SemanticEntries {
     pub role: Option<Role>,
     /// How a change to its content is announced.
     pub live: LiveRegion,
+    /// Whether it reads as one element, the labels of its subtree its own.
+    pub merged: bool,
     /// The entry of its `semantics.label`; without one, a label's name is the
     /// text it shows.
     pub label: Option<u32>,
@@ -1412,6 +1414,7 @@ impl SemanticEntries {
     pub fn says_anything(&self) -> bool {
         self.role.is_some()
             || self.live != LiveRegion::Off
+            || self.merged
             || [
                 self.label,
                 self.hint,
@@ -1888,7 +1891,7 @@ impl Encode for Control {
         enc.write_u8(self.kind as u8);
         let semantics = self.semantics;
         enc.write_u8(semantics.role.map_or(0, |role| role_tag(role) + 1));
-        enc.write_u8(live_tag(semantics.live));
+        enc.write_u8(live_tag(semantics.live) | u8::from(semantics.merged) << 7);
         let look = self.look;
         for entry in [
             self.value,
@@ -2027,8 +2030,11 @@ impl Decode for Control {
             ),
         };
         let offset = dec.position();
+        // The live setting's tag, the high bit whether it merges.
+        let said = dec.read_u8()?;
+        let merged = said & 0x80 != 0;
         let live = *LiveRegion::ALL
-            .get(usize::from(dec.read_u8()?))
+            .get(usize::from(said & 0x7f))
             .ok_or(DecodeError::Malformed { offset })?;
         let mut entry = || -> Result<Option<u32>, DecodeError> {
             let offset = dec.position();
@@ -2101,6 +2107,7 @@ impl Decode for Control {
             semantics: SemanticEntries {
                 role,
                 live,
+                merged,
                 label: entry()?,
                 hint: entry()?,
                 value: entry()?,
@@ -2422,6 +2429,7 @@ mod tests {
             semantics: SemanticEntries {
                 role: Some(Role::Slider),
                 live: LiveRegion::Polite,
+                merged: true,
                 label: Some(9),
                 hint: Some(10),
                 value: None,

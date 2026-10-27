@@ -1165,6 +1165,24 @@ mod tests {
                     s.set_semantics(leaves[0][4], Semantics::role(Role::Label).with_label("why"))
                 }),
             ),
+            (
+                "merged into one element",
+                Box::new(|s| s.set_semantics(groups[1], Semantics::default().with_merged(true))),
+            ),
+            (
+                "a label it merges",
+                Box::new(|s| {
+                    s.set_semantics(leaves[1][3], Semantics::role(Role::Label).with_label("new"))
+                }),
+            ),
+            (
+                "a node in it acting on its own",
+                Box::new(|s| s.set_focusable(leaves[1][0], true)),
+            ),
+            (
+                "merged no more",
+                Box::new(|s| s.set_semantics(groups[1], Semantics::default())),
+            ),
             ("the focus", Box::new(|s| s.set_focused(Some(leaves[3][1])))),
         ];
         for (what, change) in changes {

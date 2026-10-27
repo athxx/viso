@@ -34,6 +34,12 @@ pub struct Semantics {
     pub hidden: bool,
     /// The level of a [`Heading`](Role::Heading), 1 the topmost.
     pub heading_level: Option<u8>,
+    /// Whether it reads as one element (a list row of an icon, a title and
+    /// a subtitle): the labels of its subtree make its own, unless it has
+    /// one, and its subtree is not read apart, save the nodes in it that
+    /// act on their own (focusable, handling input, holding links, or
+    /// merged themselves), which stay its children.
+    pub merged: bool,
 }
 
 impl Semantics {
@@ -78,6 +84,12 @@ impl Semantics {
     /// This a heading of `level`.
     pub fn with_heading_level(mut self, level: u8) -> Self {
         self.heading_level = Some(level);
+        self
+    }
+
+    /// This read as one element when `merged`.
+    pub fn with_merged(mut self, merged: bool) -> Self {
+        self.merged = merged;
         self
     }
 }
