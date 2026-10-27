@@ -255,7 +255,9 @@ Rules (as for `todo_features.md`):
   both arrive as `RawEvent::Wakeup` (`AsyncCompletion`), so separate variants would change
   nothing. `RedrawReasons` is a `u8` again. Verified: viso-runtime lib tests (37) pass; workspace
   clippy `-D warnings` is clean.
-- [ ] `viso::version()`. Verify that it matches `CARGO_PKG_VERSION`.
+- [x] `viso::version()`. Verify that it matches `CARGO_PKG_VERSION`.
+  — Built: a `const fn` at the crate root returning the facade's package version. Verified: a unit
+  test compares it with `CARGO_PKG_VERSION`; clippy `-D warnings` is clean.
 
 ## N3 — Robustness and security
 

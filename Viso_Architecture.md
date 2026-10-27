@@ -6102,7 +6102,7 @@ Heap allocations/frame                   0
 - 几何：`viso_math` 的 `Point`、`Rect`、`Vec2`；
 - 宏：`ui!`、`component!`、`view!`。
 
-`asset!` 在 crate 根导出，不在 prelude。不提供 `#[component]` 属性宏：`component!`、`view!` 与 `Component` trait 已覆盖 Rust 侧组件，第四个入口违背三入口合同（§0.2）。
+`asset!` 在 crate 根导出，不在 prelude；`viso::version()` 也在 crate 根，是构建所用 Viso 的包版本（`CARGO_PKG_VERSION`）。不提供 `#[component]` 属性宏：`component!`、`view!` 与 `Component` trait 已覆盖 Rust 侧组件，第四个入口违背三入口合同（§0.2）。
 
 ---
 

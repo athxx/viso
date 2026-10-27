@@ -160,7 +160,7 @@ pub mod fonts {
 pub use viso_macros::packaged_fonts;
 
 mod app;
-pub use app::{Application, run};
+pub use app::{Application, run, version};
 
 #[doc(hidden)]
 #[path = "test_support.rs"]

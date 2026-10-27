@@ -154,3 +154,17 @@ pub fn run<A: Application>() {
     #[cfg(not(target_arch = "wasm32"))]
     Scheduler::new(platform_app, driver).run();
 }
+
+/// The version of Viso the app is built with, as its package names it.
+pub const fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_version_is_the_package_version() {
+        assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
+        assert!(!super::version().is_empty());
+    }
+}
