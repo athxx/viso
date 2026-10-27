@@ -108,5 +108,25 @@ harness = false
 name = "file_tree"
 harness = false
 
+[[bench]]
+name = "calendar_build"
+harness = false
+
+[[bench]]
+name = "date_picker_build"
+harness = false
+
+[[bench]]
+name = "number_field_build"
+harness = false
+
+[[bench]]
+name = "color_picker_build"
+harness = false
+
+[[bench]]
+name = "data_grid_build"
+harness = false
+
 [lints]
 workspace = true

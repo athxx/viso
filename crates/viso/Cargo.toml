@@ -219,6 +219,25 @@ harness = false
 name = "paint_scale"
 harness = false
 
+# From nothing to the first presented frame, for one label and for a complex
+# `view!`; only a headless build presents to the software raster.
+[[bench]]
+name = "startup"
+harness = false
+required-features = ["headless"]
+
+# A steady frame where one label's text changes, presented to the software
+# raster, which only a headless build draws on.
+[[bench]]
+name = "damage_label"
+harness = false
+required-features = ["headless"]
+
+# A scroll frame of a 100k-row list beside an empty pane, presented in part.
+[[bench]]
+name = "damage_scroll"
+harness = false
+
 # Reloads the todo app through the dev link, which only `hot-reload` builds.
 [[test]]
 name = "dsl_todo_app"

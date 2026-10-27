@@ -3128,6 +3128,9 @@ dependencies = [
 [[package]]
 name = "viso-ende"
 version = "0.0.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "viso-example-01-counter"

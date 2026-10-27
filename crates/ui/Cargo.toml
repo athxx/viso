@@ -85,5 +85,25 @@ harness = false
 name = "task_cancel"
 harness = false
 
+[[bench]]
+name = "layout_scale"
+harness = false
+
+[[bench]]
+name = "hit_scale"
+harness = false
+
+[[bench]]
+name = "state_update"
+harness = false
+
+[[bench]]
+name = "identity_scale"
+harness = false
+
+[[bench]]
+name = "memory_nodes"
+harness = false
+
 [lints]
 workspace = true

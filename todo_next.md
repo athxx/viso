@@ -566,13 +566,37 @@ Rules (as for `todo_features.md`):
     under `headless` and not on GPU builds. cpu_raster 800×480 user shaders: rounded 12.4 → 7.3 ms,
     ripple (function + loop) 78.5 → 15.5 ms, with identical pixels. Clippy is clean (host,
     headless, wasm).
-- [ ] The missing benches:
+- [x] The missing benches:
   - `layout_10k_dirty_{1pct,100pct}`, `hit_test_100k`, `state_update_1k_bindings`;
   - `startup_*`, `hot_reload_*`, `ende_*`, `identity_*`;
   - `damage_single_label_update`, `memory_10k_nodes`;
   - widget microbenches after Tier 4 (DataGrid, Calendar, ColorPicker, DatePicker, NumberField).
 
   Verify that `cargo bench -- --list` shows each one.
+  - Built: 85 benches. viso-ui: layout_scale, hit_scale, state_update, identity_scale,
+    memory_nodes. viso-ende: codec. viso-dsl: identity, hot_reload, ende_payloads (the payloads
+    other crates carry live here, so ende keeps no viso dev-deps). viso: startup, damage_label,
+    damage_scroll (headless). viso-widgets: calendar, date_picker, number_field, color_picker and
+    data_grid builds. Each asserts its work once and prints what it measures.
+  - Verified: `--list` shows every named bench (`reactive_hot_reload_rebind` is left as a target:
+    it is a viso-view patch commit). Clippy `--benches` is clean in all five crates, and
+    check-deps passes. Indicative times: layout_10k_dirty 118 µs / 1.58 ms, hit_test_100k 731 ns,
+    state_update_1k 19 µs, startup 228 µs / 1.32 ms, damage_single_label 22 µs/tick,
+    hot_reload small 1.7 ms / large 112 ms.
+- [ ] Follow-ups the new benches found:
+  - `color_picker/paint_tree` costs 356 µs because the tone mesh is rebuilt with per-vertex HSV
+    every paint; cache it or fill it with a shader.
+  - `data_grid/layout` costs 138 µs for 200 cells; check it.
+  - Virtual-list rows with `Length::fill()` seem to take the surface's width rather than the list's
+    (or the list doesn't clip), so a scroll damages the whole surface.
+  - `resolve` calls `path.display()` per comparison, which allocates and is quadratic in the
+    module count.
+  - A small component recompile costs about 1.7 ms of fixed cost (natives, prelude); profile it.
+  - `JsonWriter` can't reuse its buffer, and `RollbackSession::receive` allocates two Vecs a
+    packet.
+  - `DrivenApp` has no damage accessor.
+
+  Verify each with its bench.
 - [x] Hot, warm and cold bytes per node in `viso inspect frame`. Verify that the counter app is
   ≤ 64 hot bytes per node.
   - Built: `NodeStore::memory()` → `NodeMemory {nodes, hot, warm, cold}` over the per-node columns

@@ -15,6 +15,16 @@ rust-version.workspace = true
 # media codecs are out of scope. It must never depend on any framework crate.
 [dependencies]
 
+# Benches only: criterion is external, never in this crate's closure, and
+# does not build for wasm32. The payloads other crates carry are measured in
+# their benches (`viso-dsl`'s `ende_payloads`).
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "codec"
+harness = false
+
 [features]
 default = ["std"]
 # `std::io::Error` from a `DecodeError`.

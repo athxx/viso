@@ -1594,13 +1594,7 @@ identity_generation_check_hashmap_1m     同上（HashMap<NodeId, _> 基线）
 reconcile_keyed_reorder_within_window    crates/ui/benches/large_list.rs
 ```
 
-目标（尚未实现）：
-
-```text
-identity_name_intern_100k
-identity_symbol_build_100k
-identity_symbol_link_100k
-```
+以及 `identity_name_intern_100k`、`identity_symbol_build_100k`、`identity_symbol_link_100k`（`crates/dsl/benches/identity.rs`）、`identity_dense_property_lookup_1m`、`identity_keyed_reconcile_100k`（`crates/ui/benches/identity_scale.rs`）。
 
 重点比较：
 
@@ -2111,15 +2105,17 @@ Ende Binary steady-state encode（buffer capacity 已满足）目标：
 
 Decode 是否零分配取决于目标值是否拥有 String/Vec 等 owned data；对于 borrowed/预分配目标路径，应提供零或接近零分配选项。现有验证：XIP package 校验与遍历零分配（`crates/schema/tests/xip_alloc.rs`），AOT package 加载不按 record 分配（`crates/ui/tests/aot_load_alloc.rs`）。
 
-Benchmark（目标，尚未建立）至少：
+Benchmark：`crates/ende/benches/codec.rs`（只用 ende 自身类型）与 `crates/dsl/benches/ende_payloads.rs`（各 crate 的真实负载）：
 
 ```text
 ende_bin_small_message
 ende_bin_encode_reused_buffer
 ende_bin_decode_owned
 ende_bin_decode_borrowed
+ende_bin_100k_messages
 ende_json_diagnostic_1k
 ende_dev_patch_roundtrip
+ende_hot_reload_patch_roundtrip
 ende_game_packet_roundtrip
 ende_profiler_trace_encode
 ende_aot_package_validate
@@ -4609,44 +4605,25 @@ Dev artifact 与 headless 构建中，任何直接标记的 dirty 都可查询�
 | math | `math_vec2_ops_10m`、`math_mat4_mul_1m`、`math_affine2_transform_points_10m`、`math_rect_hit_test_10m`、`math_aabb_intersection_1m`、`math_transform_chain_100k`、`math_point_bounds_4k_x10k`、`math_segment_lengths_4k_x10k` |
 | behavior 与游戏 | `release_handler_native_vs_vm/{vm,native}/{action,fib,loop}`、`behavior/*`、`game_native`、`game_world`、`incremental_reparse`、`cpu_shader/*` |
 | footprint | 各 profile 的体积、首帧、RSS / footprint、heap、空闲 CPU 与 wakeup，对照 Makepad |
+| layout、hit test、state | `layout_1k_static`、`layout_10k_dirty_{1pct,100pct}`、`hit_test_100k`、`state_update_1_binding`、`state_update_1k_bindings`（`viso-ui`，state 走完整的 `settle_states`） |
+| memory | `memory_10k_nodes`（`viso-ui`：建树的堆字节、每节点字节与 `NodeStore::memory()` 的 hot / warm / cold） |
+| 启动与 damage | `startup_minimal`、`startup_complex_app`（到第一帧上屏）、`damage_single_label_update`、`damage_scroll_list_partial_present`（`viso`，前三个需 `headless`） |
+| hot reload（编译侧） | `hot_reload_small_component`、`hot_reload_large_module`（`viso-dsl`：重编译并规划 patch） |
+| identity | `identity_name_intern_100k/{mint,hit}`、`identity_symbol_build_100k`、`identity_symbol_link_100k`（`viso-dsl`）；`identity_dense_property_lookup_1m`（对照 `identity_property_lookup_hashmap_1m`）、`identity_keyed_reconcile_100k`（`viso-ui`） |
+| ende | `ende_bin_{small_message,encode_reused_buffer,decode_owned,decode_borrowed,100k_messages}`、`ende_json_diagnostic_1k/{write,parse}`（`viso-ende` 的 `codec`）；`ende_profiler_trace_encode`、`ende_aot_package_validate`、`ende_dev_patch_roundtrip`、`ende_hot_reload_patch_roundtrip`、`ende_game_packet_roundtrip`（`viso-dsl` 的 `ende_payloads`，用各 crate 的真实负载）；均打印 bytes/message 与 allocations/message |
+| Tier 4 widget | `calendar`、`date_picker`、`number_field`（含 `step_frame`）、`color_picker`（含 `change_frame`）、`data_grid`（1000×8，含 `scroll_page_frame`）的 `build` / `layout` / `paint_tree` |
 
 目标（尚未实现），仍须补上的场景：
 
 ```text
-layout_1k_static
-layout_10k_dirty_1pct
-layout_10k_dirty_100pct
 list_variable_height_scroll
 text_10k_labels_static
 text_dynamic_1k
 animation_transform_5k
 animation_layout_1k
-hit_test_100k
-state_update_1_binding
-state_update_1k_bindings
-reactive_hot_reload_rebind
-hot_reload_small_component
-hot_reload_large_module
-startup_minimal
-startup_complex_app
-memory_10k_nodes
-
-damage_single_label_update
-damage_scroll_list_partial_present
+reactive_hot_reload_rebind      （提交 patch 改绑定，属 viso-view 侧）
 cpu_raster_glyphs_10k
 gles3_batch_10k_quads
-
-identity_symbol_link_100k
-identity_dense_property_lookup_1m
-identity_keyed_reconcile_100k
-
-ende_bin_small_message
-ende_bin_100k_messages
-ende_bin_encode_reused_buffer
-ende_bin_decode_borrowed
-ende_json_diagnostic_1k
-ende_hot_reload_patch_roundtrip
-ende_profiler_trace_encode
 ```
 
 ### 59.1 CI regression policy
@@ -4693,7 +4670,7 @@ paint bytes/primitive
 gpu bytes/instance
 ```
 
-`NodeStore::memory()` 按 §14.2 分层统计 store 为节点持有的字节（`NodeMemory`）：hot 是每帧/每事件的遍历（hit test、dirty 标记、transform）对每个节点读的列——arena 的 generation 与 links、`bounds`、`reach`、`motion` 的每槽下标、`dirty` 及其 worklist、`flags`；warm 是重做某节点的 pass（layout、style、paint）读的列与 intern 表（`rules_at`/`box_rules`、`placed_at`/`placements`、`layout`、`style`、`measured`、`opacity`、`interaction`、`owner` 等）；cold 是只在事件或工具到达该节点时读的（handlers、semantics、content、text request 等）。每层含每节点列与选用节点的旁表、boxed 值的一个 box，不含这些值自己的堆与 store 按窗口持有的状态。`viso inspect frame` 的 `resources` 以 `nodes` 组报告三层总字节与每节点字节；01-counter 为 hot 63 / warm 233 / cold 156 B/节点（4 节点）。CI 记录典型 tree 的 memory-per-node 趋势（`memory_10k_nodes`）。
+`NodeStore::memory()` 按 §14.2 分层统计 store 为节点持有的字节（`NodeMemory`）：hot 是每帧/每事件的遍历（hit test、dirty 标记、transform）对每个节点读的列——arena 的 generation 与 links、`bounds`、`reach`、`motion` 的每槽下标、`dirty` 及其 worklist、`flags`；warm 是重做某节点的 pass（layout、style、paint）读的列与 intern 表（`rules_at`/`box_rules`、`placed_at`/`placements`、`layout`、`style`、`measured`、`opacity`、`interaction`、`owner` 等）；cold 是只在事件或工具到达该节点时读的（handlers、semantics、content、text request 等）。每层含每节点列与选用节点的旁表、boxed 值的一个 box，不含这些值自己的堆与 store 按窗口持有的状态。`viso inspect frame` 的 `resources` 以 `nodes` 组报告三层总字节与每节点字节；01-counter 为 hot 63 / warm 233 / cold 156 B/节点（4 节点）。CI 记录典型 tree 的 memory-per-node 趋势（`memory_10k_nodes`：10k 盒子节点建树 478 heap B/节点，列 hot 62 / warm 195 / cold 36 B/节点）。
 
 per-node 不设绝对上限，但 Embedded profile 有整机级预算（§50A.5），各 cache 预算由 `MemoryBudget` 统一分配（§50A.4）。NodeLinks 已是 index 链接（五个 `NodeIndex`，20 字节，§14.1）；`hot bytes/node` 不超过一条 64-byte cache line：只在少数节点非零的 scroll / translate / turn 合为一个 `Motion`，放在按槽 `Sparse` 旁表里（每槽 4 字节下标，静止的节点没有条目，回到静止即归还），普通节点 hot 为 63 字节（`a_plain_node_takes_a_cache_line_of_hot_bytes`，counter 的 inspect 测试同样断言 ≤ 64）。
 
