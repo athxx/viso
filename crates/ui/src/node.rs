@@ -264,6 +264,22 @@ impl NodeArena {
     /// The bytes one slot takes: its generation and its links.
     pub const SLOT_BYTES: usize = size_of::<u32>() + size_of::<NodeLinks>();
 
+    /// The bytes it holds: its slots, which every walk reads, and its
+    /// bookkeeping of freed slots and relinked parents, which a structural
+    /// edit does.
+    pub(crate) fn held_bytes(&self) -> (usize, usize) {
+        let slots = self.links.len() * Self::SLOT_BYTES;
+        let blocks: usize = self
+            .blocks
+            .iter()
+            .map(|(_, bases)| size_of::<(u32, Vec<u32>)>() + bases.len() * size_of::<u32>())
+            .sum();
+        let log = self.logged.len() * size_of::<Logged>()
+            + (self.free.len() + self.relinked.len()) * size_of::<u32>()
+            + self.touched.len() * size_of::<(u32, NodeId)>();
+        (slots, log + blocks)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

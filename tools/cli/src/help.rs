@@ -890,7 +890,8 @@ const NOTES: &[(&str, &str)] = &[
         "inspect frame",
         "Counters are those of the window's last frame; batches are its draw calls in\n\
          submission order; resources are the GPU memory, caches and assets the window\n\
-         holds, with their budget where one bounds them.",
+         holds, with their budget where one bounds them, and its nodes' hot, warm and\n\
+         cold bytes with what each node takes.",
     ),
     (
         "inspect query",

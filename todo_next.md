@@ -573,8 +573,17 @@ Rules (as for `todo_features.md`):
   - widget microbenches after Tier 4 (DataGrid, Calendar, ColorPicker, DatePicker, NumberField).
 
   Verify that `cargo bench -- --list` shows each one.
-- [ ] Hot, warm and cold bytes per node in `viso inspect frame`. Verify that the counter app is
+- [x] Hot, warm and cold bytes per node in `viso inspect frame`. Verify that the counter app is
   ≤ 64 hot bytes per node.
+  - Built: `NodeStore::memory()` → `NodeMemory {nodes, hot, warm, cold}` over the per-node columns
+    and opt-in side tables, tiered by what reads them; `inspect frame` reports a `nodes` resource
+    group with bytes and B/node. Scroll, translate and turn (nonzero on few nodes) moved into a
+    `Sparse<Motion>` side table that drops an entry once it rests; `rules_at` and `opacity` are
+    warm (layout and paint read them).
+  - Verified: a plain node is 63 hot bytes (was 94); the 01-counter tree reports hot 63 / warm 233 /
+    cold 156 B/node and the inspect test asserts ≤ 64. A/B on a quiet machine: hover ±2%,
+    animation_tick/1 +0.6 ns, list_100k_scroll −2–4%. viso-ui, widgets and viso lib tests and the
+    scroll/sheet/virtual-list tests pass; clippy is clean.
 
 ## N5 — Rendering, text, input and accessibility
 

@@ -402,40 +402,89 @@ pub type KeyHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 macro_rules! node_columns {
     (@list $cb:ident $($cx:tt)*) => {
         node_columns!(@$cb [$($cx)*]
-            bounds reach rules_at scroll translate turn content row_offset grid_tracks
-            placed_at dirty layout style measured flags opacity handlers key_handlers
-            interaction semantics semantic_state content_payload check_marks
-            text_request owner
+            [bounds reach motion dirty flags]
+            [rules_at content row_offset grid_tracks placed_at layout style measured opacity
+                interaction owner]
+            [handlers key_handlers semantics semantic_state content_payload check_marks
+                text_request]
         )
     };
-    (@each [$store:ident $op:ident $args:tt] $($col:ident)*) => {
-        $($store.$col.$op $args;)*
+    (@each [$store:ident $op:ident $args:tt] $([$($col:ident)*])*) => {
+        $($($store.$col.$op $args;)*)*
     };
-    (@bytes [$store:ident] $($col:ident)*) => {
-        0 $(+ SlotBytes::slot_bytes(&$store.$col))*
+    (@slot_bytes [$store:ident] $([$($col:ident)*])*) => {
+        0 $($(+ SlotBytes::slot_bytes(&$store.$col))*)*
     };
-    (@bytes $store:ident) => {
-        node_columns!(@list bytes $store)
+    (@held [$store:ident] [$($hot:ident)*] [$($warm:ident)*] [$($cold:ident)*]) => {
+        [
+            0 $(+ SlotBytes::held_bytes(&$store.$hot))*,
+            0 $(+ SlotBytes::held_bytes(&$store.$warm))*,
+            0 $(+ SlotBytes::held_bytes(&$store.$cold))*,
+        ]
+    };
+    (@slot_bytes $store:ident) => {
+        node_columns!(@list slot_bytes $store)
+    };
+    (@held $store:ident) => {
+        node_columns!(@list held $store)
     };
     ($store:ident . $op:ident $args:tt) => {
         node_columns!(@list each $store $op $args)
     };
 }
 
-/// The bytes one slot of a column takes.
+/// The bytes a column takes: one slot of it, and all of it.
 trait SlotBytes {
     fn slot_bytes(&self) -> usize;
+    fn held_bytes(&self) -> usize;
 }
 
 impl<T> SlotBytes for Vec<T> {
     fn slot_bytes(&self) -> usize {
         size_of::<T>()
     }
+
+    fn held_bytes(&self) -> usize {
+        self.len() * size_of::<T>()
+    }
 }
 
 impl<T> SlotBytes for Sparse<T> {
     fn slot_bytes(&self) -> usize {
         Sparse::<T>::SLOT_BYTES
+    }
+
+    fn held_bytes(&self) -> usize {
+        Sparse::held_bytes(self)
+    }
+}
+
+/// The bytes the boxes of a boxed column hold.
+fn boxed_bytes<T>(column: &[Option<Box<T>>]) -> usize {
+    column.iter().filter(|value| value.is_some()).count() * size_of::<T>()
+}
+
+/// What a store holds for its nodes, in bytes, by how often a frame reads
+/// it: `hot`, what the walks of every frame and event — hit testing, dirty
+/// marking, transforms — read of every node; `warm`, what a pass redoing a
+/// node reads — layout, style, paint; `cold`, what only the node an event
+/// or a tool reaches is read for — handlers, semantics, content. Each
+/// counts the per-node columns and the side tables of the nodes that opt
+/// in, one box of a boxed value included, not the heap those values own
+/// nor what the store holds once for its window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NodeMemory {
+    /// The live nodes.
+    pub nodes: u32,
+    pub hot: u64,
+    pub warm: u64,
+    pub cold: u64,
+}
+
+impl NodeMemory {
+    /// `bytes` shared out over the nodes, rounded up.
+    pub fn per_node(&self, bytes: u64) -> u64 {
+        bytes.div_ceil(u64::from(self.nodes.max(1)))
     }
 }
 
@@ -565,6 +614,34 @@ impl NodeFlags {
     }
 }
 
+/// How a node moves after layout without a relayout, kept only for the nodes
+/// that do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Motion {
+    /// A scroll viewport's offset, nonzero only on [`LayoutInput::Scroll`]
+    /// nodes: it shifts the viewport's content subtree by `-scroll`, clamped
+    /// to the scrollable range.
+    scroll: Vec2,
+    /// A world-space translate of the node itself and its subtree, never
+    /// clamped: a slide-in starts fully off-screen. Set through
+    /// [`NodeStore::set_translate`] / [`NodeStore::translate_by`].
+    translate: Vec2,
+    /// How the node scales and rotates about its transform origin.
+    turn: crate::transform::Turn,
+}
+
+impl Motion {
+    /// A node that does not move.
+    const REST: Motion = Motion {
+        scroll: Vec2::ZERO,
+        translate: Vec2::ZERO,
+        turn: crate::transform::Turn::NONE,
+    };
+}
+
+/// What a resting node's motion reads as.
+static REST: Motion = Motion::REST;
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -584,7 +661,7 @@ pub struct NodeStore {
     /// translates and by overlay flips; hit testing prunes on it and a fade
     /// composites over it.
     reach: Vec<Rect>,
-    /// Hot: each node's slot in `box_rules`, [`NO_RULES`] for a node with
+    /// Warm: each node's slot in `box_rules`, [`NO_RULES`] for a node with
     /// none — almost every node, so layout reads one word to know.
     rules_at: Vec<u32>,
     /// Cold: the [`BoxRules`] of the nodes that have them, each with the
@@ -594,23 +671,11 @@ pub struct NodeStore {
     free_rules: Vec<u32>,
     /// How many nodes have rules: while none does, layout reads no slot.
     ruled: u32,
-    /// Hot: per-node scroll offset, nonzero only on [`LayoutInput::Scroll`]
-    /// nodes; default `(0,0)`. A scroll node shifts its content subtree's world
-    /// rect by `-scroll` without a relayout (TRANSFORM-class, not LAYOUT).
-    scroll: Vec<Vec2>,
-    /// Hot: per-node world-space translate, nonzero only on nodes being moved by
-    /// a transform-only animation or an edge-anchored slide (a sheet drawer);
-    /// default `(0,0)`. Unlike `scroll` — which shifts only the *content subtree*
-    /// and is clamped to the scrollable range — a translate shifts the *node
-    /// itself* (its own world rect *and* its subtree) and is never clamped: a
-    /// slide-in starts fully off-screen. TRANSFORM-class, not LAYOUT: moving a
-    /// node never re-measures or re-lays it out. Set through
-    /// [`set_translate`](Self::set_translate) / [`translate_by`](Self::translate_by).
-    translate: Vec<Vec2>,
-    /// Hot: how each node scales and rotates about its transform origin after
-    /// layout, [`Turn::NONE`](crate::transform::Turn::NONE) on almost every
-    /// node. TRANSFORM-class like `translate`.
-    turn: Vec<crate::transform::Turn>,
+    /// Hot: how the few nodes that move without a relayout move — a scroll
+    /// viewport's offset, a slid or animated node's translate and turn — and
+    /// nothing for the rest, so a walk reads one word of a resting node. See
+    /// [`Motion`].
+    motion: Sparse<Motion>,
     /// A turned node's box moved in a layout: its pivot did, so the transform
     /// roots need recomputing.
     turn_moved: bool,
@@ -665,8 +730,8 @@ pub struct NodeStore {
     /// Hot: each node's yes/no properties, one byte a node (see
     /// [`NodeFlags`]).
     flags: Vec<NodeFlags>,
-    /// Hot: each node's opacity, applied to it and its subtree as one layer.
-    /// Default `1.0`; `0.0` paints nothing.
+    /// Warm: each node's opacity, applied to it and its subtree as one layer,
+    /// read by paint. Default `1.0`; `0.0` paints nothing.
     opacity: Vec<f32>,
     /// Cold: per-node pointer handler, sparse. Read only when a node lands on
     /// a hit's dispatch chain, so it lives off the hot columns.
@@ -1183,7 +1248,32 @@ impl NodeStore {
     /// the arena's included; what a node opts into on top (rules,
     /// placements, handlers' boxes, side tables) is not counted.
     pub fn bytes_per_node(&self) -> usize {
-        NodeArena::SLOT_BYTES + node_columns!(@bytes self)
+        NodeArena::SLOT_BYTES + node_columns!(@slot_bytes self)
+    }
+
+    /// What the store holds for its nodes, hot, warm and cold.
+    pub fn memory(&self) -> NodeMemory {
+        let [hot, warm, cold] = node_columns!(@held self);
+        let (slots, log) = self.arena.held_bytes();
+        let hot = hot + slots + self.dirty_lists.held_bytes();
+        let warm = warm
+            + log
+            + self.settled.held_bytes()
+            + self.row_lane.held_bytes()
+            + boxed_bytes(&self.grid_tracks)
+            + self.box_rules.len() * size_of::<(BoxRules, Vec2)>()
+            + self.placements.len() * size_of::<Placement>()
+            + (self.free_rules.len() + self.free_placements.len()) * size_of::<u32>();
+        let cold = cold
+            + boxed_bytes(&self.content_payload)
+            + boxed_bytes(&self.text_request)
+            + self.control_parts.held_bytes();
+        NodeMemory {
+            nodes: self.arena.live_count() as u32,
+            hot: hot as u64,
+            warm: warm as u64,
+            cold: cold as u64,
+        }
     }
 
     /// The arena backing the tree.
@@ -1285,11 +1375,12 @@ impl NodeStore {
     /// subtree.
     pub(crate) fn reach_in_parent(&self, i: usize) -> Rect {
         let reach = self.reach[i];
-        let translate = self.translate[i];
+        let motion = self.motion(i);
+        let translate = motion.translate;
         if reach.is_empty() {
             return reach;
         }
-        if self.turn[i].turns()
+        if motion.turn.turns()
             && let Some(id) = self.arena.live_id(i as u32)
         {
             return reach
@@ -1415,11 +1506,12 @@ impl NodeStore {
         while let Some(i) = at.get_some() {
             // Grouped as `transform_above` composes, so the two agree to the bit
             // while nothing is turned.
-            let scrolled = self.scroll[i.slot()] + self.pull_shift_at(i.slot() as u32);
+            let motion = self.motion(i.slot());
+            let scrolled = motion.scroll + self.pull_shift_at(i.slot() as u32);
             if scrolled == Vec2::ZERO || !self.flags[from.slot()].has(NodeFlags::CHROME) {
-                shift += self.translate[i.slot()] - scrolled;
+                shift += motion.translate - scrolled;
             } else {
-                shift += self.translate[i.slot()];
+                shift += motion.translate;
             }
             from = at;
             at = self.arena.parent_of(at);
@@ -1427,19 +1519,35 @@ impl NodeStore {
         shift
     }
 
+    /// How slot `i` moves after layout: [`Motion::REST`] for a node that does
+    /// not.
+    #[inline(always)]
+    fn motion(&self, i: usize) -> &Motion {
+        self.motion.get(i).unwrap_or(&REST)
+    }
+
+    /// Changes how slot `i` moves by `edit`, dropping its entry once it rests.
+    fn move_slot(&mut self, i: usize, edit: impl FnOnce(&mut Motion)) {
+        let mut motion = *self.motion(i);
+        edit(&mut motion);
+        self.motion
+            .set(i, (motion != Motion::REST).then_some(motion));
+    }
+
     /// The displacement a node applies to itself and its subtree: its
     /// translate.
     #[inline]
     pub fn self_shift(&self, id: NodeId) -> Vec2 {
-        self.translate[self.arena.slot(id)]
+        self.motion(self.arena.slot(id)).translate
     }
 
     /// The affine a node applies to itself and its subtree, from its layout
     /// space: its turn about its origin, then its translate.
     pub fn self_transform(&self, id: NodeId) -> Affine2 {
         let i = self.arena.slot(id);
-        let t = self.translate[i];
-        let turn = self.turn[i];
+        let Motion {
+            translate: t, turn, ..
+        } = *self.motion(i);
         if !turn.turns() {
             return Affine2::translate(t.x, t.y);
         }
@@ -1491,7 +1599,7 @@ impl NodeStore {
     /// A node's turn: its scale and rotation about its transform origin.
     #[inline]
     pub fn turn(&self, id: NodeId) -> crate::transform::Turn {
-        self.turn[self.arena.slot(id)]
+        self.motion(self.arena.slot(id)).turn
     }
 
     /// Turns a node: scales and rotates it and its subtree about its origin
@@ -1543,7 +1651,8 @@ impl NodeStore {
         edit: impl FnOnce(crate::transform::Turn) -> crate::transform::Turn,
     ) {
         let i = self.arena.slot(id);
-        let mut model = self.turn[i];
+        let shown = self.motion(i).turn;
+        let mut model = shown;
         if let LookValue::Scale(scale) = self.shown(id, &LookValue::Scale(0.0)) {
             model.scale = scale;
         }
@@ -1553,10 +1662,10 @@ impl NodeStore {
         let model = edit(model);
         let mut turn = model;
         if self.hold(id, LookValue::Scale(model.scale)) {
-            turn.scale = self.turn[i].scale;
+            turn.scale = shown.scale;
         }
         if self.hold(id, LookValue::Rotation(model.rotation)) {
-            turn.rotation = self.turn[i].rotation;
+            turn.rotation = shown.rotation;
         }
         self.show_turn(id, turn);
     }
@@ -1564,11 +1673,11 @@ impl NodeStore {
     /// Shows `turn` as node `id`'s. `id` is live.
     fn show_turn(&mut self, id: NodeId, turn: crate::transform::Turn) {
         let i = self.arena.slot(id);
-        if self.turn[i] == turn {
+        if self.motion(i).turn == turn {
             return;
         }
         let was = self.reach_in_parent(i);
-        self.turn[i] = turn;
+        self.move_slot(i, |m| m.turn = turn);
         self.lift_reach(id, was);
         self.mark_moved(id);
     }
@@ -1583,7 +1692,7 @@ impl NodeStore {
     /// scroll, and a bounced pull past its end.
     #[inline]
     pub fn content_shift(&self, id: NodeId) -> Vec2 {
-        -self.scroll[self.arena.slot(id)] - self.pull_shift_at(id.index())
+        -self.motion(self.arena.slot(id)).scroll - self.pull_shift_at(id.index())
     }
 
     /// What a scroll viewport applies to its content: its
@@ -1656,14 +1765,14 @@ impl NodeStore {
     /// A node's scroll offset (nonzero only on scroll viewports).
     #[inline]
     pub fn scroll(&self, id: NodeId) -> Vec2 {
-        self.scroll[self.arena.slot(id)]
+        self.motion(self.arena.slot(id)).scroll
     }
 
     /// A node's world-space translate (nonzero only on nodes being slid/animated).
     /// See [`set_translate`](Self::set_translate).
     #[inline]
     pub fn translate(&self, id: NodeId) -> Vec2 {
-        self.translate[self.arena.slot(id)]
+        self.motion(self.arena.slot(id)).translate
     }
 
     /// A scroll viewport's content extent (the laid-out size of its content).
@@ -2801,7 +2910,7 @@ impl NodeStore {
             self.scroll_span(id, Axis::Row),
             self.scroll_span(id, Axis::Column),
         );
-        let prev = self.scroll[i];
+        let prev = self.motion(i).scroll;
         let next = Vec2 {
             x: (prev.x + delta.x).clamp(x0, x1),
             y: (prev.y + delta.y).clamp(y0, y1),
@@ -2809,7 +2918,7 @@ impl NodeStore {
         if next == prev {
             return;
         }
-        self.scroll[i] = next;
+        self.move_slot(i, |m| m.scroll = next);
         self.mark_dirty(id, DirtyClass::TRANSFORM);
     }
 
@@ -2837,10 +2946,10 @@ impl NodeStore {
             x: offset.x.clamp(x0, x1),
             y: offset.y.clamp(y0, y1),
         };
-        if next == self.scroll[i] {
+        if next == self.motion(i).scroll {
             return;
         }
-        self.scroll[i] = next;
+        self.move_slot(i, |m| m.scroll = next);
         self.mark_dirty(id, DirtyClass::TRANSFORM);
     }
 
@@ -2860,15 +2969,16 @@ impl NodeStore {
         } else {
             distance
         };
-        let mut next = self.scroll[i];
+        let prev = self.motion(i).scroll;
+        let mut next = prev;
         match axis {
             Axis::Row => next.x = along,
             Axis::Column => next.y = along,
         }
-        if next == self.scroll[i] {
+        if next == prev {
             return;
         }
-        self.scroll[i] = next;
+        self.move_slot(i, |m| m.scroll = next);
         self.mark_dirty(id, DirtyClass::TRANSFORM);
     }
 
@@ -3023,11 +3133,11 @@ impl NodeStore {
     /// Writes `offset` as node `id`'s whole translate. `id` is live.
     pub(crate) fn put_translate(&mut self, id: NodeId, offset: Vec2) {
         let i = self.arena.slot(id);
-        if offset == self.translate[i] {
+        if offset == self.motion(i).translate {
             return;
         }
         let was = self.reach_in_parent(i);
-        self.translate[i] = offset;
+        self.move_slot(i, |m| m.translate = offset);
         self.lift_reach(id, was);
         self.mark_moved(id);
     }
@@ -4658,7 +4768,9 @@ impl NodeStore {
                 Some(Content::Text { color, .. }) => LookValue::TextColor(*color),
                 _ => *of,
             },
-            LookValue::Translate(_) => LookValue::Translate(self.translate[i] - self.pin_of(id)),
+            LookValue::Translate(_) => {
+                LookValue::Translate(self.motion(i).translate - self.pin_of(id))
+            }
             LookValue::Width(_) => match self.layout[i].size().width {
                 Length::Fixed(v) => LookValue::Width(v),
                 _ => *of,
@@ -4667,8 +4779,8 @@ impl NodeStore {
                 Length::Fixed(v) => LookValue::Height(v),
                 _ => *of,
             },
-            LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
-            LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
+            LookValue::Scale(_) => LookValue::Scale(self.motion(i).turn.scale),
+            LookValue::Rotation(_) => LookValue::Rotation(self.motion(i).turn.rotation),
             LookValue::Check(_) => match self.check_marks.copied(i) {
                 Some((_, shown)) => LookValue::Check(shown),
                 None => *of,
@@ -5143,9 +5255,11 @@ impl NodeStore {
     pub(crate) fn presented(&self, id: NodeId, of: &LookValue) -> LookValue {
         let i = self.arena.slot(id);
         match *of {
-            LookValue::Translate(_) => LookValue::Translate(self.translate[i] - self.pin_of(id)),
-            LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
-            LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
+            LookValue::Translate(_) => {
+                LookValue::Translate(self.motion(i).translate - self.pin_of(id))
+            }
+            LookValue::Scale(_) => LookValue::Scale(self.motion(i).turn.scale),
+            LookValue::Rotation(_) => LookValue::Rotation(self.motion(i).turn.rotation),
             LookValue::Opacity(_) => LookValue::Opacity(self.opacity[i]),
             _ => *of,
         }
@@ -5154,7 +5268,7 @@ impl NodeStore {
     /// Shows `value` on node `id`, past any animation's hold: the presented
     /// values an animation moves. `id` is live.
     pub(crate) fn show_look(&mut self, id: NodeId, value: LookValue) {
-        let turn = self.turn[self.arena.slot(id)];
+        let turn = self.motion(self.arena.slot(id)).turn;
         match value {
             LookValue::Translate(offset) => self.show_translate(id, offset),
             LookValue::Opacity(opacity) => self.show_opacity(id, opacity),
@@ -5858,9 +5972,7 @@ impl NodeStore {
         self.bounds[i] = Rect::ZERO;
         self.reach[i] = Rect::ZERO;
         self.drop_rules(i);
-        self.scroll[i] = Vec2::ZERO;
-        self.translate[i] = Vec2::ZERO;
-        self.turn[i] = crate::transform::Turn::NONE;
+        self.motion.remove(i);
         self.content[i] = Vec2::ZERO;
         self.row_offset[i] = f32::NAN;
         if let Some(lane) = self.row_lane.get_mut(i) {
@@ -5929,9 +6041,7 @@ impl NodeStore {
             self.bounds.push(Rect::ZERO);
             self.reach.push(Rect::ZERO);
             self.rules_at.push(NO_RULES);
-            self.scroll.push(Vec2::ZERO);
-            self.translate.push(Vec2::ZERO);
-            self.turn.push(crate::transform::Turn::NONE);
+            self.motion.push_empty();
             self.content.push(Vec2::ZERO);
             self.row_offset.push(f32::NAN);
             self.grid_tracks.push(None);
@@ -6730,7 +6840,7 @@ impl LayoutTree for NodeStore {
             return;
         }
         *slot = r;
-        self.turn_moved |= self.turn[index as usize].turns();
+        self.turn_moved |= self.motion(index as usize).turn.turns();
         self.note_moved(index);
         // A segmented control's thumb and hairlines sit on its segments'
         // boxes: a segment that moves repaints them.
@@ -6754,7 +6864,7 @@ impl LayoutTree for NodeStore {
         let Some(id) = self.arena.live_id(index) else {
             return;
         };
-        let mut offset = self.scroll[i];
+        let mut offset = self.motion(i).scroll;
         if offset == Vec2::ZERO {
             return;
         }
@@ -6769,8 +6879,8 @@ impl LayoutTree for NodeStore {
             x: offset.x.clamp(x0, x1),
             y: offset.y.clamp(y0, y1),
         };
-        if next != self.scroll[i] {
-            self.scroll[i] = next;
+        if next != self.motion(i).scroll {
+            self.move_slot(i, |m| m.scroll = next);
             self.mark_dirty(id, DirtyClass::TRANSFORM);
         }
     }
@@ -9752,7 +9862,40 @@ mod tests {
         );
         // A column that grows, or a new one, moves this: weigh it against
         // every node paying for it.
-        assert_eq!(store.bytes_per_node(), 314);
+        assert_eq!(store.bytes_per_node(), 290);
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_plain_node_takes_a_cache_line_of_hot_bytes() {
+        let mut store = NodeStore::new();
+        let leaf = || LayoutInput::Leaf {
+            size: Sizing::fixed(10.0, 10.0),
+        };
+        let root = store.alloc(leaf(), BoxStyle::NONE);
+        let mut children = Vec::new();
+        for _ in 0..99 {
+            let child = store.alloc(leaf(), BoxStyle::NONE);
+            store.arena_append_child(root, child);
+            store.mark_dirty(child, DirtyClass::PAINT);
+            children.push(child);
+        }
+        store.clear_dirty();
+        let memory = store.memory();
+        assert_eq!(memory.nodes, 100);
+        // Its generation and links, bounds and reach, a word of motion, its
+        // dirty classes twice — what it holds and what it is listed under —
+        // and its flags.
+        assert_eq!(memory.per_node(memory.hot), 63);
+        assert!(memory.per_node(memory.hot) <= 64, "one cache line");
+
+        // A node that moves holds its motion beside the column, and gives it
+        // back once it rests.
+        store.set_translate(children[0], Vec2 { x: 4.0, y: 0.0 });
+        assert!(store.memory().hot > memory.hot);
+        store.set_translate(children[0], Vec2::ZERO);
+        store.clear_dirty();
+        assert_eq!(store.memory().hot, memory.hot);
     }
 
     #[test]
@@ -9775,7 +9918,7 @@ mod tests {
         // Every parallel array grew in lockstep with the arena.
         assert_eq!(store.bounds.len(), 2);
         assert_eq!(store.flags.len(), 2);
-        assert_eq!(store.scroll.len(), 2);
+        assert_eq!(store.opacity.len(), 2);
         assert_eq!(store.content.len(), 2);
         assert_eq!(store.layout.len(), 2);
         assert_eq!(store.style.len(), 2);

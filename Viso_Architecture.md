@@ -4693,9 +4693,9 @@ paint bytes/primitive
 gpu bytes/instance
 ```
 
-CI 记录典型 tree 的 memory-per-node 趋势（目标（尚未实现）：runtime 尚无按 hot / warm / cold 统计的每节点字节数，`memory_10k_nodes` 也未建）。
+`NodeStore::memory()` 按 §14.2 分层统计 store 为节点持有的字节（`NodeMemory`）：hot 是每帧/每事件的遍历（hit test、dirty 标记、transform）对每个节点读的列——arena 的 generation 与 links、`bounds`、`reach`、`motion` 的每槽下标、`dirty` 及其 worklist、`flags`；warm 是重做某节点的 pass（layout、style、paint）读的列与 intern 表（`rules_at`/`box_rules`、`placed_at`/`placements`、`layout`、`style`、`measured`、`opacity`、`interaction`、`owner` 等）；cold 是只在事件或工具到达该节点时读的（handlers、semantics、content、text request 等）。每层含每节点列与选用节点的旁表、boxed 值的一个 box，不含这些值自己的堆与 store 按窗口持有的状态。`viso inspect frame` 的 `resources` 以 `nodes` 组报告三层总字节与每节点字节；01-counter 为 hot 63 / warm 233 / cold 156 B/节点（4 节点）。CI 记录典型 tree 的 memory-per-node 趋势（`memory_10k_nodes`）。
 
-per-node 不设绝对上限，但 Embedded profile 有整机级预算（§50A.5），各 cache 预算由 `MemoryBudget` 统一分配（§50A.4）。NodeLinks 已是 index 链接（五个 `NodeIndex`，20 字节，§14.1）；`hot bytes/node` 的目标是不超过一条 64-byte cache line（尚无测量）。
+per-node 不设绝对上限，但 Embedded profile 有整机级预算（§50A.5），各 cache 预算由 `MemoryBudget` 统一分配（§50A.4）。NodeLinks 已是 index 链接（五个 `NodeIndex`，20 字节，§14.1）；`hot bytes/node` 不超过一条 64-byte cache line：只在少数节点非零的 scroll / translate / turn 合为一个 `Motion`，放在按槽 `Sparse` 旁表里（每槽 4 字节下标，静止的节点没有条目，回到静止即归还），普通节点 hot 为 63 字节（`a_plain_node_takes_a_cache_line_of_hot_bytes`，counter 的 inspect 测试同样断言 ≤ 64）。
 
 ---
 

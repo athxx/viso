@@ -245,6 +245,22 @@ pub(crate) fn frame(ws: &WindowState, window: u32, assets: &Assets) -> FrameDeta
         Some(decoded.upload_bytes),
         None,
     );
+    // What the nodes hold, by how often a frame reads it.
+    let memory = ws.store.memory();
+    for (name, bytes) in [
+        ("hot", memory.hot),
+        ("warm", memory.warm),
+        ("cold", memory.cold),
+    ] {
+        resources.push(ResourceDetail {
+            group: "nodes".into(),
+            name: name.to_owned(),
+            count: u64::from(memory.nodes),
+            bytes: Some(bytes),
+            budget: None,
+            note: Some(format!("{} B/node", memory.per_node(bytes))),
+        });
+    }
     // What the session's memory budget limits, and how close this window is:
     // the heap is the process's.
     let budget = crate::footprint::budget();
@@ -526,4 +542,81 @@ pub(crate) fn input_name(
             (phase.to_owned(), Some([d.x / scale, d.y / scale]))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use viso_ui::{BuildCx, NodeId};
+
+    use crate::assets::Assets;
+    use viso_platform::WindowId;
+
+    use crate::driver::WindowState;
+    use crate::prelude::*;
+
+    /// The tree `01-counter` builds: a row holding a button and the bar its
+    /// count binds.
+    fn counter(cx: &mut BuildCx<'_>) -> NodeId {
+        let count = cx.state_of(0);
+        let row = FlexStyle {
+            axis: Axis::Row,
+            gap: 12.0,
+            padding: Inset::all(16.0),
+            size: Sizing::fill(),
+            ..Default::default()
+        };
+        cx.flex(row, |cx| {
+            cx.component(
+                &button("Count")
+                    .size(Sizing::fixed(96.0, 48.0))
+                    .on_click(move |ev| {
+                        count.update(ev, |n| n + 1);
+                    }),
+            );
+            let bar = cx.leaf(LeafStyle {
+                size: Sizing::fixed(160.0, 24.0),
+                style: BoxStyle::NONE,
+            });
+            let bar = cx.semantics(bar, Semantics::role(Role::Label).with_label("Count"));
+            cx.bind(count, bar, DirtyClass::SEMANTICS);
+            cx.bind(count, bar, DirtyClass::PAINT);
+        })
+        .id()
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_frame_tells_the_counters_nodes_hot_warm_and_cold_bytes() {
+        let mut ws = WindowState::new(WindowId(1));
+        let root = {
+            let mut cx = BuildCx::with_reactive(
+                &mut ws.store,
+                &mut ws.states,
+                &mut ws.bindings,
+                &mut ws.virtual_lists,
+                &mut ws.text_edits,
+                &mut ws.projectors,
+            );
+            counter(&mut cx)
+        };
+        ws.root = Some(root);
+        ws.store.clear_dirty();
+        let frame = super::frame(&ws, 0, &Assets::default());
+        let tier = |name: &str| {
+            frame
+                .resources
+                .iter()
+                .find(|r| r.group == "nodes" && r.name == name)
+                .unwrap_or_else(|| panic!("no {name} bytes: {:?}", frame.resources))
+        };
+        let nodes = ws.store.arena().live_count() as u64;
+        for name in ["hot", "warm", "cold"] {
+            let tier = tier(name);
+            assert_eq!(tier.count, nodes);
+            let per_node = tier.bytes.expect("bytes").div_ceil(nodes);
+            assert_eq!(tier.note.as_deref(), Some(&*format!("{per_node} B/node")));
+        }
+        let hot = tier("hot").bytes.expect("bytes").div_ceil(nodes);
+        assert!(hot <= 64, "{hot} hot bytes a node, past a cache line");
+    }
 }

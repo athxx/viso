@@ -88,6 +88,11 @@ impl<T> Sparse<T> {
         }
     }
 
+    /// The bytes it holds: a word a slot and the values with their slots.
+    pub(crate) fn held_bytes(&self) -> usize {
+        self.at.len() * size_of::<u32>() + self.entries.len() * size_of::<(u32, T)>()
+    }
+
     /// How many slots hold a value.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
@@ -131,6 +136,11 @@ impl SlotBits {
     /// Room for `slots` slots, so setting any of them never reallocates.
     pub(crate) fn with_capacity(slots: usize) -> Self {
         SlotBits(Vec::with_capacity(slots.div_ceil(64)))
+    }
+
+    /// The bytes it holds.
+    pub(crate) fn held_bytes(&self) -> usize {
+        self.0.len() * size_of::<u64>()
     }
 
     #[inline(always)]

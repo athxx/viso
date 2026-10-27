@@ -126,8 +126,8 @@ pub use check_mark::{CheckMark, CheckShape};
 pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds};
 pub use component::{
     AbsoluteStyle, AnyNode, BuildCx, Component, FlexStyle, FrameRecompute, Handle, LeafStyle,
-    Mount, MountedView, NodeStore, Painted, PointerHandler, ScrollBehavior, ScrollRequest,
-    ScrollStyle, StackStyle, VirtualListStyle,
+    Mount, MountedView, NodeMemory, NodeStore, Painted, PointerHandler, ScrollBehavior,
+    ScrollRequest, ScrollStyle, StackStyle, VirtualListStyle,
 };
 pub use content::{BrushImage, Content, InkRun, LinkBox, TextInk, TextMark, TextRequest};
 pub use context::{EventCx, FocusChange, StateWriter};

@@ -30,6 +30,13 @@ pub struct DirtyLists {
 }
 
 impl DirtyLists {
+    /// The bytes it holds: the classes each slot is listed under and the
+    /// lists.
+    pub(crate) fn held_bytes(&self) -> usize {
+        let listed: usize = self.by_class.iter().map(Vec::len).sum::<usize>() + self.marked.len();
+        self.listed.len() * size_of::<DirtyClass>() + listed * size_of::<u32>()
+    }
+
     /// Record that slot `index` gained `added`. A class the slot is already
     /// listed under appends nothing.
     #[inline]
