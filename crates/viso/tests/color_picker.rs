@@ -207,12 +207,20 @@ fn near(a: f32, b: f32) -> bool {
     (a - b).abs() < 2e-3
 }
 
+/// The square picker's parts in `app`: each run builds its own tree, so a
+/// run's nodes are found in it.
+fn square(app: &DrivenApp<PickerApp>) -> Parts {
+    parts(app.store(), app.root().unwrap(), 0)
+}
+
+/// The wheel picker's parts in `app`.
+fn wheel(app: &DrivenApp<PickerApp>) -> Parts {
+    parts(app.store(), app.root().unwrap(), 1)
+}
+
 fn layout() -> (Parts, Parts, DrivenApp<PickerApp>) {
     let app = run(&[]);
-    let root = app.root().unwrap();
-    let square = parts(app.store(), root, 0);
-    let wheel = parts(app.store(), root, 1);
-    (square, wheel, app)
+    (square(&app), wheel(&app), app)
 }
 
 #[test]
@@ -227,6 +235,7 @@ fn a_press_on_the_square_picks_its_tone_and_a_drag_carries_on() {
     let a = tone_at(store, p.plane, 0.75, 0.25);
     let b = tone_at(store, p.plane, 0.25, 0.9);
     let app = run(&[press(a)]);
+    let p = square(&app);
     let got = hsv(app.store(), p.plane);
     assert!(near(got.s, 0.75) && near(got.v, 0.25), "{got:?}");
     assert!(near(got.h, 1.0 / 3.0), "the hue holds");
@@ -235,6 +244,7 @@ fn a_press_on_the_square_picks_its_tone_and_a_drag_carries_on() {
     let want = Hsv::new(1.0 / 3.0, got.s, got.v).to_rgba(1.0);
     assert_eq!(colour, [want]);
     let app = run(&[press(a), drag(b), drag((9000.0, -9000.0)), release(b)]);
+    let p = square(&app);
     let got = hsv(app.store(), p.plane);
     assert_eq!(
         (got.s, got.v),
@@ -254,6 +264,7 @@ fn the_bars_pick_hue_and_opacity_and_the_arrows_step_the_focused_part() {
     let hue = at(store, p.bars[0], 0.5, 0.5);
     let alpha = at(store, p.bars[1], 0.5, 0.5);
     let app = run(&[click(hue), click(alpha)]);
+    let p = square(&app);
     let store = app.store();
     let got = hsv(store, p.plane);
     assert!(near(got.h, 0.5), "{got:?}");
@@ -267,6 +278,7 @@ fn the_bars_pick_hue_and_opacity_and_the_arrows_step_the_focused_part() {
     // The square's arrows step saturation across and brightness up.
     let tone = tone_at(store, p.plane, 0.5, 0.5);
     let app = run(&[click(tone), key(Key::Right), key(Key::Up)]);
+    let p = square(&app);
     let got = hsv(app.store(), p.plane);
     assert!(near(got.s, 0.51) && near(got.v, 0.51), "{got:?}");
     assert_eq!(
@@ -295,6 +307,7 @@ fn a_wheel_picks_its_hue_round_the_ring_and_steps_it_with_the_arrows() {
     let ring = r.w.min(r.h) * 0.43;
     // A quarter round, at the right.
     let app = run(&[click((cx + ring, cy)), key(Key::Right)]);
+    let w = wheel(&app);
     let got = hsv(app.store(), w.plane);
     assert!(near(got.h, 0.26), "{got:?}");
     assert_eq!(app.store().focused(), Some(w.stops[0]));
@@ -304,6 +317,7 @@ fn a_wheel_picks_its_hue_round_the_ring_and_steps_it_with_the_arrows() {
     );
     // Its square sits within the ring.
     let app = run(&[click((cx, cy))]);
+    let w = wheel(&app);
     let got = hsv(app.store(), w.plane);
     assert!(near(got.s, 0.5) && near(got.v, 0.5), "{got:?}");
     assert_eq!(app.store().focused(), Some(w.stops[1]));
@@ -321,6 +335,7 @@ fn typed_hex_sets_the_colour_and_settles_to_its_full_form() {
     assert!(heard().is_empty(), "a short form waits until it settles");
     steps.push(key(Key::Enter));
     let app = run(&steps);
+    let p = square(&app);
     assert_eq!(
         app.focused_text(),
         Some("#FF0000"),
@@ -336,6 +351,7 @@ fn typed_hex_sets_the_colour_and_settles_to_its_full_form() {
     steps.extend((0..9).map(|_| key(Key::Backspace)));
     steps.push(typed("00000080"));
     let app = run(&steps);
+    let p = square(&app);
     assert_eq!(
         app.focused_text(),
         Some("00000080"),
@@ -354,6 +370,7 @@ fn dragging_to_black_and_back_keeps_the_hue() {
     let black = tone_at(store, p.plane, 0.6, 0.0);
     let back = tone_at(store, p.plane, 0.6, 0.7);
     let app = run(&[press(black), drag(back), release(back)]);
+    let p = square(&app);
     let got = hsv(app.store(), p.plane);
     assert!(near(got.h, 1.0 / 3.0), "{got:?}");
     let colours = heard();

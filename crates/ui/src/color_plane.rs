@@ -29,11 +29,13 @@
 //! colour bars of a slider ([`TrackPaint`](crate::slider::TrackPaint))
 //! included.
 
+use std::cell::RefCell;
 use std::f32::consts::{PI, TAU};
 
 use viso_math::{linear_to_srgb, srgb_to_linear};
 use viso_render::{
-    AnalyticEllipse, AnalyticRRect, Border, Corners, Mesh, MeshVertex, Primitive, Rect, Rgba,
+    AnalyticEllipse, AnalyticRRect, Border, Corners, Mesh, MeshPlace, MeshVertex, Primitive, Rect,
+    Rgba,
 };
 
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
@@ -346,7 +348,10 @@ impl ColorPlane {
             }
             PlaneShape::Wheel => {
                 let lay = self.lay(rect);
-                out.push(Primitive::Mesh(ring_mesh(lay.centre, lay.outer, lay.inner)));
+                let ring = MeshKey::new(MeshKind::Ring, &[lay.outer, lay.inner]);
+                out.push(Primitive::Mesh(shared_mesh(ring, lay.centre, || {
+                    ring_mesh(Vec2::ZERO, lay.outer, lay.inner)
+                })));
                 self.paint_tone(lay.tone, INNER_RADIUS, out);
                 let (sin, cos) = (self.hsv.h * TAU).sin_cos();
                 let mid = (lay.outer + lay.inner) * 0.5;
@@ -364,13 +369,16 @@ impl ColorPlane {
             return;
         }
         let h = self.hsv.h;
-        let color = |x: f32, y: f32| Hsv::new(h, x / tone.w, 1.0 - y / tone.h).to_rgba(1.0);
-        out.push(Primitive::Mesh(rounded_mesh(
-            tone,
-            radius,
-            [TONE_CELLS, TONE_CELLS],
-            Shade::Smooth(&color),
-        )));
+        let key = MeshKey::new(MeshKind::Tone, &[tone.w, tone.h, radius, h]);
+        out.push(Primitive::Mesh(shared_mesh(key, origin(tone), || {
+            let color = |x: f32, y: f32| Hsv::new(h, x / tone.w, 1.0 - y / tone.h).to_rgba(1.0);
+            rounded_mesh(
+                at_origin(tone),
+                radius,
+                [TONE_CELLS, TONE_CELLS],
+                Shade::Smooth(&color),
+            )
+        })));
         let at = Vec2::new(
             tone.x + tone.w * clamp01(self.hsv.s),
             tone.y + tone.h * (1.0 - clamp01(self.hsv.v)),
@@ -473,6 +481,13 @@ fn paint_swatch(rect: Rect, color: Rgba, out: &mut Vec<Primitive>) {
 /// A checkerboard filling `rect`, its corners rounded by `radius`, no more
 /// than a square's side.
 pub(crate) fn checkerboard(rect: Rect, radius: f32) -> Mesh {
+    let key = MeshKey::new(MeshKind::Checkerboard, &[rect.w, rect.h, radius]);
+    shared_mesh(key, origin(rect), || {
+        checkerboard_at(at_origin(rect), radius)
+    })
+}
+
+fn checkerboard_at(rect: Rect, radius: f32) -> Mesh {
     let cols = (rect.w / CHECK).round().max(1.0);
     let rows = (rect.h / CHECK).round().max(1.0);
     let (cw, ch) = (rect.w / cols, rect.h / rows);
@@ -489,6 +504,73 @@ pub(crate) fn checkerboard(rect: Rect, radius: f32) -> Mesh {
         [cols as u32, rows as u32],
         Shade::Flat(&color),
     )
+}
+
+/// What a mesh painted again is drawn from: which kind it is and every
+/// number its vertices follow from, but where it lies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MeshKey([u32; 15]);
+
+/// The meshes [`shared_mesh`] keeps.
+#[derive(Clone, Copy)]
+pub(crate) enum MeshKind {
+    Tone = 1,
+    Ring,
+    Checkerboard,
+    HueTrack,
+    AlphaTrack,
+}
+
+impl MeshKey {
+    /// The key of a `kind` of mesh drawn from `numbers`, by their bits.
+    pub(crate) fn new(kind: MeshKind, numbers: &[f32]) -> MeshKey {
+        let mut key = [0; 15];
+        key[0] = kind as u32;
+        for (slot, n) in key[1..].iter_mut().zip(numbers) {
+            *slot = n.to_bits();
+        }
+        MeshKey(key)
+    }
+}
+
+/// How many meshes [`shared_mesh`] keeps: those of a few colour controls.
+const SHARED_MESHES: usize = 32;
+
+thread_local! {
+    /// The meshes painted last, newest last, each with its key.
+    static MESHES: RefCell<Vec<(MeshKey, Mesh)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The mesh `key` names placed with its origin at `at`: the one painted last
+/// under `key` while it is kept, else the one `build` makes about the
+/// origin. A repaint that changes none of what a mesh is drawn from builds
+/// nothing and hands the renderer the vertices it holds.
+pub(crate) fn shared_mesh(key: MeshKey, at: Vec2, build: impl FnOnce() -> Mesh) -> Mesh {
+    let place = MeshPlace {
+        scale: [1.0, 1.0],
+        offset: [at.x, at.y],
+    };
+    MESHES.with_borrow_mut(|meshes| {
+        if let Some((_, mesh)) = meshes.iter().rev().find(|(k, _)| *k == key) {
+            return mesh.clone().placed(place);
+        }
+        let mesh = build();
+        if meshes.len() == SHARED_MESHES {
+            meshes.remove(0);
+        }
+        meshes.push((key, mesh.clone()));
+        mesh.placed(place)
+    })
+}
+
+/// `rect`'s top left.
+pub(crate) fn origin(rect: Rect) -> Vec2 {
+    Vec2::new(rect.x, rect.y)
+}
+
+/// `rect` moved to the origin.
+pub(crate) fn at_origin(rect: Rect) -> Rect {
+    Rect::new(0.0, 0.0, rect.w, rect.h)
 }
 
 /// How a [`rounded_mesh`] colours its cells, from a point within its rect

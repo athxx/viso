@@ -584,11 +584,16 @@ Rules (as for `todo_features.md`):
     state_update_1k 19 µs, startup 228 µs / 1.32 ms, damage_single_label 22 µs/tick,
     hot_reload small 1.7 ms / large 112 ms.
 - [ ] Follow-ups the new benches found:
-  - `color_picker/paint_tree` costs 356 µs because the tone mesh is rebuilt with per-vertex HSV
-    every paint; cache it or fill it with a shader.
+  - [x] `color_picker/paint_tree` costs 356 µs because the tone mesh is rebuilt with per-vertex
+    HSV every paint; cache it or fill it with a shader. Done: the tone, ring, checkerboard and
+    hue/alpha track meshes are built about the origin, kept in a 32-entry cache keyed by what they
+    are drawn from, and placed with `MeshPlace`. paint_tree went from 54.6 µs to 0.76 µs, and the
+    golden still matches. The picker tests had reused one run's node handles in another run's
+    tree, which the debug owner check rejects; they now resolve each run's parts in it.
   - `data_grid/layout` costs 138 µs for 200 cells; check it.
-  - Virtual-list rows with `Length::fill()` seem to take the surface's width rather than the list's
-    (or the list doesn't clip), so a scroll damages the whole surface.
+  - [x] Virtual-list rows with `Length::fill()` seem to take the surface's width rather than the
+    list's (or the list doesn't clip), so a scroll damages the whole surface. Not a bug: the bench
+    lays the list out as the root, and the root stretches to the surface.
   - `resolve` calls `path.display()` per comparison, which allocates and is quadratic in the
     module count.
   - A small component recompile costs about 1.7 ms of fixed cost (natives, prelude); profile it.

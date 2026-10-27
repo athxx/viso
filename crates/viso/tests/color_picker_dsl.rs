@@ -217,9 +217,10 @@ fn its_parts_stand_at_its_value_named_as_a_group() {
 fn a_pick_writes_the_state_back_and_runs_changed() {
     let app = run(&[]);
     let fill = parts(&app, 0);
-    let shown = parts(&app, 1);
     let at = tone_at(app.store(), fill.plane, 0.75, 0.25);
+    // Each run builds its own tree, so its nodes are found in it.
     let app = run(&[click(at)]);
+    let (fill, shown) = (parts(&app, 0), parts(&app, 1));
     let store = app.store();
     let got = hsv(store, fill.plane);
     assert!(
@@ -238,6 +239,7 @@ fn a_pick_writes_the_state_back_and_runs_changed() {
     assert!((held.h - got.h).abs() < 1e-6);
     // The arrows step the square once it has the focus.
     let app = run(&[click(at), key(Key::Right)]);
+    let (fill, shown) = (parts(&app, 0), parts(&app, 1));
     let stepped = hsv(app.store(), fill.plane);
     assert!((stepped.s - 0.76).abs() < 2e-3, "{stepped:?}");
     assert_ne!(rgba32(swatch(app.store(), &shown)), picked);
@@ -263,12 +265,12 @@ fn wheel_and_alpha_show_the_parts_they_need() {
 fn typed_hex_picks_and_the_state_follows() {
     let app = run(&[]);
     let fill = parts(&app, 0);
-    let shown = parts(&app, 1);
     let field = middle(app.store(), fill.hex);
     let mut steps = vec![click(field)];
     steps.extend((0..9).map(|_| key(Key::Backspace)));
     steps.push(typed("ff0000"));
     let app = run(&steps);
+    let (fill, shown) = (parts(&app, 0), parts(&app, 1));
     let store = app.store();
     assert_eq!(rgba32(swatch(store, &fill)), 0xff0000ff);
     assert_eq!(rgba32(swatch(store, &shown)), 0xff0000ff);

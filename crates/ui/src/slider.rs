@@ -38,7 +38,10 @@ use viso_render::{
     Rgba, ShadowShape, Stroke,
 };
 
-use crate::color_plane::{CHECK, Hsv, Shade, checkerboard, rounded_mesh};
+use crate::color_plane::{
+    CHECK, Hsv, MeshKey, MeshKind, Shade, at_origin, checkerboard, origin, rounded_mesh,
+    shared_mesh,
+};
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
 use crate::context::EventCx;
@@ -436,37 +439,50 @@ impl Slider {
             Axis::Row => [COLOR_CELLS, 1],
             Axis::Column => [1, COLOR_CELLS],
         };
-        let fraction = |x: f32, y: f32| {
-            if lie.span <= 0.0 {
+        // The value's lie from the track's top left, which the mesh is
+        // drawn about.
+        let start = Vec2::new(lie.start.x - track.x, lie.start.y - track.y);
+        let (way, span) = (lie.way, lie.span);
+        let fraction = move |x: f32, y: f32| {
+            if span <= 0.0 {
                 return 0.0;
             }
-            let along =
-                (track.x + x - lie.start.x) * lie.way.x + (track.y + y - lie.start.y) * lie.way.y;
-            clamp01(along / lie.span)
+            clamp01(((x - start.x) * way.x + (y - start.y) * way.y) / span)
         };
+        let shape = [
+            track.w,
+            track.h,
+            radius,
+            cells[0] as f32,
+            start.x,
+            start.y,
+            way.x,
+            way.y,
+            span,
+        ];
+        let local = at_origin(track);
         match self.paint {
             TrackPaint::Plain => {}
             TrackPaint::Hue => {
-                let color = |x: f32, y: f32| Hsv::new(fraction(x, y), 1.0, 1.0).to_rgba(1.0);
-                out.push(Primitive::Mesh(rounded_mesh(
-                    track,
-                    radius,
-                    cells,
-                    Shade::Smooth(&color),
-                )));
+                let key = MeshKey::new(MeshKind::HueTrack, &shape);
+                out.push(Primitive::Mesh(shared_mesh(key, origin(track), || {
+                    let color = |x: f32, y: f32| Hsv::new(fraction(x, y), 1.0, 1.0).to_rgba(1.0);
+                    rounded_mesh(local, radius, cells, Shade::Smooth(&color))
+                })));
             }
             TrackPaint::Alpha(tint) => {
                 out.push(Primitive::Mesh(checkerboard(track, radius)));
-                let color = |x: f32, y: f32| Rgba {
-                    a: fraction(x, y),
-                    ..tint
-                };
-                out.push(Primitive::Mesh(rounded_mesh(
-                    track,
-                    radius,
-                    cells,
-                    Shade::Smooth(&color),
-                )));
+                let mut numbers = [0.0; 13];
+                numbers[..9].copy_from_slice(&shape);
+                numbers[9..].copy_from_slice(&[tint.r, tint.g, tint.b, tint.a]);
+                let key = MeshKey::new(MeshKind::AlphaTrack, &numbers);
+                out.push(Primitive::Mesh(shared_mesh(key, origin(track), || {
+                    let color = |x: f32, y: f32| Rgba {
+                        a: fraction(x, y),
+                        ..tint
+                    };
+                    rounded_mesh(local, radius, cells, Shade::Smooth(&color))
+                })));
             }
         }
     }
