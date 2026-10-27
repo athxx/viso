@@ -336,12 +336,7 @@ impl Lowerer<'_, '_> {
             }
             Some(Resolution::Env) if segments.len() == 1 => self.env_value(),
             Some(Resolution::Theme) if segments.len() == 1 => self.env_field(EnvField::Theme),
-            Some(Resolution::Native(id)) => {
-                match self.env.natives().and_then(|n| n.variant_by_id(id)) {
-                    Some(variant) => Ok(self.constant(Const::Tag(variant.index))),
-                    None => self.bail("a native used as a value"),
-                }
-            }
+            Some(Resolution::Native(_)) => self.bail("a native used as a value"),
             None if builtin_variant(&segments) == Some("None") => Ok(self.constant(Const::Nil)),
             _ => self.bail("this path has no runtime value yet"),
         }

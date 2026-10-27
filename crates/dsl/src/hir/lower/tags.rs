@@ -5,7 +5,6 @@
 //! tag enum has at most 64 variants, one bit each (`E2201`).
 
 use viso_behavior::game::{GameTag, Tag};
-use viso_behavior::native::NativeId;
 
 use crate::diag::{Diagnostic, Related};
 use crate::hir::infer::TypeEnv;
@@ -43,7 +42,7 @@ pub(super) fn tag_type(decls: &Declarations) -> Ty {
     decls
         .tag_derives
         .first()
-        .map_or(Ty::Native(NativeId::of(GameTag::PATH)), |t| {
+        .map_or(Ty::named(crate::resolve::native_enum(GameTag::PATH)), |t| {
             Ty::named(t.symbol)
         })
 }

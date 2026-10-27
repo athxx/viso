@@ -30,4 +30,6 @@ pub use resolver::{Resolution, ResolvedModule, ResolvedRef, SymbolDecl, resolve}
 pub(crate) use resolver::{generic_param_names, ident_tokens};
 pub use scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 pub(crate) use symbol::digest;
-pub use symbol::{FINGERPRINT_VERSION, SymbolId, SymbolIdentity, SymbolKind, fingerprint};
+pub use symbol::{
+    FINGERPRINT_VERSION, SymbolId, SymbolIdentity, SymbolKind, fingerprint, native_enum,
+};

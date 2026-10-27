@@ -708,7 +708,7 @@ Facade。热路径逻辑在下层 crate；facade 负责把它们组装成一个 
 proc-macro crate，只依赖叶子 `viso-glyph-a8`（构建期 bake 与运行时 raster 共用同一个 rasterizer，宏不链接 text runtime）。当前提供：
 
 - `#[derive(GpuPod)]`：GPU instance/uniform 显式布局（ADR 0001 中称为 `GpuInstance` ABI）；
-- `#[derive(NativeData)]`：`.vs` 可读字段的 native record 及其 schema；
+- `#[derive(NativeData)]`：`.vs` 可读字段的 native record，或 `.vs` 可构造、`match` 的 native enum（Variant 可带字段），及其 schema；
 - `packaged_fonts!`：build-time 字体登记、embedded 字体子集与 baked A8 page（§37.8）。
 
 

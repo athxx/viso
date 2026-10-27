@@ -420,6 +420,46 @@ impl fmt::Debug for NativeFunction {
     }
 }
 
+/// What a variant of a schema enum carries: nothing, or fields by position
+/// (`Message(i64)`) or by name (`Message { id: i64 }`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VariantFields {
+    /// Its fields, in order; a positional field is named by its index.
+    pub fields: &'static [Param],
+    /// Whether `.vs` names the fields (`Route::message { id: 5 }`) rather than
+    /// passing them in order (`Route::message(5)`).
+    pub named: bool,
+}
+
+impl VariantFields {
+    /// A variant carrying nothing.
+    pub const UNIT: VariantFields = VariantFields {
+        fields: &[],
+        named: false,
+    };
+
+    /// A variant of positional `fields`.
+    pub const fn tuple(fields: &'static [Param]) -> VariantFields {
+        VariantFields {
+            fields,
+            named: false,
+        }
+    }
+
+    /// A variant of named `fields`.
+    pub const fn record(fields: &'static [Param]) -> VariantFields {
+        VariantFields {
+            fields,
+            named: true,
+        }
+    }
+
+    /// Whether it carries nothing: its value is its index alone.
+    pub const fn is_unit(&self) -> bool {
+        self.fields.is_empty() && !self.named
+    }
+}
+
 /// A native handle type, a schema enum when it has variants, or a native
 /// value type.
 #[derive(Debug, Clone, Copy)]
@@ -428,6 +468,9 @@ pub struct NativeType {
     pub name: &'static str,
     /// Its variants, in index order; empty for a handle type.
     pub variants: &'static [&'static str],
+    /// What each variant carries, index-parallel to `variants`; empty when
+    /// every variant is a unit.
+    pub payloads: &'static [VariantFields],
     /// Who may hold a handle.
     pub ownership: Ownership,
     /// The thread its handles live and drop on.
@@ -448,6 +491,7 @@ impl NativeType {
         NativeType {
             name,
             variants: &[],
+            payloads: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Ui,
             value: false,
@@ -463,6 +507,7 @@ impl NativeType {
         NativeType {
             name,
             variants: &[],
+            payloads: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: true,
@@ -481,6 +526,7 @@ impl NativeType {
         NativeType {
             name,
             variants: &[],
+            payloads: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: true,
@@ -494,11 +540,24 @@ impl NativeType {
         self.fields.iter().position(|f| f.name == name)
     }
 
-    /// A schema enum of `variants`, a plain value any thread may hold.
+    /// A schema enum of unit `variants`, a plain value any thread may hold.
     pub const fn enumeration(name: &'static str, variants: &'static [&'static str]) -> NativeType {
+        NativeType::enumeration_of(name, variants, &[])
+    }
+
+    /// A schema enum of `variants`, each carrying the fields `payloads` gives
+    /// it at its index, as `#[derive(NativeData)]` declares one for a Rust
+    /// enum. A unit variant's value is its index; a payload variant's is the
+    /// aggregate of its fields, tagged with its index.
+    pub const fn enumeration_of(
+        name: &'static str,
+        variants: &'static [&'static str],
+        payloads: &'static [VariantFields],
+    ) -> NativeType {
         NativeType {
             name,
             variants,
+            payloads,
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: false,
@@ -510,6 +569,14 @@ impl NativeType {
     /// Whether it is a schema enum.
     pub const fn is_enum(&self) -> bool {
         !self.variants.is_empty()
+    }
+
+    /// What its variant `index` carries: nothing past `payloads`.
+    pub fn payload(&self, index: usize) -> VariantFields {
+        self.payloads
+            .get(index)
+            .copied()
+            .unwrap_or(VariantFields::UNIT)
     }
 
     /// Whether a game state may hold it: a schema enum or a value type, whose

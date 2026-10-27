@@ -19,7 +19,7 @@ use viso_ende::{JsonValue, JsonWriter};
 
 use super::{
     Determinism, NativeCx, NativeError, NativeFunction, NativeKind, NativeLibrary, NativeType,
-    Natives, Ownership, Param, SchemaTy, ThreadDomain,
+    Natives, Ownership, Param, SchemaTy, ThreadDomain, VariantFields,
 };
 use crate::value::Value;
 
@@ -82,6 +82,19 @@ pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
             w.bool(ty.value);
             w.name("fields");
             params(&mut w, ty.fields);
+            if !ty.payloads.is_empty() {
+                w.name("payloads");
+                w.begin_array();
+                for payload in ty.payloads {
+                    w.begin_object();
+                    w.name("named");
+                    w.bool(payload.named);
+                    w.name("fields");
+                    params(&mut w, payload.fields);
+                    w.end_object();
+                }
+                w.end_array();
+            }
             w.end_object();
             let ty_head = w.into_string();
             out.push_str(if j == 0 { "\n        " } else { ",\n        " });
@@ -393,9 +406,25 @@ fn native_type(json: &JsonValue) -> Result<NativeType, String> {
         "borrowed" => Ownership::Borrowed,
         other => return Err(format!("`{other}` is not an ownership")),
     };
+    let payloads = match json.get("payloads") {
+        None => Vec::new(),
+        Some(_) => array(json, "payloads")?
+            .iter()
+            .map(|p| {
+                Ok(VariantFields {
+                    fields: read_params(p, "fields")?,
+                    named: flag(p, "named")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+    if !payloads.is_empty() && payloads.len() != variants.len() {
+        return Err("a payload for each variant, or none".into());
+    }
     Ok(NativeType {
         name: leak(string(json, "name")?),
         variants: Box::leak(variants.into_boxed_slice()),
+        payloads: Box::leak(payloads.into_boxed_slice()),
         ownership,
         thread: thread(string(json, "thread")?)?,
         value: flag(json, "value")?,

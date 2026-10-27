@@ -4,8 +4,9 @@
 //! - [`macro@GpuPod`] — derive an explicit, validated GPU instance layout
 //!   for a `#[repr(C)]` struct: named per-field offsets instead of an
 //!   implicit trailing-memory convention.
-//! - [`macro@NativeData`] — derive a native record: a Rust struct whose
-//!   fields `.vs` reads, with its schema.
+//! - [`macro@NativeData`] — derive a native record (a Rust struct whose
+//!   fields `.vs` reads) or schema enum (a Rust enum `.vs` builds and
+//!   matches), with its schema.
 //! - [`packaged_fonts!`] — scan `assets/fonts/` at build time and embed each
 //!   face with the metadata the font manifest keeps, subset to the
 //!   build's characters for an embedded target, its glyphs baked at the
@@ -48,7 +49,7 @@ pub fn derive_gpu_pod(input: TokenStream) -> TokenStream {
 
 /// Derive `viso::native::NativeData` and `NativeValue` for a struct of
 /// named fields, each a native value: a record `.vs` reads, named by its
-/// path in a native library.
+/// path in a native library; or for an enum.
 ///
 /// ```ignore
 /// #[derive(NativeData)]
@@ -62,6 +63,22 @@ pub fn derive_gpu_pod(input: TokenStream) -> TokenStream {
 /// `Profile::TYPE` enters the library's `types`; a native returns a
 /// `Profile` and `.vs` reads `profile.name`. `#[native(crate = path)]` names
 /// the module the output refers to, `::viso::native` by default.
+///
+/// On an enum it derives a schema enum, each variant a unit or carrying
+/// native values, named in snake case unless `#[native(name = "..")]`
+/// renames it:
+///
+/// ```ignore
+/// #[derive(NativeData)]
+/// #[native(path = "mail::Route")]
+/// pub enum Route {
+///     Inbox,
+///     Message { id: i64 },
+/// }
+/// ```
+///
+/// `.vs` writes `Route::inbox` and `Route::message { id: 5 }`, and matches
+/// on them as on any enum.
 #[proc_macro_derive(NativeData, attributes(native))]
 pub fn derive_native_data(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

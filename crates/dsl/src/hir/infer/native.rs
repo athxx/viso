@@ -7,7 +7,7 @@
 //! constant `Duration`, converted here to whole ticks of the game's fixed
 //! step, rounding up.
 
-use viso_behavior::native::{NativeEntry, NativeId, NativeVariant, SchemaTy};
+use viso_behavior::native::{NativeEntry, NativeId, SchemaTy};
 
 use super::{
     InferCx, binary_op_kind, child_exprs, compatible, in_base_unit, parse_float_literal,
@@ -40,11 +40,6 @@ impl InferCx<'_> {
             .map(|p| Ty::from_schema(&p.ty, &package))
             .collect();
         (params, Ty::from_schema(&entry.function.ret, &package))
-    }
-
-    /// The schema enum variant `id` names, if it names one.
-    pub(super) fn native_variant(&self, id: NativeId) -> Option<NativeVariant> {
-        self.env.natives()?.variant_by_id(id)
     }
 
     /// The signature of a call through a path naming the native `id` (a

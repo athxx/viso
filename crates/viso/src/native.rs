@@ -79,7 +79,7 @@ pub use viso_macros::NativeData;
 pub use viso_behavior::native::{
     Determinism, NativeCx, NativeData, NativeError, NativeFunction, NativeFuture, NativeHandle,
     NativeKind, NativeLibrary, NativeObject, NativeType, NativeValue, Obj, Ownership, Param,
-    SchemaTy, Services, ThreadDomain, Ticks,
+    SchemaTy, Services, ThreadDomain, Ticks, VariantFields,
 };
 
 /// A [`NativeFunction`] from a Rust closure-like body, its parameter and

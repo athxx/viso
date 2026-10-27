@@ -1,5 +1,6 @@
 //! A native record: a Rust struct deriving `NativeData`, which a native
-//! returns inside a `Result` and `.vs` reads field by field.
+//! returns inside a `Result` and `.vs` reads field by field. A native enum: a
+//! Rust enum deriving it, which `.vs` builds and matches as any enum.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -24,6 +25,19 @@ struct Profile {
     best: Option<Friend>,
 }
 
+#[derive(Debug, Clone, PartialEq, NativeData)]
+#[native(path = "api::Route")]
+enum Route {
+    Inbox,
+    Message(i64, String),
+    UserProfile {
+        name: String,
+        tags: Vec<String>,
+    },
+    #[native(name = "prefs")]
+    Settings,
+}
+
 static API: NativeLibrary = NativeLibrary {
     path: "api",
     version: 1,
@@ -42,8 +56,16 @@ static API: NativeLibrary = NativeLibrary {
         native!(fn "followed" |_cx, p: Profile| -> Profile {
             Ok(Profile { followers: p.followers + 1, ..p })
         }),
+        native!(fn "deeper" |_cx, r: Route| -> Route {
+            Ok(match r {
+                Route::Inbox => Route::Message(1, "hi".into()),
+                Route::Message(id, _) => Route::UserProfile { name: format!("#{id}"), tags: vec![] },
+                Route::UserProfile { .. } => Route::Settings,
+                Route::Settings => Route::Inbox,
+            })
+        }),
     ],
-    types: &[Profile::TYPE, Friend::TYPE],
+    types: &[Profile::TYPE, Friend::TYPE, Route::TYPE],
     traits: &[],
     derives: &[],
     widgets: &[],
@@ -138,6 +160,124 @@ fn a_field_a_native_record_lacks_is_e2001_with_the_nearest() {
     assert!(
         format!("{:?}", errors[0]).contains("name"),
         "{:#?}",
+        errors[0]
+    );
+}
+
+const ROUTES: &str = r#"
+import api::{deeper, Route};
+
+fn title(r: Route) -> String {
+    match r {
+        Route::inbox => "inbox",
+        Route::message(id, subject) => format("message {id}: {subject}", id: id, subject: subject),
+        Route::user_profile { name, tags } => format("{name} ({n})", name: name, n: tags.len()),
+        Route::prefs => "prefs",
+    }
+}
+
+component Nav {
+    state route: Route = Route::inbox;
+    state titles = "";
+
+    action walk() {
+        titles = title(route);
+        route = deeper(route);
+        titles = format("{t}|{r}", t: titles, r: title(route));
+        route = deeper(route);
+        titles = format("{t}|{r}", t: titles, r: title(route));
+        route = deeper(route);
+        titles = format("{t}|{r}", t: titles, r: title(route));
+        route = Route::user_profile { name: "Ada", tags: ["math"] };
+        titles = format("{t}|{r}", t: titles, r: title(route));
+        route = Route::message(7, "late");
+    }
+
+    view { Text { text: title(route); } }
+}
+"#;
+
+#[test]
+fn a_native_enum_is_built_matched_and_passed_as_any_enum() {
+    let natives = Arc::new(viso::__private::viso_behavior::native::Natives::with(&[&API]).unwrap());
+    let origin = Origin {
+        package: "app".to_owned(),
+        module: vec!["main".to_owned()],
+        ..Default::default()
+    };
+    let compiled = compile_file_in(ROUTES, &origin, natives.clone());
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let module = Rc::new(compiled.behavior.bytecode().expect("bytecode"));
+    let index = module.component("Nav").expect("component");
+    let mut vm = Vm::new(module, Budget::default());
+    let mut nav = vm.instantiate(index, []).expect("instantiate");
+    vm.link(&natives, &[]).expect("link");
+    assert_eq!(Route::from_value(&nav.states()[0]), Some(Route::Inbox));
+    let walk = vm.module().layout(index).member("walk").expect("walk");
+    vm.call(&mut nav, walk, &[]).expect("walk");
+    assert_eq!(
+        Route::from_value(&nav.states()[0]),
+        Some(Route::Message(7, "late".into()))
+    );
+    assert_eq!(
+        nav.states()[1],
+        Value::str("inbox|message 1: hi|#1 (0)|prefs|Ada (1)")
+    );
+}
+
+#[test]
+fn a_native_enum_round_trips_and_carries_its_variants_in_the_schema() {
+    for route in [
+        Route::Inbox,
+        Route::Message(3, "x".into()),
+        Route::UserProfile {
+            name: "Ada".into(),
+            tags: vec!["a".into()],
+        },
+        Route::Settings,
+    ] {
+        assert_eq!(Route::from_value(&route.clone().into_value()), Some(route));
+    }
+    assert_eq!(
+        Route::Settings.into_value(),
+        Value::Int(3),
+        "a unit variant is its index"
+    );
+    assert_eq!(Route::from_value(&Value::Int(4)), None);
+    assert_eq!(
+        Route::TYPE.variants,
+        ["inbox", "message", "user_profile", "prefs"]
+    );
+    assert!(Route::TYPE.payload(0).is_unit());
+    assert!(!Route::TYPE.payload(1).named);
+    assert_eq!(Route::TYPE.payload(1).fields[1].name, "1");
+    assert!(Route::TYPE.payload(2).named);
+
+    let text = schema::write(&[&API]).unwrap();
+    let back = schema::read(&text).unwrap();
+    let ty: &NativeType = &back[0].types[2];
+    assert_eq!(ty.payloads, Route::TYPE.payloads);
+    assert_eq!(schema::write(&back).unwrap(), text);
+}
+
+#[test]
+fn a_match_missing_a_native_variant_is_not_exhaustive() {
+    let natives = Arc::new(viso::__private::viso_behavior::native::Natives::with(&[&API]).unwrap());
+    let origin = Origin {
+        package: "app".to_owned(),
+        module: vec!["main".to_owned()],
+        ..Default::default()
+    };
+    let source = "import api::Route;\n\
+        fn f(r: Route) -> I64 { match r { Route::inbox => 0, Route::prefs => 1 } }\n\
+        component C { view { Text {} } }";
+    let compiled = compile_file_in(source, &origin, natives);
+    let errors: Vec<_> = compiled.errors().collect();
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        format!("{:?}", errors[0]).contains("message"),
+        "names a missing variant: {:#?}",
         errors[0]
     );
 }

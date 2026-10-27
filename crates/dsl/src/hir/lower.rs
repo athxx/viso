@@ -165,6 +165,7 @@ pub fn lower(
         .types(interner)
         .map(|(name, id)| (name.to_owned(), id))
         .collect();
+    declare_native_enums(graph.natives(), &mut decls);
     decls.module_paths = graph
         .modules()
         .iter()
@@ -1619,6 +1620,56 @@ struct Declarations {
     traits: super::generic::TraitTable,
     /// The body of every generic callable, which each instantiation lowers.
     bodies: HashMap<SymbolId, traits::GenericBody>,
+}
+
+/// Declares every schema enum of `natives` as the enum `.vs` reads it as,
+/// its variants and their fields the schema's; like the prelude's, it has no
+/// home to point into.
+fn declare_native_enums(natives: &Natives, decls: &mut Declarations) {
+    let package = PackageTypes {
+        action: Ty::Unknown,
+        tag: Ty::Unknown,
+        audio_command: Ty::Unknown,
+        audio_event: Ty::Unknown,
+    };
+    for entry in natives.types().iter().filter(|t| t.ty.is_enum()) {
+        let symbol = crate::resolve::native_enum(&entry.path);
+        let variants = entry
+            .ty
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let payload = entry.ty.payload(index);
+                let ty = |p: &viso_behavior::native::Param| Ty::from_schema(&p.ty, &package);
+                VariantInfo {
+                    name: (*name).to_owned(),
+                    payload: if payload.named {
+                        VariantPayload::Record(
+                            payload
+                                .fields
+                                .iter()
+                                .map(|p| FieldInfo {
+                                    name: p.name.to_owned(),
+                                    ty: ty(p),
+                                    has_default: false,
+                                    declared_at: TextRange::empty(0.into()),
+                                })
+                                .collect(),
+                        )
+                    } else if payload.fields.is_empty() {
+                        VariantPayload::Unit
+                    } else {
+                        VariantPayload::Tuple(payload.fields.iter().map(ty).collect())
+                    },
+                    declared_at: TextRange::empty(0.into()),
+                }
+            })
+            .collect();
+        decls.types.enums.insert(symbol, variants);
+        let name = entry.path.rsplit("::").next().unwrap_or(&entry.path);
+        decls.types.names.insert(symbol, name.to_owned());
+    }
 }
 
 /// What one module adds to the package [`Declarations`]: its owners' member names, its

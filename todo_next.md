@@ -162,6 +162,11 @@ Rules (as for `todo_features.md`):
     `routes!`. `NodeStore::turn_page_from` turns between page nodes. The prelude exports them.
     Verified by the router unit tests and `crates/viso/tests/router.rs` (deep links, system
     back, and the inbox's state kept). Still to do: the DSL side.
+  - DSL native enums built: `.vs` reads a schema enum as an enum its library declares (the
+    symbol `resolve::native_enum(path)`), so it builds, compares and exhaustively matches them;
+    `#[derive(NativeData)]` on a Rust enum gives variants with tuple or named fields
+    (`NativeType::payloads`, carried in `natives.json`). Verified by `crates/viso/tests/native_data.rs`
+    and the game test suites.
 - [ ] Typed Rust access to named nodes from `view!`/`component!` (`nodes.save_button:
   Handle<Button>`). Verify with a trybuild test that a wrong-type use fails to compile.
 - [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have

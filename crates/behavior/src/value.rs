@@ -81,6 +81,14 @@ impl Value {
         }))
     }
 
+    /// The payload variant `tag` of `fields`, in declaration order.
+    pub fn variant(tag: u32, fields: impl Into<Box<[Value]>>) -> Value {
+        Value::Agg(Rc::new(Aggregate {
+            tag,
+            fields: fields.into(),
+        }))
+    }
+
     /// The fields of a record, tuple or payload variant.
     pub fn fields(&self) -> Option<&[Value]> {
         match self {

@@ -195,6 +195,8 @@ impl<T: NativeValue, E: NativeValue> NativeValue for Result<T, E> {
 
 /// A Rust struct `.vs` reads as a record: a native value type of named
 /// fields, each a [`NativeValue`], its values an aggregate of them in order.
+/// Or a Rust enum `.vs` builds and matches: a schema enum whose `FIELDS` are
+/// empty, each variant its index or the aggregate of its fields.
 /// `#[derive(NativeData)]` implements it with [`NativeValue`]; the type
 /// enters its library's `types` as [`TYPE`](NativeData::TYPE), with methods
 /// as `NativeType { methods: &METHODS, ..Profile::TYPE }`.

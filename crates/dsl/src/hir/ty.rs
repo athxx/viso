@@ -434,9 +434,8 @@ impl Ty {
                 Box::new(Ty::from_schema(t, package)),
                 Box::new(Ty::from_schema(e, package)),
             ),
-            SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
-                Ty::Native(NativeId::of(path))
-            }
+            SchemaTy::Handle(path) | SchemaTy::Value(path) => Ty::Native(NativeId::of(path)),
+            SchemaTy::Enum(path) => Ty::named(crate::resolve::native_enum(path)),
             SchemaTy::Action => package.action.clone(),
             SchemaTy::Tag => package.tag.clone(),
             SchemaTy::AudioCommand => package.audio_command.clone(),

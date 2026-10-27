@@ -55,9 +55,9 @@ fn input_map() -> NativeId {
     NativeId::of(InputMap::PATH)
 }
 
-/// The identity of `viso::game::InputAction`.
-fn default_action() -> NativeId {
-    NativeId::of(InputAction::PATH)
+/// The enum `viso::game::InputAction`.
+fn default_action() -> SymbolId {
+    crate::resolve::native_enum(InputAction::PATH)
 }
 
 /// Records `decl` if it is an `InputMap` constant, with the action type its
@@ -109,8 +109,7 @@ pub(super) fn collect_map(
 /// `InputAction`, or `InputAction` itself.
 fn is_action_type(ty: &Ty, decls: &Declarations) -> bool {
     match ty {
-        Ty::Named(e, ..) => decls.input_derives.contains(e),
-        Ty::Native(id) => *id == default_action(),
+        Ty::Named(e, ..) => decls.input_derives.contains(e) || *e == default_action(),
         _ => false,
     }
 }
@@ -124,7 +123,7 @@ pub(super) fn action_type(decls: &Declarations) -> Ty {
             Some((ty, _)) if is_action_type(ty, decls) => ty.clone(),
             _ => Ty::Unknown,
         },
-        None => Ty::Native(default_action()),
+        None => Ty::named(default_action()),
     }
 }
 
@@ -477,10 +476,6 @@ impl ConstEval<'_, '_> {
         let segments: Vec<_> = path.segments().collect();
         let head = segments.first()?;
         match self.cx.resolution_at(head.text_range()) {
-            Some(Resolution::Native(id)) => match self.env.natives.variant_by_id(id) {
-                Some(variant) => Some(Value::Int(i64::from(variant.index))),
-                None => self.fail(node, "a native is not a constant"),
-            },
             Some(Resolution::Symbol(owner)) if segments.len() == 2 => {
                 let name = segments[1].text();
                 let variants = self.env.enum_variants(owner).unwrap_or_default();

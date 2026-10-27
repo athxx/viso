@@ -972,6 +972,20 @@ fn build_import_env(
                 env.member_natives
                     .insert((owner, local), binding.path.clone());
             }
+            // A native enum is an enum its library declares.
+            None if graph
+                .natives()
+                .ty(&binding.path)
+                .is_some_and(|t| t.ty.is_enum()) =>
+            {
+                env.bindings.insert(
+                    local,
+                    ImportBinding {
+                        symbol: super::native_enum(&binding.path),
+                        namespace: Namespace::Type,
+                    },
+                );
+            }
             None => {
                 env.natives.insert(local, binding.path.clone());
             }
@@ -2392,9 +2406,9 @@ impl<'a> ModulePass<'a> {
     }
 
     /// Resolves the path `head::rest..` whose head imports the native `base`:
-    /// the function or schema enum variant (or, for a type position, handle
-    /// type) it names is recorded on `head` as [`Resolution::Native`]; a path
-    /// naming none is
+    /// the function (or, for a type position, handle type) it names is
+    /// recorded on `head` as [`Resolution::Native`], a schema enum as the
+    /// enum's [`Resolution::Symbol`]; a path naming none is
     /// [`E2001`](ResolveErrorKind::UnresolvedNative) at its first unknown
     /// segment, with the nearest registered names.
     fn resolve_native(
@@ -2406,12 +2420,7 @@ impl<'a> ModulePass<'a> {
     ) {
         let mut path = base.to_owned();
         let mut last = head.clone();
-        let value = |natives: &Natives, path: &str| {
-            natives
-                .function(path)
-                .map(|f| f.id)
-                .or_else(|| natives.variant(path).map(|_| NativeId::of(path)))
-        };
+        let value = |natives: &Natives, path: &str| natives.function(path).map(|f| f.id);
         for segment in rest {
             let found = if ty {
                 self.natives.ty(&path).is_some()
@@ -2431,20 +2440,20 @@ impl<'a> ModulePass<'a> {
             value(self.natives, &path)
         };
         if let Some(id) = id {
+            let enumeration = ty && self.natives.ty(&path).is_some_and(|t| t.ty.is_enum());
             self.refs.push(ResolvedRef {
                 range: head.text_range(),
-                to: Resolution::Native(id),
+                to: if enumeration {
+                    Resolution::Symbol(super::native_enum(&path))
+                } else {
+                    Resolution::Native(id)
+                },
             });
             return;
         }
         let at = last.text_range();
         let mut diagnostic = ResolveErrorKind::UnresolvedNative.to_diagnostic(Some(at), &path);
         let parent = path.rsplit_once("::").map_or("", |(p, _)| p);
-        let variants: Vec<&str> = self
-            .natives
-            .ty(parent)
-            .map_or(&[][..], |t| t.ty.variants)
-            .to_vec();
         let names: Vec<&str> = self
             .natives
             .functions()
@@ -2453,7 +2462,6 @@ impl<'a> ModulePass<'a> {
             .chain(self.natives.types().iter().map(|t| &*t.path))
             .filter_map(|p| p.strip_prefix(parent)?.strip_prefix("::"))
             .filter(|n| !n.contains("::"))
-            .chain(variants)
             .collect();
         let suggestions = suggest::nearest(
             &last.text(),

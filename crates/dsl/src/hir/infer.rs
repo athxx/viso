@@ -225,8 +225,12 @@ pub trait TypeEnv {
     /// `@derive(GameTag)` enum, or `viso::game::GameTag`.
     fn package_types(&self) -> PackageTypes {
         PackageTypes {
-            action: Ty::Native(NativeId::of(viso_behavior::game::InputAction::PATH)),
-            tag: Ty::Native(NativeId::of(viso_behavior::game::GameTag::PATH)),
+            action: Ty::named(crate::resolve::native_enum(
+                viso_behavior::game::InputAction::PATH,
+            )),
+            tag: Ty::named(crate::resolve::native_enum(
+                viso_behavior::game::GameTag::PATH,
+            )),
             audio_command: Ty::Unit,
             audio_event: Ty::Unit,
         }
@@ -620,10 +624,7 @@ impl<'a> InferCx<'a> {
             Some(Resolution::Symbol(id)) if self.const_param_ty(id).is_some() => {
                 self.const_param_ty(id).unwrap_or(Ty::Unknown)
             }
-            Some(Resolution::Native(id)) => match self.native_variant(id) {
-                Some(variant) => self.check_against(Ty::Native(variant.ty), expected, node),
-                None => self.native_value(id, node.text_range()),
-            },
+            Some(Resolution::Native(id)) => self.native_value(id, node.text_range()),
             Some(Resolution::Game) => self.bare_game(node.text_range()),
             Some(to) if segments.len() == 1 => self.resolution_ty(&to),
             Some(_) => Ty::Unknown,

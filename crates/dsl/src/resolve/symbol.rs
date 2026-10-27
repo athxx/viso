@@ -208,6 +208,20 @@ pub fn fingerprint(identity: SymbolIdentity<'_>) -> SymbolId {
     hash.finish()
 }
 
+/// The symbol `.vs` reads the schema enum at native `path` (`viso::game::Key`)
+/// as: a native enum is an enum its library declares, built, matched and
+/// lowered as any other.
+pub fn native_enum(path: &str) -> SymbolId {
+    let (library, name) = path.rsplit_once("::").unwrap_or(("", path));
+    fingerprint(SymbolIdentity {
+        // No package is named so: a native enum never shares a source symbol.
+        package: "@native",
+        module_path: library,
+        kind: SymbolKind::Enum,
+        decl_path: name,
+    })
+}
+
 /// The FNV-1a-128 digest of `chunks`, each length-prefixed: a stable content
 /// fingerprint for identities that are not declarations (a compiler schema).
 pub(crate) fn digest<'a>(chunks: impl IntoIterator<Item = &'a [u8]>) -> u128 {
