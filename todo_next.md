@@ -404,9 +404,25 @@ Rules (as for `todo_features.md`):
     `derive_full_single_label_change` is +0.5–3%. The cost is the extra lookup per sparse read.
     That is within noise to a few percent, not a clean zero.
   - The ui lib, viso lib and clippy runs pass.
-- [ ] Derive semantics per dirty subtree: keep the last tree and diff only re-derived branches.
+- [x] Derive semantics per dirty subtree: keep the last tree and diff only re-derived branches.
   Verify on 10k nodes that one label change re-derives O(depth) nodes and that the delta equals a
   full re-derive's.
+  - Built: a node's row is `semantics_row` (with `semantics_link_row`), and its read children come
+    from `read_children`. The whole-tree derive composes them.
+  - Built: the accessibility bridge keeps its last published nodes. A SEMANTICS-only frame
+    re-derives only the SEMANTICS-marked branches. A row whose `disabled` changed re-derives its
+    subtree. A `semantics.hidden` flip removes or adds a published subtree. A frame with LAYOUT,
+    TRANSFORM or STRUCTURE re-derives the whole tree and diffs it. The focus is published even on
+    a frame with no dirty mark.
+  - Built: setters that feed a row now mark SEMANTICS on change: focusable, handler presence,
+    access key, and a refresh starting or ending. An error node's label marks the fields that cite
+    it.
+  - Verified: on 10,101 nodes, one label change derives 3 rows and publishes one node. A clean
+    frame derives 0.
+  - Verified: a differential test runs twelve kinds of change through the incremental bridge and a
+    whole-tree bridge in lockstep. Deltas, published trees and targets are equal. Sabotage confirmed
+    that the test catches a dropped `disabled` inheritance and a dropped error-relation mark.
+  - The ui and viso lib tests, `access_keys`, `semantics_snapshot` and clippy pass.
 - [ ] Skip re-measuring clean subtrees inside a relayout root. Verify with the incremental-vs-full
   differential test and a 2000-row Column bench.
 - [ ] Drive glyph representation promotion at runtime: MTSDF for runs under sustained scale or

@@ -1,13 +1,16 @@
-//! The facade half of the accessibility OS bridge: turns a window's derived
-//! [`SemanticsTree`] into the [`SemanticsDelta`]s the platform publishes, and
-//! an assistive technology's actions back into ordinary input.
+//! The facade half of the accessibility OS bridge: turns a window's node
+//! model into the [`SemanticsDelta`]s the platform publishes, and an
+//! assistive technology's actions back into ordinary input.
 //!
 //! A window holds an [`AccessBridge`] only while an assistive technology
 //! listens on a backend with a bridge. The first delta carries the whole tree;
 //! later ones carry only the nodes that differ from the last publication. The
-//! bridge re-derives only on a frame that dirtied semantics, layout or
-//! transforms, so with no assistive technology running the cost is the
-//! `Option` check in the frame loop.
+//! bridge keeps what it last published and, on a frame that dirtied only
+//! semantics, re-derives just the SEMANTICS-marked branches: a label change
+//! re-derives the node and its ancestors, not the tree. A frame that moved
+//! or restructured nodes re-derives the whole tree and diffs it. With no
+//! assistive technology running the cost is the `Option` check in the frame
+//! loop.
 
 use std::collections::HashMap;
 
@@ -19,14 +22,15 @@ use viso_runtime::{
     InputSample, Key, KeySample, Modifiers, PointerId, PointerKind, PointerPhase, PointerSample,
 };
 use viso_ui::{
-    DirtyClass, LiveRegion, NodeId, NodeStore, PointerButtons, Role, SemanticState, SemanticsTree,
+    DirtyClass, LiveRegion, NodeId, NodeStore, PointerButtons, Role, SemanticState, SemanticsNode,
 };
 
-/// The dirty classes that can change what the published tree says: roles,
-/// labels, state and focus (SEMANTICS), and where nodes sit (LAYOUT,
-/// TRANSFORM).
-fn republish() -> DirtyClass {
-    DirtyClass::SEMANTICS | DirtyClass::LAYOUT | DirtyClass::TRANSFORM
+/// The dirty classes after which the whole tree is re-derived: they move
+/// nodes (LAYOUT, TRANSFORM), or add and take them away (STRUCTURE), without
+/// a SEMANTICS mark on each. A SEMANTICS mark alone re-derives the marked
+/// branches; a frame with neither publishes at most a moved focus.
+fn whole() -> DirtyClass {
+    DirtyClass::LAYOUT | DirtyClass::TRANSFORM | DirtyClass::STRUCTURE
 }
 
 /// One window's published semantics tree.
@@ -39,6 +43,9 @@ pub(crate) struct AccessBridge {
     /// The root and focus last sent; `None` until the first publication.
     root: Option<SemanticsId>,
     focus: Option<SemanticsId>,
+    /// The rows the last update derived.
+    #[cfg(test)]
+    derived: u32,
 }
 
 impl AccessBridge {
@@ -48,6 +55,8 @@ impl AccessBridge {
             targets: HashMap::new(),
             root: None,
             focus: None,
+            #[cfg(test)]
+            derived: 0,
         }
     }
 
@@ -62,40 +71,64 @@ impl AccessBridge {
         root: NodeId,
         scale: f32,
     ) -> Option<SemanticsDelta> {
-        let root_id = semantics_id(root);
-        if self.root == Some(root_id) && !store.any_dirty_class(republish()) {
-            return None;
-        }
-        let mut tree = store.derive_semantics(root);
-        if tree.is_empty() {
-            return None;
-        }
-        let mut walk = Walk {
-            store,
-            nodes: HashMap::with_capacity(tree.len()),
-            targets: HashMap::with_capacity(tree.len()),
-            focus: root_id,
-            scale,
-            tree: &mut tree,
-        };
-        walk.visit(0);
-        let Walk {
-            nodes,
-            targets,
-            focus,
-            ..
-        } = walk;
+        self.sync(store, root, scale, false)
+    }
 
-        let mut changed: Vec<AccessNode> = nodes
-            .iter()
-            .filter(|(id, node)| self.published.get(id) != Some(node))
-            .map(|(_, node)| node.clone())
-            .collect();
-        changed.sort_unstable_by_key(|node| node.id);
+    /// [`update`](Self::update), re-deriving the whole tree when `whole`.
+    fn sync(
+        &mut self,
+        store: &NodeStore,
+        root: NodeId,
+        scale: f32,
+        whole_tree: bool,
+    ) -> Option<SemanticsDelta> {
+        let root_id = semantics_id(root);
         let new_root = self.root != Some(root_id);
+        #[cfg(test)]
+        {
+            self.derived = 0;
+        }
+        if !store.arena().is_live(root) {
+            return None;
+        }
+        let mut changed = Vec::new();
+        if new_root || whole_tree || store.any_dirty_class(whole()) {
+            let mut sync = Sync {
+                store,
+                root,
+                scale,
+                before: Some(std::mem::take(&mut self.published)),
+                published: &mut self.published,
+                targets: &mut self.targets,
+                changed: &mut changed,
+                derived: 0,
+            };
+            sync.targets.clear();
+            sync.visit(root, store.inert(root), true);
+            #[cfg(test)]
+            {
+                self.derived = sync.derived;
+            }
+        } else if store.any_dirty_class(DirtyClass::SEMANTICS) {
+            let mut sync = Sync {
+                store,
+                root,
+                scale,
+                before: None,
+                published: &mut self.published,
+                targets: &mut self.targets,
+                changed: &mut changed,
+                derived: 0,
+            };
+            sync.visit(root, store.inert(root), false);
+            #[cfg(test)]
+            {
+                self.derived = sync.derived;
+            }
+        }
+        changed.sort_unstable_by_key(|node| node.id);
+        let focus = self.focus_of(store, root_id);
         let focus_moved = self.focus != Some(focus);
-        self.published = nodes;
-        self.targets = targets;
         self.root = Some(root_id);
         self.focus = Some(focus);
         if changed.is_empty() && !new_root && !focus_moved {
@@ -106,6 +139,22 @@ impl AccessBridge {
             nodes: changed,
             focus,
         })
+    }
+
+    /// The published node holding the focus: the focused node, or the link
+    /// of its text the focus is on; the root when that is not published.
+    fn focus_of(&self, store: &NodeStore, root: SemanticsId) -> SemanticsId {
+        store
+            .focused()
+            .and_then(|f| {
+                let id = if store.links(f).is_empty() {
+                    semantics_id(f)
+                } else {
+                    link_id(f, store.focused_link(f)?)
+                };
+                self.published.contains_key(&id).then_some(id)
+            })
+            .unwrap_or(root)
     }
 
     /// The retained node last published as `target`, and which of its links
@@ -218,14 +267,6 @@ fn link_id(id: NodeId, link: u16) -> SemanticsId {
     )
 }
 
-/// The published id of `row`.
-fn row_id(row: &viso_ui::SemanticsNode) -> SemanticsId {
-    match row.link {
-        Some(link) => link_id(row.id, link),
-        None => semantics_id(row.id),
-    }
-}
-
 /// The published role for a Viso one. An unnamed group is a plain layout
 /// container, which platforms leave out of what they announce.
 fn semantics_role(role: Role, named: bool) -> SemanticsRole {
@@ -303,44 +344,101 @@ fn semantics_state(state: Option<SemanticState>, disabled: bool) -> SemanticsSta
     }
 }
 
-/// One pre-order conversion of a derived tree. The tree is the walk's own
-/// copy, so each row's text moves into its node rather than being cloned.
-struct Walk<'a> {
+/// One pass bringing the published nodes up to date.
+struct Sync<'a> {
     store: &'a NodeStore,
-    tree: &'a mut SemanticsTree,
+    root: NodeId,
     scale: f32,
-    nodes: HashMap<SemanticsId, AccessNode>,
-    targets: HashMap<SemanticsId, Target>,
-    focus: SemanticsId,
+    /// What was published before, when the whole tree is re-derived into an
+    /// empty `published`; `None` when `published` is updated in place.
+    before: Option<HashMap<SemanticsId, AccessNode>>,
+    published: &'a mut HashMap<SemanticsId, AccessNode>,
+    targets: &'a mut HashMap<SemanticsId, Target>,
+    changed: &'a mut Vec<AccessNode>,
+    derived: u32,
 }
 
-impl Walk<'_> {
-    /// Convert `tree.nodes[index]` and its visible descendants; returns its id.
-    fn visit(&mut self, index: usize) -> SemanticsId {
-        let rows = std::mem::take(&mut self.tree.nodes[index].children);
-        let mut children = Vec::with_capacity(rows.len());
-        for &child in &rows {
-            let row = &self.tree.nodes[child];
-            if row.link.is_some() || !self.store.hidden(row.id) {
-                children.push(self.visit(child));
+impl Sync<'_> {
+    /// Re-derive node `id` and publish it with the children the tree reads.
+    /// A child is re-derived too when `all`, when it is SEMANTICS-marked,
+    /// when it was not published, or when `id`'s `disabled`, which it
+    /// inherits, changed; any other keeps its published subtree. `inert` is
+    /// whether an ancestor is disabled.
+    fn visit(&mut self, id: NodeId, inert: bool, all: bool) {
+        let store = self.store;
+        let row = store.semantics_row(id, inert);
+        self.derived += 1;
+        let disabled = row.disabled;
+        let own = semantics_id(id);
+        let all = all || self.prior(own).map(|n| n.state.disabled) != Some(disabled);
+        let mut children = Vec::new();
+        for c in store.read_children(id) {
+            let child = semantics_id(c);
+            if all
+                || store.dirty(c).intersects(DirtyClass::SEMANTICS)
+                || !self.published.contains_key(&child)
+            {
+                self.visit(c, disabled, all);
+            }
+            children.push(child);
+        }
+        for link in 0..store.links(id).len() as u16 {
+            let row = store.semantics_link_row(id, link, disabled);
+            self.derived += 1;
+            let node = self.node(row, false, Vec::new());
+            children.push(node.id);
+            self.publish(node, (id, Some(link)));
+        }
+        if self.before.is_none()
+            && let Some(old) = self.published.get(&own)
+            && old.children != children
+        {
+            let gone: Vec<SemanticsId> = old
+                .children
+                .iter()
+                .filter(|c| !children.contains(c))
+                .copied()
+                .collect();
+            for child in gone {
+                self.unpublish(child);
             }
         }
-        let node = self.node(index, children);
-        let id = node.id;
-        let row = &self.tree.nodes[index];
-        if row.focused {
-            self.focus = id;
-        }
-        self.targets.insert(id, (row.id, row.link));
-        self.nodes.insert(id, node);
-        id
+        let node = self.node(row, id == self.root, children);
+        self.publish(node, (id, None));
     }
 
-    fn node(&mut self, index: usize, children: Vec<SemanticsId>) -> AccessNode {
+    /// What was last published as `id`.
+    fn prior(&self, id: SemanticsId) -> Option<&AccessNode> {
+        match &self.before {
+            Some(before) => before.get(&id),
+            None => self.published.get(&id),
+        }
+    }
+
+    /// Publish `node`, noting it in the delta when it differs from what was.
+    fn publish(&mut self, node: AccessNode, target: Target) {
+        if self.prior(node.id) != Some(&node) {
+            self.changed.push(node.clone());
+        }
+        self.targets.insert(node.id, target);
+        self.published.insert(node.id, node);
+    }
+
+    /// Take `id` and its published subtree out of what is published: the
+    /// tree no longer reads them.
+    fn unpublish(&mut self, id: SemanticsId) {
+        self.targets.remove(&id);
+        if let Some(node) = self.published.remove(&id) {
+            for child in node.children {
+                self.unpublish(child);
+            }
+        }
+    }
+
+    fn node(&self, row: SemanticsNode, root: bool, children: Vec<SemanticsId>) -> AccessNode {
         let store = self.store;
-        let row = &mut self.tree.nodes[index];
-        let label = row.label.take();
-        let role = if index == 0 {
+        let label = row.label;
+        let role = if root {
             SemanticsRole::Window
         } else {
             semantics_role(row.role, label.is_some())
@@ -380,8 +478,7 @@ impl Walk<'_> {
         let validity = row.validity;
         let error = validity.error.filter(|_| validity.invalid);
         let reason = error.and_then(|e| store.semantics(e)?.label.as_deref());
-        let hint = row.hint.take();
-        let description = match (reason, hint) {
+        let description = match (reason, row.hint) {
             (Some(reason), Some(hint)) => Some(format!("{reason}. {hint}")),
             (Some(reason), None) => Some(reason.to_owned()),
             (None, hint) => hint,
@@ -396,11 +493,14 @@ impl Walk<'_> {
             viso_ui::SortOrder::Descending => SemanticsSort::Descending,
         });
         AccessNode {
-            id: row_id(row),
+            id: match row.link {
+                Some(link) => link_id(row.id, link),
+                None => semantics_id(row.id),
+            },
             role,
             label,
             description,
-            value: row.value.take(),
+            value: row.value,
             live: semantics_live(row.live),
             level: row.heading_level,
             access_key: store.access_key(row.id).filter(|_| row.link.is_none()),
@@ -833,5 +933,165 @@ mod tests {
 
         assert!(perform(&mut store, window, button, None, AccessAction::Focus, 1.0).is_none());
         assert_eq!(store.focused(), Some(button));
+    }
+
+    /// `groups` groups of `per` leaves under one root, laid out: a leaf of
+    /// an even index is a named label, the others plain. Returns (store,
+    /// root, groups, leaves by group).
+    fn wide(groups: usize, per: usize) -> (NodeStore, NodeId, Vec<NodeId>, Vec<Vec<NodeId>>) {
+        let mut store = NodeStore::new();
+        let made = Rc::new(RefCell::new((Vec::new(), Vec::new())));
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            let sink = made.clone();
+            cx.flex(FlexStyle::default(), |cx| {
+                for _ in 0..groups {
+                    let leaves = Rc::new(RefCell::new(Vec::new()));
+                    let into = leaves.clone();
+                    let group = cx.flex(
+                        FlexStyle {
+                            axis: Axis::Row,
+                            ..Default::default()
+                        },
+                        |cx| {
+                            for _ in 0..per {
+                                let leaf = cx.leaf(LeafStyle {
+                                    size: Sizing::fixed(2.0, 2.0),
+                                    ..Default::default()
+                                });
+                                into.borrow_mut().push(leaf.id());
+                            }
+                        },
+                    );
+                    let mut made = sink.borrow_mut();
+                    made.0.push(group.id());
+                    made.1.push(leaves.take());
+                }
+            });
+            cx.root().unwrap()
+        };
+        let (groups, leaves) = made.take();
+        for (g, row) in leaves.iter().enumerate() {
+            for (i, &leaf) in row.iter().enumerate() {
+                if i % 2 == 0 {
+                    let label = format!("{g}.{i}");
+                    store.set_semantics(leaf, Semantics::role(Role::Label).with_label(label));
+                }
+            }
+        }
+        let mut scratch = Vec::new();
+        store.layout(root, Rect::new(0.0, 0.0, 400.0, 400.0), &mut scratch);
+        (store, root, groups, leaves)
+    }
+
+    /// Publish through `kept`, which re-derives what is marked, and through
+    /// `whole`, which re-derives every node; both must say the same and keep
+    /// the same tree. Ends the frame. Returns the delta and the rows `kept`
+    /// derived.
+    fn publish_both(
+        store: &mut NodeStore,
+        root: NodeId,
+        kept: &mut AccessBridge,
+        whole: &mut AccessBridge,
+    ) -> (Option<SemanticsDelta>, u32) {
+        let delta = kept.update(store, root, 1.0);
+        assert_eq!(delta, whole.sync(store, root, 1.0, true));
+        assert!(kept.published == whole.published, "the same tree published");
+        assert_eq!(kept.targets, whole.targets);
+        store.clear_dirty();
+        (delta, kept.derived)
+    }
+
+    #[test]
+    fn one_label_change_re_derives_its_branch_and_publishes_what_a_whole_re_derive_would() {
+        let (mut store, root, _, leaves) = wide(100, 100);
+        let (mut kept, mut whole) = (AccessBridge::new(), AccessBridge::new());
+        let (first, derived) = publish_both(&mut store, root, &mut kept, &mut whole);
+        assert_eq!(first.expect("the whole tree").nodes.len(), 10_101);
+        assert_eq!(derived, 10_101);
+
+        let leaf = leaves[42][8];
+        store.set_semantics(leaf, Semantics::role(Role::Label).with_label("changed"));
+        let (delta, derived) = publish_both(&mut store, root, &mut kept, &mut whole);
+        assert_eq!(derived, 3, "the leaf, its group and the root");
+        assert_eq!(whole.derived, 10_101);
+        let delta = delta.expect("the label changed");
+        assert_eq!(delta.nodes.len(), 1);
+        assert_eq!(delta.nodes[0].label.as_deref(), Some("changed"));
+
+        let (delta, derived) = publish_both(&mut store, root, &mut kept, &mut whole);
+        assert_eq!((delta, derived), (None, 0), "a clean frame derives nothing");
+    }
+
+    #[test]
+    fn every_kind_of_semantic_change_publishes_what_a_whole_re_derive_would() {
+        let (mut store, root, groups, leaves) = wide(4, 6);
+        let (mut kept, mut whole) = (AccessBridge::new(), AccessBridge::new());
+        publish_both(&mut store, root, &mut kept, &mut whole);
+        let all = 1 + 4 + 4 * 6;
+        type Change<'a> = (&'a str, Box<dyn Fn(&mut NodeStore) + 'a>);
+        let changes: Vec<Change> = vec![
+            (
+                "live state",
+                Box::new(|s| s.set_semantic_state(leaves[0][0], SemanticState::checked(true))),
+            ),
+            ("disabled", Box::new(|s| s.set_enabled(groups[1], false))),
+            ("enabled", Box::new(|s| s.set_enabled(groups[1], true))),
+            (
+                "hidden",
+                Box::new(|s| {
+                    let named = Semantics::role(Role::Label).with_label("2.2");
+                    s.set_semantics(leaves[2][2], named.with_hidden(true));
+                }),
+            ),
+            (
+                "shown",
+                Box::new(|s| {
+                    s.set_semantics(leaves[2][2], Semantics::role(Role::Label).with_label("2.2"))
+                }),
+            ),
+            (
+                "focusable",
+                Box::new(|s| s.set_focusable(leaves[3][1], true)),
+            ),
+            (
+                "a handler",
+                Box::new(|s| s.set_pointer_handler(leaves[3][3], Box::new(|_| {}))),
+            ),
+            (
+                "handlers gone",
+                Box::new(|s| s.clear_event_handlers(leaves[3][3])),
+            ),
+            (
+                "an access key",
+                Box::new(|s| s.set_access_key(leaves[0][2], Some('k'))),
+            ),
+            (
+                "a refusal",
+                Box::new(|s| {
+                    s.set_validity(
+                        leaves[1][1],
+                        viso_ui::Validity {
+                            required: true,
+                            invalid: true,
+                            error: Some(leaves[0][4]),
+                        },
+                    )
+                }),
+            ),
+            (
+                "its reason",
+                Box::new(|s| {
+                    s.set_semantics(leaves[0][4], Semantics::role(Role::Label).with_label("why"))
+                }),
+            ),
+            ("the focus", Box::new(|s| s.set_focused(Some(leaves[3][1])))),
+        ];
+        for (what, change) in changes {
+            change(&mut store);
+            let (delta, derived) = publish_both(&mut store, root, &mut kept, &mut whole);
+            assert!(delta.is_some(), "{what} is published");
+            assert!(derived < all, "{what} re-derived {derived} of {all} rows");
+        }
     }
 }

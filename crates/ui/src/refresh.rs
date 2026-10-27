@@ -497,6 +497,8 @@ impl NodeStore {
         if r.phase == Phase::Ending && !style.inset {
             self.transition(r.puck, LookValue::Scale(1.0), INSTANT);
         }
+        // Whether it refreshes is what it offers: no refresh while it does.
+        self.mark_dirty(r.viewport, DirtyClass::SEMANTICS);
         let r = &mut self.refreshers.list[i];
         r.phase = Phase::Refreshing;
         r.armed = true;
@@ -518,6 +520,7 @@ impl NodeStore {
         let style = self.refreshers.style;
         let r = self.refreshers.list[i];
         self.refreshers.list[i].phase = Phase::Ending;
+        self.mark_dirty(r.viewport, DirtyClass::SEMANTICS);
         self.refreshers.list[i].told = false;
         self.set_spinning(r.spinner, false);
         if style.inset {

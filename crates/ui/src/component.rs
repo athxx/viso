@@ -936,11 +936,11 @@ pub struct NodeStore {
     /// Cold: the viewports that snap to their items.
     pub(crate) snaps: crate::snap::Snaps,
     /// Cold: the nodes that show a descendant as active.
-    actives: crate::semantics::Sparse<NodeId>,
+    actives: crate::semantics::Few<NodeId>,
     /// Cold: the form controls a value is checked of.
-    validities: crate::semantics::Sparse<crate::semantics::Validity>,
+    validities: crate::semantics::Few<crate::semantics::Validity>,
     /// Cold: the tables, rows and cells that say where they stand.
-    tables: crate::semantics::Sparse<crate::semantics::TableFacts>,
+    tables: crate::semantics::Few<crate::semantics::TableFacts>,
     /// Cold: the parts of the controls each node roots, by slot, which the
     /// node owns: they go when it is freed, and their handles go stale.
     control_parts: Vec<(u32, Rc<dyn Any>)>,
@@ -3108,6 +3108,16 @@ impl NodeStore {
         }
         self.semantics.insert(self.arena.slot(id), semantics);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
+        // A field refused for the reason this node gives reads that reason.
+        let gives = |&(_, v): &(u32, crate::semantics::Validity)| v.error == Some(id);
+        if self.validities.iter().any(|e| gives(&e)) {
+            let fields: Vec<u32> = self.validities.iter().filter(gives).map(|e| e.0).collect();
+            for slot in fields {
+                if let Some(field) = self.arena.live_id(slot) {
+                    self.mark_dirty(field, DirtyClass::SEMANTICS);
+                }
+            }
+        }
     }
 
     /// The descendant node `id` shows as active while it keeps the focus
@@ -5183,7 +5193,19 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers.insert(self.arena.slot(id), handler);
+        let i = self.arena.slot(id);
+        let had = self.has_any_handler(i);
+        self.handlers.insert(i, handler);
+        if !had {
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
+    }
+
+    /// Whether slot `i` has a pointer or key handler: what makes a node
+    /// without a role read as a button, and offer a click.
+    #[inline]
+    fn has_any_handler(&self, i: usize) -> bool {
+        self.handlers.contains(i) || self.key_handlers.contains(i)
     }
 
     /// Whether a live node currently carries a pointer handler.
@@ -5288,7 +5310,11 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.flags[self.arena.slot(id)].set(NodeFlags::FOCUSABLE, focusable);
+        let flags = &mut self.flags[self.arena.slot(id)];
+        if flags.has(NodeFlags::FOCUSABLE) != focusable {
+            flags.set(NodeFlags::FOCUSABLE, focusable);
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
     }
 
     /// Whether a node takes input as far as its own `enabled` goes (default
@@ -5359,7 +5385,12 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.key_handlers.insert(self.arena.slot(id), handler);
+        let i = self.arena.slot(id);
+        let had = self.has_any_handler(i);
+        self.key_handlers.insert(i, handler);
+        if !had {
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
     }
 
     /// Detach a node's pointer and key handlers, as a reload does before it
@@ -5368,8 +5399,11 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers.remove(self.arena.slot(id));
-        self.key_handlers.remove(self.arena.slot(id));
+        let i = self.arena.slot(id);
+        let had = self.handlers.remove(i).is_some() | self.key_handlers.remove(i).is_some();
+        if had {
+            self.mark_dirty(id, DirtyClass::SEMANTICS);
+        }
     }
 
     /// Whether a live node currently carries a key handler.
@@ -6427,8 +6461,28 @@ impl NodeStore {
     /// so the parent can link it. Pre-order, mirroring the paint walk.
     /// `inert` is whether an ancestor is disabled.
     fn derive_into(&self, id: NodeId, inert: bool, tree: &mut SemanticsTree) -> usize {
-        let disabled = inert || self.flags[self.arena.slot(id)].has(NodeFlags::DISABLED);
         let my_index = tree.nodes.len();
+        let row = self.semantics_row(id, inert);
+        let disabled = row.disabled;
+        tree.nodes.push(row);
+        for c in self.read_children(id) {
+            let ci = self.derive_into(c, disabled, tree);
+            tree.nodes[my_index].children.push(ci);
+        }
+        for link in 0..self.links(id).len() as u16 {
+            let li = tree.nodes.len();
+            tree.nodes[my_index].children.push(li);
+            tree.nodes.push(self.semantics_link_row(id, link, disabled));
+        }
+        my_index
+    }
+
+    /// Node `id`'s own row of the derived tree, its children not filled in.
+    /// `inert` is whether an ancestor is disabled. What the row says changes
+    /// only with a SEMANTICS mark on `id`, or with its layout, or with an
+    /// ancestor's `disabled`, which [`SemanticsNode::disabled`] carries down.
+    pub fn semantics_row(&self, id: NodeId, inert: bool) -> SemanticsNode {
+        let disabled = inert || self.flags[self.arena.slot(id)].has(NodeFlags::DISABLED);
         // Resolve role/label: authored wins; else an interactive node (a pointer
         // or key handler present) defaults to Button so an assistive-technology
         // path always exists; else Group.
@@ -6439,15 +6493,13 @@ impl NodeStore {
             None if interactive => Role::Button,
             None => Role::Group,
         };
-        let label = authored.and_then(|s| s.label.clone());
-        let links = self.links(id).len() as u16;
         // A text of links holds the focus on one of them.
-        let focused = self.focused == Some(id) && links == 0;
-        tree.nodes.push(SemanticsNode {
+        let focused = self.focused == Some(id) && self.links(id).is_empty();
+        SemanticsNode {
             id,
             link: None,
             role,
-            label,
+            label: authored.and_then(|s| s.label.clone()),
             hint: authored.and_then(|s| s.hint.clone()),
             value: authored.and_then(|s| s.value.clone()),
             live: authored.map(|s| s.live).unwrap_or_default(),
@@ -6463,58 +6515,59 @@ impl NodeStore {
             table: self.table_facts(id),
             bounds: self.bounds(id),
             children: Vec::new(),
-        });
-        for c in self.arena.children(id) {
-            // A subtree authored hidden is shown but not read; one folded out
-            // of layout is neither.
-            if !self.concealed(c.index() as usize) && !self.semantics(c).is_some_and(|s| s.hidden) {
-                let ci = self.derive_into(c, disabled, tree);
-                tree.nodes[my_index].children.push(ci);
-            }
         }
-        let on = self.focused_link(id);
+    }
+
+    /// The row of link `link` of node `id`'s text, `disabled` as `id` is.
+    pub fn semantics_link_row(&self, id: NodeId, link: u16, disabled: bool) -> SemanticsNode {
         let origin = self.bounds(id);
-        for link in 0..links {
-            let ci = tree.nodes.len();
-            let bounds = self
-                .link_boxes(id, link)
-                .reduce(Rect::union)
-                .map_or(origin, |seen| {
-                    let world = self.world(id);
-                    Rect {
-                        x: origin.x + seen.x - world.x,
-                        y: origin.y + seen.y - world.y,
-                        ..seen
-                    }
-                });
-            tree.nodes.push(SemanticsNode {
-                id,
-                link: Some(link),
-                role: Role::Link,
-                label: self.link_label(id, link).map(str::to_owned),
-                hint: None,
-                value: None,
-                live: crate::semantics::LiveRegion::Off,
-                heading_level: None,
-                focused: on == Some(link),
-                disabled,
-                state: None,
-                active: None,
-                validity: crate::semantics::Validity::default(),
-                table: crate::semantics::TableFacts::default(),
-                bounds,
-                children: Vec::new(),
+        let bounds = self
+            .link_boxes(id, link)
+            .reduce(Rect::union)
+            .map_or(origin, |seen| {
+                let world = self.world(id);
+                Rect {
+                    x: origin.x + seen.x - world.x,
+                    y: origin.y + seen.y - world.y,
+                    ..seen
+                }
             });
-            tree.nodes[my_index].children.push(ci);
+        SemanticsNode {
+            id,
+            link: Some(link),
+            role: Role::Link,
+            label: self.link_label(id, link).map(str::to_owned),
+            hint: None,
+            value: None,
+            live: crate::semantics::LiveRegion::Off,
+            heading_level: None,
+            focused: self.focused_link(id) == Some(link),
+            disabled,
+            state: None,
+            active: None,
+            validity: crate::semantics::Validity::default(),
+            table: crate::semantics::TableFacts::default(),
+            bounds,
+            children: Vec::new(),
         }
-        my_index
+    }
+
+    /// The children of `id` the derived tree reads, in order: a subtree
+    /// authored hidden is shown but not read, and one folded out of layout
+    /// is neither. Its links' rows follow them.
+    pub fn read_children(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.arena.children(id).filter(|&c| {
+            !self.concealed(c.index() as usize) && !self.semantics(c).is_some_and(|s| s.hidden)
+        })
     }
 
     /// Re-derive the accessibility tree only when a SEMANTICS invalidation is
     /// pending, returning the new tree (or `None` when SEMANTICS is clean, so a
-    /// frame with no semantic change does no work). The whole tree is rebuilt —
-    /// SEMANTICS bubbles to the root, so any change reaches `root`; there is no
-    /// per-subtree caching.
+    /// frame with no semantic change does no work). The whole tree is rebuilt;
+    /// a holder of the last tree re-derives only the marked branches through
+    /// [`semantics_row`](Self::semantics_row) and
+    /// [`read_children`](Self::read_children), as SEMANTICS bubbles to `root`
+    /// along each.
     pub fn derive_semantics_dirty(&self, root: NodeId) -> Option<SemanticsTree> {
         if !self.any_dirty_class(DirtyClass::SEMANTICS) {
             return None;

@@ -362,19 +362,24 @@ mod tests {
 /// A cold column a few nodes carry a value in: one entry for each, in slot
 /// order.
 #[derive(Debug)]
-pub(crate) struct Sparse<T> {
+pub(crate) struct Few<T> {
     entries: Vec<(u32, T)>,
 }
 
-impl<T> Default for Sparse<T> {
+impl<T> Default for Few<T> {
     fn default() -> Self {
-        Sparse {
+        Few {
             entries: Vec::new(),
         }
     }
 }
 
-impl<T: Copy + PartialEq> Sparse<T> {
+impl<T: Copy + PartialEq> Few<T> {
+    /// The slots holding a value, with it, in slot order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, T)> + '_ {
+        self.entries.iter().copied()
+    }
+
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
     }

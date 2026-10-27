@@ -3176,6 +3176,8 @@ struct SemanticState { checked, value, range, expanded, selected, position: Opti
 
 `NodeStore::derive_semantics` 把三者折叠成扁平的 `SemanticsTree`（先序，`nodes[0]` 为根）。没有作者角色的交互节点默认为 `Button`，其余为 `Group`。DSL 的 `semantics.*` 属性组、默认角色与规则见 DSL U8。
 
+单个节点的行由 `semantics_row`（及链接的 `semantics_link_row`）派生，读入的子节点由 `read_children` 给出；整树派生就是二者的先序组合。约定：一行读到的任何输入（authored semantics、实时状态、focusable、handler 有无、access key、validity 及其 error 节点的 label、table facts、active descendant、refresh 状态、check mark）变化时，setter 都给该节点打 SEMANTICS 标记；error 节点的 label 变化也标记引用它的字段。祖先的 `disabled` 经行向下继承。facade 的 accessibility bridge 保留上次发布的 `AccessNode`：只有 SEMANTICS 脏的帧只沿 SEMANTICS 标记的分支重派生（一个 label 改动只重派生该节点与其祖先）；某行 `disabled` 变化时整棵子树重派生；`semantics.hidden` 翻转从已发布集合摘除或补入子树。带 LAYOUT / TRANSFORM / STRUCTURE 的帧整树重派生后再 diff。两种路径发布的 delta 相同，由差分测试逐类变化核对。
+
 Semantics tree 与 UI tree 不完全一一对应：
 
 - 隐藏、折叠 / 分页移出、`semantics.hidden` 的子树不进入；无名 `Group` 发布为 generic container，辅助技术跳过它；

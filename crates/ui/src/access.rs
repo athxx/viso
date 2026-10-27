@@ -15,6 +15,7 @@
 //! on the rare Alt press.
 
 use crate::component::NodeStore;
+use crate::dirty::DirtyClass;
 use crate::node::NodeId;
 
 /// What an access-key dispatch tells a node ([`EventCx::access`]).
@@ -63,11 +64,16 @@ impl NodeStore {
         if !self.arena().is_live(id) {
             return;
         }
+        let key = key.map(fold);
+        if self.access_key(id) == key {
+            return;
+        }
         let keys = &mut self.access.keys;
         keys.retain(|&(n, _)| n != id);
         if let Some(key) = key {
-            keys.push((id, fold(key)));
+            keys.push((id, key));
         }
+        self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
     /// The access key of node `id`.
