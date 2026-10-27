@@ -261,10 +261,16 @@ Rules (as for `todo_features.md`):
 
 ## N3 — Robustness and security
 
-- [ ] Bounded collection reads in `viso-ende`: `Decoder::read_count(max)` checks the cap and
+- [x] Bounded collection reads in `viso-ende`: `Decoder::read_count(max)` checks the cap and
   `count <= remaining()`. Replace the three hand copies in `schema/src/codec.rs`,
   `behavior/src/wire.rs` and `dev-protocol/src/wire.rs`. Verify that a huge count over zero-byte
   items fails fast.
+  — Built: `read_count(max)` (over the cap: the new `DecodeError::TooMany`; over the bytes left:
+  `UnexpectedEof`) and `read_list(max, item)`, which reserves at most 4096 items. The schema and
+  behavior `read_list`s, dev-protocol's `read_count`/`read_list` (mapping `TooMany` to
+  `WireError::Bound`), the AOT track reader and the 13 region-table counts use them. Verified:
+  an ende test reads a `u64::MAX` count with zero-byte items and fails at once, reading none;
+  ende, schema, dev-protocol and behavior lib tests pass; the workspace checks clean.
 - [ ] cargo-fuzz targets for `GameNet::receive` packets, AOT and view packages, behavior modules,
   the raster, SVG, glTF and font decoders, and text segmentation. Verify that each runs 10 minutes
   in `fuzz.yml` without a crash, with `encode(decode(x))` stable.

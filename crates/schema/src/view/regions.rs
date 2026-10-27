@@ -238,9 +238,9 @@ pub enum SlotTemplate {
     Region(u32),
 }
 
-/// A pre-allocation hint that never trusts a length prefix past a sane ceiling.
-fn bounded(count: u64) -> usize {
-    count.min(4096) as usize
+/// A pre-allocation hint that never trusts a count past a sane ceiling.
+fn bounded(count: usize) -> usize {
+    count.min(4096)
 }
 
 fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
@@ -407,14 +407,14 @@ impl Decode for ViewRegions {
         if !ProtocolTag::decode(dec)?.is_compatible() {
             return Err(DecodeError::Malformed { offset });
         }
-        let count = dec.read_varint()?;
+        let count = dec.read_count(usize::MAX)?;
         let mut states = Vec::with_capacity(bounded(count));
         for _ in 0..count {
             let hi = dec.read_u64()?;
             let lo = dec.read_u64()?;
             states.push(StateKey::from_parts(hi, lo));
         }
-        let count = dec.read_varint()?;
+        let count = dec.read_count(usize::MAX)?;
         let mut regions = Vec::with_capacity(bounded(count));
         for _ in 0..count {
             let offset = dec.position();
@@ -452,16 +452,16 @@ impl Decode for ViewRegions {
                 },
                 _ => return Err(DecodeError::Malformed { offset }),
             };
-            let count = dec.read_varint()?;
+            let count = dec.read_count(usize::MAX)?;
             let mut deps = Vec::with_capacity(bounded(count));
             for _ in 0..count {
                 deps.push(read_cell(dec)?);
             }
-            let count = dec.read_varint()?;
+            let count = dec.read_count(usize::MAX)?;
             let mut arms = Vec::with_capacity(bounded(count));
             for _ in 0..count {
                 let preserve = dec.read_bool()?;
-                let count = dec.read_varint()?;
+                let count = dec.read_count(usize::MAX)?;
                 let mut locals = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     locals.push(LocalTemplate {
@@ -469,7 +469,7 @@ impl Decode for ViewRegions {
                         init: read_u32(dec)?.checked_sub(1),
                     });
                 }
-                let count = dec.read_varint()?;
+                let count = dec.read_count(usize::MAX)?;
                 let mut env = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     let slot = read_u32(dec)?;
@@ -482,7 +482,7 @@ impl Decode for ViewRegions {
                         anchor: read_u32(dec)?,
                     });
                 }
-                let count = dec.read_varint()?;
+                let count = dec.read_count(usize::MAX)?;
                 let mut effects = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     effects.push(EffectTemplate {
@@ -490,7 +490,7 @@ impl Decode for ViewRegions {
                         anchor: read_u32(dec)?,
                     });
                 }
-                let count = dec.read_varint()?;
+                let count = dec.read_count(usize::MAX)?;
                 let mut starters = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     starters.push(StarterTemplate {
@@ -498,19 +498,19 @@ impl Decode for ViewRegions {
                         anchor: read_u32(dec)?,
                     });
                 }
-                let count = dec.read_varint()?;
+                let count = dec.read_count(usize::MAX)?;
                 let mut items = Vec::with_capacity(bounded(count));
                 for _ in 0..count {
                     let offset = dec.position();
                     items.push(match dec.read_u8()? {
                         0 => {
                             let node = Box::new(AotNode::decode(dec)?);
-                            let count = dec.read_varint()?;
+                            let count = dec.read_count(usize::MAX)?;
                             let mut edges = Vec::with_capacity(bounded(count));
                             for _ in 0..count {
                                 edges.push((read_cell(dec)?, dec.read_u8()?));
                             }
-                            let count = dec.read_varint()?;
+                            let count = dec.read_count(usize::MAX)?;
                             let mut routes = Vec::with_capacity(bounded(count));
                             for _ in 0..count {
                                 routes.push(Route::decode(dec)?);
@@ -550,11 +550,11 @@ impl Decode for ViewRegions {
             }
             regions.push(RegionTemplate { kind, deps, arms });
         }
-        let count = dec.read_varint()?;
+        let count = dec.read_count(usize::MAX)?;
         let mut groups = Vec::with_capacity(bounded(count));
         for _ in 0..count {
             let parent = read_u32(dec)?;
-            let count = dec.read_varint()?;
+            let count = dec.read_count(usize::MAX)?;
             let mut slots = Vec::with_capacity(bounded(count));
             for _ in 0..count {
                 let offset = dec.position();

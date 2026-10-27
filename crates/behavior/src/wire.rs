@@ -289,10 +289,6 @@ pub(crate) fn read_text<'a>(
     Ok(keep.text(dec.read_str()?))
 }
 
-/// The largest count a decoder preallocates for, so a corrupt length cannot
-/// request a huge buffer before the bytes run out.
-const MAX_PREALLOC: u64 = 4096;
-
 pub(crate) fn write_list<T>(
     enc: &mut Encoder,
     items: &[T],
@@ -306,14 +302,9 @@ pub(crate) fn write_list<T>(
 
 pub(crate) fn read_list<'a, T>(
     dec: &mut Decoder<'a>,
-    mut read: impl FnMut(&mut Decoder<'a>) -> Result<T, DecodeError>,
+    read: impl FnMut(&mut Decoder<'a>) -> Result<T, DecodeError>,
 ) -> Result<Vec<T>, DecodeError> {
-    let n = dec.read_varint()?;
-    let mut items = Vec::with_capacity(n.min(MAX_PREALLOC) as usize);
-    for _ in 0..n {
-        items.push(read(dec)?);
-    }
-    Ok(items)
+    dec.read_list(usize::MAX, read)
 }
 
 pub(crate) fn malformed(dec: &Decoder<'_>) -> DecodeError {

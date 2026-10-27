@@ -1278,14 +1278,10 @@ pub fn read_count(
     max: usize,
     what: &'static str,
 ) -> Result<usize, WireError> {
-    let count = dec.read_varint()?;
-    if count > max as u64 {
-        return Err(WireError::Bound { what });
-    }
-    if count > dec.remaining() as u64 {
-        return Err(malformed(dec));
-    }
-    Ok(count as usize)
+    dec.read_count(max).map_err(|error| match error {
+        DecodeError::TooMany { .. } => WireError::Bound { what },
+        error => WireError::Malformed(error),
+    })
 }
 
 fn write_revision(enc: &mut Encoder, revision: Revision) {
@@ -1320,14 +1316,12 @@ pub fn read_list<T>(
     dec: &mut Decoder<'_>,
     max: usize,
     what: &'static str,
-    mut item: impl FnMut(&mut Decoder<'_>) -> Result<T, WireError>,
+    item: impl FnMut(&mut Decoder<'_>) -> Result<T, WireError>,
 ) -> Result<Vec<T>, WireError> {
-    let count = read_count(dec, max, what)?;
-    let mut items = Vec::with_capacity(count);
-    for _ in 0..count {
-        items.push(item(dec)?);
-    }
-    Ok(items)
+    dec.read_list(max, item).map_err(|error| match error {
+        WireError::Malformed(DecodeError::TooMany { .. }) => WireError::Bound { what },
+        error => error,
+    })
 }
 
 fn write_strings(enc: &mut Encoder, strings: &[String]) {

@@ -1096,13 +1096,9 @@ fn encode_tracks(tracks: &[TrackSizing], enc: &mut Encoder) {
 }
 
 /// Reads a template, handing each track to `push`. A count is at most a
-/// `u16` and never more than the bytes left, each track taking one.
+/// `u16`.
 fn decode_tracks(dec: &mut Decoder, mut push: impl FnMut(TrackSizing)) -> Result<(), DecodeError> {
-    let offset = dec.position();
-    let count = dec.read_varint()?;
-    if count > u64::from(u16::MAX) || count > dec.remaining() as u64 {
-        return Err(DecodeError::Malformed { offset });
-    }
+    let count = dec.read_count(usize::from(u16::MAX))?;
     for _ in 0..count {
         push(decode_track(dec)?);
     }

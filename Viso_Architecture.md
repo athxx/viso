@@ -1956,6 +1956,7 @@ Runtime/Studio/Compiler protocol 不允许静默把不兼容数据按旧布局�
 - 每次 read 都经单一 `read_raw(len)` 闸门先检查剩余字节；
 - varint 超长（> 10 字节）或越出 `u64` 即拒绝；
 - byte/string 借用输入，不分配；声明长度超过剩余字节即报错，不按声明长度预分配；
+- 集合 count 经 `Decoder::read_count(max)`：超上限报 `TooMany`，超剩余字节报 `UnexpectedEof`（每个元素至少占一字节），所以对零字节元素的巨大 count 也立即失败；`Decoder::read_list(max, item)` 在其上读出 `Vec`，预分配至多 4096 项；
 - `DecodeError` 是 heap-free 的 `Copy` 枚举，携带 byte offset；
 - JSON reader 嵌套深度上限 128。
 
@@ -1968,7 +1969,7 @@ max collection length（MAX_FILES、MAX_SECTIONS …）
 max nesting depth（固定深度，如 state retyping）
 ```
 
-声明的 count 必须先与上限比较、再与剩余字节比较，之后才允许按它预分配（dev-protocol `read_count`：超上限 → `WireError::Bound`，超剩余字节 → `Malformed`）。
+声明的 count 必须先与上限比较、再与剩余字节比较，之后才允许按它预分配。schema、behavior 与 dev-protocol 的 list 读取都走 `read_count` / `read_list`；dev-protocol 把 `TooMany` 映射为带名字的 `WireError::Bound { what }`。
 
 错误模型：
 
@@ -1979,6 +1980,7 @@ DecodeError（ende）
   InvalidUtf8 { offset }
   TrailingBytes { remaining }      // decode_from_slice / Decoder::finish
   Malformed { offset }             // 非法 tag、版本不符、非零 padding、section table 不合法 …
+  TooMany { offset, max }          // read_count 超出调用方给的上限
 
 协议错误（如 dev 的 WireError）
   Version / FrameTooLarge / Bound / UnsupportedDomain / Malformed(DecodeError)
@@ -4810,7 +4812,7 @@ Makepad 的轻量序列化实现证明了低依赖、derive 生成、直接 Enco
 - Ende JSON 作为 diagnostics/tool interchange（emitter + bounded reader）；
 - bounded decoder；
 - execute-in-place：对齐分区与借用式 decode（AOT package 可直接从映射的 flash 读）；
-- typed ID 的 canonical wire 表示；
+- 集合 count 的统一上限与剩余字节检查（`read_count` / `read_list`）；
 - 不支持 RON；
 - Serde 只作为生态 integration。
 
@@ -5637,7 +5639,7 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 
 **决定**：Viso 内部协议、cache、snapshot、tool transport 使用 Viso-owned Ende Binary/JSON contract；RON 不属于 Viso；Serde 只作为生态 integration。
 
-**理由**：协议 ABI、分配行为、bounded decode、typed ID wire representation 与工具链版本语义属于框架架构。
+**理由**：协议 ABI、分配行为、bounded decode 与工具链版本语义属于框架架构。
 
 **代价**：需要维护 binary/json encoder/decoder、fuzz 与 compatibility tests，以及目标中的 derive。
 

@@ -7,7 +7,13 @@
 //! arbitrary (including adversarial) input can never panic and never read past
 //! the input slice. The fuzz-smoke test asserts exactly that over random bytes.
 
+use alloc::vec::Vec;
 use core::str::Utf8Error;
+
+/// The most items a list read reserves room for up front: a count is checked
+/// against the bytes left, but items wider than a byte would still reserve
+/// more than the input could hold.
+const LIST_PREALLOC: usize = 4096;
 
 /// Why decoding failed. Carries no owned data (no `String`) so it stays cheap
 /// and heap-free; the numeric context is enough to locate the fault.
@@ -52,6 +58,14 @@ pub enum DecodeError {
         /// Cursor position where the invalid value began.
         offset: usize,
     },
+    /// A count of items was over the cap its reader puts on it
+    /// ([`Decoder::read_count`]).
+    TooMany {
+        /// Cursor position where the count began.
+        offset: usize,
+        /// The cap.
+        max: usize,
+    },
 }
 
 impl core::fmt::Display for DecodeError {
@@ -76,6 +90,9 @@ impl core::fmt::Display for DecodeError {
             }
             DecodeError::Malformed { offset } => {
                 write!(f, "malformed value at offset {offset}")
+            }
+            DecodeError::TooMany { offset, max } => {
+                write!(f, "a count over {max} at offset {offset}")
             }
         }
     }
@@ -234,6 +251,36 @@ impl<'a> Decoder<'a> {
         self.read_raw(usize_from_u64(len, self.offset, self.remaining())?)
     }
 
+    /// Reads a count of the items that follow, each taking at least one
+    /// byte: one over `max` fails as [`DecodeError::TooMany`], and one over
+    /// the bytes left as [`DecodeError::UnexpectedEof`], so a corrupt count
+    /// fails here rather than looping over items that are not there.
+    #[inline]
+    pub fn read_count(&mut self, max: usize) -> Result<usize, DecodeError> {
+        let offset = self.offset;
+        let count = self.read_varint()?;
+        if count > max as u64 {
+            return Err(DecodeError::TooMany { offset, max });
+        }
+        usize_from_u64(count, offset, self.remaining())
+    }
+
+    /// Reads a list: a [`read_count`](Self::read_count) of at most `max`,
+    /// then that many items, each by `item`. It reserves room for at most a
+    /// few thousand items before reading them.
+    pub fn read_list<T, E: From<DecodeError>>(
+        &mut self,
+        max: usize,
+        mut item: impl FnMut(&mut Self) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        let count = self.read_count(max)?;
+        let mut items = Vec::with_capacity(count.min(LIST_PREALLOC));
+        for _ in 0..count {
+            items.push(item(self)?);
+        }
+        Ok(items)
+    }
+
     /// Reads a length-prefixed UTF-8 string, validating the bytes.
     #[inline]
     pub fn read_str(&mut self) -> Result<&'a str, DecodeError> {
@@ -366,7 +413,45 @@ decode_scalar! {
 mod tests {
     use super::*;
     use crate::encode::{Encode, Encoder};
-    use alloc::vec::Vec;
+
+    #[test]
+    fn a_huge_count_over_zero_byte_items_fails_at_once() {
+        let mut enc = Encoder::new();
+        enc.write_varint(u64::MAX);
+        let bytes = enc.into_bytes();
+        let mut dec = Decoder::new(&bytes);
+        let mut reads = 0;
+        let read = dec.read_list(usize::MAX, |_| {
+            reads += 1;
+            Ok::<(), DecodeError>(())
+        });
+        assert!(matches!(
+            read,
+            Err(DecodeError::UnexpectedEof { offset: 0, .. })
+        ));
+        assert_eq!(
+            reads, 0,
+            "no item is read for a count the input cannot hold"
+        );
+    }
+
+    #[test]
+    fn a_count_over_its_cap_is_too_many() {
+        let mut enc = Encoder::new();
+        enc.write_u8(7);
+        enc.write_varint(3);
+        enc.write_raw(&[1, 2, 3]);
+        let bytes = enc.into_bytes();
+        let mut dec = Decoder::new(&bytes);
+        dec.read_u8().unwrap();
+        assert_eq!(
+            dec.read_count(2),
+            Err(DecodeError::TooMany { offset: 1, max: 2 })
+        );
+        let mut dec = Decoder::new(&bytes[1..]);
+        assert_eq!(dec.read_list(3, Decoder::read_u8), Ok(alloc::vec![1, 2, 3]));
+        dec.finish().unwrap();
+    }
 
     // Encode a value, decode it back requiring full consumption, and assert the
     // round trip is the identity. The whole point of the mirrored codec.

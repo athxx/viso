@@ -4,12 +4,11 @@
 //!
 //! - a compact binary wire format ([`Encoder`] / [`Decoder`]) with a **bounded**
 //!   decoder — every read validates the remaining length, so decoding untrusted
-//!   input never panics and never reads past the slice;
+//!   input never panics and never reads past the slice, and a collection's count
+//!   is checked against its cap and the bytes left before any item is read;
 //! - a minimal JSON emitter for diagnostics and tool interchange, and a
 //!   bounded reader for a tool reading another tool's JSON;
-//! - the canonical wire representation of core typed IDs (the *format* — a stable
-//!   tag plus a fixed-width payload — not the identity type itself, which is
-//!   owned elsewhere, so no edge back into those crates is needed);
+//! - the protocol tag payloads start with and a stable content hash;
 //! - execute-in-place support: zero padding to an alignment boundary
 //!   ([`Encoder::align`] / [`Decoder::align`]), a section table that splits a
 //!   blob into [`SECTION_ALIGN`]-aligned sections a reader locates directly
