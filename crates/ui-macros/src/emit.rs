@@ -649,7 +649,7 @@ impl Emit<'_> {
             NodeKind::Component => {
                 let path = syn::parse_str::<syn::Path>(&node.type_name)
                     .map_err(|_| format!("`{}` is not a Rust path", node.type_name))?;
-                quote! { #path::build(cx).1.root }
+                quote! { <#path as ::viso::__private::viso_ui::Mount>::mount(cx) }
             }
         })
     }

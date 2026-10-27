@@ -60,6 +60,20 @@ pub trait Component {
     fn build(&self, cx: &mut BuildCx<'_>);
 }
 
+/// A Rust component a `ui!` fragment places by its type name
+/// (`ui! { Column { Tally {} } }`): a hand-written [`Component`] that is
+/// [`Default`], or a `component!` struct, which allocates its own states.
+pub trait Mount {
+    /// Builds a fresh one into `cx` and returns its root.
+    fn mount(cx: &mut BuildCx<'_>) -> Handle;
+}
+
+impl<C: Component + Default> Mount for C {
+    fn mount(cx: &mut BuildCx<'_>) -> Handle {
+        cx.component(&C::default())
+    }
+}
+
 /// A handle onto a built node. It carries only the [`NodeId`]; its type
 /// parameter is the kind of node it is, a [`kind`](crate::kind) marker for a
 /// named node of a `.vs` view (`Handle<kind::Button>`), or [`AnyNode`] for a
@@ -7118,6 +7132,30 @@ impl<'a> BuildCx<'a> {
     #[inline]
     pub fn root(&self) -> Option<NodeId> {
         self.root
+    }
+
+    /// Builds `component` here and returns its root: the first node it
+    /// declares at this level.
+    ///
+    /// # Panics
+    ///
+    /// When it declares no node.
+    pub fn component(&mut self, component: &(impl Component + ?Sized)) -> Handle {
+        let parent = self.stack.last().copied();
+        let before = match parent {
+            Some(parent) => self.store.arena.last_child(parent),
+            None => self.root,
+        };
+        component.build(self);
+        let first = match parent {
+            Some(parent) => match before {
+                Some(before) => self.store.arena.next_sibling(before),
+                None => self.store.arena.first_child(parent),
+            },
+            None if self.root != before => self.root,
+            None => None,
+        };
+        Handle::of(first.expect("a component declares a node"))
     }
 
     /// Declare a Flex container and its children. The `children` closure runs

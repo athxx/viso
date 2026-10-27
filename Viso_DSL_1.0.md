@@ -1619,7 +1619,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 - 实例可以位于 `if`、`match` 与 Keyed `for` 中，区域绑定对实例的 Input 实参、State 初值与 Handler 可见（§56.1）；
 - 控制流区域中的实例，其 State 属于区域的每次挂载：Keyed `for` 的每个 Item、`if`/`match` 的每次进入各有一份，以区域绑定求值初值；State 随 Key 移动，Item 移除或离开无 `preserve` 的分支即丢弃，`preserve` 分支缓存期间保留；这类 State 不按名称跨 Hot Reload 保留，含控制流区域的 View 整树重建时从初值重新开始；
 - 以下情形报 `E3711`：Component 直接或间接挂载自身；`bind` 目标为 Component Input 且带 `using`；向 View 不恰好挂载一个 Node 的实例传入非 Input Property 或非 Event Handler；`AdaptiveScope` 的 `basis` 不是常量 `dp` 长度（§96.3）；`SafeArea` 或 `KeyboardAvoiding` 带 `padding`（§96.6）；`padding` 写在非容器节点上（U3.3）；`Grid` 的 `areas` 或子节点的 `grid.area` 不是常量（U3.5）；`VirtualList` 的 `columns`、`min_column`、`gap`、`column_gap` 或 `masonry` 不是常量或长度为百分比（U9.3）；Style 以读取值的绑定给出布局 Property（U3.4）；
-- `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域以 `component!` 声明的 Component（可写作 Rust 路径，如 `widgets::Tally`），由其 `build` 挂载，每个实例自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
+- `ui!` Fragment 中不是内置 Widget 的类型是外围 Rust 作用域中实现 `viso::ui::Mount` 的 Rust Component（可写作 Rust 路径，如 `widgets::Tally`）：`Default` 的手写 `impl Component` 由其 `Default` 构建，`component!` 声明的 Component 由其 `build` 挂载并自带 State 与 Handler；这类 Node 不接受 Property、Handler 与子项（`E3711`），名称无法解析时由 Rust 在该位置报错；Hot Reload 与 Release Package 的 Fragment 没有 Rust 作用域，这类类型报 `E2001`。
 
 ---
 

@@ -199,8 +199,14 @@ Rules (as for `todo_features.md`):
     label), `view_inputs.rs` (given and defaulted inputs), and the trybuild cases
     `named_node_kind` (`Handle<kind::Text>` from a `Button` fails), `view_input_type` and
     `view_input_missing`; the facade's 29 macro-using test binaries pass.
-- [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have
+- [x] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have
   one shape. Verify with a `ui!` case naming a hand-written `impl Component`.
+  - Built: `viso_ui::Mount` (`fn mount(cx) -> Handle`), implemented for every `Component +
+    Default` and by each `component!` struct; `ui!` places a Rust component node through it.
+    `BuildCx::component(&c)` builds any `Component` and returns its root. Docs: Architecture
+    §6, DSL §40.1.
+  - Verified: `crates/viso/tests/ui_macro.rs` mounts a hand-written `Swatch` and a `component!`
+    `Tally` side by side, and a `Swatch` as a fragment's root.
 - [ ] Add `Component`, `Sizing`, `Align`, `Justify`, `Axis`, `Inset`, `BoxStyle` and `Rgba` to the
   prelude, with `component!`/`view!` re-exported from it. Verify that the examples build with
   `use viso::prelude::*` as their only `viso` import.

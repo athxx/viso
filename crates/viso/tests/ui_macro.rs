@@ -519,3 +519,86 @@ fn a_sheet_mounts_against_its_edge_resting_at_its_detents() {
         "against the top, 200 of its 240 showing"
     );
 }
+
+/// A hand-written component: what a fragment places by its type name, built
+/// from its `Default`.
+#[derive(Default)]
+struct Swatch;
+
+impl viso::ui::Component for Swatch {
+    fn build(&self, cx: &mut BuildCx<'_>) {
+        let leaf = cx.leaf(viso::ui::LeafStyle::default());
+        cx.semantics(
+            leaf,
+            viso::ui::Semantics {
+                role: viso::ui::Role::Image,
+                label: Some("swatch".into()),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+viso::component! {
+    Tally {
+        state count = 0;
+        view { Button { text: "Tally"; on click { count += 1; } } }
+    }
+}
+
+/// A fragment mounts a hand-written `Component` and a `component!` alike:
+/// each by its type name, each the root it builds.
+#[test]
+fn a_fragment_mounts_hand_written_and_declared_components_alike() {
+    let build = viso::ui! {
+        Column {
+            Swatch {}
+            Tally {}
+        }
+    };
+    let mut store = NodeStore::new();
+    let mut states = StateStore::new();
+    let mut bindings = BindingTable::new();
+    let mut lists = VirtualLists::new();
+    let mut text_edits = TextEdits::new();
+    let mut projectors = SemanticProjector::new();
+    let root = {
+        let mut cx = BuildCx::with_reactive(
+            &mut store,
+            &mut states,
+            &mut bindings,
+            &mut lists,
+            &mut text_edits,
+            &mut projectors,
+        );
+        build(&mut cx).id()
+    };
+    let kids: Vec<_> = store.arena().children(root).collect();
+    assert_eq!(
+        kids.len(),
+        2,
+        "each component built its root under the Column"
+    );
+    let said = |id| {
+        let s = store.semantics(id).expect("speaks");
+        (s.role, s.label.clone())
+    };
+    assert_eq!(
+        said(kids[0]),
+        (viso::ui::Role::Image, Some("swatch".into()))
+    );
+    assert_eq!(
+        said(kids[1]),
+        (viso::ui::Role::Button, Some("Tally".into()))
+    );
+}
+
+/// A fragment whose root is a hand-written component returns its root.
+#[test]
+fn a_hand_written_component_is_a_fragments_root() {
+    let build = viso::ui! { Swatch {} };
+    let mut store = NodeStore::new();
+    let mut cx = BuildCx::new(&mut store);
+    let root = build(&mut cx);
+    assert_eq!(cx.root(), Some(root.id()));
+}

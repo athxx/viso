@@ -131,6 +131,12 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     (Self { #(#values,)* }, __viso_view)
                 }
             }
+
+            impl ::viso::__private::viso_ui::Mount for #name {
+                fn mount(cx: &mut ::viso::__private::viso_ui::BuildCx<'_>) -> ::viso::__private::viso_ui::Handle {
+                    Self::build(cx).1.root
+                }
+            }
         })
     })();
     finish(expansion, false)

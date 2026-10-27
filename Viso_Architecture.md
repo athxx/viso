@@ -576,7 +576,7 @@ viso::component! {
 let page = ui! { Column { Text { text: "Counter"; } Counter {} } };
 ```
 
-`ui!` 把 schema 中没有的节点类型当作 Rust Component 路径，以 `Path::build(cx)` 挂载——即 `component!` 生成的形状。手写控件实现 `viso::ui::Component`（`fn build(&self, cx: &mut BuildCx)`）。
+`ui!` 把 schema 中没有的节点类型当作 Rust Component 路径，以 `<Path as viso::ui::Mount>::mount(cx)` 挂载，返回其根。`Mount` 是二者的同一形状：`component!` 生成的 struct 实现它（`build` 分配自己的 State），手写控件实现 `viso::ui::Component`（`fn build(&self, cx: &mut BuildCx)`）并 `Default` 即得到它；`BuildCx::component(&c)` 构建任一 `Component` 并返回其根。
 
 DSL 语法（property binding 用 `property: expr;`，命名节点用 `node name: Type { ... }`，行为赋值用 `=`）以 `Viso_DSL_1.0.md` 为准。
 
