@@ -2293,15 +2293,13 @@ Runtime 聚合以下原因（`viso_runtime::RedrawReason`，存成一个 `Redraw
 InputDirty
 StateDirty
 AnimationActive
-TimerDue
-AsyncCompletion
+AsyncCompletion   // RawEvent::Wakeup：task 完成、dev channel 消息、timer 到期
 WindowResize
 ExternalSurfaceInvalidation
-HotReload
 FirstFrame        // 启动首帧，由 scheduler 拥有（ADR 0004）
 ```
 
-`TimerDue` 与 `HotReload` 目前没有产生者：timer 到期与 dev channel 消息都以 `RawEvent::Wakeup` 进入，记为 `AsyncCompletion`。
+原因只用于 `decide()`，不区分跨线程唤醒的来源：timer 到期与 dev channel 消息都以 `RawEvent::Wakeup` 进入，共用 `AsyncCompletion`。
 
 最终决定（`FrameDecision`，由 `RedrawReasons::decide` 得出）：
 
@@ -2309,7 +2307,6 @@ FirstFrame        // 启动首帧，由 scheduler 拥有（ADR 0004）
 NoFrame                 // ControlFlow::Wait；有 timer 时为 WaitUntil(deadline)
 FrameAtNextVsync        // 其余原因
 ImmediateFrame          // WindowResize / ExternalSurfaceInvalidation / FirstFrame
-BackgroundMaintenance   // 目标（尚未实现）：decide() 目前不会产生它
 ```
 
 一帧内（两帧之间到达的所有事件）的多个 state mutation 自动 batch 进同一 transaction。一次性 timer 由 driver 持有，driver 报告最近 deadline（`FrameDriver::next_timer_deadline`），scheduler 只在本来要 `Wait` 时把它转为 `ControlFlow::WaitUntil` 驱动平台 pump，而不是轮询（ADR 0019）；deadline 到达时 backend 合成一次 `RawEvent::Wakeup`。

@@ -249,8 +249,12 @@ Rules (as for `todo_features.md`):
   with nothing relaid. Verified: `cargo check --workspace --all-targets` and clippy `-D warnings`
   (workspace, and `viso`/`viso-ui` with `headless,hot-reload`) are clean; the viso-ui lib (761),
   `animation_loop` (3) and viso-ende tests pass; viso-ext and the examples use none of it.
-- [ ] Produce or remove `RedrawReason::TimerDue`/`HotReload` and
+- [x] Produce or remove `RedrawReason::TimerDue`/`HotReload` and
   `FrameDecision::BackgroundMaintenance`. Verify with scheduler unit tests.
+  — Built: removed. Reasons feed only `decide()`, and a timer deadline and a dev-channel message
+  both arrive as `RawEvent::Wakeup` (`AsyncCompletion`), so separate variants would change
+  nothing. `RedrawReasons` is a `u8` again. Verified: viso-runtime lib tests (37) pass; workspace
+  clippy `-D warnings` is clean.
 - [ ] `viso::version()`. Verify that it matches `CARGO_PKG_VERSION`.
 
 ## N3 — Robustness and security

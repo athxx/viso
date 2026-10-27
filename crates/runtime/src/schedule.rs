@@ -14,12 +14,11 @@ pub enum RedrawReason {
     InputDirty,
     StateDirty,
     AnimationActive,
-    TimerDue,
+    /// A cross-thread kick: a task, a dev patch, or a timer's deadline
+    /// passing.
     AsyncCompletion,
     WindowResize,
     ExternalSurfaceInvalidation,
-    /// Live editing / hot reload requested a redraw.
-    HotReload,
     /// The first frame after a window is created on launch. Escalated to an
     /// immediate frame so the initial content appears without waiting for an
     /// OS expose event.
@@ -28,17 +27,15 @@ pub enum RedrawReason {
 
 impl RedrawReason {
     /// The bit this reason occupies in a [`RedrawReasons`] set.
-    const fn bit(self) -> u16 {
+    const fn bit(self) -> u8 {
         match self {
             RedrawReason::InputDirty => 1 << 0,
             RedrawReason::StateDirty => 1 << 1,
             RedrawReason::AnimationActive => 1 << 2,
-            RedrawReason::TimerDue => 1 << 3,
-            RedrawReason::AsyncCompletion => 1 << 4,
-            RedrawReason::WindowResize => 1 << 5,
-            RedrawReason::ExternalSurfaceInvalidation => 1 << 6,
-            RedrawReason::HotReload => 1 << 7,
-            RedrawReason::FirstFrame => 1 << 8,
+            RedrawReason::AsyncCompletion => 1 << 3,
+            RedrawReason::WindowResize => 1 << 4,
+            RedrawReason::ExternalSurfaceInvalidation => 1 << 5,
+            RedrawReason::FirstFrame => 1 << 6,
         }
     }
 }
@@ -52,8 +49,6 @@ pub enum FrameDecision {
     FrameAtNextVsync,
     /// Draw immediately (e.g. resize).
     ImmediateFrame,
-    /// Do low-priority background maintenance without a visible frame.
-    BackgroundMaintenance,
 }
 
 impl FrameDecision {
@@ -66,9 +61,7 @@ impl FrameDecision {
     pub fn to_control_flow(self) -> ControlFlow {
         match self {
             FrameDecision::NoFrame => ControlFlow::Wait,
-            FrameDecision::FrameAtNextVsync
-            | FrameDecision::ImmediateFrame
-            | FrameDecision::BackgroundMaintenance => ControlFlow::Poll,
+            FrameDecision::FrameAtNextVsync | FrameDecision::ImmediateFrame => ControlFlow::Poll,
         }
     }
 }
@@ -79,7 +72,7 @@ impl FrameDecision {
 /// a compare-with-zero. `take` clears the set and returns what was pending, so
 /// each reason drives exactly one decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RedrawReasons(u16);
+pub struct RedrawReasons(u8);
 
 impl RedrawReasons {
     /// An empty set (idle).
@@ -162,9 +155,7 @@ mod tests {
             RedrawReason::InputDirty,
             RedrawReason::StateDirty,
             RedrawReason::AnimationActive,
-            RedrawReason::TimerDue,
             RedrawReason::AsyncCompletion,
-            RedrawReason::HotReload,
         ] {
             let mut reasons = RedrawReasons::new();
             reasons.add(reason);
