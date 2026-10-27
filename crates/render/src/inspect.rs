@@ -404,7 +404,7 @@ impl Renderer {
     /// and `.instances()` then equal the corresponding `FrameStats` fields.
     pub fn inspect_batches(&self) -> InspectBatches {
         let batches = self
-            .segments_snapshot()
+            .draws_snapshot()
             .iter()
             .enumerate()
             .map(|(i, seg)| self.inspect_segment(BatchId(i as u32), seg))
@@ -736,27 +736,34 @@ impl Renderer {
                 range: (start, count),
             });
         }
+        // The walk numbers the segments; a segment that joined an earlier
+        // draw reports that draw.
+        let draw_of = self.segment_draws();
+        for p in &mut primitives {
+            if let Some(&d) = draw_of.get(p.batch.0 as usize) {
+                p.batch = BatchId(d);
+            }
+        }
         InspectPrimitives { primitives }
     }
 
-    /// Project the frame's draw segments into the paint-order `RenderChunk`
-    /// stream — the `RenderChunkId -> ranges` view.
+    /// Project the frame's draws into the paint-order `RenderChunk` stream —
+    /// the `RenderChunkId -> ranges` view.
     ///
     /// A cold-path introspection surface, produced only when tooling asks. It is
-    /// not a hot-path structure and does not replace the segment list: the
-    /// segments stay the sole draw carrier the encoder reads. Each emitted draw
-    /// becomes one [`RenderChunk`] carrying the packed [`BatchKey`] the encoder
-    /// fixes — including the real bound resource for image/glyph chunks, so
-    /// chunks that bind distinct textures hold distinct keys — its geometry
-    /// range and clip, and the half-open paint-order span it absorbed. That span
-    /// is the one piece [`InspectBatch`] cannot carry: it maps a changed
-    /// paint-order position back to the single chunk that must be rebuilt.
+    /// not a hot-path structure and does not replace the draw list the encoder
+    /// reads. Each draw becomes one [`RenderChunk`] carrying the packed
+    /// [`BatchKey`] the encoder fixes — including the real bound resource for
+    /// image/glyph chunks, so chunks that bind distinct textures hold distinct
+    /// keys — its geometry range and clip, and the half-open paint-order span
+    /// from its first primitive to its last. That span is the one piece
+    /// [`InspectBatch`] cannot carry: it maps a changed paint-order position
+    /// back to the chunks that must be rebuilt.
     ///
     /// `chunks[i]` is `RenderChunkId(i)` and corresponds one-to-one with
-    /// `inspect_batches().batches[i]`: identical count and boundaries, since both
-    /// route every merge through the same [`joins`](crate::batch::joins)
-    /// predicate. It reads only `&self`, mutates no renderer state, and never
-    /// runs on the steady frame path.
+    /// `inspect_batches().batches[i]`: both are the draws the encoder issues.
+    /// It reads only `&self`, mutates no renderer state, and never runs on the
+    /// steady frame path.
     pub fn render_chunks(&self) -> Vec<RenderChunk> {
         // The paint-order walk yields, per emitted batch, the half-open span of
         // paint-order positions that batch absorbed. Batch boundaries here match
@@ -773,9 +780,19 @@ impl Renderer {
             "one paint-order span per emitted segment"
         );
 
-        segments
+        // Each draw spans the paint order of every segment it took in.
+        let (draws, draw_of) = (self.draws_snapshot(), self.segment_draws());
+        let mut orders: Vec<Option<(u32, u32)>> = vec![None; draws.len()];
+        for (&d, span) in draw_of.iter().zip(order_spans) {
+            let order = &mut orders[d as usize];
+            *order = Some(match *order {
+                Some((start, end)) => (start.min(span.0), end.max(span.1)),
+                None => span,
+            });
+        }
+        draws
             .iter()
-            .zip(order_spans)
+            .zip(orders)
             .map(|(seg, order)| RenderChunk {
                 key: BatchKey::pack(
                     seg.kind.family(),
@@ -785,7 +802,7 @@ impl Renderer {
                 family: seg.kind.family(),
                 clip: seg.clip,
                 geometry: (seg.start, seg.count),
-                order,
+                order: order.unwrap_or((0, 0)),
             })
             .collect()
     }

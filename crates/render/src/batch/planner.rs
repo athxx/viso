@@ -15,15 +15,15 @@
 //!
 //! # Order safety
 //!
-//! Paint order is a correctness contract: a primitive may only join the
-//! draw **immediately before it**. The planner never reaches back past an
-//! intervening primitive to group a non-adjacent one, so the emitted draws,
-//! read front to back, replay the scene in exactly its submission order. The
-//! goal is the *maximum contiguous run of compatible instances*, not the fewest
-//! possible draws: widening the window to reorder across an intervening
-//! primitive is only sound for spans explicitly marked reorder-safe, which this
-//! layer does not yet mint — so the safe, order-preserving adjacency merge is
-//! the whole policy here.
+//! Paint order is a correctness contract. Adjacent primitives with equal keys
+//! join one run ([`joins`]); [`plan`] then folds those runs into draws, and a
+//! run may join a draw *earlier* than the one before it only when moving it
+//! there cannot change a pixel: every draw it passes over lies in the same
+//! space, covers a known region, and does not overlap the run. Two draws that
+//! cover disjoint pixels commute, so the emitted draws still replay the scene
+//! exactly. A run joins only a draw whose instances end where its own begin,
+//! so a draw stays one contiguous range of its family buffer. The walk back
+//! stops at the first draw it cannot pass, and after [`REACH`] draws.
 //!
 //! # Mergeability
 //!
@@ -386,6 +386,124 @@ pub fn joins(prev: &BatchItem, next: &BatchItem) -> bool {
         && prev.space == next.space
 }
 
+/// How many draws [`plan`] walks back past to find one a run can join.
+pub const REACH: usize = 32;
+
+/// One run of adjacent, joined primitives handed to [`plan`]: what it binds,
+/// where its instances lie in its family buffer, and the region it covers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Run {
+    /// The batch item the run's primitives share.
+    pub item: BatchItem,
+    /// The first instance (or index) of the run in its family buffer.
+    pub start: u32,
+    /// How many instances (or indices) the run draws.
+    pub count: u32,
+    /// The region its pixels may touch, in its pass's space, or `None` when
+    /// not known. A draw passed over and a run moved past it must both have one.
+    pub cover: Option<Rect>,
+}
+
+impl Run {
+    /// The region the run touches once its clip cuts it.
+    fn touched(&self) -> Option<Rect> {
+        let cover = self.cover?;
+        Some(match self.item.clip {
+            Some(clip) => cover.intersect(clip),
+            None => cover,
+        })
+    }
+
+    /// Whether `self` and `other` draw into the same pass.
+    fn same_pass(&self, other: &Run) -> bool {
+        self.item.key.target_field() == other.item.key.target_field()
+            && self.item.key.target_class_field() == other.item.key.target_class_field()
+    }
+}
+
+/// One draw [`plan`] emits: the run that opened it, grown by the runs it took
+/// in. Its `start`/`count` cover every instance of those runs, and its
+/// `cover` their union.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Draw {
+    /// The index of the run that opened the draw.
+    pub first: u32,
+    /// The draw as one run: its item, instance range and cover.
+    pub run: Run,
+}
+
+/// Fold `runs`, in paint order, into `draws`: `of[i]` is the draw run `i`
+/// lands in. Returns how many runs joined a draw other than the last.
+///
+/// A run extends the last draw when the two [`joins`] and its instances follow
+/// the draw's. Otherwise it walks back: past each draw of another pass, and
+/// past each draw of its own pass that lies in its space and covers a known
+/// region apart from its own, until a draw it joins whose instances it
+/// follows. A draw it can neither pass nor join ends the walk, and the run
+/// opens a draw of its own. Program runs never move: their instances are laid
+/// out by the run that precedes them.
+pub fn plan(runs: &[Run], draws: &mut Vec<Draw>, of: &mut Vec<u32>) -> u32 {
+    draws.clear();
+    of.clear();
+    let mut moved = 0;
+    for (i, run) in runs.iter().enumerate() {
+        let at = match draws.last() {
+            Some(last) if extends(&last.run, run) => Some(draws.len() - 1),
+            Some(_) if run.item.key.family() != BatchFamily::Program => {
+                let found = hoist(draws, run);
+                moved += u32::from(found.is_some());
+                found
+            }
+            _ => None,
+        };
+        match at {
+            Some(d) => {
+                let draw = &mut draws[d].run;
+                draw.count += run.count;
+                draw.cover = match (draw.cover, run.cover) {
+                    (Some(a), Some(b)) => Some(a.union(b)),
+                    _ => None,
+                };
+                of.push(d as u32);
+            }
+            None => {
+                of.push(draws.len() as u32);
+                draws.push(Draw {
+                    first: i as u32,
+                    run: *run,
+                });
+            }
+        }
+    }
+    moved
+}
+
+/// Whether `run` can grow `draw`: the two join and `run`'s instances begin
+/// where the draw's end.
+fn extends(draw: &Run, run: &Run) -> bool {
+    joins(&draw.item, &run.item) && draw.start + draw.count == run.start
+}
+
+/// The earlier draw `run` may join without changing a pixel, if any.
+fn hoist(draws: &[Draw], run: &Run) -> Option<usize> {
+    let touched = run.touched()?;
+    for (d, draw) in draws.iter().enumerate().rev().take(REACH) {
+        let draw = &draw.run;
+        if !draw.same_pass(run) {
+            continue;
+        }
+        if extends(draw, run) {
+            return Some(d);
+        }
+        let apart = draw.item.space == run.item.space
+            && draw.touched().is_some_and(|t| !t.intersects(touched));
+        if !apart {
+            return None;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,5 +704,196 @@ mod tests {
         };
         assert!(joins(&a, &a));
         assert!(!joins(&a, &b));
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    /// A run of `family` binding `resource`, drawing `count` instances from
+    /// `start` over `cover`.
+    fn run(family: BatchFamily, resource: u32, start: u32, count: u32, cover: Option<Rect>) -> Run {
+        Run {
+            item: BatchItem {
+                key: BatchKey::pack(family, BatchTarget::Main, Some(bg(resource))),
+                clip: None,
+                space: Space::STATIC,
+                mergeable: family.mergeable(),
+            },
+            start,
+            count,
+            cover,
+        }
+    }
+
+    fn planned(runs: &[Run]) -> (Vec<Draw>, Vec<u32>, u32) {
+        let (mut draws, mut of) = (Vec::new(), Vec::new());
+        let moved = plan(runs, &mut draws, &mut of);
+        (draws, of, moved)
+    }
+
+    /// Cards in a column, each a background quad with a label over it: the
+    /// paint order alternates quad, glyphs, quad, glyphs.
+    fn cards(n: u32) -> Vec<Run> {
+        (0..n)
+            .flat_map(|i| {
+                let y = i as f32 * 30.0;
+                [
+                    run(BatchFamily::Quad, 0, i, 1, Some(rect(0.0, y, 100.0, 28.0))),
+                    run(
+                        BatchFamily::GlyphRun,
+                        1,
+                        i * 5,
+                        5,
+                        Some(rect(4.0, y + 4.0, 50.0, 20.0)),
+                    ),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_over_sibling_cards_folds_into_one_quad_draw_and_one_glyph_draw() {
+        let (draws, of, moved) = planned(&cards(6));
+        assert_eq!(draws.len(), 2);
+        assert_eq!((draws[0].run.start, draws[0].run.count), (0, 6));
+        assert_eq!((draws[1].run.start, draws[1].run.count), (0, 30));
+        assert_eq!(draws[0].run.item.key.family(), BatchFamily::Quad);
+        assert_eq!(of, [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]);
+        assert_eq!(moved, 5, "each later card's quad moved past the labels");
+        assert_eq!(draws[0].run.cover, Some(rect(0.0, 0.0, 100.0, 178.0)));
+    }
+
+    #[test]
+    fn a_run_over_a_draw_it_would_pass_keeps_its_place() {
+        // The second quad covers the first label: it must draw after it.
+        let mut runs = cards(2);
+        runs[2].cover = Some(rect(0.0, 20.0, 100.0, 28.0));
+        let (draws, of, moved) = planned(&runs);
+        assert_eq!(moved, 0);
+        assert_eq!(of, [0, 1, 2, 3]);
+        assert_eq!(draws.len(), 4);
+    }
+
+    #[test]
+    fn a_draw_of_unknown_extent_is_never_passed() {
+        let mut runs = cards(2);
+        runs[1].cover = None;
+        assert_eq!(planned(&runs).0.len(), 4, "the label's extent is unknown");
+        let mut runs = cards(2);
+        runs[2].cover = None;
+        assert_eq!(planned(&runs).0.len(), 4, "the moving quad's is");
+    }
+
+    #[test]
+    fn a_draw_in_another_space_is_never_passed() {
+        // A label under a transform root may move anywhere without a new plan.
+        let mut runs = cards(2);
+        runs[1].item.space = Space {
+            slot: 3,
+            chain: Space::STATIC.chain,
+        };
+        assert_eq!(planned(&runs).0.len(), 4);
+    }
+
+    #[test]
+    fn a_draw_into_another_pass_is_no_barrier() {
+        let mut runs = cards(2);
+        runs[1].item.key = BatchKey::pack(
+            BatchFamily::GlyphRun,
+            BatchTarget::Offscreen(0),
+            Some(bg(1)),
+        );
+        runs[1].cover = Some(rect(0.0, 0.0, 400.0, 400.0));
+        let (draws, of, _) = planned(&runs);
+        assert_eq!(of[2], 0, "the second quad passes a draw of another pass");
+        assert_eq!(draws.len(), 3);
+    }
+
+    #[test]
+    fn a_run_joins_only_a_draw_whose_instances_it_follows() {
+        // The second quad's instance is not next to the first's in the buffer.
+        let mut runs = cards(2);
+        runs[2].start = 7;
+        let (draws, _, moved) = planned(&runs);
+        assert_eq!(moved, 0);
+        assert_eq!(draws.len(), 4, "and the second label must follow its quad");
+    }
+
+    #[test]
+    fn a_clip_cuts_the_region_a_draw_touches() {
+        // The label's glyphs reach into the next card, but its clip keeps them
+        // on its own.
+        let mut runs = cards(2);
+        runs[1].cover = Some(rect(4.0, 4.0, 50.0, 40.0));
+        assert_eq!(planned(&runs).0.len(), 4);
+        runs[1].item.clip = Some(rect(0.0, 0.0, 100.0, 28.0));
+        runs[3].item.clip = Some(rect(0.0, 30.0, 100.0, 28.0));
+        let (draws, of, _) = planned(&runs);
+        assert_eq!(of[2], 0, "the clipped label no longer reaches the quad");
+        assert_eq!(draws.len(), 3, "labels under different clips stay apart");
+    }
+
+    #[test]
+    fn program_runs_keep_their_place() {
+        let program = |start: u32, y: f32| Run {
+            item: BatchItem {
+                key: BatchKey::pack(BatchFamily::Program, BatchTarget::Main, None).with_program(1),
+                clip: None,
+                space: Space::STATIC,
+                mergeable: true,
+            },
+            start,
+            count: 1,
+            cover: Some(rect(0.0, y, 10.0, 10.0)),
+        };
+        let runs = [
+            program(0, 0.0),
+            run(
+                BatchFamily::Quad,
+                0,
+                0,
+                1,
+                Some(rect(50.0, 0.0, 10.0, 10.0)),
+            ),
+            program(1, 20.0),
+        ];
+        assert_eq!(planned(&runs).0.len(), 3);
+    }
+
+    #[test]
+    fn the_walk_back_stops_after_its_reach() {
+        // A quad, then more disjoint images than the walk passes, then a quad.
+        let mut runs = vec![run(
+            BatchFamily::Quad,
+            0,
+            0,
+            1,
+            Some(rect(0.0, 0.0, 4.0, 4.0)),
+        )];
+        for i in 0..REACH as u32 {
+            let x = 10.0 + i as f32 * 10.0;
+            runs.push(run(
+                BatchFamily::Image,
+                2 + i,
+                i,
+                1,
+                Some(rect(x, 0.0, 4.0, 4.0)),
+            ));
+        }
+        runs.push(run(
+            BatchFamily::Quad,
+            0,
+            1,
+            1,
+            Some(rect(0.0, 10.0, 4.0, 4.0)),
+        ));
+        let (draws, _, moved) = planned(&runs);
+        assert_eq!(moved, 0);
+        assert_eq!(draws.len(), REACH + 2);
+        runs.remove(1);
+        let (draws, _, moved) = planned(&runs);
+        assert_eq!(moved, 1);
+        assert_eq!(draws.len(), REACH);
     }
 }

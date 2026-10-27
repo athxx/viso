@@ -11,7 +11,8 @@
 //!   one row, so one row mounts and one unmounts.
 //!
 //! Each frame runs Layout through UploadGpuChanges, as the facade does, but
-//! submits nothing: the raster cost is the damage's, measured elsewhere.
+//! submits nothing: the raster cost is the damage's, measured elsewhere. Each
+//! case prints the draws its first frame issues.
 //!
 //! Run release (`cargo bench -p viso --bench paint_scale`).
 
@@ -371,10 +372,11 @@ fn bench_paint_scale(c: &mut Criterion) {
         let (mut h, target) = page(cards);
         let mut flip = 0;
         h.store.set_fill(target, COLORS[1]);
+        let painted = frame(&mut h);
         eprintln!(
-            "hover/cards_{cards}: {} nodes, the frame paints {} primitives",
+            "hover/cards_{cards}: {} nodes, the frame paints {painted} primitives in {} draws",
             h.store.arena().live_count(),
-            frame(&mut h)
+            h.renderer.frame_stats().draw_calls
         );
         c.bench_function(&format!("hover/cards_{cards}/paint"), |b| {
             b.iter_custom(|iters| {
@@ -433,10 +435,11 @@ fn bench_paint_scale(c: &mut Criterion) {
         let glyphs = [17, 18];
         let mut flip = 0;
         h.store.set_content_payload(label, text(glyphs[1]));
+        let painted = frame(&mut h);
         eprintln!(
-            "type/notes_{count}: {} nodes, the frame paints {} primitives",
+            "type/notes_{count}: {} nodes, the frame paints {painted} primitives in {} draws",
             h.store.arena().live_count(),
-            frame(&mut h)
+            h.renderer.frame_stats().draw_calls
         );
         c.bench_function(&format!("type/notes_{count}"), |b| {
             b.iter_batched(
@@ -457,10 +460,11 @@ fn bench_paint_scale(c: &mut Criterion) {
         let mut dy = -row_h;
         dy = -dy;
         h.store.scroll_by(h.root, Vec2 { x: 0.0, y: dy });
+        let painted = frame(&mut h);
         eprintln!(
-            "mount/rows_{rows}: {} rows mounted, the frame paints {} primitives",
+            "mount/rows_{rows}: {} rows mounted, the frame paints {painted} primitives in {} draws",
             h.lists.get(h.root).unwrap().mounted_count(),
-            frame(&mut h)
+            h.renderer.frame_stats().draw_calls
         );
         c.bench_function(&format!("mount/rows_{rows}"), |b| {
             b.iter(|| {

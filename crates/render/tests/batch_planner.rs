@@ -87,12 +87,12 @@ fn make_texture(gpu: &mut CpuRaster) -> TextureId {
     })
 }
 
-fn image(texture: TextureId) -> Primitive {
+fn image(texture: TextureId, w: f32) -> Primitive {
     Primitive::Image(ImageDraw::new(
         Rect {
             x: 0.0,
             y: 0.0,
-            w: 8.0,
+            w,
             h: 8.0,
         },
         texture,
@@ -130,15 +130,15 @@ fn adjacent_same_key_quads_collapse_to_one_batch() {
 
 #[test]
 fn incompatible_primitive_splits_equal_key_quads_in_order() {
-    // Two quads with an image between them. The image draws from a different
-    // pipeline, so its key cannot equal a quad's and it is a hard barrier: the
-    // trailing quad may NOT reach back past it to join the leading quad. The
-    // emitted draws replay the scene in submission order — quad, image, quad —
-    // three batches, not two.
+    // Two quads with an image between them that overlaps both. The image
+    // draws from a different pipeline, so its key cannot equal a quad's, and
+    // the trailing quad covers some of its pixels: it may NOT reach back past
+    // it to join the leading quad. The emitted draws replay the scene in
+    // submission order — quad, image, quad — three batches, not two.
     with_scene(
         |gpu| {
             let tex = make_texture(gpu);
-            vec![quad(0.0, 0.0), image(tex), quad(40.0, 0.0)]
+            vec![quad(0.0, 0.0), image(tex, 48.0), quad(40.0, 0.0)]
         },
         |r| {
             let batches = r.inspect_batches();
@@ -160,6 +160,31 @@ fn incompatible_primitive_splits_equal_key_quads_in_order() {
             // The two quads carry the same packed key but stayed distinct draws:
             // the barrier split them, key equality did not re-merge them.
             assert_eq!(chunks[0].key, chunks[2].key);
+        },
+    );
+}
+
+#[test]
+fn a_quad_clear_of_the_image_between_rejoins_the_quad_before_it() {
+    // The image only overlaps the leading quad. The trailing quad covers none
+    // of its pixels, so drawing it with the leading one changes nothing: two
+    // draws, the quads first.
+    with_scene(
+        |gpu| {
+            let tex = make_texture(gpu);
+            vec![quad(0.0, 0.0), image(tex, 8.0), quad(40.0, 0.0)]
+        },
+        |r| {
+            let chunks = r.render_chunks();
+            assert_eq!(chunks.len(), 2, "the trailing quad rejoins the first draw");
+            assert_eq!(chunks[0].family, BatchFamily::Quad);
+            assert_eq!(chunks[0].geometry, (0, 2));
+            assert_eq!(chunks[0].order, (0, 3), "it spans the image it passed");
+            assert_eq!(chunks[1].family, BatchFamily::Image);
+            assert_eq!(chunks[1].order, (1, 2));
+            let prims = r.inspect_primitives();
+            assert_eq!(prims.primitives[2].batch, prims.primitives[0].batch);
+            assert_eq!(r.frame_stats().draw_calls, 2);
         },
     );
 }
@@ -222,7 +247,7 @@ fn render_chunks_correspond_one_to_one_with_batches() {
     with_scene(
         |gpu| {
             let tex = make_texture(gpu);
-            vec![quad(0.0, 0.0), quad(20.0, 0.0), image(tex)]
+            vec![quad(0.0, 0.0), quad(20.0, 0.0), image(tex, 8.0)]
         },
         |r| {
             let batches = r.inspect_batches();
@@ -263,7 +288,7 @@ fn distinct_textures_yield_distinct_chunk_keys() {
         |gpu| {
             let a = make_texture(gpu);
             let b = make_texture(gpu);
-            vec![image(a), image(b)]
+            vec![image(a, 8.0), image(b, 8.0)]
         },
         |r| {
             let chunks = r.render_chunks();

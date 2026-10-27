@@ -1,8 +1,8 @@
 //! The render chunk: one contiguous draw the planner emitted, and the
 //! unit of incremental rebuild.
 //!
-//! A [`RenderChunk`] is the maximal run of paint-order-adjacent primitives that
-//! share a [`BatchKey`](super::planner::BatchKey) and clip — everything the
+//! A [`RenderChunk`] is one draw of primitives that share a
+//! [`BatchKey`](super::planner::BatchKey) and clip — everything the
 //! encoder needs to issue one draw command, plus the paint-order span and
 //! revision it was built from. When a later frame changes one primitive, only
 //! the chunk covering it is rebuilt; chunks whose key and inputs did not move
@@ -30,8 +30,9 @@ pub struct RenderChunkId(pub u32);
 /// `key.family()` — instances for quad/image/glyph families, indices for the
 /// mesh family (the same unit convention the instance pools and
 /// [`FrameStats`](crate::FrameStats) use). `order` is the half-open span of
-/// paint-order positions the chunk absorbed, so a consumer can map a changed
-/// primitive back to the one chunk that must be rebuilt.
+/// paint-order positions from the first primitive the chunk draws to the
+/// last, so a consumer can map a changed primitive back to the chunks that
+/// must be rebuilt. A chunk that took in runs past others spans theirs too.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderChunk {
     /// The packed GPU-state key every primitive in this chunk shares.

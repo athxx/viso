@@ -236,18 +236,41 @@ fn the_cost_is_switches_in_paint_order_not_texture_count() {
     );
 }
 
-/// A different *family* between two images is a barrier even when they share a
-/// texture: batching never reorders paint order to save a draw.
+/// A different *family* between two images is a barrier when the trailing
+/// image covers its pixels, even when the images share a texture: batching
+/// never changes what paint order composites to save a draw.
 #[test]
 fn an_opaque_quad_between_two_images_is_still_a_barrier() {
     let stats = scene(|gpu| {
         let tex = texture(gpu, "shared");
-        vec![image(tex, 0.0), quad(0.0), image(tex, 20.0)]
+        let under = Primitive::Quad(Quad {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 28.0,
+                h: 8.0,
+            },
+            color: Rgba::new(0.2, 0.4, 0.6, 1.0),
+            radius: 0.0,
+            border: Border::NONE,
+        });
+        vec![image(tex, 0.0), under, image(tex, 20.0)]
     });
     assert_eq!(
         stats.draw_calls, 3,
         "the trailing image must not reach back across the quad"
     );
+}
+
+/// A quad the trailing image does not touch is no barrier: the two images
+/// share one draw ahead of it, and every pixel composites as painted.
+#[test]
+fn a_quad_clear_of_the_trailing_image_lets_it_rejoin() {
+    let stats = scene(|gpu| {
+        let tex = texture(gpu, "shared");
+        vec![image(tex, 0.0), quad(0.0), image(tex, 20.0)]
+    });
+    assert_eq!(stats.draw_calls, 2, "the images share one draw");
 }
 
 // ---------------------------------------------------------------------------

@@ -340,6 +340,7 @@ impl Renderer {
                 context.clip,
                 PassTarget::Main,
                 context.origin,
+                i,
             );
             for _ in opened..self.segments.len() {
                 l.opens.push(i as u32);
@@ -365,6 +366,7 @@ impl Renderer {
         }
         let len = l.segments.len();
         self.segments.splice(x..y, l.segments.iter().copied());
+        self.replan(x, y, len);
         self.segment_entries.splice(x..y, l.entries.iter().copied());
         if shift != 0 {
             for f in &mut self.segment_entries[x + len..] {

@@ -495,8 +495,23 @@ Rules (as for `todo_features.md`):
     are updated. The viso, ui and text lib tests and the shader and mtsdf_lane tests pass.
     clippy is clean on ui, text, shader, render and viso (host, headless, wasm32, no
     rasterizer).
-- [ ] Reorder-safe spans in the batch planner, so text over sibling cards rejoins one glyph draw.
+- [x] Reorder-safe spans in the batch planner, so text over sibling cards rejoins one glyph draw.
   Verify with planner order tests and a draw-count drop in `paint_scale`.
+  - Built: `batch::plan` folds segments into draws. A segment may join an earlier draw when its
+    instances follow that draw's in the family buffer and every draw it passes is in another
+    pass, or in its space with a known cover that does not overlap its own. The cover is paint
+    bounds or content extent, plus extrusion and 1 px of AA, cut by the clip. The walk back
+    stops at the first draw it cannot pass, or after 32 draws. Program draws never move.
+  - Built: segments keep their paint-order meaning, so patch and splice are unchanged. The
+    encoder, `frame_stats` and inspect read the draws. Planning runs per 64-segment chunk, and
+    an in-place splice replans only the chunks it touched.
+  - Verified: 9 planner order tests (fold, overlap barrier, unknown extent, other space, other
+    pass, contiguity, clip, program, reach), `batch_planner.rs` and `texture_binding.rs`.
+  - Verified: renderer tests show the planned draws match drawing the segments in paint order
+    pixel for pixel. A spliced label replans its chunk and matches a fresh frame.
+  - Verified: in `paint_scale`, `type/notes_100` drops from 200 draws to 13 and
+    `type/notes_2000` from 4000 to 131; `mount/rows_160` drops from 2 to 1. Frame time costs
+    +0.5 µs (1.21→1.70 µs and 1.34→1.84 µs); mount is within 0.3 µs.
 - [x] `Encoder::clear` and `Encoder::from_vec`; reuse one encoder for game net packets and dev
   frames. Verify that a counting allocator sees 0 allocations per steady-state packet.
   - Built: `Encoder::clear` keeps the capacity, and `Encoder::from_vec` takes a buffer back.

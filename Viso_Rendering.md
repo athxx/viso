@@ -770,10 +770,10 @@ HashMap 只允许在 cold path：resource interning、pipeline lookup on miss、
 
 1. primitive 只能并入**紧邻前一个** draw，且 key 相等、clip 与 pass target 相同；
 2. 不绑定 per-draw 资源的 family（quad、各 analytic shape、shadow、mesh）只按 key 合并；采样一张 texture 的 family（image、glyph run 两条 lane、gradient）同样合并，因为 texture 的 bind group 就在 key 里，key 相等即同一资源；用户 program 按 program 槽位合并。只有 ColorTransform、AdvancedBlend、Material 三个 composite family 各自独立成 batch：它们带 bind group 之外的 per-draw 状态（融合矩阵、destination snapshot、backdrop）（`BatchFamily::mergeable`）；
-3. **Reorder 条件**：draw B 可以越过中间 draw 集合 M 与更早的兼容 draw A 合并，当且仅当对 M 中每个 draw X，`B.paint_bounds` 与 `X.paint_bounds`（device space，clip 后，含 AA 带）按 §5.3 严格不相交，且 B 与 M 均无 destination/backdrop 依赖（§17.4 nonlocal）。不满足即为 order barrier；
+3. **Reorder 条件**：draw B 可以越过中间 draw 集合 M 与更早的兼容 draw A 合并，当且仅当 B 的 instance 在 family buffer 里紧接 A 的末尾（合并后仍是一段连续 range），且对 M 中每个与 B 同 pass 的 draw X：X 与 B 处于同一 transform space，X 的 cover 已知，且 B 与 X 的 cover（paint bounds，没有时用内容 extent；加顶点 extrude 与 1px AA 带；再与 clip 求交）严格不相交。别的 pass 的 draw 不构成 barrier。不满足即为 order barrier。advanced blend、material、backdrop composite 读取的 destination 是在各自 pass 里重画出来的 snapshot，所以对它们只要求像素不相交；
 4. “opaque 可任意重排”**不成立**：重叠 opaque 仍依赖顺序；只有引入 depth-ordered opaque pass 后才能放宽，该优化属于 A0，须单独合同。
 
-当前实现只执行规则 1–2（未产生 reorder-safe span），由 `batch_planner.rs` 与 `data_path_contract_frozen.rs` 钉住。
+实现分两层。lowering 按规则 1–2 产生 segment：每个 segment 覆盖连续的 paint-order entry，patch 与 splice 只认这一层。`batch::plan` 再按规则 3 把 segment 折成 encoder 发出的 draw：每个 segment 最多回看 32 个 draw，遇到第一个越不过的 draw 就停下；program draw 的 instance 布局依赖前一个 segment，所以不移动。plan 按 64 个 segment 一块分别折叠，draw 不跨块合并：整帧 lowering 与卸载 program 后全部重折，原地 splice 只重折它碰到的块，所以 splice 的开销不随页面变大。一页 2000 条 note（底色、色块、标签）从 4000 个 draw 降到约 130 个，打一个字的帧多花约 0.5 µs。patch 不改 segment：叶子 patch 要求 bounds 不变，glyph run patch 要求每个 glyph 框不变，所以已证明的不相交依然成立。transform root 移动不重新 plan，因为跨 space 的 draw 本来就是 barrier。规则由 `batch_planner.rs`、`texture_binding.rs`、planner 单测，以及“plan 后与按 paint order 逐 segment 绘制逐像素一致”的 renderer 测试钉住。
 
 Draw 优化优先级：
 

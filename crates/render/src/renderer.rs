@@ -28,7 +28,7 @@ use viso_math::Affine2;
 use viso_shader::program::BrushLayout;
 use viso_shader::{PipelineEntry, PipelineFamily, standard_manifest};
 
-use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, joins};
+use crate::batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, Draw, Run, joins, plan};
 use crate::blend::Blend;
 use crate::clip::{ClipShape, plan_clip};
 use crate::color_effect::{ColorOp, fuse};
@@ -324,6 +324,19 @@ impl PassTarget {
     }
 }
 
+/// How many segments the draw planner folds together. A segment joins only
+/// draws of its own chunk, so a splice folds again the chunks it touched and
+/// no others.
+const PLAN_CHUNK: usize = 64;
+
+/// One run of segments planned on its own: how many segments, and how many
+/// draws they made.
+#[derive(Debug, Clone, Copy)]
+struct PlanChunk {
+    segments: u32,
+    draws: u32,
+}
+
 /// A contiguous run of geometry that encodes as a single draw.
 ///
 /// Segments are built in [`Renderer::upload`] by walking the flat primitive
@@ -354,6 +367,9 @@ pub(crate) struct Segment {
     pub(crate) target: PassTarget,
     /// The transform root and moving clips this segment's draw follows.
     pub(crate) space: Space,
+    /// The region its pixels may touch in its pass's space, or `None` when
+    /// one of its primitives has no known extent.
+    pub(crate) cover: Option<Rect>,
 }
 
 impl Segment {
@@ -375,6 +391,16 @@ impl Segment {
             clip: self.clip,
             space: self.space,
             mergeable: self.kind.family().mergeable(),
+        }
+    }
+
+    /// The run this segment hands the draw planner.
+    fn run(&self) -> Run {
+        Run {
+            item: self.batch_item(),
+            start: self.start,
+            count: self.count,
+            cover: self.cover,
         }
     }
 }
@@ -1300,6 +1326,16 @@ pub struct Renderer {
     mesh_index_scratch: Vec<u32>,
     /// Draw segments in submission order, reused each frame.
     segments: Vec<Segment>,
+    /// The segments folded into the draws the encoder issues, in order.
+    draws: Vec<Segment>,
+    /// The runs of segments planned on their own, in order.
+    plan_chunks: Vec<PlanChunk>,
+    plan_scratch: Vec<PlanChunk>,
+    replanned: Vec<Segment>,
+    plan_of: Vec<u32>,
+    /// Planner scratch, kept across frames.
+    plan_runs: Vec<Run>,
+    plan_out: Vec<Draw>,
     /// The paint-order entry each segment opens at, in step with `segments`:
     /// a segment draws the entries from its own up to the next one's. Empty
     /// when segments were added or dropped outside the paint-order walk — a
@@ -2063,6 +2099,13 @@ impl Renderer {
             mesh_vertex_scratch: Vec::with_capacity(1024),
             mesh_index_scratch: Vec::with_capacity(2048),
             segments: Vec::with_capacity(8),
+            draws: Vec::with_capacity(8),
+            plan_chunks: Vec::new(),
+            plan_scratch: Vec::new(),
+            replanned: Vec::new(),
+            plan_of: Vec::new(),
+            plan_runs: Vec::new(),
+            plan_out: Vec::new(),
             segment_entries: Vec::new(),
             holes: 0,
             fragments: 0,
@@ -2270,6 +2313,7 @@ impl Renderer {
         if released {
             self.segments.retain(|seg| seg.kind.program() != Some(slot));
             self.segment_entries.clear();
+            self.plan_draws();
         }
         released
     }
@@ -3385,7 +3429,7 @@ impl Renderer {
             }
             self.lowered.push(self.lowering_cursor(entry.store));
             let opened = self.segments.len();
-            self.lower_entry(backend, entry, clip, target, origin);
+            self.lower_entry(backend, entry, clip, target, origin, i);
             for _ in opened..self.segments.len() {
                 self.segment_entries.push(i as u32);
             }
@@ -3406,7 +3450,7 @@ impl Renderer {
             let target = PassTarget::Capture(i);
             let origin = [roi.x, roi.y];
             let under = self.backdrop_captures[i].under;
-            for entry in &record[..under] {
+            for (index, entry) in record[..under].iter().enumerate() {
                 // Only content of the capture's own target is behind it; an
                 // offscreen layer's children reach the surface through their
                 // pass's composite, which is itself a `record` entry here.
@@ -3435,11 +3479,12 @@ impl Renderer {
                     w: c.w,
                     h: c.h,
                 });
-                self.lower_entry(backend, entry, clip, target, origin);
+                self.lower_entry(backend, entry, clip, target, origin, index);
             }
         }
 
         self.scene.paint_order = record;
+        self.plan_draws();
     }
 
     /// Whether `entry` is a user-program draw on the surface showing none of
@@ -3474,8 +3519,10 @@ impl Renderer {
         clip: Option<Rect>,
         target: PassTarget,
         origin: [f32; 2],
+        index: usize,
     ) {
         let space = entry.context.space;
+        let region = self.entry_cover(entry, index, origin);
         match entry.store {
             StoreRef::Quad(id) => {
                 let mut inst = self.scene.quads.get(id).expect("quad slot").instance;
@@ -3492,6 +3539,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::AnalyticRRect(id) => {
@@ -3512,6 +3560,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::AnalyticEllipse(id) => {
@@ -3532,6 +3581,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::AnalyticCapsule(id) => {
@@ -3552,6 +3602,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::AnalyticLine(id) => {
@@ -3575,6 +3626,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::Image(id) => {
@@ -3598,6 +3650,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::Gradient(id) => {
@@ -3618,6 +3671,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::Shader(id) => {
@@ -3633,6 +3687,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 };
                 // A draw that joins the previous one extends its run; any other
                 // opens an aligned run of its own.
@@ -3667,6 +3722,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::Composite { pass, slot } => {
@@ -3743,6 +3799,7 @@ impl Renderer {
                         clip,
                         target,
                         space,
+                        cover: region,
                     });
                     return;
                 }
@@ -3769,6 +3826,7 @@ impl Renderer {
                         clip,
                         target,
                         space,
+                        cover: region,
                     });
                     return;
                 }
@@ -3781,6 +3839,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::GlyphRun(run) => {
@@ -3807,6 +3866,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::Path(id) => {
@@ -3853,7 +3913,7 @@ impl Renderer {
                     .extend(geo.indices.iter_u32().map(|i| base + i));
                 self.translate_vertices(base as usize, origin);
                 let count = self.mesh_index_scratch.len() as u32 - index_start;
-                self.push_mesh_segment(index_start, count, clip, target, space);
+                self.push_mesh_segment(index_start, count, clip, target, space, region);
             }
             StoreRef::Mesh(id) => {
                 let e = self.scene.meshes.get(id).expect("mesh slot");
@@ -3873,7 +3933,7 @@ impl Renderer {
                     .extend(e.indices.iter().map(|&i| base + i));
                 self.translate_vertices(base as usize, origin);
                 let count = self.mesh_index_scratch.len() as u32 - index_start;
-                self.push_mesh_segment(index_start, count, clip, target, space);
+                self.push_mesh_segment(index_start, count, clip, target, space, region);
             }
             StoreRef::BackdropComposite { capture, slot } => {
                 let capture = capture as usize;
@@ -3920,6 +3980,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
             StoreRef::MaterialComposite { capture, material } => {
@@ -3963,6 +4024,7 @@ impl Renderer {
                     clip,
                     target,
                     space,
+                    cover: region,
                 });
             }
         }
@@ -4080,7 +4142,7 @@ impl Renderer {
         // side switch pipelines though they share a family.
         type Pipeline = (BatchFamily, Option<ProgramSlot>);
         let mut prev: Option<(Pipeline, Option<BindGroupId>)> = None;
-        for seg in &self.segments {
+        for seg in &self.draws {
             let family = (seg.kind.family(), seg.kind.program());
             let binding = seg.kind.resource();
             match prev {
@@ -4127,12 +4189,8 @@ impl Renderer {
             // beyond the segment-derived draws, so both add to the draw and
             // instance totals. The *final* color op is not counted here: it rides
             // the composite, which is already a segment.
-            draw_calls: self.segments.len() + self.blur_passes.len() + self.color_passes.len(),
-            instances: self
-                .segments
-                .iter()
-                .map(|s| s.count as usize)
-                .sum::<usize>()
+            draw_calls: self.draws.len() + self.blur_passes.len() + self.color_passes.len(),
+            instances: self.draws.iter().map(|s| s.count as usize).sum::<usize>()
                 + self.blur_passes.len()
                 + self.color_passes.len(),
             visible_primitives: ingest.visible_primitives,
@@ -4140,8 +4198,8 @@ impl Renderer {
             quad_instances: ingest.quad_instances,
             glyph_instances: ingest.glyph_instances,
             path_tessellations: ingest.path_tessellations,
-            batches: self.segments.len(),
-            render_chunks: self.segments.len(),
+            batches: self.draws.len(),
+            render_chunks: self.draws.len(),
             pipeline_switches,
             texture_binding_switches,
             uploaded_ranges: self.uploaded_ranges,
@@ -4212,6 +4270,12 @@ impl Renderer {
     /// [`frame_stats`](Self::frame_stats).
     pub(crate) fn segments_snapshot(&self) -> &[Segment] {
         &self.segments
+    }
+
+    /// The draws the segments fold into, in the order the encoder issues
+    /// them.
+    pub(crate) fn draws_snapshot(&self) -> &[Segment] {
+        &self.draws
     }
 
     /// The retained scene, for the cold-path primitive introspection surface
@@ -4422,9 +4486,136 @@ impl Renderer {
             }
         });
         match self.segments.last_mut() {
-            Some(prev) if joined => prev.count += segment.count,
+            Some(prev) if joined => {
+                prev.count += segment.count;
+                prev.cover = match (prev.cover, segment.cover) {
+                    (Some(a), Some(b)) => Some(a.union(b)),
+                    _ => None,
+                };
+            }
             _ => self.segments.push(segment),
         }
+    }
+
+    /// The region paint-order entry `index` may touch in the space of a pass
+    /// drawn from `origin`: its paint bounds, or the extent of its content
+    /// when it records none, grown by how far its vertices extrude and by a
+    /// pixel of antialiasing. `None` when neither is known.
+    fn entry_cover(&self, entry: &PaintEntry, index: usize, origin: [f32; 2]) -> Option<Rect> {
+        let paint = entry.bounds.paint;
+        let rect = match paint.has_area() {
+            true => paint,
+            false => self.scene.key(index).1?,
+        };
+        let fringe = 1.0 / self.scale.min(1.0);
+        let rect = rect.inflate(self.scene.reach(index) + fringe);
+        Some(Rect::new(
+            rect.x - origin[0],
+            rect.y - origin[1],
+            rect.w,
+            rect.h,
+        ))
+    }
+
+    /// Fold the segments into the draws the encoder issues, [`PLAN_CHUNK`]
+    /// segments at a time: a segment joins an earlier draw of its chunk past
+    /// others it does not overlap ([`plan`]).
+    fn plan_draws(&mut self) {
+        let mut draws = std::mem::take(&mut self.draws);
+        draws.clear();
+        self.plan_chunks.clear();
+        let mut at = 0;
+        while at < self.segments.len() {
+            let end = (at + PLAN_CHUNK).min(self.segments.len());
+            let made = self.plan_range(at..end, &mut draws);
+            self.plan_chunks.push(PlanChunk {
+                segments: (end - at) as u32,
+                draws: made,
+            });
+            at = end;
+        }
+        self.draws = draws;
+    }
+
+    /// Plan the draws after segments `x..y` became `len` new ones: only the
+    /// chunks those segments fell in are folded again.
+    fn replan(&mut self, x: usize, y: usize, len: usize) {
+        // The chunks the old segments `x..y` lie in, or the one an insertion
+        // lands in, and where they start.
+        let (mut first, mut seg, mut draw) = (None, 0usize, 0usize);
+        let (mut last, mut end_seg, mut end_draw) = (0, 0, 0);
+        for (i, c) in self.plan_chunks.iter().enumerate() {
+            let next = seg + c.segments as usize;
+            let touched = next > x && seg < y.max(x + 1);
+            if touched || (i + 1 == self.plan_chunks.len() && first.is_none()) {
+                if first.is_none() {
+                    first = Some((i, seg, draw));
+                }
+                (last, end_seg, end_draw) = (i, next, draw + c.draws as usize);
+            } else if first.is_some() {
+                break;
+            }
+            seg = next;
+            draw += c.draws as usize;
+        }
+        let Some((first, a, da)) = first else {
+            return self.plan_draws();
+        };
+        let b = end_seg + len - (y - x);
+        let mut chunks = std::mem::take(&mut self.plan_scratch);
+        let mut draws = std::mem::take(&mut self.replanned);
+        chunks.clear();
+        draws.clear();
+        let mut at = a;
+        while at < b {
+            let end = (at + PLAN_CHUNK).min(b);
+            let made = self.plan_range(at..end, &mut draws);
+            chunks.push(PlanChunk {
+                segments: (end - at) as u32,
+                draws: made,
+            });
+            at = end;
+        }
+        self.draws.splice(da..end_draw, draws.drain(..));
+        self.plan_chunks.splice(first..=last, chunks.drain(..));
+        self.plan_scratch = chunks;
+        self.replanned = draws;
+    }
+
+    /// Fold segments `range` on their own onto the end of `out`; how many
+    /// draws they made.
+    fn plan_range(&mut self, range: std::ops::Range<usize>, out: &mut Vec<Segment>) -> u32 {
+        let base = range.start;
+        self.plan_runs.clear();
+        self.plan_runs
+            .extend(self.segments[range].iter().map(Segment::run));
+        plan(&self.plan_runs, &mut self.plan_out, &mut self.plan_of);
+        let segments = &self.segments;
+        out.extend(self.plan_out.iter().map(|d| Segment {
+            start: d.run.start,
+            count: d.run.count,
+            cover: d.run.cover,
+            ..segments[base + d.first as usize]
+        }));
+        self.plan_out.len() as u32
+    }
+
+    /// The draw each segment lands in, planned again chunk by chunk as the
+    /// encoder's draws were. Cold: for introspection.
+    pub(crate) fn segment_draws(&self) -> Vec<u32> {
+        let (mut runs, mut draws, mut of) = (Vec::new(), Vec::new(), Vec::new());
+        let mut out = Vec::with_capacity(self.segments.len());
+        let (mut seg, mut base) = (0, 0);
+        for c in &self.plan_chunks {
+            let end = seg + c.segments as usize;
+            runs.clear();
+            runs.extend(self.segments[seg..end].iter().map(Segment::run));
+            plan(&runs, &mut draws, &mut of);
+            out.extend(of.iter().map(|d| base + d));
+            seg = end;
+            base += c.draws;
+        }
+        out
     }
 
     /// Push (or extend) a mesh segment covering `count` indices at `index_start`.
@@ -4437,6 +4628,7 @@ impl Renderer {
         clip: Option<Rect>,
         target: PassTarget,
         space: Space,
+        cover: Option<Rect>,
     ) {
         if count == 0 {
             return;
@@ -4448,6 +4640,7 @@ impl Renderer {
             clip,
             target,
             space,
+            cover,
         });
     }
 
@@ -5275,7 +5468,7 @@ impl Renderer {
                     // A layer's own content: every segment routed to this pass.
                     PassWork::Offscreen(i) => {
                         for seg in self
-                            .segments
+                            .draws
                             .iter()
                             .filter(|seg| seg.target == PassTarget::Offscreen(i as usize))
                         {
@@ -5323,7 +5516,7 @@ impl Renderer {
                     // appended for this capture, selected by their segment target.
                     PassWork::BackdropCapture(i) => {
                         for seg in self
-                            .segments
+                            .draws
                             .iter()
                             .filter(|seg| seg.target == PassTarget::Capture(i as usize))
                         {
@@ -5335,7 +5528,7 @@ impl Renderer {
                     PassWork::Surface => {
                         let Region::Rects(rects) = redraw else {
                             for seg in self
-                                .segments
+                                .draws
                                 .iter()
                                 .filter(|seg| seg.target == PassTarget::Main)
                             {
@@ -5346,7 +5539,7 @@ impl Renderer {
                         let mut surface = std::mem::take(&mut self.partial_scratch);
                         surface.clear();
                         surface.extend(
-                            self.segments
+                            self.draws
                                 .iter()
                                 .filter(|seg| seg.target == PassTarget::Main)
                                 .map(|seg| self.command_for(seg, vp)),
@@ -6225,6 +6418,247 @@ mod tests {
     /// `SegmentKind::GlyphRun` path — A8 coverage sample → premultiplied blend —
     /// that the golden also covers, but with an explicit
     /// assertion on ink-vs-background so a regression names itself.
+    /// Labels over a column of cards, with a translucent badge over the
+    /// second label: the planner folds the cards and labels it can into one
+    /// draw each, and what it draws matches the segments drawn in paint order
+    /// pixel for pixel.
+    #[test]
+    fn planned_draws_composite_exactly_what_paint_order_does() {
+        const W: u32 = 96;
+        const H: u32 = 96;
+        let tg = crate::test_glyphs([4.0, 2.0], 9.0);
+        let card = |y: f32, g: f32| {
+            Primitive::Quad(Quad {
+                rect: Rect::new(0.0, y, 90.0, 22.0),
+                color: Rgba::new(0.2, g, 0.6, 1.0),
+                radius: 3.0,
+                border: Border::NONE,
+            })
+        };
+        let draw = |planned: bool| {
+            let mut gpu = CpuRaster::new();
+            let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+            let format = gpu.surface_format(surface);
+            let mut r = Renderer::new(&mut gpu, format);
+            let atlas = gpu.create_texture(&viso_gpu::TextureDesc {
+                width: tg.atlas_size,
+                height: tg.atlas_size,
+                format: TextureFormat::R8Unorm,
+                render_target: false,
+                label: "glyph-atlas",
+            });
+            gpu.write_texture(atlas, 0, 0, tg.atlas_size, tg.atlas_size, &tg.atlas_pixels);
+            let label = |y: f32| {
+                let mut glyphs = tg.glyphs.clone();
+                for g in &mut glyphs {
+                    g.rect.y += y;
+                }
+                Primitive::GlyphRun(crate::GlyphRunDraw {
+                    glyphs,
+                    atlas,
+                    color: tg.color,
+                    lane: crate::GlyphLane::CoverageA8,
+                })
+            };
+            let mut prims = Vec::new();
+            for i in 0..4 {
+                let y = i as f32 * 24.0;
+                prims.push(card(y, 0.1 * i as f32));
+                prims.push(label(y));
+                if i == 1 {
+                    prims.push(Primitive::Quad(Quad {
+                        rect: Rect::new(8.0, y + 4.0, 30.0, 10.0),
+                        color: Rgba::new(0.9, 0.3, 0.1, 0.5),
+                        radius: 0.0,
+                        border: Border::NONE,
+                    }));
+                }
+            }
+            r.upload(&mut gpu, &prims);
+            let counts = (r.segments.len(), r.draws.len());
+            if !planned {
+                r.draws = r.segments.clone();
+            }
+            r.submit(
+                &mut gpu,
+                surface,
+                [0.0, 0.0, 0.0, 1.0],
+                [W as f32, H as f32],
+            );
+            (gpu.read_pixels_bgra8(surface), counts)
+        };
+        let (planned, (segments, draws)) = draw(true);
+        let (ordered, _) = draw(false);
+        // The badge joins the next card's quad; the label it covers and the
+        // one on that card keep their places, the rest fold.
+        assert_eq!(segments, 8);
+        assert_eq!(draws, 4);
+        assert!(planned.iter().any(|&b| b > 200), "the labels drew ink");
+        assert!(planned == ordered, "reordered draws changed pixels");
+    }
+
+    /// A label moved onto the next card, whose quad was drawn ahead of it,
+    /// draws under the card as its paint order says, not over it.
+    #[test]
+    fn a_label_moved_past_where_it_was_planned_keeps_paint_order() {
+        const W: u32 = 96;
+        const H: u32 = 64;
+        let tg = crate::test_glyphs([4.0, 2.0], 9.0);
+        let frame = |gpu: &mut CpuRaster, atlas, shift: f32| {
+            let label = |y: f32| {
+                let mut glyphs = tg.glyphs.clone();
+                for g in &mut glyphs {
+                    g.rect.y += y;
+                }
+                Primitive::GlyphRun(crate::GlyphRunDraw {
+                    glyphs,
+                    atlas,
+                    color: tg.color,
+                    lane: crate::GlyphLane::CoverageA8,
+                })
+            };
+            let _ = gpu;
+            let card = |y: f32| {
+                Primitive::Quad(Quad {
+                    rect: Rect::new(0.0, y, 90.0, 22.0),
+                    color: Rgba::new(0.2, 0.3, 0.6, 1.0),
+                    radius: 0.0,
+                    border: Border::NONE,
+                })
+            };
+            vec![card(0.0), label(shift), card(24.0), label(24.0)]
+        };
+        let setup = || {
+            let mut gpu = CpuRaster::new();
+            let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+            let format = gpu.surface_format(surface);
+            let r = Renderer::new(&mut gpu, format);
+            let atlas = gpu.create_texture(&viso_gpu::TextureDesc {
+                width: tg.atlas_size,
+                height: tg.atlas_size,
+                format: TextureFormat::R8Unorm,
+                render_target: false,
+                label: "glyph-atlas",
+            });
+            gpu.write_texture(atlas, 0, 0, tg.atlas_size, tg.atlas_size, &tg.atlas_pixels);
+            (gpu, surface, r, atlas)
+        };
+        let (mut gpu, surface, mut r, atlas) = setup();
+        let before = frame(&mut gpu, atlas, 0.0);
+        r.upload(&mut gpu, &before);
+        assert_eq!(r.draws.len(), 2, "the second card joins the first");
+        r.submit(
+            &mut gpu,
+            surface,
+            [0.0, 0.0, 0.0, 1.0],
+            [W as f32, H as f32],
+        );
+        let after = frame(&mut gpu, atlas, 16.0);
+        assert!(r.patch(&mut gpu, &after, &[1]));
+        r.submit(
+            &mut gpu,
+            surface,
+            [0.0, 0.0, 0.0, 1.0],
+            [W as f32, H as f32],
+        );
+        let patched = gpu.read_pixels_bgra8(surface);
+
+        let (mut fresh_gpu, fresh_surface, mut fresh, atlas) = setup();
+        let after = frame(&mut fresh_gpu, atlas, 16.0);
+        fresh.upload(&mut fresh_gpu, &after);
+        fresh.submit(
+            &mut fresh_gpu,
+            fresh_surface,
+            [0.0, 0.0, 0.0, 1.0],
+            [W as f32, H as f32],
+        );
+        assert!(patched == fresh_gpu.read_pixels_bgra8(fresh_surface));
+    }
+
+    /// A long column of labelled cards, a label growing by a glyph mid-page:
+    /// the splice folds again only the chunk it touched, the draws stay few,
+    /// and they composite what a fresh frame composites.
+    #[test]
+    fn a_spliced_label_replans_its_chunk_and_draws_what_a_fresh_frame_draws() {
+        const W: u32 = 64;
+        const ROWS: usize = 100;
+        const H: u32 = (ROWS * 8) as u32;
+        let tg = crate::test_glyphs([4.0, 2.0], 9.0);
+        let uv = tg.glyphs[0].uv;
+        let frame = |atlas, grown: usize| {
+            let mut prims = Vec::new();
+            for i in 0..ROWS {
+                let y = i as f32 * 8.0;
+                prims.push(Primitive::Quad(Quad {
+                    rect: Rect::new(0.0, y, 60.0, 7.0),
+                    color: Rgba::new(0.2, 0.3, 0.6, 1.0),
+                    radius: 0.0,
+                    border: Border::NONE,
+                }));
+                let n = if i == grown { 4 } else { 3 };
+                prims.push(Primitive::GlyphRun(crate::GlyphRunDraw {
+                    glyphs: (0..n)
+                        .map(|g| crate::GlyphInstanceData {
+                            rect: Rect::new(2.0 + g as f32 * 5.0, y + 1.0, 4.0, 5.0),
+                            uv,
+                        })
+                        .collect(),
+                    atlas,
+                    color: tg.color,
+                    lane: crate::GlyphLane::CoverageA8,
+                }));
+            }
+            prims
+        };
+        let setup = || {
+            let mut gpu = CpuRaster::new();
+            let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+            let format = gpu.surface_format(surface);
+            let r = Renderer::new(&mut gpu, format);
+            let atlas = gpu.create_texture(&viso_gpu::TextureDesc {
+                width: tg.atlas_size,
+                height: tg.atlas_size,
+                format: TextureFormat::R8Unorm,
+                render_target: false,
+                label: "glyph-atlas",
+            });
+            gpu.write_texture(atlas, 0, 0, tg.atlas_size, tg.atlas_size, &tg.atlas_pixels);
+            (gpu, surface, r, atlas)
+        };
+        let clear = [0.0, 0.0, 0.0, 1.0];
+        let size = [W as f32, H as f32];
+
+        let (mut gpu, surface, mut r, atlas) = setup();
+        r.upload(&mut gpu, &frame(atlas, usize::MAX));
+        assert_eq!(r.segments.len(), 2 * ROWS);
+        let whole = r.draws.len();
+        assert_eq!(whole, 8, "two draws for each chunk of 64 segments");
+        r.submit(&mut gpu, surface, clear, size);
+        let grown = 70;
+        let at = (2 * grown + 1) as u32;
+        let spliced = r.splice(
+            &mut gpu,
+            &frame(atlas, grown),
+            &[Splice {
+                at,
+                removed: 1,
+                inserted: 1,
+            }],
+        );
+        assert!(spliced);
+        assert!(r.draws.len() <= whole + 6, "{} draws", r.draws.len());
+        let draws: u32 = r.draws.iter().map(|d| d.count).sum();
+        let segments: u32 = r.segments.iter().map(|d| d.count).sum();
+        assert_eq!(draws, segments, "every instance drawn once");
+        r.submit(&mut gpu, surface, clear, size);
+        let planned = gpu.read_pixels_bgra8(surface);
+
+        let (mut fresh_gpu, fresh_surface, mut fresh, atlas) = setup();
+        fresh.upload(&mut fresh_gpu, &frame(atlas, grown));
+        fresh.submit(&mut fresh_gpu, fresh_surface, clear, size);
+        assert!(planned == fresh_gpu.read_pixels_bgra8(fresh_surface));
+    }
+
     #[test]
     fn glyph_run_paints_ink_over_background() {
         const W: u32 = 96;
