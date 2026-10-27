@@ -100,6 +100,7 @@ pub mod task;
 pub mod text_edit;
 pub mod text_entry;
 pub mod text_style;
+pub mod theme;
 pub mod timer;
 pub mod transform;
 pub mod typed_state;
@@ -117,6 +118,7 @@ pub use animation::{
     Keyframes, LookTransition, LookValue, Pace, PlayDirection, ReducedMotion, Repeat, Spring,
     Timing,
 };
+pub use theme::{ColorToken, Palette};
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use anchored::{AnchorAlign, AnchorPlacement, Anchoring, Side};
 pub use binding::{

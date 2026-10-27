@@ -1,7 +1,8 @@
 //! The adaptive environment as the platform reports it: each window's metrics,
 //! safe area, keyboard and display features, the system appearance, text
-//! scale and locale, and the input devices its input reveals. A field is written only when its value changes, so a steady
-//! stream of input touches nothing.
+//! scale and locale, the theme its scheme picks when the app picks none, and
+//! the input devices its input reveals. A field is written only when its
+//! value changes, so a steady stream of input touches nothing.
 
 use viso_platform::{Appearance, PointerKind};
 use viso_render::Rect;
@@ -50,6 +51,7 @@ impl WindowState {
         }
         self.store.set_reduced_motion(appearance.reduce_motion);
         let dark = appearance.color_scheme == viso_platform::ColorScheme::Dark;
+        self.follow_scheme(dark);
         self.store
             .set_scroll_bar_style(if appearance.overlay_scroll_bars {
                 viso_ui::ScrollBarStyle::native(dark)
@@ -74,6 +76,31 @@ impl WindowState {
                 text_scale,
                 ..lengths
             });
+        }
+    }
+
+    /// Gives the window the default theme of the system's scheme, light or
+    /// dark, while the app set no theme of its own: a swap repaints the
+    /// controls' colors and re-evaluates what reads `theme`.
+    fn follow_scheme(&mut self, dark: bool) {
+        use viso_view::{Value, default_dark_theme, default_theme, set_theme};
+        let set = self
+            .states
+            .env()
+            .theme()
+            .and_then(|theme| theme.0.downcast_ref::<Value>().cloned());
+        let light = default_theme();
+        let follows = set
+            .as_ref()
+            .is_none_or(|theme| *theme == light || *theme == default_dark_theme());
+        if !follows {
+            return;
+        }
+        let theme = if dark { default_dark_theme() } else { light };
+        // No theme set reads as the light one.
+        let shown = set.unwrap_or_else(default_theme);
+        if shown != theme {
+            set_theme(&mut self.states, &mut self.store, theme);
         }
     }
 

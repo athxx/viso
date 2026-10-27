@@ -193,6 +193,62 @@ pub struct BrushImage {
 }
 
 impl Content {
+    /// Visits every color the content paints with that a theme may name, in
+    /// a fixed order: a text's run, an image's or asset's tint, a path's fill
+    /// and stroke, a control's parts. A plot's or drawing's are its data's.
+    pub(crate) fn colors_mut(&mut self, mut f: impl FnMut(&mut Rgba)) {
+        match self {
+            Content::Text { color, .. } => f(color),
+            Content::Image { tint, .. } => f(tint),
+            Content::Path { fill, stroke, .. } => {
+                if let Some(fill) = fill {
+                    f(fill);
+                }
+                if let Some(stroke) = stroke {
+                    f(&mut stroke.color);
+                }
+            }
+            Content::Asset { tint, .. } => {
+                if let Some(tint) = tint {
+                    f(tint);
+                }
+            }
+            Content::Spinner(s) => f(&mut s.color),
+            Content::Progress(p) => f(&mut p.color),
+            Content::Stepper(s) => {
+                f(&mut s.ink);
+                f(&mut s.fill);
+            }
+            Content::Segments(s) => {
+                f(&mut s.thumb);
+                f(&mut s.divider);
+            }
+            Content::Slider(s) => {
+                f(&mut s.track);
+                f(&mut s.fill);
+                f(&mut s.thumb);
+            }
+            Content::ColorPlane(p) => f(&mut p.accent),
+            Content::Shimmer(s) => {
+                f(&mut s.base);
+                f(&mut s.highlight);
+            }
+            Content::Days(d) => {
+                f(&mut d.accent);
+                f(&mut d.hover_fill);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a color [`colors_mut`](Self::colors_mut) visits names a theme
+    /// token.
+    pub(crate) fn has_token(&mut self) -> bool {
+        let mut any = false;
+        self.colors_mut(|c| any |= crate::theme::is_token(*c));
+        any
+    }
+
     /// The content's intrinsic `(width, height)` in physical pixels — what the
     /// measure pass resolves a `Fit`/`Fill` axis against.
     #[inline]

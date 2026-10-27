@@ -6,9 +6,9 @@
 use std::rc::Rc;
 
 use viso_behavior::Value;
-pub use viso_behavior::theme::default_theme;
+pub use viso_behavior::theme::{default_dark_theme, default_theme};
 use viso_ui::adaptive::{AdaptiveEnv, ThemeValue};
-use viso_ui::{FontFamily, NodeStore, StateStore};
+use viso_ui::{FontFamily, NodeStore, Palette, StateStore};
 
 use crate::text_style::family;
 
@@ -19,7 +19,26 @@ use crate::text_style::family;
 pub fn set_theme(states: &mut StateStore, store: &mut NodeStore, theme: Value) {
     let (base_size, family) = typography(&theme);
     store.set_typography(base_size, family);
+    if let Some(palette) = palette(&theme) {
+        store.set_palette(palette);
+    }
     states.set_theme(ThemeValue(Rc::new(theme)));
+}
+
+/// The palette of a theme's `colors`, the controls' colors; `None` for a
+/// value of the wrong shape, which only a compiler bug makes.
+pub fn palette(theme: &Value) -> Option<Palette> {
+    let Value::Agg(theme) = theme else {
+        return None;
+    };
+    let Value::Agg(colors) = theme.fields.first()? else {
+        return None;
+    };
+    let mut srgb = [0u32; 14];
+    for (at, color) in srgb.iter_mut().zip(colors.fields.iter()) {
+        *at = u32::try_from(color.as_int()?).ok()?;
+    }
+    (colors.fields.len() == 14).then(|| Palette::from_srgb(srgb))
 }
 
 /// A theme's `typography.base_size` and `typography.family`; a value of the
@@ -47,4 +66,15 @@ pub(crate) fn current_theme(env: &AdaptiveEnv) -> Value {
         .and_then(|theme| theme.0.downcast_ref::<Value>())
         .cloned()
         .unwrap_or_else(default_theme)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_themes_give_the_stores_their_default_palettes() {
+        assert_eq!(palette(&default_theme()), Some(Palette::light()));
+        assert_eq!(palette(&default_dark_theme()), Some(Palette::dark()));
+    }
 }

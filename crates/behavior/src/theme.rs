@@ -11,7 +11,7 @@ use crate::value::{Aggregate, Value};
 #[cfg(feature = "std")]
 pub fn default_theme() -> Value {
     std::thread_local! {
-        static DEFAULT: Value = build_default();
+        static DEFAULT: Value = build(LIGHT);
     }
     DEFAULT.with(Value::clone)
 }
@@ -21,29 +21,65 @@ pub fn default_theme() -> Value {
 /// it in, so each call builds it.
 #[cfg(not(feature = "std"))]
 pub fn default_theme() -> Value {
-    build_default()
+    build(LIGHT)
 }
 
-fn build_default() -> Value {
-    let colors = record(
-        [
-            0xffff_ffff, // background
-            0x1b1f_24ff, // foreground
-            0xf5f6_f8ff, // surface
-            0x1b1f_24ff, // on_surface
-            0x3b6c_f0ff, // primary
-            0xffff_ffff, // on_primary
-            0x2f5c_d6ff, // primary_hover
-            0x8a4f_ffff, // accent
-            0x6b72_80ff, // muted
-            0xd0d5_ddff, // outline
-            0xd93a_3aff, // error
-            0xffff_ffff, // on_error
-            0x3b6c_f099, // focus_ring
-            0x0000_0066, // scrim
-        ]
-        .map(|rgba: u32| Value::Int(i64::from(rgba))),
-    );
+/// The default theme's dark counterpart: a dark palette over the same
+/// scales, which a window follows while the system is dark and the app set
+/// no theme.
+#[cfg(feature = "std")]
+pub fn default_dark_theme() -> Value {
+    std::thread_local! {
+        static DARK_THEME: Value = build(DARK);
+    }
+    DARK_THEME.with(Value::clone)
+}
+
+/// The default dark theme, built anew without `std`.
+#[cfg(not(feature = "std"))]
+pub fn default_dark_theme() -> Value {
+    build(DARK)
+}
+
+/// The default theme's colors, sRGB `0xRRGGBBAA` in the order of the
+/// prelude's `ColorPalette`.
+pub const LIGHT: [u32; 14] = [
+    0xffff_ffff, // background
+    0x1b1f_24ff, // foreground
+    0xf5f6_f8ff, // surface
+    0x1b1f_24ff, // on_surface
+    0x3b6c_f0ff, // primary
+    0xffff_ffff, // on_primary
+    0x2f5c_d6ff, // primary_hover
+    0x8a4f_ffff, // accent
+    0x6b72_80ff, // muted
+    0xd0d5_ddff, // outline
+    0xd93a_3aff, // error
+    0xffff_ffff, // on_error
+    0x3b6c_f099, // focus_ring
+    0x0000_0066, // scrim
+];
+
+/// The default dark theme's colors, in the same order.
+pub const DARK: [u32; 14] = [
+    0x1a1c_21ff, // background
+    0xe6e8_ebff, // foreground
+    0x2a2d_33ff, // surface
+    0xe6e8_ebff, // on_surface
+    0x82b3_edff, // primary
+    0xfcfc_ffff, // on_primary
+    0x91bf_f6ff, // primary_hover
+    0xb391_ffff, // accent
+    0x9aa1_acff, // muted
+    0x454a_53ff, // outline
+    0xff6b_6bff, // error
+    0x1b1f_24ff, // on_error
+    0x82b3_ed99, // focus_ring
+    0x0000_0099, // scrim
+];
+
+fn build(palette: [u32; 14]) -> Value {
+    let colors = record(palette.map(|rgba: u32| Value::Int(i64::from(rgba))));
     // `FontFamily::system_ui`, by tag.
     let typography = record([
         Value::Float(14.0),

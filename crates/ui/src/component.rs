@@ -12,6 +12,7 @@
 use crate::layout::OnAxis;
 use core::time::Duration;
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -43,6 +44,7 @@ use crate::state::{StateId, StateKey, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
 use crate::text_style::WidthUse;
+use crate::theme::{ColorSlot, Palette, is_token};
 use crate::timer::TimerRequest;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
@@ -731,6 +733,13 @@ pub struct NodeStore {
     /// it has been folded or paged — so a child of any other parent is in
     /// layout without asking the folds and pages. One bit a node.
     pub(crate) choosers: SlotBits,
+    /// The colors the window's theme gives the controls.
+    palette: Palette,
+    /// Cold: by slot, whether a color of the node names a theme token, one
+    /// bit a node.
+    themed: SlotBits,
+    /// The tokens the themed nodes' colors name, by slot and color.
+    theme_refs: BTreeMap<(u32, ColorSlot), Rgba>,
     /// Hot: each node's yes/no properties, one byte a node (see
     /// [`NodeFlags`]).
     flags: Vec<NodeFlags>,
@@ -1128,6 +1137,8 @@ impl NodeStore {
         self.arena.clear();
         node_columns!(self.clear());
         self.settled.clear();
+        self.themed.clear();
+        self.theme_refs.clear();
         self.row_lane.clear();
         self.disabled_count = 0;
         self.box_rules.clear();
@@ -1270,6 +1281,8 @@ impl NodeStore {
             + self.placements.len() * size_of::<Placement>()
             + (self.free_rules.len() + self.free_placements.len()) * size_of::<u32>();
         let cold = cold
+            + self.themed.held_bytes()
+            + self.theme_refs.len() * size_of::<((u32, ColorSlot), Rgba)>()
             + boxed_bytes(&self.content_payload)
             + boxed_bytes(&self.text_request)
             + self.control_parts.held_bytes();
@@ -3212,7 +3225,20 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.interaction.insert(self.arena.slot(id), interaction);
+        let i = self.arena.slot(id);
+        let mut interaction = interaction;
+        for (k, b) in [
+            &mut interaction.resting,
+            &mut interaction.hover,
+            &mut interaction.pressed,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let k = k as u8 * 2;
+            self.theme_box(i, ColorSlot::Box(k), ColorSlot::Box(k + 1), b);
+        }
+        self.interaction.insert(i, interaction);
         self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
     }
 
@@ -3468,6 +3494,7 @@ impl NodeStore {
             classes |= DirtyClass::SEMANTICS;
         }
         let mut content = content;
+        self.theme_content(self.arena.slot(id), &mut content);
         self.arriving(id, &mut content);
         self.leave_content(id);
         self.content_payload[self.arena.slot(id)] = Some(Box::new(content));
@@ -4295,6 +4322,8 @@ impl NodeStore {
                 .unzip();
             self.set_links(id, targets, labels);
         }
+        let mut request = request;
+        self.theme_color(self.arena.slot(id), ColorSlot::Text, &mut request.color);
         self.text_request[self.arena.slot(id)] = Some(Box::new(request));
     }
 
@@ -4718,6 +4747,8 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        let mut fill = fill;
+        self.theme_color(self.arena.slot(id), ColorSlot::Fill, &mut fill);
         self.settle(id, &LookValue::Fill(fill));
         self.write_fill(id, fill);
     }
@@ -4753,6 +4784,8 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        let mut border = border;
+        self.theme_color(self.arena.slot(id), ColorSlot::Border, &mut border.color);
         let style = &mut self.style[self.arena.slot(id)];
         if style.border != border {
             style.border = border;
@@ -4900,6 +4933,8 @@ impl NodeStore {
     /// [`transition`](Self::transition) on a live node, a move from rest
     /// beginning at `velocity` when one is given.
     fn move_look(&mut self, id: NodeId, to: LookValue, timing: Timing, velocity: Option<Parts>) {
+        let mut to = to;
+        self.theme_look(id, &mut to);
         let from = self.shown(id, &to);
         let moving = self.transitions.iter().position(|t| t.moves(id, &to));
         if self.lands(&timing) || (moving.is_none() && velocity.is_none() && from == to) {
@@ -4927,6 +4962,8 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
+        let mut value = value;
+        self.theme_look(id, &mut value);
         match self.transitions.iter().position(|t| t.moves(id, &value)) {
             None => self.write_look(id, value),
             Some(at) => {
@@ -5993,6 +6030,9 @@ impl NodeStore {
         self.drop_placement(i);
         self.dirty[i] = DirtyClass::EMPTY;
         self.layout[i] = input;
+        self.forget_theme(i);
+        let mut style = style;
+        self.theme_box(i, ColorSlot::Fill, ColorSlot::Border, &mut style);
         self.style[i] = style;
         self.measured[i] = Measured::default();
         self.settled.set(i, false);
@@ -8610,6 +8650,186 @@ impl<'a> BuildCx<'a> {
                 .keep_placement(self.store.arena.slot(id), placement);
         }
         id
+    }
+}
+
+impl NodeStore {
+    /// The colors the window's theme gives the controls.
+    #[inline]
+    pub fn palette(&self) -> &Palette {
+        &self.palette
+    }
+
+    /// Paints the controls with `palette`: every color that named a theme
+    /// token takes the token's color in it, each node it changes marked
+    /// PAINT, nothing else. Colors given by value stay as they are.
+    pub fn set_palette(&mut self, palette: Palette) {
+        if palette == self.palette {
+            return;
+        }
+        self.palette = palette;
+        let mut refs = std::mem::take(&mut self.theme_refs);
+        refs.retain(|&(i, _), _| self.arena.live_id(i).is_some());
+        let all: Vec<(u32, ColorSlot, Rgba)> = refs
+            .iter()
+            .map(|(&(i, slot), &token)| (i, slot, token))
+            .collect();
+        let mut of_node = Vec::new();
+        for node in all.chunk_by(|a, b| a.0 == b.0) {
+            of_node.clear();
+            of_node.extend(node.iter().map(|&(_, slot, token)| (slot, token)));
+            self.repaint_themed(node[0].0 as usize, &of_node);
+        }
+        self.theme_refs = refs;
+    }
+
+    /// Writes the colors `refs` name, in the current palette, into node
+    /// slot `i`.
+    fn repaint_themed(&mut self, i: usize, refs: &[(ColorSlot, Rgba)]) {
+        let Some(id) = self.arena.live_id(i as u32) else {
+            return;
+        };
+        let palette = self.palette;
+        let mut changed = false;
+        let mut set = |at: &mut Rgba, token: Rgba| {
+            let color = palette.resolve(token);
+            if *at != color {
+                *at = color;
+                changed = true;
+            }
+        };
+        // The box the node shows now is one of its interaction's, chosen by
+        // its cells; find which before the boxes change.
+        let shown = self.interaction.get(i).and_then(|boxes| {
+            let style = self.style[i];
+            [boxes.pressed, boxes.hover, boxes.resting]
+                .iter()
+                .position(|b| *b == style)
+                .map(|at| 2 - at)
+        });
+        for &(slot, token) in refs {
+            match slot {
+                ColorSlot::Fill => set(&mut self.style[i].fill, token),
+                ColorSlot::Border => set(&mut self.style[i].border.color, token),
+                ColorSlot::Box(k) => {
+                    if let Some(boxes) = self.interaction.get_mut(i) {
+                        let b = match k / 2 {
+                            0 => &mut boxes.resting,
+                            1 => &mut boxes.hover,
+                            _ => &mut boxes.pressed,
+                        };
+                        if k % 2 == 0 {
+                            set(&mut b.fill, token);
+                        } else {
+                            set(&mut b.border.color, token);
+                        }
+                    }
+                }
+                ColorSlot::Text => {
+                    if let Some(Content::Text { color, .. }) =
+                        self.content_payload[i].as_deref_mut()
+                    {
+                        set(color, token);
+                    }
+                    if let Some(request) = self.text_request[i].as_deref_mut() {
+                        set(&mut request.color, token);
+                    }
+                }
+                ColorSlot::Content(n) => {
+                    if let Some(content) = self.content_payload[i].as_deref_mut() {
+                        let mut at = 0;
+                        content.colors_mut(|color| {
+                            if at == n {
+                                set(color, token);
+                            }
+                            at += 1;
+                        });
+                    }
+                }
+            }
+        }
+        if let (Some(which), Some(boxes)) = (shown, self.interaction.get(i)) {
+            let now = [boxes.resting, boxes.hover, boxes.pressed][which];
+            if self.style[i] != now {
+                self.style[i] = now;
+                changed = true;
+            }
+        }
+        if changed {
+            self.mark_dirty(id, DirtyClass::PAINT);
+        }
+    }
+
+    /// Resolves `color`, the `slot` color of node slot `i`, against the
+    /// palette, remembering the token it names; a color given by value
+    /// forgets the token the slot named, unless it is that token's color.
+    fn theme_color(&mut self, i: usize, slot: ColorSlot, color: &mut Rgba) {
+        if is_token(*color) {
+            self.theme_refs.insert((i as u32, slot), *color);
+            self.themed.set(i, true);
+            *color = self.palette.resolve(*color);
+        } else if self.themed.get(i)
+            && let std::collections::btree_map::Entry::Occupied(named) =
+                self.theme_refs.entry((i as u32, slot))
+            && self.palette.resolve(*named.get()) != *color
+        {
+            named.remove();
+        }
+    }
+
+    /// [`theme_color`](Self::theme_color) on a box's fill and border.
+    fn theme_box(&mut self, i: usize, fill: ColorSlot, border: ColorSlot, b: &mut BoxStyle) {
+        self.theme_color(i, fill, &mut b.fill);
+        self.theme_color(i, border, &mut b.border.color);
+    }
+
+    /// [`theme_color`](Self::theme_color) on every color `content` paints
+    /// with: a text's run as the node's text color, the rest by position.
+    fn theme_content(&mut self, i: usize, content: &mut Content) {
+        if let Content::Text { color, .. } = content {
+            self.theme_color(i, ColorSlot::Text, color);
+            return;
+        }
+        if !self.themed.get(i) && !content.has_token() {
+            return;
+        }
+        let mut n = 0u8;
+        content.colors_mut(|color| {
+            let (palette, refs, themed) = (&self.palette, &mut self.theme_refs, &mut self.themed);
+            let slot = ColorSlot::Content(n);
+            if is_token(*color) {
+                refs.insert((i as u32, slot), *color);
+                themed.set(i, true);
+                *color = palette.resolve(*color);
+            } else if let std::collections::btree_map::Entry::Occupied(named) =
+                refs.entry((i as u32, slot))
+                && palette.resolve(*named.get()) != *color
+            {
+                named.remove();
+            }
+            n = n.saturating_add(1);
+        });
+    }
+
+    /// [`theme_color`](Self::theme_color) on the color a look value moves.
+    fn theme_look(&mut self, id: NodeId, value: &mut LookValue) {
+        let i = self.arena.slot(id);
+        match value {
+            LookValue::Fill(fill) => self.theme_color(i, ColorSlot::Fill, fill),
+            LookValue::TextColor(ink) => self.theme_color(i, ColorSlot::Text, ink),
+            _ => {}
+        }
+    }
+
+    /// Forgets the tokens node slot `i` named, for a node taking the slot.
+    fn forget_theme(&mut self, i: usize) {
+        if self.themed.get(i) {
+            self.themed.set(i, false);
+            let span = (i as u32, ColorSlot::FIRST)..=(i as u32, ColorSlot::LAST);
+            while let Some(&key) = self.theme_refs.range(span.clone()).next().map(|(k, _)| k) {
+                self.theme_refs.remove(&key);
+            }
+        }
     }
 }
 

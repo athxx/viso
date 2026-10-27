@@ -84,7 +84,7 @@ pub use shaders::{__embedded_shader, load_shader, load_shaders};
 pub use viso_dev_protocol::{headless, profile, tape};
 // The expression `view!` picks the target backend's code of a shader with.
 pub use tasks::release_tasks;
-pub use theme::{default_theme, set_theme};
+pub use theme::{default_dark_theme, default_theme, palette, set_theme};
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
 pub use viso_ui::shader::__per_backend;
