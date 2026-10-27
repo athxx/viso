@@ -442,6 +442,9 @@ pub struct VirtualListState {
     /// The last scroll offset a reconcile ran at, so a frame whose scroll has not
     /// moved (and whose data is clean) skips the whole pass.
     last_reconciled_scroll: f32,
+    /// The viewport's extent that reconcile windowed for: a layout that
+    /// resizes the viewport, as its first does, needs another window.
+    last_reconciled_extent: f32,
     /// The extent the canvas layout node currently holds. Reconcile rewrites the
     /// canvas (and marks it for relayout) only when `heights.total()` drifts from
     /// this, so an item-count or measured-height change is caught regardless of
@@ -546,6 +549,7 @@ impl VirtualListState {
             key_of,
             canvas,
             last_reconciled_scroll: f32::NAN,
+            last_reconciled_extent: f32::NAN,
             // The build sized the canvas to `estimated_row * item_count`; keep it
             // in sync so the first reconcile only rewrites the canvas on a real
             // drift (a measured-height correction), not spuriously.
@@ -1548,9 +1552,15 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
         }
     }
 
-    // Steady-path gate: scroll unchanged and data clean → nothing to do. The
-    // scroll itself already moved the world rects (TRANSFORM class); no relayout.
-    if state.mounted_once && scroll_main == state.last_reconciled_scroll && !state.dirty_data {
+    // Steady-path gate: scroll and viewport unchanged and data clean →
+    // nothing to do. The scroll itself already moved the world rects
+    // (TRANSFORM class); no relayout.
+    let viewport_main = cx.store.bounds_main(viewport, axis);
+    if state.mounted_once
+        && scroll_main == state.last_reconciled_scroll
+        && viewport_main == state.last_reconciled_extent
+        && !state.dirty_data
+    {
         return 0;
     }
 
@@ -1561,7 +1571,6 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
 
     // The visible window: the row at the viewport top, through the row at its
     // bottom, widened by overscan on each side and clamped to the item range.
-    let viewport_main = cx.store.bounds_main(viewport, axis);
     let first = state.flow.window(scroll_main, viewport_main, 0).0;
     let (new_start, new_end) = state
         .flow
@@ -1576,6 +1585,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
         && !state.dirty_data
     {
         state.last_reconciled_scroll = scroll_main;
+        state.last_reconciled_extent = viewport_main;
         let bound = state.place_header(first, scroll_main, cx);
         if bound > 0 {
             state.announce_positions(cx.store);
@@ -1616,6 +1626,7 @@ fn reconcile_one(viewport: NodeId, state: &mut VirtualListState, cx: &mut Struct
     state.range_start = new_start;
     state.range_end = new_end;
     state.last_reconciled_scroll = scroll_main;
+    state.last_reconciled_extent = viewport_main;
     state.dirty_data = false;
     state.mounted_once = true;
 
@@ -1634,6 +1645,18 @@ fn park(store: &mut NodeStore, pool: &mut Vec<NodeId>, host: NodeId) {
     store.arena_detach(host);
     store.clear_row_offset(host);
     pool.push(host);
+}
+
+/// Whether a list's last window no longer fits its viewport: the layout
+/// since resized the viewport, as a list's first layout does, or measured
+/// rows that moved its rows. The frame reconciles again so the list shows
+/// the rows its viewport now covers.
+pub fn unsettled(store: &NodeStore, lists: &VirtualLists) -> bool {
+    lists.lists.iter().flatten().any(|(viewport, state)| {
+        state.dirty_data
+            || (store.arena().is_live(*viewport)
+                && store.bounds_main(*viewport, state.axis) != state.last_reconciled_extent)
+    })
 }
 
 /// Fold the measured heights of this frame's newly-mounted rows back into the

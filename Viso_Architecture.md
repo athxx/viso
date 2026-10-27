@@ -3201,6 +3201,14 @@ Web       Viso 自有 ARIA DOM 镜像
 
 辅助技术动作（Focus、Click、Increment、Decrement、Refresh、Remove）合成为普通输入，控件不需要第二套激活协议。
 
+滚动动作直接作用于视口，不合成输入：
+
+- **发布**：视口在每个可滚轴上发布 `SemanticsState::scroll_x`/`scroll_y`（物理像素的当前偏移与上下界）。还能往哪个方向移动，就提供对应的 `ScrollUp`/`ScrollDown`/`ScrollLeft`/`ScrollRight`。视口内的节点提供 `ScrollIntoView`。
+- **翻页**：`NodeStore::scroll_page` 从目标节点向上找最近一个还能朝该方向移动的视口，一次翻一页。步长与 Page 键相同，吸附视口停在项上；直接到位，不滑行。
+- **滚入视图**：`ScrollIntoView` 在下一次 layout 后以最小滚动把节点露出来。
+- **虚拟列表**：翻页后，下一帧的 reconcile 挂载新覆盖到的行，并以 1 起的位置和总数发布，AT 由此到达从未挂载过的行。列表视口的语义角色是 `List`。
+- **平台映射**：AccessKit 的滚动动作（Android 的 scroll forward/backward 以页为单位）映射到这四个方向，并把 orientation 告诉 AT。iOS 的 `accessibilityScroll:` 从当前元素沿 mirror 向上找能滚动的祖先：三指上滑翻到下一页，左滑翻到右侧一页；翻页后发布 `UIAccessibilityPageScrolledNotification`，播报“Page n of m”。没有能滚动的祖先时返回 NO，由 VoiceOver 提示已到边界。
+
 ### 29.1 性能
 
 Semantics 只在 dirty branch 更新，不在每帧重建整棵 accessibility tree。

@@ -4,12 +4,17 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(any(target_os = "ios", test))]
+use crate::accessibility::AccessAction;
 use crate::accessibility::{AccessNode, SemanticsDelta, SemanticsId};
 
 /// The tree as of the last delta: applies each one and reports which nodes
 /// the native side has to patch.
 pub(crate) struct TreeMirror {
     nodes: HashMap<SemanticsId, AccessNode>,
+    /// Each node's parent, for walking up from an element.
+    #[cfg(any(target_os = "ios", test))]
+    parents: HashMap<SemanticsId, SemanticsId>,
     root: Option<SemanticsId>,
     focus: SemanticsId,
 }
@@ -29,6 +34,8 @@ impl TreeMirror {
     pub(crate) fn new() -> Self {
         Self {
             nodes: HashMap::new(),
+            #[cfg(any(target_os = "ios", test))]
+            parents: HashMap::new(),
             root: None,
             focus: SemanticsId::default(),
         }
@@ -47,9 +54,19 @@ impl TreeMirror {
             self.nodes.insert(node.id, node);
         }
         let mut reachable = HashSet::with_capacity(self.nodes.len());
-        self.walk(|node, _| {
+        #[cfg(any(target_os = "ios", test))]
+        let mut parents = HashMap::with_capacity(self.nodes.len());
+        self.walk(|node, _parent| {
             reachable.insert(node.id);
+            #[cfg(any(target_os = "ios", test))]
+            if let Some(parent) = _parent {
+                parents.insert(node.id, parent);
+            }
         });
+        #[cfg(any(target_os = "ios", test))]
+        {
+            self.parents = parents;
+        }
         let mut removed: Vec<SemanticsId> = self
             .nodes
             .keys()
@@ -80,6 +97,19 @@ impl TreeMirror {
     #[cfg(any(target_os = "ios", test))]
     pub(crate) fn focus(&self) -> SemanticsId {
         self.focus
+    }
+
+    /// The nearest of `from` and the nodes about it that offers `action`.
+    #[cfg(any(target_os = "ios", test))]
+    pub(crate) fn offering(&self, from: SemanticsId, action: AccessAction) -> Option<SemanticsId> {
+        let mut at = Some(from);
+        while let Some(id) = at {
+            if self.nodes.get(&id)?.actions.contains(action) {
+                return Some(id);
+            }
+            at = self.parents.get(&id).copied();
+        }
+        None
     }
 
     /// Visit every node in document order with its parent's id.
@@ -187,6 +217,32 @@ mod tests {
         assert_eq!(
             mirror.get(SemanticsId(3)).and_then(|n| n.label.as_deref()),
             Some("Volume")
+        );
+    }
+
+    #[test]
+    fn a_walk_up_finds_the_nearest_node_offering_an_action() {
+        use crate::accessibility::AccessActions;
+        use SemanticsRole as R;
+        let mut list = node(2, R::List, &[3]);
+        list.actions = AccessActions::NONE.with(AccessAction::ScrollDown);
+        let mut mirror = TreeMirror::new();
+        mirror.apply(delta(
+            vec![
+                node(1, R::Window, &[2]),
+                list,
+                node(3, R::ListItem, &[4]),
+                node(4, R::Label, &[]),
+            ],
+            Some(1),
+            1,
+        ));
+        let down = AccessAction::ScrollDown;
+        assert_eq!(mirror.offering(SemanticsId(4), down), Some(SemanticsId(2)));
+        assert_eq!(mirror.offering(SemanticsId(2), down), Some(SemanticsId(2)));
+        assert_eq!(
+            mirror.offering(SemanticsId(4), AccessAction::ScrollUp),
+            None
         );
     }
 }

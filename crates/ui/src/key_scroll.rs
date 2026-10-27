@@ -114,6 +114,50 @@ impl NodeStore {
         true
     }
 
+    /// Whether viewport `id` can still move along `axis` toward its
+    /// greatest offset (`forward`) or its least, from where it is headed.
+    pub fn can_scroll(&self, id: NodeId, axis: Axis, forward: bool) -> bool {
+        if !self.scrolls_on(id, axis) || self.scroll_range(id, axis) <= 0.0 {
+            return false;
+        }
+        let (least, most) = self.scroll_span(id, axis);
+        let at = self.scroll_target(id).on(axis);
+        if forward {
+            at < most - 0.5
+        } else {
+            at > least + 0.5
+        }
+    }
+
+    /// Turn a page of the nearest viewport about `from`, itself included,
+    /// that can still move along `axis` toward its greatest offset
+    /// (`forward`) or its least, as an assistive technology's scroll asks:
+    /// at once, as far as a page key glides, onto the item a snapping one
+    /// rests on. Returns the viewport it turned, `None` when none can.
+    pub fn scroll_page(&mut self, from: NodeId, axis: Axis, forward: bool) -> Option<NodeId> {
+        let mut at = Some(from).filter(|&n| self.arena().is_live(n));
+        while let Some(n) = at {
+            if self.can_scroll(n, axis, forward) {
+                break;
+            }
+            at = self.arena().parent(n);
+        }
+        let id = at?;
+        // A page key steps from the start on; a row read right to left
+        // starts at its greatest offset.
+        let rtl = self.scroll_span(id, axis).0 < 0.0 && axis == Axis::Row;
+        let step = Step::Page(forward != rtl);
+        if self.snaps(id) {
+            self.snap_by_key(id, axis, step);
+        } else {
+            self.glide_by_key(id, axis, step);
+        }
+        let to = self.scroll_target(id);
+        self.stop_coast(id);
+        self.set_scroll(id, to);
+        Some(id)
+    }
+
     /// The viewport a key along `axis` (any, for `None`) scrolls: the
     /// nearest about `from` that scrolls that way, else the outermost under
     /// `root`.
@@ -354,5 +398,27 @@ mod tests {
         let before = store.scroll_target(viewport).y;
         assert!(store.scroll_by_key(root, &press(Key::Down), false));
         assert_eq!(store.scroll_target(viewport).y, before + 40.0);
+    }
+
+    #[test]
+    fn a_page_turned_from_an_item_turns_its_viewport_at_once() {
+        let (mut store, _, viewport, items) = column(None);
+        assert!(!store.can_scroll(viewport, Axis::Column, false));
+        assert!(store.can_scroll(viewport, Axis::Column, true));
+        assert_eq!(store.scroll_page(items[0], Axis::Column, true), Some(viewport));
+        // A page key's step, there already rather than gliding.
+        assert_eq!(store.scroll(viewport).y, 87.5);
+        assert!(!store.is_scroll_moving());
+        assert_eq!(store.scroll_page(items[0], Axis::Column, false), Some(viewport));
+        assert_eq!(store.scroll(viewport).y, 0.0);
+        assert_eq!(store.scroll_page(items[0], Axis::Column, false), None);
+        assert_eq!(store.scroll_page(items[0], Axis::Row, true), None);
+    }
+
+    #[test]
+    fn a_page_turned_on_a_snapping_viewport_rests_on_an_item() {
+        let (mut store, _, viewport, items) = column(Some(ScrollSnap::START));
+        assert_eq!(store.scroll_page(items[3], Axis::Column, true), Some(viewport));
+        assert_eq!(store.scroll(viewport).y, 100.0);
     }
 }

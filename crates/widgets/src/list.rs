@@ -17,8 +17,8 @@
 //!
 //! Rows are declared by a builder closure invoked with each row's logical index,
 //! run only when a row is (re)mounted — cold, never on the per-frame hot path.
-//! The default accessible role is [`Role::Group`]: a structural grouping with no
-//! interaction of its own; the wheel/drag scroll gesture is routed by `viso-ui`'s
+//! The default accessible role is [`Role::List`], its rows list items that say
+//! their place; it has no interaction of its own: the wheel/drag scroll gesture is routed by `viso-ui`'s
 //! `ScrollRouter`, not by a widget-level handler.
 //!
 //! Building a `VirtualList` requires a reactive [`BuildCx`] (one made with
@@ -147,7 +147,7 @@ impl Default for VirtualListViewStyle {
 /// forces the ancestors above the list to relayout. A scroll within the mounted
 /// window is a pure transform (no relayout, no rebind). That targeted
 /// invalidation lives in the `viso-ui` substrate, not here. Semantics default to
-/// [`Role::Group`].
+/// [`Role::List`], each row a list item that says its place.
 pub struct VirtualList {
     style: VirtualListViewStyle,
     /// The number of logical rows. The canvas is sized to this times
@@ -160,7 +160,7 @@ pub struct VirtualList {
     /// value finds `None` and declares an empty (no-row-body) list rather than
     /// panicking. Building a widget value once is the norm.
     item: RefCell<Option<RowBuilder>>,
-    /// An optional accessible label. `None` keeps the plain [`Role::Group`] list
+    /// An optional accessible label. `None` keeps the plain [`Role::List`] list
     /// with no name.
     label: Option<String>,
     on_refresh: Option<crate::scroll::RefreshHandler>,
@@ -207,7 +207,7 @@ impl VirtualList {
         self
     }
 
-    /// Give the list an accessible label, surfaced on its [`Role::Group`]
+    /// Give the list an accessible label, surfaced on its [`Role::List`]
     /// semantics node.
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
@@ -294,9 +294,9 @@ impl Component for VirtualList {
             self.on_snap.as_ref(),
             self.on_reorder.as_ref(),
         );
-        // A virtual list is a `Group` to an assistive technology; carry the label
+        // A virtual list is a list to an assistive technology; carry the label
         // when one was authored.
-        let mut semantics = Semantics::role(Role::Group);
+        let mut semantics = Semantics::role(Role::List);
         if let Some(label) = &self.label {
             semantics = semantics.with_label(label.clone());
         }
@@ -443,7 +443,7 @@ mod tests {
     /// its own — the scroll gesture is routed by `viso-ui`, not a widget handler —
     /// so it stays a structural `Group`.
     #[test]
-    fn virtual_list_default_role_is_group_and_carries_label() {
+    fn virtual_list_default_role_is_list_and_carries_label() {
         let mut rx = Reactive::new();
         let root = rx.build(
             virtual_list(VirtualListViewStyle::default())
@@ -455,7 +455,7 @@ mod tests {
             .store
             .semantics(root)
             .expect("virtual list authors semantics on its node");
-        assert_eq!(sem.role, Role::Group);
+        assert_eq!(sem.role, Role::List);
         assert_eq!(sem.label.as_deref(), Some("Messages"));
         assert!(
             !rx.store.has_handler(root) && !rx.store.has_key_handler(root),

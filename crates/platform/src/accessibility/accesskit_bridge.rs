@@ -8,8 +8,8 @@
 //! conversion is per node and keeps no state.
 
 use accesskit::{
-    Action, ActionData, ActionRequest, CustomAction, Invalid, Live, Node, NodeId, Rect, Role,
-    SortDirection, TreeId, TreeInfo, TreeUpdate,
+    Action, ActionData, ActionRequest, CustomAction, Invalid, Live, Node, NodeId, Orientation,
+    Rect, Role, SortDirection, TreeId, TreeInfo, TreeUpdate,
 };
 
 use super::{
@@ -128,6 +128,23 @@ fn node_of(node: AccessNode) -> Node {
             SemanticsSort::Descending => SortDirection::Descending,
         });
     }
+    if let Some(x) = state.scroll_x {
+        out.set_scroll_x(f64::from(x.at));
+        out.set_scroll_x_min(f64::from(x.least));
+        out.set_scroll_x_max(f64::from(x.most));
+    }
+    if let Some(y) = state.scroll_y {
+        out.set_scroll_y(f64::from(y.at));
+        out.set_scroll_y_min(f64::from(y.least));
+        out.set_scroll_y_max(f64::from(y.most));
+    }
+    // A viewport scrolling one way says which, so a page scroll forward
+    // or back knows its axis.
+    match (state.scroll_x, state.scroll_y) {
+        (Some(_), None) => out.set_orientation(Orientation::Horizontal),
+        (None, Some(_)) => out.set_orientation(Orientation::Vertical),
+        _ => {}
+    }
     if let Some(error) = node.error_message {
         out.set_error_message(node_id(error));
     }
@@ -218,16 +235,27 @@ fn accesskit_action(action: AccessAction) -> Action {
         AccessAction::Increment => Action::Increment,
         AccessAction::Decrement => Action::Decrement,
         AccessAction::Refresh | AccessAction::Remove => Action::CustomAction,
+        AccessAction::ScrollUp => Action::ScrollUp,
+        AccessAction::ScrollDown => Action::ScrollDown,
+        AccessAction::ScrollLeft => Action::ScrollLeft,
+        AccessAction::ScrollRight => Action::ScrollRight,
+        AccessAction::ScrollIntoView => Action::ScrollIntoView,
     }
 }
 
-/// The action `action` with `data` asks for.
+/// The action `action` with `data` asks for. A scroll moves a page, whatever
+/// unit it names.
 fn action_of(action: Action, data: Option<&ActionData>) -> Option<AccessAction> {
     Some(match action {
         Action::Focus => AccessAction::Focus,
         Action::Click => AccessAction::Click,
         Action::Increment => AccessAction::Increment,
         Action::Decrement => AccessAction::Decrement,
+        Action::ScrollUp => AccessAction::ScrollUp,
+        Action::ScrollDown => AccessAction::ScrollDown,
+        Action::ScrollLeft => AccessAction::ScrollLeft,
+        Action::ScrollRight => AccessAction::ScrollRight,
+        Action::ScrollIntoView => AccessAction::ScrollIntoView,
         Action::CustomAction => match data {
             Some(&ActionData::CustomAction(REFRESH)) => AccessAction::Refresh,
             Some(&ActionData::CustomAction(REMOVE)) => AccessAction::Remove,
@@ -410,7 +438,55 @@ mod tests {
             None,
             "no custom action named"
         );
-        assert_eq!(request(&ask(Action::ScrollIntoView)), None);
+        assert_eq!(request(&ask(Action::ShowContextMenu)), None);
+    }
+
+    #[test]
+    fn a_viewport_says_where_it_stands_its_axis_and_the_pages_it_turns() {
+        use crate::accessibility::SemanticsScroll;
+        let list = AccessNode {
+            id: SemanticsId(3),
+            role: SemanticsRole::List,
+            state: SemanticsState {
+                scroll_y: Some(SemanticsScroll {
+                    at: 120.0,
+                    least: 0.0,
+                    most: 9000.0,
+                }),
+                ..SemanticsState::default()
+            },
+            actions: AccessActions::NONE
+                .with(AccessAction::ScrollUp)
+                .with(AccessAction::ScrollDown),
+            ..AccessNode::default()
+        };
+        let update = tree_update(SemanticsDelta {
+            root: None,
+            nodes: vec![list],
+            focus: SemanticsId(3),
+        });
+        let list = found(&update, 3);
+        assert_eq!(list.scroll_y(), Some(120.0));
+        assert_eq!(list.scroll_y_min(), Some(0.0));
+        assert_eq!(list.scroll_y_max(), Some(9000.0));
+        assert_eq!(list.scroll_x(), None);
+        assert_eq!(list.orientation(), Some(Orientation::Vertical));
+        assert!(list.supports_action(Action::ScrollDown));
+        assert!(list.supports_action(Action::ScrollUp));
+        assert!(!list.supports_action(Action::ScrollLeft));
+        let page = ActionRequest {
+            action: Action::ScrollDown,
+            target_tree: TreeId::ROOT,
+            target_node: NodeId(3),
+            data: Some(ActionData::ScrollUnit(accesskit::ScrollUnit::Page)),
+        };
+        assert_eq!(
+            request(&page),
+            Some(AccessRequest::Action {
+                target: SemanticsId(3),
+                action: AccessAction::ScrollDown
+            })
+        );
     }
 
     #[test]

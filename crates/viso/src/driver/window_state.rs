@@ -434,6 +434,8 @@ impl WindowState {
             || self.store.sheets_due()
             || self.store.drops_due()
             || self.store.frame_clients_want_frame()
+            // A list still owes the rows its viewport covers.
+            || viso_ui::virtual_list::unsettled(&self.store, &self.virtual_lists)
             || self.video_step.beating
             || self.draws_clock
             // A device lost in the last frame is replaced in the next.

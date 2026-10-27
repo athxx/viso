@@ -42,6 +42,15 @@ impl<A: Application> DrivenApp<A> {
         self.driver.windows[0].root
     }
 
+    /// What the first window last published to an assistive technology,
+    /// in id order; `None` while none listens.
+    pub fn published(&self) -> Option<Vec<viso_platform::AccessNode>> {
+        let access = self.driver.windows[0].access.as_ref()?;
+        let mut nodes: Vec<_> = access.published().cloned().collect();
+        nodes.sort_unstable_by_key(|node| node.id);
+        Some(nodes)
+    }
+
     /// The first window's reactive state cells.
     pub fn states(&self) -> &StateStore {
         &self.driver.windows[0].states
@@ -246,6 +255,11 @@ impl<A: Application> DrivenApp<A> {
             },
         }
     }
+}
+
+/// The id node `node` is published to an assistive technology under.
+pub fn semantics_id(node: NodeId) -> viso_platform::SemanticsId {
+    crate::accessibility::semantics_id(node)
 }
 
 /// Build application `A`, replay `script` through a headless pump driven by

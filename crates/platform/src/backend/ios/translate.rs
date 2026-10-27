@@ -309,6 +309,7 @@ pub(crate) fn announced(role: SemanticsRole) -> bool {
             | R::Dialog
             | R::Menu
             | R::MenuBar
+            | R::List
             | R::ListBox
             | R::Table
             | R::Grid
@@ -371,6 +372,44 @@ pub(crate) fn spoken_value(node: &AccessNode) -> Option<String> {
         }
         _ => format!("{value}"),
     })
+}
+
+/// The page turns a VoiceOver scroll in `direction` asks for, in the order
+/// to try. A three-finger swipe up turns to the page below, a swipe left to
+/// the page on the right. Next and previous turn along whichever axis
+/// scrolls.
+pub(crate) fn scroll_actions(direction: isize) -> &'static [AccessAction] {
+    use AccessAction as A;
+    match direction {
+        1 => &[A::ScrollLeft],
+        2 => &[A::ScrollRight],
+        3 => &[A::ScrollDown],
+        4 => &[A::ScrollUp],
+        5 => &[A::ScrollDown, A::ScrollRight],
+        6 => &[A::ScrollUp, A::ScrollLeft],
+        _ => &[],
+    }
+}
+
+/// What VoiceOver says once viewport `node` turned a page up or down
+/// (`vertical`) or across: which page of how many it shows.
+pub(crate) fn page_status(node: &AccessNode, vertical: bool) -> Option<String> {
+    let (scroll, extent) = if vertical {
+        (node.state.scroll_y?, node.bounds.height)
+    } else {
+        (node.state.scroll_x?, node.bounds.width)
+    };
+    if extent <= 0.0 {
+        return None;
+    }
+    let span = (scroll.most - scroll.least).max(0.0);
+    let pages = ((span + extent) / extent).ceil().max(1.0) as u32;
+    let page = if scroll.at >= scroll.most - 0.5 {
+        pages
+    } else {
+        ((scroll.at - scroll.least).max(0.0) / extent) as u32 + 1
+    };
+    Some(format!("Page {} of {pages}", page.min(pages)))
 }
 
 #[cfg(test)]
@@ -488,5 +527,43 @@ mod tests {
         };
         assert!(!shows_selected(&unchecked));
         assert_eq!(element_kind(&AccessNode::default()), ElementKind::Plain);
+    }
+
+    #[test]
+    fn a_swipe_turns_the_page_it_reveals_and_says_which_it_shows() {
+        use crate::accessibility::{SemanticsRect, SemanticsScroll, SemanticsState};
+        assert_eq!(scroll_actions(3), [AccessAction::ScrollDown]);
+        assert_eq!(scroll_actions(2), [AccessAction::ScrollRight]);
+        assert_eq!(
+            scroll_actions(6),
+            [AccessAction::ScrollUp, AccessAction::ScrollLeft]
+        );
+        assert!(scroll_actions(0).is_empty());
+        let at = |at: f32| AccessNode {
+            bounds: SemanticsRect {
+                width: 100.0,
+                height: 200.0,
+                ..SemanticsRect::default()
+            },
+            state: SemanticsState {
+                scroll_y: Some(SemanticsScroll {
+                    at,
+                    least: 0.0,
+                    most: 900.0,
+                }),
+                ..SemanticsState::default()
+            },
+            ..AccessNode::default()
+        };
+        assert_eq!(page_status(&at(0.0), true).as_deref(), Some("Page 1 of 6"));
+        assert_eq!(
+            page_status(&at(450.0), true).as_deref(),
+            Some("Page 3 of 6")
+        );
+        assert_eq!(
+            page_status(&at(900.0), true).as_deref(),
+            Some("Page 6 of 6")
+        );
+        assert_eq!(page_status(&at(0.0), false), None);
     }
 }

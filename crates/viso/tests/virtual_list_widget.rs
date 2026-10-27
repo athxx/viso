@@ -16,7 +16,7 @@
 //!   over the raw `cx.virtual_list` node, here over a widget-built tree: a 100k-row
 //!   list mounts ~a window (never 100k), reports the full scroll range, a sub-row
 //!   scroll rebinds nothing, and crossing three rows recycles exactly three;
-//! - **a11y snapshot** — a `VirtualList`'s derived semantics node is `Role::Group`
+//! - **a11y snapshot** — a `VirtualList`'s derived semantics node is `Role::List`
 //!   and carries an authored label; it declares no interactive handlers of its own
 //!   (the scroll gesture is routed by `viso-ui`, not a widget handler);
 //! - **allocation profile** — a warmed-up steady `VirtualList` frame (paint of a
@@ -352,7 +352,7 @@ fn virtual_list_derives_a_group_semantics_node_with_label() {
 
     let tree = store.derive_semantics(root);
     let node = tree.root().expect("the derived tree has a root");
-    assert_eq!(node.role, Role::Group, "a VirtualList is a Group");
+    assert_eq!(node.role, Role::List, "a VirtualList is a List");
     assert_eq!(node.label.as_deref(), Some("Messages"));
     assert!(
         !store.has_handler(root) && !store.has_key_handler(root),

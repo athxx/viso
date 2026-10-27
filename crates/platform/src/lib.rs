@@ -74,7 +74,7 @@ pub mod wake;
 
 pub use accessibility::{
     AccessAction, AccessActions, AccessNode, AccessRequest, SemanticsDelta, SemanticsId,
-    SemanticsLive, SemanticsRect, SemanticsRole, SemanticsSort, SemanticsState,
+    SemanticsLive, SemanticsRect, SemanticsRole, SemanticsScroll, SemanticsSort, SemanticsState,
 };
 pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, PasteReply};
 pub use control::{

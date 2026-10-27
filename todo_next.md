@@ -678,9 +678,29 @@ Rules (as for `todo_features.md`):
     - The per-widget goldens on dark scenes now draw in the dark palette and are re-blessed.
     - A rich text's span ink and fill follow a palette swap with PAINT only, and a reflowed run
       draws resolved too (`viso-ui` theme tests).
-- [ ] Assistive-technology scroll actions on scroll viewports and virtual lists (`ScrollDown`,
+- [x] Assistive-technology scroll actions on scroll viewports and virtual lists (`ScrollDown`,
   `ScrollUp`, `ScrollIntoView`, iOS `accessibilityScroll`). Verify with an AccessKit request test
   that reaches an unmounted row of a 10k-row list.
+  - Built:
+    - Viewports publish `scroll_x`/`scroll_y` and offer `ScrollUp`/`Down`/`Left`/`Right` for each
+      way they can still move. Nodes inside a viewport offer `ScrollIntoView`.
+    - `NodeStore::scroll_page` turns the nearest viewport that can move a page at once (a page
+      key's step, or onto an item when it snaps). `ScrollIntoView` reveals the node.
+    - AccessKit maps both ways and states the orientation. iOS `accessibilityScroll:` walks the
+      mirror up to a viewport that can scroll, then posts "Page n of m".
+    - A virtual list is `Role::List`.
+    - Fixed a virtual list that mounted only its overscan rows until first scrolled: reconcile
+      ran before the first layout gave the viewport its extent. Reconcile now also gates on the
+      viewport's extent, and a frame whose layout resized a list reconciles again.
+  - Verified:
+    - `crates/viso/tests/access_scroll.rs`, a 10,000-row list driven with an assistive technology
+      listening: three `ScrollDown` requests publish rows never mounted, with their places of
+      10,000, while the mounted window stays a window. `ScrollUp` turns back, and a row cut off at
+      the end comes into view on `ScrollIntoView`. The first frame mounts all ten rows the
+      viewport covers.
+    - The AccessKit bridge maps scroll requests and state; the mirror finds the scrolling
+      ancestor; the iOS page-status and direction tests pass.
+    - Clippy is clean on host, iOS, Android, Windows and wasm.
 - [ ] Surrounding text and selection to platform IMEs:
   - macOS `attributedSubstringForProposedRange`/`selectedRange`;
   - iOS `UITextInput`;

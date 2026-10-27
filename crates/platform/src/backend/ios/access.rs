@@ -21,7 +21,8 @@ use objc2_foundation::{NSArray, NSString};
 use objc2_ui_kit::{
     NSObjectUIAccessibilityAction, UIAccessibilityCustomAction, UIAccessibilityElement,
     UIAccessibilityIsSwitchControlRunning, UIAccessibilityIsVoiceOverRunning,
-    UIAccessibilityLayoutChangedNotification, UIAccessibilityPostNotification,
+    UIAccessibilityLayoutChangedNotification, UIAccessibilityPageScrolledNotification,
+    UIAccessibilityPostNotification, UIAccessibilityScrollDirection,
     UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitImage,
     UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField,
     UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UIAccessibilityTraits,
@@ -35,7 +36,7 @@ use crate::accessibility::{
     AccessAction, AccessNode, AccessRequest, SemanticsDelta, SemanticsId, SemanticsRole,
 };
 use crate::backend::ios_translate::{
-    ElementKind, announced, element_kind, shows_selected, spoken_value,
+    ElementKind, announced, element_kind, page_status, scroll_actions, shows_selected, spoken_value,
 };
 use crate::event::RawEvent;
 
@@ -48,6 +49,9 @@ pub(super) struct Access {
     elements: HashMap<SemanticsId, Retained<AccessElement>>,
     /// The announced elements in document order, as handed to UIKit.
     order: Option<Retained<NSArray>>,
+    /// The viewport a scroll asked to turn a page, and whether up or down,
+    /// until a delta shows it turned.
+    paging: Option<(SemanticsId, bool)>,
 }
 
 impl Access {
@@ -57,19 +61,30 @@ impl Access {
             mirror: TreeMirror::new(),
             elements: HashMap::new(),
             order: None,
+            paging: None,
         }
     }
 
     /// Fold `delta` in and rebuild the element list; returns the focused
-    /// element when the focus moved.
+    /// element when the focus moved, and what to say when a viewport a
+    /// scroll asked for turned its page.
     fn apply(
         &mut self,
         view: &VisoView,
         delta: SemanticsDelta,
         scale: f64,
-    ) -> Option<Retained<AccessElement>> {
+    ) -> (Option<Retained<AccessElement>>, Option<String>) {
         let changes = self.mirror.apply(delta);
         let changed: HashSet<SemanticsId> = changes.changed.into_iter().collect();
+        let status = match self.paging {
+            Some((id, vertical)) if changed.contains(&id) => {
+                self.paging = None;
+                self.mirror
+                    .get(id)
+                    .and_then(|node| page_status(node, vertical))
+            }
+            _ => None,
+        };
         let Self {
             mirror, elements, ..
         } = self;
@@ -95,10 +110,11 @@ impl Access {
         });
         let refs: Vec<&AnyObject> = order.iter().map(|e| -> &AnyObject { e }).collect();
         self.order = Some(NSArray::from_slice(&refs));
-        changes
+        let focus = changes
             .focus_moved
             .then(|| self.elements.get(&self.mirror.focus()).cloned())
-            .flatten()
+            .flatten();
+        (focus, status)
     }
 }
 
@@ -121,7 +137,7 @@ pub(super) fn elements() -> Option<Retained<NSArray>> {
 /// Publish `delta` if an assistive technology has asked for the elements.
 pub(super) fn update(view: &VisoView, delta: SemanticsDelta) {
     let scale = view.contentScaleFactor();
-    let Some(focus) = LOOP.with(|l| {
+    let Some((focus, status)) = LOOP.with(|l| {
         let mut access = l.access.borrow_mut();
         access.active.then(|| access.apply(view, delta, scale))
     }) else {
@@ -131,6 +147,15 @@ pub(super) fn update(view: &VisoView, delta: SemanticsDelta) {
     // SAFETY: the layout-changed notification takes the element to move the
     // cursor to, or nil; the constant is an immutable UIKit value.
     unsafe { UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification, focus) };
+    if let Some(status) = status {
+        let status = NSString::from_str(&status);
+        let status: &AnyObject = &status;
+        // SAFETY: the page-scrolled notification takes the string to speak;
+        // the constant is an immutable UIKit value.
+        unsafe {
+            UIAccessibilityPostNotification(UIAccessibilityPageScrolledNotification, Some(status));
+        };
+    }
 }
 
 /// Stop publishing once no assistive technology that reads the elements
@@ -221,6 +246,11 @@ define_class!(
             self.perform(AccessAction::Decrement);
         }
 
+        #[unsafe(method(accessibilityScroll:))]
+        fn scroll(&self, direction: UIAccessibilityScrollDirection) -> bool {
+            self.turn_page(direction.0)
+        }
+
         #[unsafe(method(visoRefresh:))]
         fn refresh(&self, _action: &AnyObject) -> bool {
             self.perform(AccessAction::Refresh)
@@ -285,6 +315,29 @@ impl AccessElement {
             size: CGSize::new(f64::from(b.width) / scale, f64::from(b.height) / scale),
         };
         self.setAccessibilityFrameInContainerSpace(frame);
+    }
+
+    /// Turn a page of the nearest viewport about this element that can
+    /// still move as a scroll in `direction` asks; `false`, so VoiceOver
+    /// says it went no further, when none can.
+    fn turn_page(&self, direction: isize) -> bool {
+        let from = *self.ivars();
+        let found = LOOP.with(|l| {
+            let mut access = l.access.try_borrow_mut().ok()?;
+            let (target, action) = scroll_actions(direction)
+                .iter()
+                .find_map(|&action| Some((access.mirror.offering(from, action)?, action)))?;
+            let vertical = matches!(action, AccessAction::ScrollUp | AccessAction::ScrollDown);
+            access.paging = Some((target, vertical));
+            Some(AccessRequest::Action { target, action })
+        });
+        match found {
+            Some(request) => {
+                guarded(|| send(request));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Queue `action` on this element's node if the node supports it.

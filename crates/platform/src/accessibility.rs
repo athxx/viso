@@ -156,6 +156,19 @@ pub struct SemanticsState {
     pub table_place: Option<(u32, u32)>,
     /// How a column header's column is sorted, if it is.
     pub sort: Option<SemanticsSort>,
+    /// Where a viewport that scrolls across stands, if it scrolls so.
+    pub scroll_x: Option<SemanticsScroll>,
+    /// Where a viewport that scrolls up and down stands, if it scrolls so.
+    pub scroll_y: Option<SemanticsScroll>,
+}
+
+/// Where a viewport stands along one axis, in physical pixels: its offset
+/// between the least and the greatest it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SemanticsScroll {
+    pub at: f32,
+    pub least: f32,
+    pub most: f32,
 }
 
 /// How a column is sorted.
@@ -167,7 +180,7 @@ pub enum SemanticsSort {
 
 /// The set of [`AccessAction`]s a node supports, one bit each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AccessActions(u8);
+pub struct AccessActions(u16);
 
 impl AccessActions {
     /// No action.
@@ -268,21 +281,35 @@ pub enum AccessAction {
     /// Remove the node from what holds it, as Delete on it does — a chip's
     /// cross: offered as a custom action named "Remove".
     Remove,
+    /// Scroll a viewport a page toward its start or its end, up and down or
+    /// across: offered by a viewport that can still move that way.
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+    /// Scroll the viewports about the node the least that shows it: offered
+    /// by a node inside one.
+    ScrollIntoView,
 }
 
 impl AccessAction {
     /// Every action, in declaration order.
-    pub const ALL: [AccessAction; 6] = [
+    pub const ALL: [AccessAction; 11] = [
         AccessAction::Focus,
         AccessAction::Click,
         AccessAction::Increment,
         AccessAction::Decrement,
         AccessAction::Refresh,
         AccessAction::Remove,
+        AccessAction::ScrollUp,
+        AccessAction::ScrollDown,
+        AccessAction::ScrollLeft,
+        AccessAction::ScrollRight,
+        AccessAction::ScrollIntoView,
     ];
 
-    const fn bit(self) -> u8 {
-        1 << self as u8
+    const fn bit(self) -> u16 {
+        1 << self as u16
     }
 }
 
@@ -302,6 +329,11 @@ impl AccessRequest {
                     AccessAction::Decrement => 5,
                     AccessAction::Refresh => 6,
                     AccessAction::Remove => 7,
+                    AccessAction::ScrollUp => 8,
+                    AccessAction::ScrollDown => 9,
+                    AccessAction::ScrollLeft => 10,
+                    AccessAction::ScrollRight => 11,
+                    AccessAction::ScrollIntoView => 12,
                 };
                 (kind, target.0)
             }
@@ -318,6 +350,11 @@ impl AccessRequest {
             5 => AccessAction::Decrement,
             6 => AccessAction::Refresh,
             7 => AccessAction::Remove,
+            8 => AccessAction::ScrollUp,
+            9 => AccessAction::ScrollDown,
+            10 => AccessAction::ScrollLeft,
+            11 => AccessAction::ScrollRight,
+            12 => AccessAction::ScrollIntoView,
             _ => return None,
         };
         Some(Self::Action {
@@ -353,11 +390,18 @@ mod tests {
                 action: AccessAction::Remove,
             },
         ];
+        let requests =
+            requests
+                .into_iter()
+                .chain(AccessAction::ALL.map(|action| AccessRequest::Action {
+                    target: SemanticsId(7),
+                    action,
+                }));
         for request in requests {
             let (kind, target) = request.to_words();
             assert_eq!(AccessRequest::from_words(kind, target), Some(request));
         }
-        assert_eq!(AccessRequest::from_words(8, 0), None);
+        assert_eq!(AccessRequest::from_words(13, 0), None);
     }
 
     #[test]

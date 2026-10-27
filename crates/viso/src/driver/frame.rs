@@ -1717,6 +1717,23 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // next frame. Bounded to this frame's newly-mounted rows — no
                     // full-list sweep.
                     virtual_list::absorb_measurements(&ws.store, &mut ws.virtual_lists);
+                    // A list whose viewport this layout resized, as a list's
+                    // first layout does, mounts the rows it now covers in
+                    // this frame rather than the next.
+                    if virtual_list::unsettled(&ws.store, &ws.virtual_lists) {
+                        virtual_list::reconcile(
+                            &mut ws.store,
+                            &mut ws.virtual_lists,
+                            &mut ws.states,
+                            &mut ws.bindings,
+                            &mut ws.effects,
+                        );
+                        ws.store.set_dirty_cause(DirtyCause::Text);
+                        ws.shape_pending_text();
+                        ws.store.set_dirty_cause(DirtyCause::Layout);
+                        ws.relayout();
+                        virtual_list::absorb_measurements(&ws.store, &mut ws.virtual_lists);
+                    }
                 }
             }
             FramePhase::ResolveStyle => {

@@ -16,13 +16,14 @@ use std::collections::HashMap;
 
 use viso_platform::{
     AccessAction, AccessActions, AccessNode, SemanticsDelta, SemanticsId, SemanticsLive,
-    SemanticsRect, SemanticsRole, SemanticsSort, SemanticsState, WindowId,
+    SemanticsRect, SemanticsRole, SemanticsScroll, SemanticsSort, SemanticsState, WindowId,
 };
 use viso_runtime::{
     InputSample, Key, KeySample, Modifiers, PointerId, PointerKind, PointerPhase, PointerSample,
 };
 use viso_ui::{
-    DirtyClass, LiveRegion, NodeId, NodeStore, PointerButtons, Role, SemanticState, SemanticsNode,
+    Axis, DirtyClass, LiveRegion, NodeId, NodeStore, PointerButtons, Role, ScrollBehavior,
+    ScrollRequest, SemanticState, SemanticsNode,
 };
 
 /// The dirty classes after which the whole tree is re-derived: they move
@@ -104,7 +105,7 @@ impl AccessBridge {
                 derived: 0,
             };
             sync.targets.clear();
-            sync.visit(root, store.inert(root), true);
+            sync.visit(root, store.inert(root), true, false);
             #[cfg(test)]
             {
                 self.derived = sync.derived;
@@ -120,7 +121,7 @@ impl AccessBridge {
                 changed: &mut changed,
                 derived: 0,
             };
-            sync.visit(root, store.inert(root), false);
+            sync.visit(root, store.inert(root), false, false);
             #[cfg(test)]
             {
                 self.derived = sync.derived;
@@ -157,6 +158,12 @@ impl AccessBridge {
             .unwrap_or(root)
     }
 
+    /// Every node last published.
+    #[cfg(feature = "headless")]
+    pub(crate) fn published(&self) -> impl Iterator<Item = &AccessNode> {
+        self.published.values()
+    }
+
     /// The retained node last published as `target`, and which of its links
     /// it is.
     pub(crate) fn target(&self, target: SemanticsId) -> Option<Target> {
@@ -173,7 +180,10 @@ pub(crate) type Target = (NodeId, Option<u16>);
 /// link's first line's); `Increment`/`Decrement` are the
 /// arrow keys a focused slider steps on, Up and Down for a spin button;
 /// `Refresh` needs no input, a refreshable viewport refreshing as a pull
-/// past its start makes it; `Remove` is Delete on the focused node.
+/// past its start makes it; `Remove` is Delete on the focused node. A
+/// scroll needs none either: a page turns on the nearest viewport about
+/// the node that can move that way, and `ScrollIntoView` reveals the node
+/// once the next layout has placed it.
 /// Positions are physical pixels, as the
 /// scheduler delivers them. An inert node takes none.
 pub(crate) fn perform(
@@ -223,6 +233,23 @@ pub(crate) fn perform(
             store.begin_refresh(node);
             return None;
         }
+        AccessAction::ScrollUp
+        | AccessAction::ScrollDown
+        | AccessAction::ScrollLeft
+        | AccessAction::ScrollRight => {
+            let (axis, forward) = match action {
+                AccessAction::ScrollUp => (Axis::Column, false),
+                AccessAction::ScrollDown => (Axis::Column, true),
+                AccessAction::ScrollLeft => (Axis::Row, false),
+                _ => (Axis::Row, true),
+            };
+            store.scroll_page(node, axis, forward);
+            return None;
+        }
+        AccessAction::ScrollIntoView => {
+            store.request_scroll_with(node, ScrollRequest::Reveal, ScrollBehavior::Instant);
+            return None;
+        }
         AccessAction::Remove => Key::Delete,
         AccessAction::Increment | AccessAction::Decrement => {
             let spin = store
@@ -251,7 +278,7 @@ pub(crate) fn perform(
 
 /// The published id of a retained node: its index and generation packed, so
 /// a recycled slot never answers for the node it replaced.
-fn semantics_id(id: NodeId) -> SemanticsId {
+pub(crate) fn semantics_id(id: NodeId) -> SemanticsId {
     SemanticsId(u64::from(id.index()) | u64::from(id.generation()) << 32)
 }
 
@@ -363,8 +390,8 @@ impl Sync<'_> {
     /// A child is re-derived too when `all`, when it is SEMANTICS-marked,
     /// when it was not published, or when `id`'s `disabled`, which it
     /// inherits, changed; any other keeps its published subtree. `inert` is
-    /// whether an ancestor is disabled.
-    fn visit(&mut self, id: NodeId, inert: bool, all: bool) {
+    /// whether an ancestor is disabled, `scrolled` whether one is a viewport.
+    fn visit(&mut self, id: NodeId, inert: bool, all: bool, scrolled: bool) {
         let store = self.store;
         let row = store.semantics_row(id, inert);
         self.derived += 1;
@@ -372,20 +399,21 @@ impl Sync<'_> {
         let own = semantics_id(id);
         let all = all || self.prior(own).map(|n| n.state.disabled) != Some(disabled);
         let mut children = Vec::new();
+        let within = scrolled || store.scroll_axis(id).is_some();
         for c in store.read_children(id) {
             let child = semantics_id(c);
             if all
                 || store.dirty(c).intersects(DirtyClass::SEMANTICS)
                 || !self.published.contains_key(&child)
             {
-                self.visit(c, disabled, all);
+                self.visit(c, disabled, all, within);
             }
             children.push(child);
         }
         for link in 0..store.links(id).len() as u16 {
             let row = store.semantics_link_row(id, link, disabled);
             self.derived += 1;
-            let node = self.node(row, false, Vec::new());
+            let node = self.node(row, false, scrolled, Vec::new());
             children.push(node.id);
             self.publish(node, (id, Some(link)));
         }
@@ -403,7 +431,7 @@ impl Sync<'_> {
                 self.unpublish(child);
             }
         }
-        let node = self.node(row, id == self.root, children);
+        let node = self.node(row, id == self.root, scrolled, children);
         self.publish(node, (id, None));
     }
 
@@ -435,7 +463,15 @@ impl Sync<'_> {
         }
     }
 
-    fn node(&self, row: SemanticsNode, root: bool, children: Vec<SemanticsId>) -> AccessNode {
+    /// The published node for `row`: the window when `root`; `scrolled`
+    /// when a viewport is about it.
+    fn node(
+        &self,
+        row: SemanticsNode,
+        root: bool,
+        scrolled: bool,
+        children: Vec<SemanticsId>,
+    ) -> AccessNode {
         let store = self.store;
         let label = row.label;
         let role = if root {
@@ -473,6 +509,49 @@ impl Sync<'_> {
         if live && store.check_mark(row.id).is_some_and(|m| m.removes()) {
             actions = actions.with(AccessAction::Remove);
         }
+        if live && scrolled {
+            actions = actions.with(AccessAction::ScrollIntoView);
+        }
+        // A viewport says where it stands on each axis it scrolls along,
+        // and turns a page each way it can still move.
+        let mut scroll = [None, None];
+        if row.link.is_none() && store.scroll_axis(row.id).is_some() {
+            let pages = [
+                (
+                    Axis::Row,
+                    AccessAction::ScrollLeft,
+                    AccessAction::ScrollRight,
+                ),
+                (
+                    Axis::Column,
+                    AccessAction::ScrollUp,
+                    AccessAction::ScrollDown,
+                ),
+            ];
+            for (at, (axis, back, on)) in pages.into_iter().enumerate() {
+                if !store.scrolls_on(row.id, axis) || store.scroll_range(row.id, axis) <= 0.0 {
+                    continue;
+                }
+                let (least, most) = store.scroll_span(row.id, axis);
+                let offset = store.scroll(row.id);
+                let offset = if axis == Axis::Row {
+                    offset.x
+                } else {
+                    offset.y
+                };
+                scroll[at] = Some(SemanticsScroll {
+                    at: offset * self.scale,
+                    least: least * self.scale,
+                    most: most * self.scale,
+                });
+                if live && store.can_scroll(row.id, axis, false) {
+                    actions = actions.with(back);
+                }
+                if live && store.can_scroll(row.id, axis, true) {
+                    actions = actions.with(on);
+                }
+            }
+        }
         // A refused value's reason is read with the node's description: the
         // error relation alone is not read by every reader.
         let validity = row.validity;
@@ -492,6 +571,7 @@ impl Sync<'_> {
             viso_ui::SortOrder::Ascending => SemanticsSort::Ascending,
             viso_ui::SortOrder::Descending => SemanticsSort::Descending,
         });
+        [state.scroll_x, state.scroll_y] = scroll;
         AccessNode {
             id: match row.link {
                 Some(link) => link_id(row.id, link),
