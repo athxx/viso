@@ -583,7 +583,7 @@ Rules (as for `todo_features.md`):
     check-deps passes. Indicative times: layout_10k_dirty 118 µs / 1.58 ms, hit_test_100k 731 ns,
     state_update_1k 19 µs, startup 228 µs / 1.32 ms, damage_single_label 22 µs/tick,
     hot_reload small 1.7 ms / large 112 ms.
-- [ ] Follow-ups the new benches found:
+- [x] Follow-ups the new benches found:
   - [x] `color_picker/paint_tree` costs 356 µs because the tone mesh is rebuilt with per-vertex
     HSV every paint; cache it or fill it with a shader. Done: the tone, ring, checkerboard and
     hue/alpha track meshes are built about the origin, kept in a 32-entry cache keyed by what they
@@ -612,7 +612,9 @@ Rules (as for `todo_features.md`):
     copies unescaped runs whole, which halves the write (681 → 343 µs). `receive` reads the
     inputs in place and the hashes into a fixed array: 0 allocations a packet (was 2, 104 B),
     86.6 → 60.8 ns a round trip.
-  - `DrivenApp` has no damage accessor.
+  - [x] `DrivenApp` has no damage accessor. `DrivenApp::damage` gives the last submit's region.
+    damage_single_label_update now asserts that the region covers the pixels the tick changed:
+    one 475 px rect around a 77 px box.
 
   Verify each with its bench.
 - [x] Hot, warm and cold bytes per node in `viso inspect frame`. Verify that the counter app is

@@ -172,6 +172,13 @@ impl<A: Application> DrivenApp<A> {
         Some((w, h, gpu.backend.read_pixels_bgra8(surface)))
     }
 
+    /// What the launch window's last submit redrew: nothing, the whole
+    /// surface, or a few rects in device pixels; `None` without a surface.
+    pub fn damage(&self) -> Option<viso_render::damage::Region> {
+        let gpu = self.driver.windows[0].gpu.as_ref()?;
+        Some(*gpu.renderer.last_damage())
+    }
+
     /// How many devices the launch window lost and drew on anew.
     pub fn devices_replaced(&self) -> u32 {
         self.driver.windows[0].devices_replaced

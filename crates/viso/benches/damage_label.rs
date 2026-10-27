@@ -10,8 +10,8 @@
 //! submits of consecutive updates in a run of them.
 //!
 //! Before timing it asserts each tick submits those two frames and only the
-//! second uploads, and prints the draws of that frame and the pixels it
-//! changed on the surface.
+//! second uploads and that its damage covers the pixels it changed, and
+//! prints the draws of that frame, the pixels it changed and those it redrew.
 //!
 //! Run release (`cargo bench -p viso --features headless --bench damage_label`).
 
@@ -25,6 +25,7 @@ use std::hint::black_box;
 use viso::__test_support::{DrivenApp, drive_scripted, probe_frames};
 use viso::platform::{Modifiers, PointerButtons, PointerPhase, RawEvent, RawPointer, WindowId};
 use viso::prelude::*;
+use viso::render::damage::Region;
 
 const STEP: Duration = Duration::from_millis(16);
 const FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
@@ -147,11 +148,24 @@ fn check() {
         area * 20 < w * h,
         "the changed box {x0},{y0}..{x1},{y1} is most of the {w}x{h} surface"
     );
+    let Some(Region::Rects(rects)) = after.damage() else {
+        panic!("the update redraws a few rects, not {:?}", after.damage());
+    };
+    let covered = |x: u32, y: u32| {
+        rects
+            .iter()
+            .any(|r| r.contains(x as f32 + 0.5, y as f32 + 0.5))
+    };
+    assert!(
+        covered(x0, y0) && covered(x1 - 1, y1 - 1),
+        "the damage {rects:?} covers the changed box {x0},{y0}..{x1},{y1}"
+    );
+    let damaged: f32 = rects.iter().map(|r| r.w * r.h).sum();
     let stats = seen.last().unwrap().1;
     eprintln!(
         "damage_single_label_update: {} nodes; the update frame draws {} draws of {} \
          instances, {} dirty primitives, {} upload bytes in {} ranges; it changes {count} \
-         pixels in {x0},{y0}..{x1},{y1} ({area} of {} px)",
+         pixels in {x0},{y0}..{x1},{y1} ({area} of {} px) and redraws {damaged} px in {} rects",
         after.store().arena().live_count(),
         stats.draw_calls,
         stats.instances,
@@ -159,6 +173,7 @@ fn check() {
         stats.gpu_upload_bytes,
         stats.uploaded_ranges,
         w * h,
+        rects.len(),
     );
 }
 
