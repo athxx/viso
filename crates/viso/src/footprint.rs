@@ -86,6 +86,7 @@ impl Footprint {
     pub const fn default_budget(self) -> MemoryBudget {
         match self {
             Footprint::Desktop | Footprint::Web => MemoryBudget {
+                nodes: None,
                 heap: None,
                 gpu: None,
                 faces: 256 * MIB,
@@ -94,6 +95,7 @@ impl Footprint {
                 images: 256 * MIB,
             },
             Footprint::Mobile => MemoryBudget {
+                nodes: None,
                 heap: None,
                 gpu: None,
                 faces: 64 * MIB,
@@ -102,6 +104,7 @@ impl Footprint {
                 images: 96 * MIB,
             },
             Footprint::EmbeddedGpu => MemoryBudget {
+                nodes: Some(16_384),
                 heap: Some(48 * MIB),
                 gpu: Some(64 * MIB),
                 faces: 16 * MIB,
@@ -110,6 +113,7 @@ impl Footprint {
                 images: 16 * MIB,
             },
             Footprint::EmbeddedCpu => MemoryBudget {
+                nodes: Some(4_096),
                 heap: Some(16 * MIB),
                 gpu: Some(16 * MIB),
                 faces: 4 * MIB,
@@ -134,6 +138,11 @@ const _: () = assert!(
 /// on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryBudget {
+    /// The nodes a window's tree holds at most: its store is built at this
+    /// capacity, every column allocated once, up front, and a node created
+    /// past it is refused — it does not appear, and the refusal is reported
+    /// (`ArenaFull`) — rather than the store growing. `None` grows as needed.
+    pub nodes: Option<u32>,
     /// The process heap, as a [`Counting`](crate::alloc::Counting) allocator
     /// sees it; unchecked without one.
     pub heap: Option<u64>,

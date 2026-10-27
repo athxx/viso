@@ -322,9 +322,26 @@ Rules (as for `todo_features.md`):
   - `check-deps` passes.
   - Not run: a real removal on Windows (`D3D12Backend::remove_device` exists for that). Losses
     first seen while creating a resource can still panic in the native backends' create paths.
-- [ ] Fixed-capacity `NodeStore` under the embedded profiles, sized from the footprint profile; a
+- [x] Fixed-capacity `NodeStore` under the embedded profiles, sized from the footprint profile; a
   full store reports `ArenaFull` instead of panicking. Verify with an embedded-cpu headless test
   that overfills it.
+  — Built:
+  - `MemoryBudget::nodes` sets the window store's capacity: embedded-gpu 16384, embedded-cpu
+    4096, the others grow. An app can change it in `Application::memory_budget`.
+  - A window builds its store with `NodeStore::with_fixed_capacity`, with one column slot past
+    the capacity. A node created when the store is full is refused: it gets a handle that is
+    never live, writes into the spare slot, and every write or link through it does nothing.
+  - `take_refused` reports `ArenaFull` with the refused count, and the facade prints it once a
+    frame.
+  - Not done: a `Viso.toml` budget key for `nodes`, because the budget keys there are byte sizes.
+
+  Verified:
+  - A ui unit test overfills a store of capacity 8: 7 refused, what fit lays out and paints,
+    and a freed node makes room again.
+  - `tests/node_budget.rs` builds 40 rows of label, button and text input at a 48-node budget.
+    It passes headless both on the desktop profile and with `VISO_FOOTPRINT=embedded-cpu`: no
+    panic, the store full, the root laid out, and the `ArenaFull` line printed.
+  - Clippy -D warnings is clean.
 - [ ] `ProtocolTag` bad magic returns `DecodeError::Malformed { offset }`. Ende golden-byte tests
   run on a 32-bit target. Verify both in CI.
 - [ ] A debug-only owner-store tag on `NodeId`, with an assertion on cross-window use. Verify with

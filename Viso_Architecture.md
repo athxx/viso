@@ -2546,7 +2546,7 @@ pub struct NodeArena {
 
 容量策略：
 - 默认按需增长；所有列在同一步扩到同一容量（几何增长，至少 64 slot），一次突发创建让每列只 realloc O(log n) 次；已知节点数的 builder（模板实例化、AOT package 加载）先调用一次 `NodeStore::reserve_nodes`；
-- `NodeArena::with_fixed_capacity(n)` / `NodeStore::with_fixed_capacity(n)`：所有列一次分配，之后不再 realloc；`try_alloc` 在满时返回 `ArenaFull`。embedded profile 用它把峰值内存变成启动期可知的量——目标（尚未接线）：目前没有 profile 构建 fixed-capacity store，且 `NodeStore` 的建节点路径在满时 panic，而不是把 `ArenaFull` 作为诊断报告出去。
+- `NodeArena::with_fixed_capacity(n)` / `NodeStore::with_fixed_capacity(n)`：所有列一次分配，之后不再 realloc；`try_alloc` 在满时返回 `ArenaFull`。embedded profile 用它把峰值内存变成启动期可知的量：窗口的 store 按 `MemoryBudget::nodes` 固定容量建。`NodeStore` 满时拒绝新节点而不 panic：交出一个永不 live 的 handle（各列多留的一格供它写入），经它的写与 link 都是 no-op，`take_refused` 报告 `ArenaFull` 与被拒数，facade 每帧打印一次。
 
 ### 16.1 ID 验证
 
@@ -4046,10 +4046,10 @@ Profile 是一组固定的编译期 feature 加上运行时预算默认值。用
 | a11y OS bridge | 是 | 是 | ARIA mirror | 否（KMS 无 AT-SPI） | 否 |
 | behavior VM（Release） | 否 | 否 | 否 | 否 | 否 |
 | MTSDF / vector glyph | 是 | 是 | 是 | 否 | 否 |
-| arena 容量 | 增长 | 增长 | 增长 | 增长 / 固定（目标） | 固定（目标） |
+| arena 容量 | 增长 | 增长 | 增长 | 固定 16384 | 固定 4096 |
 | hot reload | Dev artifact | Dev artifact | Dev artifact | Remote Dev | Remote Dev |
 
-固定容量的 store 已存在（`NodeStore::with_fixed_capacity`，§50A.6），facade 尚未按 profile 选用，表中标“目标”。
+窗口的 store 按 `MemoryBudget::nodes` 建（`NodeStore::with_fixed_capacity`，§50A.6）：embedded profile 默认固定容量，app 可在 `Application::memory_budget` 里改；`None` 为增长。满了以后再建的节点被拒绝：不进树，其 handle 永不 live，经它的写与 link 都是 no-op；facade 每帧报告一次 `ArenaFull`（容量、profile、被拒数）。
 
 `Viso.toml` 的 device target（字段语法以 `Viso_CLI.md` 为准；另有 `gpu`、`locales`、`deploy`、`images`，`fonts` 还接受 `bake` 与 `rasterizer`）：
 

@@ -34,7 +34,7 @@ use crate::layout::{
     self, AbsoluteInsets, Align, Alignment2D, Axis, BoxRules, Inset, Justify, LayoutInput,
     LayoutTree, Length, Measured, Placement, Sizing, StackPlacement, Vec2,
 };
-use crate::node::{NodeArena, NodeId, NodeIndex};
+use crate::node::{ArenaFull, NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::shader::ShaderSlots;
@@ -970,6 +970,9 @@ pub struct NodeStore {
     /// while none does, and then a mark records nothing.
     #[cfg(feature = "inspect")]
     journal: Option<Box<crate::dirty::DirtyJournal>>,
+    /// Of a fixed-capacity store, the nodes refused since the facade last
+    /// took the count, and the capacity they were refused at.
+    refused: Option<(ArenaFull, u32)>,
 }
 
 impl NodeStore {
@@ -980,14 +983,20 @@ impl NodeStore {
 
     /// A store that holds at most `capacity` live nodes and allocates every
     /// column once, up front: creation never reallocates, and exceeding the
-    /// budget is [`ArenaFull`](crate::node::ArenaFull) rather than growth. The
-    /// embedded profiles build their stores this way.
+    /// budget is [`ArenaFull`] rather than growth. The embedded profiles build
+    /// their stores this way.
+    ///
+    /// A node created past the capacity is refused: its handle is never live,
+    /// so every write through it and every link to it does nothing, and the
+    /// tree holds what fit. [`take_refused`](Self::take_refused) reports it.
+    /// The columns hold one slot past the capacity for the refused node to
+    /// write into.
     pub fn with_fixed_capacity(capacity: u32) -> Self {
         let mut store = NodeStore {
             arena: NodeArena::with_fixed_capacity(capacity),
             ..Self::default()
         };
-        let n = capacity as usize;
+        let n = capacity as usize + 1;
         node_columns!(store.reserve_exact(n));
         store.dirty_lists.reserve_slots(n);
         store.redo_flag.reserve_exact(n);
@@ -1004,6 +1013,12 @@ impl NodeStore {
         }
         self.arena.reserve(additional);
         node_columns!(self.reserve(additional));
+    }
+
+    /// How many nodes a full fixed-capacity store refused since the last
+    /// call, and its capacity; `None` when it refused none.
+    pub fn take_refused(&mut self) -> Option<(ArenaFull, u32)> {
+        self.refused.take()
     }
 
     /// Whether another node fits: always for a growing store, while slots
@@ -5683,6 +5698,14 @@ impl NodeStore {
         0
     }
 
+    /// Counts a node a full store refused, and hands out the slot past its
+    /// capacity, which no live handle names, for it to be written into.
+    fn refuse(&mut self, full: ArenaFull) -> NodeId {
+        let refused = self.refused.get_or_insert((full, 0));
+        refused.1 += 1;
+        NodeId::refused(full.capacity)
+    }
+
     /// Allocate a node and reset its slot in every column. Inside an open
     /// instance scope the node takes the scope's next block slot, or is an
     /// ordinary node the scope records; a reused slot is overwritten in place,
@@ -5697,12 +5720,19 @@ impl NodeStore {
                 }
                 _ => {
                     let owner = scope.owner;
-                    let id = self.arena.alloc();
-                    self.scope_log.push(id);
-                    (id, owner)
+                    match self.arena.try_alloc() {
+                        Ok(id) => {
+                            self.scope_log.push(id);
+                            (id, owner)
+                        }
+                        Err(full) => (self.refuse(full), NO_OWNER),
+                    }
                 }
             },
-            None => (self.arena.alloc(), NO_OWNER),
+            None => match self.arena.try_alloc() {
+                Ok(id) => (id, NO_OWNER),
+                Err(full) => (self.refuse(full), NO_OWNER),
+            },
         };
         let i = id.index() as usize;
         if i >= self.bounds.len() {
@@ -8364,6 +8394,52 @@ mod tests {
             w,
             h,
         }
+    }
+
+    #[test]
+    fn a_full_fixed_store_refuses_the_nodes_past_it_and_lays_out_what_fit() {
+        let mut store = NodeStore::with_fixed_capacity(8);
+        let filled = LeafStyle {
+            size: Sizing::fixed(10.0, 10.0),
+            style: BoxStyle::solid(RED),
+        };
+        let (root, leaves) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut leaves = Vec::new();
+            let root = cx
+                .flex(FlexStyle::default(), |cx| {
+                    for _ in 0..12 {
+                        leaves.push(cx.leaf(filled).id());
+                    }
+                    cx.flex(FlexStyle::default(), |cx| {
+                        cx.leaf(filled);
+                    });
+                })
+                .id();
+            (root, leaves)
+        };
+        assert_eq!(store.arena().live_count(), 8);
+        let (full, refused) = store.take_refused().expect("the store was overfilled");
+        assert_eq!(full, ArenaFull { capacity: 8 });
+        assert_eq!(refused, 7, "root and seven leaves fit of fifteen");
+        assert_eq!(store.take_refused(), None, "taken once");
+        assert!(!store.arena().is_live(leaves[11]));
+        assert_eq!(store.arena().children(root).count(), 7);
+
+        // What fit lays out and paints; the refused take writes as no-ops.
+        store.set_opacity(leaves[11], 0.5);
+        store.mark_dirty(leaves[11], DirtyClass::PAINT);
+        store.layout(root, surface(400.0, 300.0), &mut Vec::new());
+        let mut out = Vec::new();
+        assert_eq!(store.repaint(root, &mut out), 7);
+
+        // A node let go of makes room for one more.
+        let (mut effects, mut scratch) = (crate::reactive::EffectStore::default(), Vec::new());
+        store.free_tree(leaves[0], &mut effects, &mut scratch);
+        let mut cx = BuildCx::new(&mut store);
+        let again = cx.leaf(filled).id();
+        assert!(store.arena().is_live(again));
+        assert_eq!(store.take_refused(), None);
     }
 
     #[test]

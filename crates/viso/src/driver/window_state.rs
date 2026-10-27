@@ -73,7 +73,11 @@ impl WindowState {
             safe_area_root: None,
             safe_area: LogicalInsets::default(),
             keyboard_inset: 0.0,
-            store: NodeStore::new(),
+            // An embedded profile's window holds its tree in a store of fixed
+            // capacity, allocated once.
+            store: footprint::budget()
+                .nodes
+                .map_or_else(NodeStore::new, NodeStore::with_fixed_capacity),
             states: StateStore::new(),
             bindings: BindingTable::new(),
             computeds: ComputedStore::new(),

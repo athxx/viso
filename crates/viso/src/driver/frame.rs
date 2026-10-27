@@ -1995,6 +1995,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     self.count_frame();
                 }
                 for ws in &mut self.windows {
+                    // The nodes a full store refused this frame are not in the
+                    // tree: said once a frame that refused any.
+                    if let Some((full, refused)) = ws.store.take_refused() {
+                        eprintln!(
+                            "[viso] ArenaFull: the window's tree holds {} nodes ({} profile); {refused} past them were not created",
+                            full.capacity,
+                            footprint::Footprint::of_build().name()
+                        );
+                    }
                     // A timer the frame's own passes asked for (a scroll bar's
                     // fade) is armed now, so an idle loop wakes for it.
                     ws.store.take_timer_requests(&mut ws.timer_requests);

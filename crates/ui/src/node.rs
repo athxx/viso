@@ -62,6 +62,15 @@ pub struct NodeId {
 }
 
 impl NodeId {
+    /// A handle to slot `index` that is never live: what a full
+    /// fixed-capacity store hands out for a node it refuses.
+    pub(crate) const fn refused(index: u32) -> NodeId {
+        NodeId {
+            index,
+            generation: 0,
+        }
+    }
+
     /// The raw slot index.
     #[inline]
     pub fn index(self) -> u32 {
