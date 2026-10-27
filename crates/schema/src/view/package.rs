@@ -5,7 +5,8 @@
 //! # Wire form
 //!
 //! The blob is read in place: a [`ProtocolTag`], the
-//! magic `VPK1`, then a section table ([`viso_ende::Sections`]) of twelve
+//! magic `VPK2`, the [`FINGERPRINT_VERSION`] its
+//! state keys were minted under (LE `u32`), then a section table ([`viso_ende::Sections`]) of twelve
 //! sections, each starting on an eight-byte boundary of the blob:
 //!
 //! | section   | items | content |
@@ -42,7 +43,7 @@ use viso_ende::{
 use crate::aot::{AotPackage, AotView};
 use crate::env::EnvField;
 use crate::resource::{AssetBytes, ResourceId};
-use crate::state::{StateKey, StateValue};
+use crate::state::{FINGERPRINT_VERSION, StateKey, StateValue};
 use crate::view::control::Control;
 use crate::view::regions::ViewRegions;
 use crate::view::route::Route;
@@ -227,8 +228,9 @@ pub struct ViewHandler {
     pub route: Route,
 }
 
-/// The format magic after the [`ProtocolTag`].
-const MAGIC: [u8; 4] = *b"VPK1";
+/// The format magic after the [`ProtocolTag`], followed by the
+/// [`FINGERPRINT_VERSION`] its state keys were minted with.
+const MAGIC: [u8; 4] = *b"VPK2";
 
 /// The sections, in table order.
 const UI: u32 = 0;
@@ -447,6 +449,17 @@ impl<'a> ViewPackageView<'a> {
         if !ProtocolTag::decode(&mut dec)?.is_compatible() || *dec.read_array()? != MAGIC {
             return Err(DecodeError::Malformed { offset: 0 });
         }
+        // Its state keys are only this build's when they were minted the same
+        // way.
+        let offset = dec.position();
+        let found = dec.read_u32()?;
+        if found != FINGERPRINT_VERSION {
+            return Err(DecodeError::Version {
+                offset,
+                found,
+                expected: FINGERPRINT_VERSION,
+            });
+        }
         let sections = Sections::read(&mut dec, SECTIONS)?;
         let section = |index| sections.get(index);
         let component = section(COMPONENT);
@@ -643,6 +656,7 @@ impl ViewPackage {
         let count = |n: usize| u32::try_from(n).expect("a package table fits u32 counts");
         ProtocolTag::current().encode(enc);
         enc.write_raw(&MAGIC);
+        enc.write_u32(FINGERPRINT_VERSION);
         let mut sections = SectionWriter::new(enc, SECTIONS);
         sections.section(enc, |enc| {
             self.ui.encode(enc);
@@ -845,7 +859,7 @@ mod tests {
     /// The offset in `bytes` of section `index`.
     fn section_offset(bytes: &[u8], index: u32) -> usize {
         let mut dec = Decoder::new(bytes);
-        dec.read_raw(8).unwrap();
+        dec.read_raw(12).unwrap();
         Sections::read(&mut dec, SECTIONS)
             .unwrap()
             .get(index)
@@ -865,6 +879,21 @@ mod tests {
         for end in 0..bytes.len() {
             assert!(ViewPackage::decode_from_slice(&bytes[..end]).is_err());
         }
+    }
+
+    #[test]
+    fn a_package_of_other_fingerprints_is_refused() {
+        let mut bytes = package().encode_to_vec();
+        // After the protocol tag and the magic.
+        bytes[8..12].copy_from_slice(&(FINGERPRINT_VERSION + 1).to_le_bytes());
+        assert_eq!(
+            ViewPackage::decode_from_slice(&bytes),
+            Err(DecodeError::Version {
+                offset: 8,
+                found: FINGERPRINT_VERSION + 1,
+                expected: FINGERPRINT_VERSION,
+            })
+        );
     }
 
     #[test]

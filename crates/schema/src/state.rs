@@ -2,6 +2,13 @@
 
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder};
 
+/// The version of the algorithm that mints symbol identities: the
+/// [`StateKey`]s of states and the stable identities of the records and enums
+/// a stored value's type reaches. Artifacts that outlive a build record it; a
+/// change to the algorithm or its constants bumps it, and identities of two
+/// versions are never compared.
+pub const FINGERPRINT_VERSION: u32 = 1;
+
 /// A durable, position-independent identity for a state cell, used to match a
 /// cell across a hot-reload recompile.
 ///

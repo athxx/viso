@@ -59,6 +59,13 @@ pub enum ViewLoadError {
 impl fmt::Display for ViewLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ViewLoadError::Decode(DecodeError::Version {
+                found, expected, ..
+            }) => write!(
+                f,
+                "the view package's state identities are of fingerprint version {found}, and \
+                 this build's are of version {expected}: rebuild the package"
+            ),
             ViewLoadError::Decode(error) => write!(f, "the view package does not decode: {error}"),
             ViewLoadError::Host(error) => error.fmt(f),
             ViewLoadError::Shader(error) => {
@@ -303,4 +310,30 @@ fn mount<'a>(
         root,
         host: Some(host),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use viso_ende::Encode;
+    use viso_schema::FINGERPRINT_VERSION;
+    use viso_schema::view::ViewPackage;
+
+    #[test]
+    fn a_package_of_other_fingerprints_is_refused_with_why() {
+        let mut blob = ViewPackage::default().encode_to_vec();
+        // After the protocol tag and the magic.
+        blob[8..12].copy_from_slice(&(FINGERPRINT_VERSION + 1).to_le_bytes());
+        let (mut store, mut states) = (NodeStore::new(), StateStore::new());
+        let (mut bindings, mut lists) = (BindingTable::new(), VirtualLists::new());
+        let Err(error) = load_view(&blob, &mut store, &mut states, &mut bindings, &mut lists)
+        else {
+            panic!("a package of other fingerprints loads");
+        };
+        assert!(matches!(
+            error,
+            ViewLoadError::Decode(DecodeError::Version { found, .. }) if found == FINGERPRINT_VERSION + 1
+        ));
+        assert!(error.to_string().contains("rebuild the package"), "{error}");
+    }
 }

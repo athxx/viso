@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use viso_ende::{DecodeError, Decoder, Encoder};
+use viso_schema::FINGERPRINT_VERSION;
 
 use crate::module::{Module, PersistSlot};
 use crate::retype::{RetypeValue, Retyping, ValueSchema};
@@ -417,8 +418,13 @@ mod dir {
     }
 }
 
-/// The blob marker and version.
-const MAGIC: [u8; 4] = *b"VPS1";
+/// The blob marker, followed by the [`FINGERPRINT_VERSION`] the identities
+/// of its type's records and enums were minted with.
+const MAGIC: [u8; 4] = *b"VPS2";
+
+/// The marker of a blob from before the version was recorded, when only
+/// version 1 existed.
+const MAGIC_V1: [u8; 4] = *b"VPS1";
 
 /// A value as a build stored it: its type's spelling and schema.
 #[derive(Debug, Clone, PartialEq)]
@@ -441,6 +447,7 @@ impl Stored {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut enc = Encoder::new();
         enc.write_raw(&MAGIC);
+        enc.write_u32(FINGERPRINT_VERSION);
         enc.write_str(&self.spelling);
         self.schema.encode(&mut enc);
         write_value(&mut enc, &self.value);
@@ -450,8 +457,17 @@ impl Stored {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Stored, DecodeError> {
         let mut dec = Decoder::new(bytes);
         let offset = dec.position();
-        if dec.read_raw(MAGIC.len())? != MAGIC {
-            return Err(DecodeError::Malformed { offset });
+        let (at, found) = match *dec.read_array::<4>()? {
+            MAGIC => (dec.position(), dec.read_u32()?),
+            MAGIC_V1 => (offset, 1),
+            _ => return Err(DecodeError::Malformed { offset }),
+        };
+        if found != FINGERPRINT_VERSION {
+            return Err(DecodeError::Version {
+                offset: at,
+                found,
+                expected: FINGERPRINT_VERSION,
+            });
         }
         let spelling = dec.read_str()?.into();
         let schema = ValueSchema::decode(&mut dec)?;
@@ -547,8 +563,15 @@ impl Persistence {
         let Some(blob) = self.store.load(&slot.key)? else {
             return Ok(None);
         };
-        let stored =
-            Stored::decode(&blob).map_err(|_| "the stored value is malformed".to_owned())?;
+        let stored = Stored::decode(&blob).map_err(|error| match error {
+            DecodeError::Version {
+                found, expected, ..
+            } => format!(
+                "it was stored by a build whose type identities are of fingerprint version \
+                 {found}, and this build's are of version {expected}, so it is not loaded"
+            ),
+            _ => "the stored value is malformed".to_owned(),
+        })?;
         stored.into_slot(slot, module, vm, instance).map(Some)
     }
 
@@ -616,6 +639,32 @@ mod tests {
         let mut other = blob.clone();
         other[0] = b'X';
         assert!(Stored::decode(&other).is_err());
+    }
+
+    #[test]
+    fn a_blob_of_other_fingerprints_is_refused_and_one_from_before_them_is_read() {
+        let stored = Stored {
+            spelling: "F64".into(),
+            schema: ValueSchema {
+                root: TypeDesc::F64,
+                decls: Box::new([]),
+            },
+            value: Value::Float(1.5),
+        };
+        let blob = stored.encode();
+        let mut bumped = blob.clone();
+        bumped[4..8].copy_from_slice(&(FINGERPRINT_VERSION + 1).to_le_bytes());
+        assert_eq!(
+            Stored::decode(&bumped),
+            Err(DecodeError::Version {
+                offset: 4,
+                found: FINGERPRINT_VERSION + 1,
+                expected: FINGERPRINT_VERSION,
+            })
+        );
+        let mut before = MAGIC_V1.to_vec();
+        before.extend_from_slice(&blob[8..]);
+        assert_eq!(Stored::decode(&before), Ok(stored));
     }
 
     #[test]

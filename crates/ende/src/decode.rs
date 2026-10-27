@@ -58,6 +58,15 @@ pub enum DecodeError {
         /// Cursor position where the invalid value began.
         offset: usize,
     },
+    /// The bytes are of a version of their format this build does not read.
+    Version {
+        /// Cursor position where the version began.
+        offset: usize,
+        /// The version the bytes are of.
+        found: u32,
+        /// The version this build reads.
+        expected: u32,
+    },
     /// A count of items was over the cap its reader puts on it
     /// ([`Decoder::read_count`]).
     TooMany {
@@ -91,6 +100,14 @@ impl core::fmt::Display for DecodeError {
             DecodeError::Malformed { offset } => {
                 write!(f, "malformed value at offset {offset}")
             }
+            DecodeError::Version {
+                offset,
+                found,
+                expected,
+            } => write!(
+                f,
+                "version {found} at offset {offset}, where this build reads version {expected}"
+            ),
             DecodeError::TooMany { offset, max } => {
                 write!(f, "a count over {max} at offset {offset}")
             }

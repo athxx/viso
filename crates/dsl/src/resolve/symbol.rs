@@ -33,9 +33,9 @@ const PRIME_HI: u64 = 0x0000_0000_0100_0000;
 const PRIME_LO: u64 = 0x0000_0000_0000_013b;
 
 /// The fingerprint algorithm version, recorded in artifact metadata. A change to the
-/// algorithm or to any constant above must bump this — a differing version means two
+/// algorithm or to any constant above must bump it — a differing version means two
 /// artifacts' `SymbolId`s are not comparable.
-pub const FINGERPRINT_VERSION: u32 = 1;
+pub use viso_schema::FINGERPRINT_VERSION;
 
 /// A durable, position-independent 128-bit symbol identity.
 ///

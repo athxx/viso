@@ -282,9 +282,16 @@ Rules (as for `todo_features.md`):
   the frame) and a GIF frame past the pixel cap. Each is refused before allocating, with the crash
   inputs kept as fixtures. Verified locally: each target ran 60 s without a crash and `raster` ran
   5 min after the fixes. The 10-minute CI runs happen on the nightly schedule, not here.
-- [ ] Record `FINGERPRINT_VERSION` in persisted artifacts (view package, persist store) and refuse
+- [x] Record `FINGERPRINT_VERSION` in persisted artifacts (view package, persist store) and refuse
   a mismatch with a diagnostic. Verify with a test that bumps the version and gets the error
-  instead of silently dropped state.
+  instead of silently dropped state. — Built: the constant moved to `viso_schema` (the DSL
+  re-exports it). The view package (now `VPK2`) and each persisted value (`VPS2`) write it after
+  their magic. A different version is `DecodeError::Version { offset, found, expected }`.
+  `load_view` says to rebuild the package, and `Persistence::load` reports the value as not
+  loaded. A `VPS1` value from before this change is read as version 1. Verified: tests that bump
+  the version in a package (schema, and through `load_view` in view) and in a persisted value
+  (behavior) get the error, and a `VPS1` value still loads. ende/schema/dev-protocol/dsl resolve
+  tests pass, workspace check is clean, and clippy -D warnings is clean on the changed crates.
 - [ ] Recreate the GPU device after a loss (D3D12 removed or reset, `VK_ERROR_DEVICE_LOST`,
   WebGPU `device.lost`) and re-upload from the asset tables. Verify by forcing a removal and
   checking that the next frame redraws without a panic.

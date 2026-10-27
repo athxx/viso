@@ -43,4 +43,4 @@ pub use layout::{Align, Axis, Inset, Justify, Length};
 pub use length::{EdgeTerms, InsetTerms, LengthDeps, LengthEnv, LengthTerms, NodeLengths};
 pub use resource::{AssetBytes, AssetFormat, AssetKind, ResourceId, ResourceRevision};
 pub use semantics::{InspectKind, LiveRegion, Role, SemanticState};
-pub use state::{StateKey, StateValue};
+pub use state::{FINGERPRINT_VERSION, StateKey, StateValue};

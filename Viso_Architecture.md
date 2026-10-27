@@ -1292,7 +1292,7 @@ my_app
 - 文件物理移动但 canonical module path 不变时不应改变 Symbol；
 - 显式 stable annotation 可以在受控 rename/move 中保持身份；
 - compiler/linker 必须检测同一 artifact 内的 Symbol collision，并将其视为构建错误（`E5104`；热重载中 `@stable` 撞上已有身份报 `E5102`，旧版本继续运行）；
-- fingerprint algorithm/version 不能静默改变：版本混入指纹，改动任何常量都要升版本。目标（尚未实现）：版本同时写入持久 artifact（view package、persist 数据）的 metadata，读取方遇到不同版本时明确报错，而不是把全部身份当作新声明。
+- fingerprint algorithm/version 不能静默改变：版本混入指纹，改动任何常量都要升版本。版本（`viso_schema::FINGERPRINT_VERSION`）同时写入持久 artifact：view package 与 persist 存的每个值都在 magic 后带它的 LE `u32`，读取方遇到不同版本报 `DecodeError::Version`（`load_view` 提示重建 package，`Persistence::load` 报告该值不载入），而不是把全部身份当作新声明；版本记录之前写的 persist 值（magic `VPS1`）按版本 1 读。
 
 ### 10.4.4 128-bit Symbol 与 32-bit target
 
@@ -1927,7 +1927,7 @@ compatibility policy
 现有实现：
 
 - dev channel（`viso-dev-protocol`）：长度前缀 frame（≤ `MAX_FRAME` 4 MiB），每条消息以稳定的 1 字节 tag 开头；runtime 的 hello 以 `ProtocolTag` + `DEV_PROTOCOL_VERSION` 开头并携带 schema / project fingerprint，host 校验后回 `HostHello` 或带原因的 `Reject`；
-- 持久 artifact：以 `ProtocolTag` 加 4 字节 magic 开头（AOT package `AOT1`、view package `VPK1`；trace、input tape 另带各自的 format version），magic / version 不符即拒绝。
+- 持久 artifact：以 `ProtocolTag` 加 4 字节 magic 开头（AOT package `AOT1`、view package `VPK2`，view package 与 persist 值 `VPS2` 再带 `FINGERPRINT_VERSION`；trace、input tape 另带各自的 format version），magic / version 不符即拒绝。
 
 ### 10.5.10 Versioning 与兼容策略
 
@@ -4130,7 +4130,7 @@ embedded-cpu（桌面窗口，CpuRaster）：二进制 4.58 MiB，空闲 footpri
 3. 不假设 `usize == u64`（§10.4.4 已有）。
 4. arena、hot store、worklist 都支持固定容量模式（§16）：`NodeStore::with_fixed_capacity` 一次分配 arena、全部节点列与 dirty list，超出为 `ArenaFull` 而不是增长。
 5. AOT package 支持 XIP：Ende borrowed decode 直接读 memory-mapped flash，不要求先拷贝进 RAM。
-   - **布局**：AOT package 与 view package 以 `ProtocolTag` 加 4 字节 magic（`AOT1` / `VPK1`）开头，后接 Ende section table（`viso_ende::SectionWriter` / `Sections`：section 数，再每项 offset、长度、条目数三个 LE `u32`）。每个 section 从 blob 起点算按 8 字节（`SECTION_ALIGN`）对齐，间隙为 0，布局唯一；reader 先校验整张表，越界、重叠、乱序或非零 padding 都是 `Malformed`。能定宽的记录定宽：AOT edge 24 字节，view 的 state 40 字节，handler 与 env 各 12 字节；AOT node 是变长记录（kind、style mask、payload、child 数）。view package 内嵌的 AOT blob 本身也在对齐 offset 上，内部 section 因此同样对齐。
+   - **布局**：AOT package 与 view package 以 `ProtocolTag` 加 4 字节 magic（`AOT1` / `VPK2`，view package 再跟 `FINGERPRINT_VERSION` 的 LE `u32`）开头，后接 Ende section table（`viso_ende::SectionWriter` / `Sections`：section 数，再每项 offset、长度、条目数三个 LE `u32`）。每个 section 从 blob 起点算按 8 字节（`SECTION_ALIGN`）对齐，间隙为 0，布局唯一；reader 先校验整张表，越界、重叠、乱序或非零 padding 都是 `Malformed`。能定宽的记录定宽：AOT edge 24 字节，view 的 state 40 字节，handler 与 env 各 12 字节；AOT node 是变长记录（kind、style mask、payload、child 数）。view package 内嵌的 AOT blob 本身也在对齐 offset 上，内部 section 因此同样对齐。
    - **对齐地址**：宏把 behavior module、control-flow region 和 shader 字节 embed 成 `viso_ende::Aligned`（`#[repr(C, align(8))]`）`static`，blob 起点对齐，section 就落在对齐地址上。
    - **读取**：`AotView` / `ViewPackageView` 在 mount 之前一次校验整个 blob（forest 结构、节点下标、记录取值、升序约束、无尾随字节），之后 node / edge / state / handler / env / asset / shader 迭代器在栈上逐条解码，不生成 `Vec`。Release loader（`viso_ui::aot::load_from_bytes`、`viso_view::load_static_view`）只走 borrowed 路径，asset 与 shader 是借用 blob 的 `AssetBytes::Static`。owned 的 `AotPackage` / `ViewPackage` 只给 emitter 和 dev commit 用，其 `Decode` 建在同一个 view 上，没有第二套解码。
    - **Behavior**：`Module::decode_static` 借用 `'static` blob——chunk、component、state、native、capability、theme 名，persist key，catalog 的 message key 与 locale table，以及字符串常量都是借 blob 的 `Text::Static`。运行 Rust 编译代码的 build（`viso::__behavior!` 选取，cfg 与选取 native code 相同：release，或没有 `vm` feature）embed `Module::compiled()`：没有 bytecode、operand 表和 source span，只留常量池、`BodyReads`（memo 的读集）和 build hash，install 时不再整模块重编码求 hash；debug 且有 `vm` 时 embed 完整 bytecode，hot reload 不变。未选取的那份字节在编译期整个丢弃。
