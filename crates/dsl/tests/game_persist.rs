@@ -4,6 +4,8 @@
 //! and across a process restart; `E9106` at compile time, `E6103` and
 //! `E9111` at run time.
 
+mod support;
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -398,4 +400,83 @@ mod restart {
         drop(game);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A store counting how often it is made durable.
+#[derive(Clone, Default)]
+struct Flushes {
+    inner: MemoryStore,
+    flushes: Rc<Cell<u32>>,
+}
+
+impl PersistStore for Flushes {
+    fn load(&mut self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        self.inner.load(key)
+    }
+
+    fn store(&mut self, key: &str, blob: Vec<u8>) {
+        self.inner.store(key, blob);
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        self.flushes.set(self.flushes.get() + 1);
+        self.inner.flush()
+    }
+}
+
+const PLAYED: &str = r#"
+import viso::game::{FixedUpdate, FixedFrame};
+
+system Progress implements FixedUpdate {
+    @persist("best_score")
+    state best: I64 = 0;
+
+    action fixed_update(frame: FixedFrame) { best += 1; }
+}
+
+export component Play {
+    view { Column { width: 10dp; height: 10dp; } }
+}
+"#;
+
+#[test]
+fn a_store_suspend_makes_a_running_games_persisted_states_durable() {
+    use support::Rt;
+    use viso_view::game_session;
+    use viso_view::persist::SharedStore;
+
+    let store = Flushes::default();
+    viso_view::install_persistence(Some(SharedStore::new(store.clone())));
+    let granted = || {
+        let mut capabilities = CapabilitySet::new();
+        capabilities.insert(PERSIST_CAPABILITY);
+        TargetProfile {
+            capabilities,
+            ..TargetProfile::default()
+        }
+    };
+    let mut first = Rt::packaged_for(PLAYED, granted());
+    let session = game_session(&first.store, first.root.expect("mounted")).expect("a game");
+    for _ in 0..5 {
+        first.store.run_frame_clients(1.0 / 60.0);
+    }
+    let best = session
+        .borrow()
+        .state("Progress", "best")
+        .expect("the state");
+    assert_ne!(best, Value::Int(0), "the game ran");
+
+    // The app goes to the background: the session lives on, its state made
+    // durable.
+    assert_eq!(store.flushes.get(), 0, "nothing durable yet");
+    first.store.suspend(&first.states);
+    assert!(store.flushes.get() > 0, "made durable at the suspend");
+    assert!(viso_view::take_persist_reports().is_empty());
+    assert!(first.store.has_frame_clients(), "the session still runs");
+
+    // A second launch, the first still alive, loads what the suspend stored.
+    let second = Rt::packaged_for(PLAYED, granted());
+    let loaded = game_session(&second.store, second.root.expect("mounted")).expect("a game");
+    assert_eq!(loaded.borrow().state("Progress", "best"), Some(best));
+    viso_view::install_persistence(None);
 }

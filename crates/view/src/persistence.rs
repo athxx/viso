@@ -42,7 +42,11 @@ pub fn take_persist_reports() -> Vec<PersistReport> {
 }
 
 fn queue(host: &mut ViewHost) {
-    let reports = host.take_persist_reports();
+    queue_reports(host.take_persist_reports());
+}
+
+/// Queues `reports` for [`take_persist_reports`].
+pub(crate) fn queue_reports(reports: Vec<PersistReport>) {
     if !reports.is_empty() {
         REPORTS.with(|queued| queued.borrow_mut().extend(reports));
     }

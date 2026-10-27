@@ -144,8 +144,14 @@ Rules (as for `todo_features.md`):
     paused while suspended. `game_session` audio uses a fake device that pauses once, resumes
     once, and is not started when it was not playing. check-targets is clean on android, wasm32,
     windows, linux and macOS.
-- [ ] Make game sessions' `@persist` states durable on Suspended, through a store suspend hook.
+- [x] Make game sessions' `@persist` states durable on Suspended, through a store suspend hook.
   Verify with a `game_persist` test that suspends without dropping the session.
+  - Built: `GameSession::suspend`, reached through `FrameClient::suspend` from
+    `NodeStore::suspend`, runs `Scheduler::suspend` and queues the scheduler's persist reports
+    for `take_persist_reports`. Architecture §50 updated.
+  - Verified: `game_persist` mounts a packaged game granted `storage.persist`, runs it five
+    ticks, and suspends the store. Nothing is durable before; the session still runs; a second
+    launch loads the value from the suspend. Without `Scheduler::suspend` the test fails.
 - [ ] Typed routes: a Rust `Route` enum, `Navigator<R>`, `RouterView` and `routes!` (DSL U11),
   serving `NavigationStack` and `on_open_url`. Verify with a DSL test and a UI scenario that push,
   pop, system back and a deep link keep the back-stack page's state.

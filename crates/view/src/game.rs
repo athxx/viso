@@ -472,9 +472,12 @@ impl GameSession {
         self.audio = Some(device);
     }
 
-    /// Pauses the audio output, the app going to the background or the
-    /// window closing.
+    /// Makes the game's `@persist` states durable and pauses the audio
+    /// output, the app going to the background or the window closing; what
+    /// did not store is queued for [`take_persist_reports`](crate::take_persist_reports).
     pub fn suspend(&mut self) {
+        self.scheduler.suspend();
+        crate::persistence::queue_reports(self.scheduler.take_persist_reports());
         if let Some(audio) = &mut self.audio
             && !self.audio_held
         {

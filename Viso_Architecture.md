@@ -3985,9 +3985,7 @@ fn on_lifecycle(&mut self, cx: &mut EventCx<'_>, event: Lifecycle) {}
 
 `cx` 与 `on_open_url` 的相同（launch window 根上的处理器上下文：可写 state、spawn task），`Lifecycle` 由 facade 再导出。顺序：`Suspended` 先调 hook 再运行 suspend hook 与 flush，使 hook 写入的 `@persist` state 进入同一次 durable 写；`Resumed` 先请求重画并恢复框架暂停的播放，再调 hook；`LowMemory` 先 trim 再调 hook。`.vs` 不另设生命周期事件，持久化由 `@persist` 承担。
 
-**后台不播放**：Suspended 时 facade 暂停每个窗口里正在播放的视频，`NodeStore::suspend` 经 `FrameClient::suspend` 让游戏 session 暂停音频输出（`GameAudioDevice::pause`，`AudioOutput::pause` 停设备、保留 render）；Resumed 时 `NodeStore::resume` 与视频只恢复由框架暂停的那些：app 本来暂停的不动，挂起期间 app 要求暂停的保持暂停。
-
-**框架在 Suspended 时还须做**（目标（尚未实现））：游戏 session 的 `@persist` state 与 view 一样在 Suspended 时 durable（今天只在 session drop 时经 `Scheduler::suspend` flush）。
+**后台不播放**：Suspended 时 facade 暂停每个窗口里正在播放的视频，`NodeStore::suspend` 经 `FrameClient::suspend` 让游戏 session 暂停音频输出（`GameAudioDevice::pause`，`AudioOutput::pause` 停设备、保留 render）；Resumed 时 `NodeStore::resume` 与视频只恢复由框架暂停的那些：app 本来暂停的不动，挂起期间 app 要求暂停的保持暂停。游戏 session 的 `@persist` state 与 view 一样在 Suspended 时 durable：`FrameClient::suspend` 先经 `Scheduler::suspend` 写出并 flush，存储失败的报告进入 `take_persist_reports`；session 不必 drop。
 
 UI 层经窗口的 `Environment` 提供 safe area、软键盘覆盖高度（`keyboard_inset`）、方向（`orientation()`）、size class（`SizeClassPolicy`；`AdaptiveScope` 按自身宽度为子树重设）、display features（折叠、铰链、刘海）、文字缩放与减少动态效果；DSL 以 `env` 读取，并有 `SafeArea`、`KeyboardAvoiding`、`AdaptiveScope` 容器。
 
