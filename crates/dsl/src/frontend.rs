@@ -38,7 +38,7 @@ use crate::ir::{
 };
 use crate::resolve::{
     ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, SymbolId, SymbolIdentity,
-    SymbolKind, fingerprint, resolve,
+    SymbolKind, fingerprint,
 };
 use crate::syntax::grammar::{Entry, Parse, parse_entry};
 use crate::syntax::{GreenNode, SyntaxKind, SyntaxNode, TextRange, TextSize, tokenize};
@@ -531,20 +531,22 @@ fn compile_unit(
     };
     diagnostics.extend(graph.module_errors(index).cloned());
     diagnostics.extend(graph.graph_errors().cloned());
-    let resolved = resolve(&graph, &mut units, &mut interner, &origin.package);
+    let (resolved, prelude) =
+        crate::resolve::resolve_in(&graph, &mut units, &mut interner, &origin.package);
     // Resolution re-tags the unit's module qualifiers; every later pass reads
     // its tree.
     let root = SyntaxNode::new_root(units[0].parse.root.clone());
     let cu =
         CompilationUnit::cast(root.clone()).expect("every module entry roots a CompilationUnit");
     let rust_scope = profile.rust_scope;
-    let lowered = crate::hir::lower(
+    let lowered = crate::hir::lower_with(
         &graph,
         &units,
         &resolved,
         &mut interner,
         &origin.package,
         profile,
+        &prelude,
     );
     let mut behavior = lowered.behavior;
     let shaders = lowered.shaders;

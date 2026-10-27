@@ -164,6 +164,16 @@ pub fn resolve(
     interner: &mut NameInterner,
     package: &str,
 ) -> Vec<ResolvedModule> {
+    resolve_in(graph, units, interner, package).0
+}
+
+/// [`resolve`], and the prelude it resolved against, for the passes after it.
+pub(crate) fn resolve_in(
+    graph: &ModuleGraph,
+    units: &mut [SourceUnit],
+    interner: &mut NameInterner,
+    package: &str,
+) -> (Vec<ResolvedModule>, Prelude) {
     let mut qualified: Vec<Vec<QualifiedHead>> = units
         .iter_mut()
         .map(|unit| qualify(unit, graph, interner))
@@ -246,7 +256,7 @@ pub fn resolve(
         passes.push((refs, errors));
     }
     drop(members);
-    tables
+    let resolved = tables
         .into_iter()
         .zip(all_decls)
         .zip(passes)
@@ -256,7 +266,8 @@ pub fn resolve(
             decls,
             errors,
         })
-        .collect()
+        .collect();
+    (resolved, prelude)
 }
 
 /// Resolves a single self-contained unit (no imports, no prelude) as the module

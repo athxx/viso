@@ -12,8 +12,10 @@ use super::resolver::{ResolvedModule, resolve_standalone};
 use super::symbol::{SymbolIdentity, SymbolKind, fingerprint};
 use super::{NameInterner, Namespace, SymbolId};
 use crate::ast::{AstNode, CompilationUnit};
+use crate::syntax::cst::GreenNode;
 use crate::syntax::grammar::parse;
 use crate::syntax::{SyntaxNode, tokenize};
+use std::rc::Rc;
 
 /// The package and module identity of the prelude's declarations.
 pub(crate) const PRELUDE_MODULE: &str = "viso";
@@ -108,12 +110,21 @@ pub(crate) struct Prelude {
     pub(crate) module: ResolvedModule,
 }
 
-impl Prelude {
-    /// Parses and resolves the prelude, interning its names into `interner`.
-    pub(crate) fn load(interner: &mut NameInterner) -> Prelude {
+thread_local! {
+    /// The prelude's tree, parsed once a thread: it is the same source every
+    /// compile.
+    static PARSED: Rc<GreenNode> = {
         let parse = parse(&tokenize(SOURCE), SOURCE);
         debug_assert!(parse.errors.is_empty(), "the prelude does not parse");
-        let unit = CompilationUnit::cast(SyntaxNode::new_root(parse.root))
+        parse.root
+    };
+}
+
+impl Prelude {
+    /// Resolves the prelude, interning its names into `interner`.
+    pub(crate) fn load(interner: &mut NameInterner) -> Prelude {
+        let root = PARSED.with(Rc::clone);
+        let unit = CompilationUnit::cast(SyntaxNode::new_root(root))
             .expect("a parse root is a compilation unit");
         let module = resolve_standalone(&unit, PRELUDE_MODULE, PRELUDE_MODULE, interner);
         debug_assert!(module.errors.is_empty(), "the prelude does not resolve");

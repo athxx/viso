@@ -602,7 +602,10 @@ Rules (as for `todo_features.md`):
     module count. Done: resolve and lowering index the units by module path once (one interner,
     so paths compare by segment). Neutral at 110 modules (link 52.6 → 52.5 ms), with no
     allocation per module pair.
-  - A small component recompile costs about 1.7 ms of fixed cost (natives, prelude); profile it.
+  - [x] A small component recompile costs about 1.7 ms of fixed cost (natives, prelude); profile it.
+    The prelude was parsed and resolved twice a compile (by resolve and by lowering), over half the
+    time. Now each thread parses it once, and one compile resolves it once and lowers against that.
+    hot_reload_small_component 1.17 → 0.50 ms.
   - `JsonWriter` can't reuse its buffer, and `RollbackSession::receive` allocates two Vecs a
     packet.
   - `DrivenApp` has no damage accessor.

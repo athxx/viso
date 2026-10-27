@@ -144,6 +144,20 @@ pub fn lower(
     package: &str,
     profile: TargetProfile,
 ) -> LoweredPackage {
+    let prelude = Prelude::load(interner);
+    lower_with(graph, units, resolved, interner, package, profile, &prelude)
+}
+
+/// [`lower`] against `prelude`, the one the package was resolved against.
+pub(crate) fn lower_with(
+    graph: &ModuleGraph,
+    units: &[SourceUnit],
+    resolved: &[ResolvedModule],
+    interner: &mut NameInterner,
+    package: &str,
+    profile: TargetProfile,
+    prelude: &Prelude,
+) -> LoweredPackage {
     let _ = package;
     let mut components = Vec::new();
     let mut callables = Vec::new();
@@ -151,7 +165,6 @@ pub fn lower(
     // First pass: every module's declarations into one package table (a module types what
     // it imports exactly as what it declares), and each module's own scope.
     let mut decls = Declarations::default();
-    let prelude = Prelude::load(interner);
     let prelude_scope = ModuleScope::build(
         &prelude.unit,
         &prelude.module.table,
@@ -300,7 +313,7 @@ pub fn lower(
     drop(envs);
     shader::check_brushes(&shaders, &brushes, &decls, &mut per_module);
     traits::check_overlap(&decls, &mut per_module);
-    lower_prelude_defaults(&prelude, &prelude_scope, &decls, &behavior, graph.natives());
+    lower_prelude_defaults(prelude, &prelude_scope, &decls, &behavior, graph.natives());
     cap.finish(&mut components, &mut callables, &mut per_module);
     check_input_bases(&input_flows, &mut per_module);
     domains.check(&decls, graph.natives(), profile, &mut per_module);

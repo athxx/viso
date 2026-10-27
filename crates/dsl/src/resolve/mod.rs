@@ -27,7 +27,9 @@ pub use module::{
 };
 pub use name::{NameId, NameInterner};
 pub use resolver::{Resolution, ResolvedModule, ResolvedRef, SymbolDecl, resolve};
-pub(crate) use resolver::{compilation_unit_of, generic_param_names, ident_tokens, unit_index};
+pub(crate) use resolver::{
+    compilation_unit_of, generic_param_names, ident_tokens, resolve_in, unit_index,
+};
 pub use scope::{LocalSlot, ModuleSymbol, Namespace, ScopeStack, SymbolTable};
 pub(crate) use symbol::digest;
 pub use symbol::{
