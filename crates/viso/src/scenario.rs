@@ -38,7 +38,7 @@ use viso_view::headless::{
 };
 use viso_view::inspect::{self, Census, SourceTable, WindowCensus, WindowDetail};
 
-use crate::WindowState;
+use crate::driver::WindowState;
 
 /// How many labels a failed expectation lists of what the window shows.
 const LABELS_SHOWN: usize = 12;
@@ -757,7 +757,8 @@ mod tests {
     use viso_view::headless::{Action, Expectation, Selector};
 
     use super::{Window, events, expect, find};
-    use crate::{WindowId, WindowState};
+    use crate::driver::WindowState;
+    use viso_platform::WindowId;
 
     /// A window showing the overflow view: a column shorter than its buttons,
     /// and a viewport whose second button is scrolled out of it.

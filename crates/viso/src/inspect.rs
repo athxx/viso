@@ -21,8 +21,8 @@ use viso_view::inspect::{
     ResourceDetail, node_detail,
 };
 
-use crate::WindowState;
 use crate::assets::Assets;
+use crate::driver::WindowState;
 
 /// The detail of the live `nodes` of `ws`, by index and generation.
 pub(crate) fn nodes(ws: &WindowState, nodes: &[(u32, u32)]) -> NodeDetails {

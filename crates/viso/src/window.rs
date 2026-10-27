@@ -50,8 +50,8 @@ use viso_ui::{BuildCx, EventCx, NodeId, WindowConfig, WindowIdSlot};
 /// [`open`](WindowBuilder::open) it from within an event handler to record the
 /// deferred open and receive a [`WindowHandle`].
 ///
-/// The window does not exist until the next frame services the request; see the
-/// [module docs](self) for the deferred-open contract.
+/// The window does not exist until the next frame services the request; until
+/// then [`WindowHandle::id`] reads `None`.
 #[inline]
 pub fn window(config: WindowConfig) -> WindowBuilder {
     WindowBuilder {

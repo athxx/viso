@@ -104,8 +104,8 @@ use viso_view::{
     keep_game_history, take_mounts,
 };
 
-use crate::WindowState;
 use crate::assets::Assets;
+use crate::driver::WindowState;
 use compile::{Built, ShaderCompiles, Work};
 use link::{DevLink, Incoming, Loaded, LoadedAsset};
 
@@ -2903,7 +2903,7 @@ mod tests {
         let mut backend = viso_gpu::create_device();
         let renderer =
             viso_render::Renderer::new(&mut backend, viso_gpu::TextureFormat::Bgra8UnormSrgb);
-        ws.gpu = Some(crate::GpuState {
+        ws.gpu = Some(crate::driver::GpuState {
             backend,
             renderer,
             surface: None,

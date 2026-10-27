@@ -217,9 +217,19 @@ Rules (as for `todo_features.md`):
     import only the prelude from `viso` for UI (`shell` adds its tray module, `04-navigation`
     `viso::native`); `pointer` and `code-editor` keep only pointer, cursor, text-style and key
     types. `cargo check --workspace --all-targets` passes.
-- [ ] Split `crates/viso/src/lib.rs` (5.6k lines: `AppDriver`, per-window state, frame phases,
+- [x] Split `crates/viso/src/lib.rs` (5.6k lines: `AppDriver`, per-window state, frame phases,
   access keys) into modules, leaving docs, `mod` and `pub use`. Verify that the `cargo doc` item list
   is unchanged and that the facade tests pass.
+  — Built: `lib.rs` (196 lines) keeps the crate docs, `mod`, `pub use` and the re-export modules.
+  `app` holds `Application` and `run`; `driver/` holds `AppDriver` (`mod`), per-window state
+  (`window_state`), the frame phases (`frame`), access keys and the platform conversions;
+  `prelude`, `stdio`, `behavior` and `test_support` hold the prelude, the print macros, the
+  behavior macros and the test harness. Verified: `all.html` lists the same items (rustdoc adds only
+  redirects under `app/`), `cargo doc` has no warnings, clippy `-D warnings` is clean on default and
+  `headless,hot-reload`, and the build is checked on default, `headless`, `hot-reload` and both. The
+  lib tests pass except a stale byte count (fixed separately). The facade integration tests pass
+  except `game_sheet` (golden drift, fails at HEAD too) and `game_audio_device` (no device output
+  here).
 - [ ] Remove dead surface:
   - the marker contexts `LayoutCx`/`PaintCx`/`RenderCx`/`TaskCx`;
   - `viso_ui::token` (`TokenId`/`TokenInterner`/its `Theme`) with `StyleId`/`resolve_styles`/

@@ -62,8 +62,8 @@ use viso_ui::{
     TransformTable,
 };
 
+use crate::driver::{GpuState, WindowState};
 use crate::text_content::{ParagraphSlot, TextShaper};
-use crate::{GpuState, WindowState};
 
 /// A paper size, in points.
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -13,7 +13,7 @@ use viso_ui::{
     Rgba, Sizing, TextRequest, TextStyle,
 };
 
-use crate::WindowState;
+use crate::driver::WindowState;
 
 /// The diagnostics a panel lists before summarizing the rest.
 const MAX_LINES: usize = 8;

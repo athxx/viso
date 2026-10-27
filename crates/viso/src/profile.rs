@@ -44,7 +44,8 @@ mod live {
     use viso_gpu::GpuBackend;
     use viso_runtime::RuntimeCx;
 
-    use crate::{AppDriver, Application};
+    use crate::Application;
+    use crate::driver::AppDriver;
 
     /// How many frames a sample waits for the GPU to time it.
     const GPU_WAIT: u64 = 4;

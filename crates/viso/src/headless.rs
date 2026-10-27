@@ -39,9 +39,10 @@ use viso_view::profile::{PROFILE_ENV, Trace};
 use viso_view::tape::{TAPE_ENV, UiTape};
 use viso_view::{MountRecord, ViewHost, load_view, take_mounts};
 
+use crate::driver::{AppDriver, WindowState};
 use crate::scenario::{Input, Outputs, ScriptRunner};
 use crate::tape::{HeadlessClock, STEP, TapeClock, TapePlayer};
-use crate::{AppDriver, Application, WindowState, services};
+use crate::{Application, services};
 
 pub(crate) fn run<A: Application>() {
     if let Some(path) = viso_platform::launch_var(GAME_SHEET_ENV) {

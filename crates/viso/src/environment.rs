@@ -12,7 +12,7 @@ use viso_ui::adaptive::{
 };
 use viso_ui::layout::Inset;
 
-use crate::WindowState;
+use crate::driver::WindowState;
 
 impl WindowState {
     /// Seeds a new window's environment before its tree is built, so every
