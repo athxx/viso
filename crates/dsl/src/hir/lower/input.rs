@@ -69,7 +69,7 @@ pub(super) fn collect_map(
     scope: &ModuleScope,
     decls: &mut Declarations,
 ) {
-    if *ty != Ty::Native(input_map()) {
+    if *ty != Ty::native(input_map()) {
         return;
     }
     let (Some(module), Some(name)) = (scope.home, decl.name()) else {
@@ -304,7 +304,7 @@ pub(super) fn lower_map(
         return;
     };
     let mut cx = InferCx::new(refs, env);
-    let ty = cx.infer_promoted(&value, &Ty::Native(input_map()));
+    let ty = cx.infer_promoted(&value, &Ty::native(input_map()));
     if ty.has_unknown()
         || cx
             .diagnostics()

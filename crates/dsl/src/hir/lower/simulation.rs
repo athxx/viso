@@ -1022,7 +1022,7 @@ fn check_query(
 fn not_value(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) -> Option<String> {
     match ty {
         Ty::Fn(..) => Some("a closure".to_owned()),
-        Ty::Native(id) => {
+        Ty::Native(id, _) => {
             let name = env.natives.ty_by_id(*id).map_or("a native type", |entry| {
                 entry.path.rsplit("::").next().unwrap_or(&entry.path)
             });
@@ -1333,7 +1333,7 @@ fn schema_text(ty: &Ty, env: &ModuleEnv<'_>, open: &mut Vec<SymbolId>, out: &mut
 fn not_snapshot(ty: &Ty, env: &ModuleEnv<'_>, seen: &mut HashSet<SymbolId>) -> Option<String> {
     match ty {
         Ty::Fn(..) => Some("a closure has no snapshot".to_owned()),
-        Ty::Native(id) => {
+        Ty::Native(id, _) => {
             let entry = env.natives.ty_by_id(*id)?;
             (!entry.ty.snapshots()).then(|| {
                 let name = entry.path.rsplit("::").next().unwrap_or(&entry.path);

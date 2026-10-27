@@ -444,7 +444,7 @@ impl Lowerer<'_, '_> {
                 .record_fields(*id)
                 .and_then(|fields| fields.iter().position(|f| f.name == name)),
             Ty::Tuple(elems) => name.parse::<usize>().ok().filter(|i| *i < elems.len()),
-            Ty::Native(id) => self
+            Ty::Native(id, _) => self
                 .env
                 .natives()
                 .and_then(|n| n.ty_by_id(*id))

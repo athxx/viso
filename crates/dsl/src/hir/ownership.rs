@@ -15,7 +15,7 @@ use crate::syntax::TextRange;
 /// option, tuple, result, range or function type.
 fn borrowed_in<'n>(ty: &Ty, natives: &'n Natives) -> Option<&'n NativeTypeEntry> {
     match ty {
-        Ty::Native(id) => natives
+        Ty::Native(id, _) => natives
             .ty_by_id(*id)
             .filter(|t| t.ty.ownership == Ownership::Borrowed),
         Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => {

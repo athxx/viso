@@ -315,7 +315,7 @@ pub(crate) fn displayable(env: &dyn TypeEnv, ty: &Ty) -> bool {
         | Ty::ResourceState(..)
         | Ty::NodeRef(_)
         | Ty::Animation
-        | Ty::Native(_) => false,
+        | Ty::Native(..) => false,
     }
 }
 

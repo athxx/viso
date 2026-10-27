@@ -575,7 +575,7 @@ impl<'a> ViewWalk<'a> {
         }
         // A native value type, by its path.
         if name.contains("::") {
-            return Some(Ty::Native(viso_behavior::native::NativeId::of(name)));
+            return Some(Ty::native(viso_behavior::native::NativeId::of(name)));
         }
         let id = self.env.standard_type(name)?;
         let is_enum = self.cx.env().enum_variants(id).is_some();

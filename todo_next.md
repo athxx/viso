@@ -167,6 +167,10 @@ Rules (as for `todo_features.md`):
     `#[derive(NativeData)]` on a Rust enum gives variants with tuple or named fields
     (`NativeType::payloads`, carried in `natives.json`). Verified by `crates/viso/tests/native_data.rs`
     and the game test suites.
+  - Generic native types and `viso::nav` built: `NativeType::params` with `SchemaTy::Param`,
+    `Ty::Native(id, args)`; `Navigator<R>` (in scope without an import) with `current`,
+    `can_pop`, `depth`, `push`, `replace`, `pop`, `reset` over a host `RouteStack`. ADR 0055
+    (Proposed). Verified by `crates/dsl/tests/navigator.rs`.
 - [ ] Typed Rust access to named nodes from `view!`/`component!` (`nodes.save_button:
   Handle<Button>`). Verify with a trybuild test that a wrong-type use fails to compile.
 - [ ] `ui!` mounts any `viso::ui::Component`, so hand-written widgets and `component!` structs have

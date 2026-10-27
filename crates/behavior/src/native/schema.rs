@@ -82,6 +82,14 @@ pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
             w.bool(ty.value);
             w.name("fields");
             params(&mut w, ty.fields);
+            if !ty.params.is_empty() {
+                w.name("params");
+                w.begin_array();
+                for param in ty.params {
+                    w.string(param);
+                }
+                w.end_array();
+            }
             if !ty.payloads.is_empty() {
                 w.name("payloads");
                 w.begin_array();
@@ -197,6 +205,13 @@ fn ty(w: &mut JsonWriter, ty: &SchemaTy) {
         SchemaTy::Tag => "Tag",
         SchemaTy::AudioCommand => "AudioCommand",
         SchemaTy::AudioEvent => "AudioEvent",
+        SchemaTy::Param(index) => {
+            w.begin_object();
+            w.name("Param");
+            w.uint(u64::from(*index));
+            w.end_object();
+            return;
+        }
         SchemaTy::List(inner) | SchemaTy::Option(inner) => {
             w.begin_object();
             w.name(if matches!(ty, SchemaTy::List(_)) {
@@ -418,6 +433,17 @@ fn native_type(json: &JsonValue) -> Result<NativeType, String> {
             })
             .collect::<Result<Vec<_>, String>>()?,
     };
+    let params = match json.get("params") {
+        None => Vec::new(),
+        Some(_) => array(json, "params")?
+            .iter()
+            .map(|p| {
+                p.as_str()
+                    .map(leak)
+                    .ok_or("a type parameter is not a string")
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     if !payloads.is_empty() && payloads.len() != variants.len() {
         return Err("a payload for each variant, or none".into());
     }
@@ -425,6 +451,7 @@ fn native_type(json: &JsonValue) -> Result<NativeType, String> {
         name: leak(string(json, "name")?),
         variants: Box::leak(variants.into_boxed_slice()),
         payloads: Box::leak(payloads.into_boxed_slice()),
+        params: Box::leak(params.into_boxed_slice()),
         ownership,
         thread: thread(string(json, "thread")?)?,
         value: flag(json, "value")?,
@@ -476,6 +503,12 @@ fn schema_ty(json: &JsonValue) -> Result<SchemaTy, String> {
         "Handle" => SchemaTy::Handle(path()?),
         "Value" => SchemaTy::Value(path()?),
         "Enum" => SchemaTy::Enum(path()?),
+        "Param" => SchemaTy::Param(
+            inner
+                .as_f64()
+                .filter(|n| n.fract() == 0.0 && (0.0..=f64::from(u8::MAX)).contains(n))
+                .ok_or("`Param` is not a parameter index")? as u8,
+        ),
         other => return Err(format!("`{other}` is not a schema type")),
     })
 }

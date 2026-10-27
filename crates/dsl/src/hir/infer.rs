@@ -802,8 +802,9 @@ impl<'a> InferCx<'a> {
                             }
                             if let Some(recv) = first_child_expr(callee.syntax()) {
                                 return match self.infer_expr(&recv, None) {
-                                    Ty::Native(ty) => self.native_method_call(
+                                    Ty::Native(ty, targs) => self.native_method_call(
                                         ty,
+                                        &targs,
                                         callee.syntax(),
                                         &args,
                                         expected,
@@ -1534,7 +1535,7 @@ fn spell(
             super::ty::ConstArg::Char(v) => format!("{v:?}"),
             super::ty::ConstArg::Variant(id, index) => format!("{}#{index}", named(*id)),
         },
-        Ty::Native(id) => native(*id),
+        Ty::Native(id, xs) => format!("{}{}", native(*id), args(xs)),
         Ty::Tuple(tys) => format!("({})", list(tys)),
         Ty::Fn(params, ret) => format!("Fn({}) -> {}", list(params), one(ret)),
         Ty::List(t) => format!("List<{}>", one(t)),
@@ -1953,7 +1954,7 @@ pub(crate) fn ty_name(ty: &Ty) -> &'static str {
         Ty::Assoc(..) => "<associated>",
         Ty::Dyn(..) => "<dyn>",
         Ty::Const(_) => "<const>",
-        Ty::Native(_) => "<native>",
+        Ty::Native(..) => "<native>",
         Ty::Tuple(_) => "<tuple>",
         Ty::Fn(_, _) => "<fn>",
         Ty::List(_) => "<list>",

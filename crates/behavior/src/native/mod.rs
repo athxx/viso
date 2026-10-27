@@ -196,8 +196,13 @@ pub enum SchemaTy {
     Handle(&'static str),
     /// The native value type at this path ([`NativeType::value`]).
     Value(&'static str),
-    /// The schema enum at this path, a variant index.
+    /// The schema enum at this path: a unit variant's index, or a payload
+    /// variant's fields tagged with it.
     Enum(&'static str),
+    /// In a method of a generic handle type ([`NativeType::params`]), the
+    /// receiver's type argument at this index: a `Navigator<Route>`'s
+    /// `current()` returns a `Route`. The native sees the value untyped.
+    Param(u8),
     /// An input action of the compiled package: a variant of the `InputAction`
     /// enum its `InputMap` maps, or of `viso::game::InputAction` when it
     /// declares none.
@@ -229,6 +234,7 @@ impl fmt::Display for SchemaTy {
             SchemaTy::Handle(path) | SchemaTy::Value(path) | SchemaTy::Enum(path) => {
                 f.write_str(path.rsplit("::").next().unwrap_or(path))
             }
+            SchemaTy::Param(i) => write!(f, "T{i}"),
             SchemaTy::Action => f.write_str("Action"),
             SchemaTy::Tag => f.write_str("Tag"),
             SchemaTy::AudioCommand => f.write_str("AudioCommand"),
@@ -471,6 +477,9 @@ pub struct NativeType {
     /// What each variant carries, index-parallel to `variants`; empty when
     /// every variant is a unit.
     pub payloads: &'static [VariantFields],
+    /// A handle type's type parameters, which its methods name as
+    /// [`SchemaTy::Param`]; empty for a type that takes none.
+    pub params: &'static [&'static str],
     /// Who may hold a handle.
     pub ownership: Ownership,
     /// The thread its handles live and drop on.
@@ -492,6 +501,7 @@ impl NativeType {
             name,
             variants: &[],
             payloads: &[],
+            params: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Ui,
             value: false,
@@ -508,6 +518,7 @@ impl NativeType {
             name,
             variants: &[],
             payloads: &[],
+            params: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: true,
@@ -527,6 +538,7 @@ impl NativeType {
             name,
             variants: &[],
             payloads: &[],
+            params: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: true,
@@ -558,6 +570,7 @@ impl NativeType {
             name,
             variants,
             payloads,
+            params: &[],
             ownership: Ownership::Shared,
             thread: ThreadDomain::Any,
             value: false,
@@ -584,6 +597,13 @@ impl NativeType {
     /// interpreter and never does.
     pub const fn snapshots(&self) -> bool {
         self.value || self.is_enum()
+    }
+
+    /// Takes the type parameters `params`: `Navigator<R>` is
+    /// `NativeType::new("Navigator", METHODS).generic(&["R"])`.
+    pub const fn generic(mut self, params: &'static [&'static str]) -> NativeType {
+        self.params = params;
+        self
     }
 
     /// Makes its handles borrowed.

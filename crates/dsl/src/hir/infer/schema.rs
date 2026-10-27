@@ -57,7 +57,7 @@ impl Builder<'_> {
             Ty::F32 => TypeDesc::F32,
             Ty::F64 => TypeDesc::F64,
             Ty::Unit => TypeDesc::Unit,
-            Ty::Native(id) => TypeDesc::Native(id.0),
+            Ty::Native(id, _) => TypeDesc::Native(id.0),
             Ty::Tuple(items) => TypeDesc::Tuple(self.all(items)),
             Ty::Fn(params, ret) => TypeDesc::Fn(self.all(params), boxed(self, ret)),
             Ty::List(t) => TypeDesc::List(boxed(self, t)),

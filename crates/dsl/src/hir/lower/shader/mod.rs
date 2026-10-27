@@ -208,7 +208,7 @@ pub(super) fn parameters(decl: &ShaderDecl) -> Vec<FieldInfo> {
 
 /// The host type a parameter of `kind` takes its value from.
 fn host_ty(kind: ParamKind) -> HostTy {
-    let vector = |path| HostTy::Native(viso_behavior::native::NativeId::of(path));
+    let vector = |path| HostTy::native(viso_behavior::native::NativeId::of(path));
     match kind {
         ParamKind::F32 => HostTy::F32,
         ParamKind::I32 => HostTy::I32,

@@ -700,7 +700,7 @@ fn unify(a: &Ty, b: &Ty, is_var: &dyn Fn(SymbolId) -> bool, subst: &mut Subst) -
             std::mem::discriminant(&a) == std::mem::discriminant(&b)
                 && match (&a, &b) {
                     (Ty::Named(x, _), Ty::Named(y, _)) | (Ty::Dyn(x, _), Ty::Dyn(y, _)) => x == y,
-                    (Ty::Native(x), Ty::Native(y)) => x == y,
+                    (Ty::Native(x, xs), Ty::Native(y, ys)) => x == y && xs == ys,
                     (Ty::Const(x), Ty::Const(y)) => x == y,
                     (Ty::Assoc(_, x), Ty::Assoc(_, y)) => x == y,
                     _ => true,

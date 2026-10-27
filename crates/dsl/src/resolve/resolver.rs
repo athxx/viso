@@ -72,7 +72,7 @@ impl Resolution {
     pub fn nominal(self) -> Option<Ty> {
         match self {
             Resolution::Symbol(id) => Some(Ty::named(id)),
-            Resolution::Native(id) => Some(Ty::Native(id)),
+            Resolution::Native(id) => Some(Ty::native(id)),
             Resolution::Local(_) | Resolution::Env | Resolution::Theme | Resolution::Game => None,
         }
     }
@@ -935,6 +935,9 @@ const BUILTIN_VALUES: &[&str] = &[
     "asset",
     "tracks",
 ];
+
+/// The native types every module names without an import, by name.
+const STANDARD_NATIVE_TYPES: &[(&str, &str)] = &[("Navigator", viso_behavior::nav::NAVIGATOR_PATH)];
 
 /// An item naming a declaration its module does not export is `E2001`, pointing at
 /// the declaration and offering to export it; it still binds, so its uses type as
@@ -2644,6 +2647,15 @@ impl<'a> ModulePass<'a> {
         if let Some(base) = self.native_base(name) {
             let rest: Vec<_> = ty.segments().skip(1).collect();
             self.resolve_native(&head, base, &rest, true);
+            return;
+        }
+        if let Some(&(_, path)) = STANDARD_NATIVE_TYPES.iter().find(|(n, _)| *n == text)
+            && let Some(native) = self.natives.ty(path)
+        {
+            self.refs.push(ResolvedRef {
+                range: head.text_range(),
+                to: Resolution::Native(native.id),
+            });
             return;
         }
         // `Float` is no type: the one diagnostic for it, wherever a type is

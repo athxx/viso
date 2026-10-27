@@ -40,7 +40,7 @@ pub(crate) struct TrCall {
 
 /// The type of a message key.
 pub(crate) fn message_key_ty() -> Ty {
-    Ty::Native(NativeId::of(MESSAGE_KEY))
+    Ty::native(NativeId::of(MESSAGE_KEY))
 }
 
 /// Whether the native `id` is `tr`.

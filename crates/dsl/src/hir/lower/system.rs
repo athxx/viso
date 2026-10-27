@@ -80,7 +80,7 @@ pub(super) fn hooks(
         let at = bound.syntax().text_range();
         let text = bound.syntax().text().to_string().trim().to_string();
         let entry = match env.scope.nominal.get(&head.text_range()) {
-            Some(Ty::Native(id)) => env.natives.native_trait_by_id(*id),
+            Some(Ty::Native(id, _)) => env.natives.native_trait_by_id(*id),
             Some(_) => None,
             // The resolver reported the unresolved name.
             None => continue,

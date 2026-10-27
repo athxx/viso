@@ -324,7 +324,7 @@ impl InferCx<'_> {
         let Some(name) = field.field() else {
             return Ty::Unknown;
         };
-        if let Ty::Native(ty) = recv {
+        if let Ty::Native(ty, _) = recv {
             let ty = self.native_property(ty, &name, node);
             return self.check_against(ty, expected, node);
         }
@@ -443,7 +443,7 @@ impl InferCx<'_> {
                     None
                 }
             },
-            Ty::Native(id) => {
+            Ty::Native(id, _) => {
                 let record = self.env.natives()?.ty_by_id(*id)?.ty;
                 if let Some(field) = record.fields.iter().find(|f| f.name == text) {
                     return Some(Ty::from_schema(&field.ty, &self.env.package_types()));

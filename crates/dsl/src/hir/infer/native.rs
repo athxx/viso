@@ -32,14 +32,23 @@ pub struct NativeCall {
 impl InferCx<'_> {
     /// A native function's parameter and return types.
     fn signature(&self, entry: &NativeEntry) -> (Vec<Ty>, Ty) {
+        self.signature_in(entry, &[])
+    }
+
+    /// A native method's parameter and return types on a receiver of the type
+    /// arguments `args`, which its type parameters stand for.
+    fn signature_in(&self, entry: &NativeEntry, args: &[Ty]) -> (Vec<Ty>, Ty) {
         let package = self.env.package_types();
         let params = entry
             .function
             .params
             .iter()
-            .map(|p| Ty::from_schema(&p.ty, &package))
+            .map(|p| Ty::from_schema_in(&p.ty, &package, args))
             .collect();
-        (params, Ty::from_schema(&entry.function.ret, &package))
+        (
+            params,
+            Ty::from_schema_in(&entry.function.ret, &package, args),
+        )
     }
 
     /// The signature of a call through a path naming the native `id` (a
@@ -72,6 +81,7 @@ impl InferCx<'_> {
     pub(super) fn native_method_call(
         &mut self,
         ty: NativeId,
+        targs: &[Ty],
         callee: &SyntaxNode,
         args: &[Expr],
         expected: Option<&Ty>,
@@ -99,7 +109,7 @@ impl InferCx<'_> {
             }
             Some(entry) => {
                 let id = entry.id;
-                let (mut params, ret) = self.signature(entry);
+                let (mut params, ret) = self.signature_in(entry, targs);
                 params.remove(0);
                 self.record_native(node.text_range(), id, true);
                 let ty = self.apply_signature(args, (params, ret), expected, node);

@@ -85,8 +85,9 @@ pub enum Ty {
     Dyn(SymbolId, Vec<Ty>),
     /// A const generic argument.
     Const(ConstArg),
-    /// A native handle type, identified by its registered path.
-    Native(NativeId),
+    /// A native handle or value type, identified by its registered path,
+    /// with the type arguments of a generic one (`Navigator<Route>`).
+    Native(NativeId, Vec<Ty>),
     /// A tuple `(A, B, ...)` — structural.
     Tuple(Vec<Ty>),
     /// A function type `(params) -> ret` — structural.
@@ -174,6 +175,11 @@ impl Ty {
     /// The nominal type `id` without generic arguments.
     pub fn named(id: SymbolId) -> Ty {
         Ty::Named(id, Vec::new())
+    }
+
+    /// The non-generic native type `id`.
+    pub fn native(id: NativeId) -> Ty {
+        Ty::Native(id, Vec::new())
     }
 
     /// Resolves a scalar or UI-dimensional type *name* to its [`Ty`]. Nominal types
@@ -324,6 +330,9 @@ impl Ty {
                         Ty::Named(id, xs) if xs.is_empty() && !args.is_empty() => {
                             Ty::Named(id, args)
                         }
+                        Ty::Native(id, xs) if xs.is_empty() && !args.is_empty() => {
+                            Ty::Native(id, args)
+                        }
                         other => other,
                     });
                 }
@@ -418,8 +427,16 @@ impl Ty {
     }
 
     /// The type a native schema type denotes; an input action or a game tag
-    /// is the compiled package's type of it.
+    /// is the compiled package's type of it. A type parameter is unknown.
     pub fn from_schema(ty: &SchemaTy, package: &PackageTypes) -> Ty {
+        Ty::from_schema_in(ty, package, &[])
+    }
+
+    /// [`from_schema`](Self::from_schema) in a method of a generic native
+    /// type whose receiver has the type arguments `args`: a type parameter is
+    /// its argument.
+    pub fn from_schema_in(ty: &SchemaTy, package: &PackageTypes, args: &[Ty]) -> Ty {
+        let inner = |t: &SchemaTy| Box::new(Ty::from_schema_in(t, package, args));
         match ty {
             SchemaTy::Unit => Ty::Unit,
             SchemaTy::Bool => Ty::Bool,
@@ -428,13 +445,11 @@ impl Ty {
             SchemaTy::F64 => Ty::F64,
             SchemaTy::Duration | SchemaTy::Ticks => Ty::Duration,
             SchemaTy::String => Ty::String,
-            SchemaTy::List(t) => Ty::List(Box::new(Ty::from_schema(t, package))),
-            SchemaTy::Option(t) => Ty::Option(Box::new(Ty::from_schema(t, package))),
-            SchemaTy::Result(t, e) => Ty::Result(
-                Box::new(Ty::from_schema(t, package)),
-                Box::new(Ty::from_schema(e, package)),
-            ),
-            SchemaTy::Handle(path) | SchemaTy::Value(path) => Ty::Native(NativeId::of(path)),
+            SchemaTy::List(t) => Ty::List(inner(t)),
+            SchemaTy::Option(t) => Ty::Option(inner(t)),
+            SchemaTy::Result(t, e) => Ty::Result(inner(t), inner(e)),
+            SchemaTy::Handle(path) | SchemaTy::Value(path) => Ty::native(NativeId::of(path)),
+            SchemaTy::Param(i) => args.get(usize::from(*i)).cloned().unwrap_or(Ty::Unknown),
             SchemaTy::Enum(path) => Ty::named(crate::resolve::native_enum(path)),
             SchemaTy::Action => package.action.clone(),
             SchemaTy::Tag => package.tag.clone(),
@@ -460,6 +475,7 @@ impl Ty {
         let mut each = |t: &Ty| Box::new(t.map(f));
         match self {
             Ty::Named(id, args) => Ty::Named(*id, args.iter().map(|a| a.map(f)).collect()),
+            Ty::Native(id, args) => Ty::Native(*id, args.iter().map(|a| a.map(f)).collect()),
             Ty::Dyn(id, args) => Ty::Dyn(*id, args.iter().map(|a| a.map(f)).collect()),
             Ty::Assoc(base, name) => Ty::Assoc(each(base), name.clone()),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| t.map(f)).collect()),
@@ -481,7 +497,9 @@ impl Ty {
     /// The direct component types of a structural or applied type.
     pub fn parts(&self) -> Vec<&Ty> {
         match self {
-            Ty::Named(_, args) | Ty::Dyn(_, args) | Ty::Tuple(args) => args.iter().collect(),
+            Ty::Named(_, args) | Ty::Dyn(_, args) | Ty::Native(_, args) | Ty::Tuple(args) => {
+                args.iter().collect()
+            }
             Ty::Assoc(base, _) => vec![base],
             Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).collect(),
             Ty::List(t) | Ty::Option(t) | Ty::Range(t) | Ty::RangeInclusive(t) => vec![t],
@@ -546,6 +564,11 @@ impl Ty {
         }
         match (self, actual) {
             (_, Ty::Unknown | Ty::Never) => true,
+            (Ty::Native(a, xs), Ty::Native(b, ys)) => {
+                a == b
+                    && xs.len() == ys.len()
+                    && xs.iter().zip(ys).all(|(x, y)| x.bind(y, is_var, out))
+            }
             (Ty::Named(a, xs), Ty::Named(b, ys)) | (Ty::Dyn(a, xs), Ty::Dyn(b, ys)) => {
                 a == b
                     && xs.len() == ys.len()
