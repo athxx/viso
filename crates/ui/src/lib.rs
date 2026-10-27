@@ -86,6 +86,7 @@ pub mod sheet;
 pub mod shimmer;
 pub mod slider;
 pub mod snap;
+mod sparse;
 pub mod spinner;
 pub mod state;
 #[cfg(feature = "hot-reload")]

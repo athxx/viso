@@ -38,6 +38,7 @@ use crate::node::{ArenaFull, NodeArena, NodeId, NodeIndex};
 use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::shader::ShaderSlots;
+use crate::sparse::Sparse;
 use crate::state::{StateId, StateKey, StateStore, StateValue};
 use crate::style::{BoxStyle, InteractionStyle};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
@@ -411,7 +412,7 @@ macro_rules! node_columns {
         $($store.$col.$op $args;)*
     };
     (@bytes [$store:ident] $($col:ident)*) => {
-        0 $(+ slot_bytes(&$store.$col))*
+        0 $(+ SlotBytes::slot_bytes(&$store.$col))*
     };
     (@bytes $store:ident) => {
         node_columns!(@list bytes $store)
@@ -421,9 +422,21 @@ macro_rules! node_columns {
     };
 }
 
-/// The bytes one slot of `column` takes.
-fn slot_bytes<T>(_column: &Vec<T>) -> usize {
-    core::mem::size_of::<T>()
+/// The bytes one slot of a column takes.
+trait SlotBytes {
+    fn slot_bytes(&self) -> usize;
+}
+
+impl<T> SlotBytes for Vec<T> {
+    fn slot_bytes(&self) -> usize {
+        size_of::<T>()
+    }
+}
+
+impl<T> SlotBytes for Sparse<T> {
+    fn slot_bytes(&self) -> usize {
+        Sparse::<T>::SLOT_BYTES
+    }
 }
 
 /// A node with no [`BoxRules`].
@@ -650,10 +663,9 @@ pub struct NodeStore {
     /// Hot: each node's opacity, applied to it and its subtree as one layer.
     /// Default `1.0`; `0.0` paints nothing.
     opacity: Vec<f32>,
-    /// Cold: per-node pointer handler, index-aligned but mostly `None`. Read
-    /// only when a node lands on a hit's dispatch chain, so it lives off the hot
-    /// columns as an owned box rather than an inline fat pointer.
-    handlers: Vec<Option<PointerHandler>>,
+    /// Cold: per-node pointer handler, sparse. Read only when a node lands on
+    /// a hit's dispatch chain, so it lives off the hot columns.
+    handlers: Sparse<PointerHandler>,
     /// The single focused node, or `None` when nothing holds focus. Keyboard and
     /// IME events route to this node (not hit testing). One slot per store — a
     /// window has one focus — reset to `None` on a structural rebuild.
@@ -689,36 +701,36 @@ pub struct NodeStore {
     /// How many nodes are disabled, so a tree with none answers
     /// [`inert`](Self::inert) without walking an ancestry.
     disabled_count: u32,
-    /// Cold: per-node keyboard/IME handler, index-aligned but mostly `None`.
+    /// Cold: per-node keyboard/IME handler, sparse.
     /// Parallel to `handlers` but a distinct column: read only when a key/IME
     /// event routes through the focused node's dispatch chain.
-    key_handlers: Vec<Option<KeyHandler>>,
-    /// Warm: per-node interaction-state box selection, index-aligned but mostly
-    /// `None`. An interactive node (a button, a toggle) keeps its resting /
-    /// hover / pressed boxes plus the cells driving them here; a `None` entry
-    /// means the node paints its literal `style` unconditionally. Read only by
+    key_handlers: Sparse<KeyHandler>,
+    /// Warm: per-node interaction-state box selection, sparse: most nodes
+    /// have none. An interactive node (a button, a toggle) keeps its resting /
+    /// hover / pressed boxes plus the cells driving them here; a node without
+    /// one paints its literal `style` unconditionally. Read only by
     /// the STYLE-resolve pass over style-dirty nodes (via
     /// [`resolve_interaction_styles`](Self::resolve_interaction_styles)), which
     /// selects the winning box into the warm `style` column — never in the hot
     /// per-node traversal, so it sits off the `style` column.
-    interaction: Vec<Option<InteractionStyle>>,
+    interaction: Sparse<InteractionStyle>,
     /// Cold: per-node authored accessibility semantics (role + label),
-    /// index-aligned but mostly `None`. Holds the only heap data in the store
+    /// sparse. Holds the only heap data in the store
     /// (the label `String`); read only by the SEMANTICS-derive pass, never in
     /// the hot per-node traversal — so it sits off the hot columns like
-    /// `handlers`/`styled`. A `None` entry means a plain layout/decoration node
+    /// `handlers`/`styled`. A node without one is a plain layout/decoration node
     /// (the derive pass still gives an interactive node a default role).
-    semantics: Vec<Option<Semantics>>,
+    semantics: Sparse<Semantics>,
     /// Cold: per-node *live* accessibility state (checked / value / range /
-    /// expanded), index-aligned but mostly `None`. Unlike authored `semantics`,
+    /// expanded), sparse. Unlike authored `semantics`,
     /// this is reactive: a control registers a parallel projection binding whose
     /// flush writes the current cell value here (via
     /// [`set_semantic_state`](Self::set_semantic_state)), and the SEMANTICS-derive
     /// pass reads it (`&self`) — so live state reaches the derived tree through a
     /// node column, never a cross-layer StateStore read,
     /// mirroring the `focused` slot. Heap-free ([`SemanticState`] is `Copy`), so
-    /// the column reuses its slots with no per-frame allocation.
-    semantic_state: Vec<Option<SemanticState>>,
+    /// the column reuses its entries with no per-frame allocation.
+    semantic_state: Sparse<SemanticState>,
     /// Cold: per-node drawable content (text/image/path) plus its measured
     /// intrinsic size, index-aligned but mostly `None` — only content-bearing
     /// nodes carry it, boxed off the hot columns like `semantics`. The measure
@@ -727,8 +739,9 @@ pub struct NodeStore {
     /// scroll `content` extent column above.
     content_payload: Vec<Option<Box<Content>>>,
     /// Cold: what each check draws beside its caption (its text content),
-    /// index-aligned and `None` for every node but a check.
-    check_marks: Vec<Option<(CheckMark, f32)>>,
+    /// and how far its mark shows moved toward checked; sparse, held by
+    /// checks only.
+    check_marks: Sparse<(CheckMark, f32)>,
     /// The brush programs `Content::Shader` nodes paint with, by slot.
     shaders: ShaderSlots,
     scenes: crate::scenes::SceneSlots,
@@ -3056,7 +3069,7 @@ impl NodeStore {
     /// node paints its literal `style` unconditionally.
     #[inline]
     pub fn interaction_style(&self, id: NodeId) -> Option<InteractionStyle> {
-        self.interaction[self.arena.slot(id)]
+        self.interaction.copied(self.arena.slot(id))
     }
 
     /// Bind a node's `style` to an interaction-state box selection, replacing
@@ -3074,7 +3087,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.interaction[self.arena.slot(id)] = Some(interaction);
+        self.interaction.insert(self.arena.slot(id), interaction);
         self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
     }
 
@@ -3082,7 +3095,7 @@ impl NodeStore {
     /// node (the derive pass still gives an interactive node a default role).
     #[inline]
     pub fn semantics(&self, id: NodeId) -> Option<&Semantics> {
-        self.semantics[self.arena.slot(id)].as_ref()
+        self.semantics.get(self.arena.slot(id))
     }
 
     /// Set a node's authored semantics, replacing any prior value, and mark it
@@ -3093,7 +3106,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.semantics[self.arena.slot(id)] = Some(semantics);
+        self.semantics.insert(self.arena.slot(id), semantics);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
@@ -3152,7 +3165,7 @@ impl NodeStore {
     /// container, a label, or a control before its projection binding has run).
     #[inline]
     pub fn semantic_state(&self, id: NodeId) -> Option<SemanticState> {
-        self.semantic_state[self.arena.slot(id)]
+        self.semantic_state.copied(self.arena.slot(id))
     }
 
     /// Set a node's live accessibility state, replacing any prior value, and mark
@@ -3171,11 +3184,17 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let slot = &mut self.semantic_state[self.arena.slot(id)];
-        if slot.and_then(|s| s.selected) != state.selected {
+        let i = self.arena.slot(id);
+        let was = match self.semantic_state.get_mut(i) {
+            Some(slot) => core::mem::replace(slot, state).selected,
+            None => {
+                self.semantic_state.insert(i, state);
+                None
+            }
+        };
+        if was != state.selected {
             self.interaction_states.moved();
         }
-        *slot = Some(state);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
         if let Some(mark) = self.check_mark(id) {
             let follows = match mark.shape {
@@ -3235,13 +3254,17 @@ impl NodeStore {
     /// check.
     #[inline]
     pub fn check_mark(&self, id: NodeId) -> Option<CheckMark> {
-        self.check_marks[self.arena.slot(id)].map(|(mark, _)| mark)
+        self.check_marks
+            .get(self.arena.slot(id))
+            .map(|&(mark, _)| mark)
     }
 
     /// How far a check's mark shows moved toward checked, `0` to `1`: its
     /// state at rest, between them while it moves.
     pub(crate) fn check_progress(&self, id: NodeId) -> f32 {
-        self.check_marks[self.arena.slot(id)].map_or(0.0, |(_, shown)| shown)
+        self.check_marks
+            .get(self.arena.slot(id))
+            .map_or(0.0, |&(_, shown)| shown)
     }
 
     /// Makes a node a check drawing `mark` beside its caption, or no check.
@@ -3256,19 +3279,19 @@ impl NodeStore {
             return;
         }
         let i = self.arena.slot(id);
-        let prior = self.check_marks[i];
+        let prior = self.check_marks.copied(i);
         if prior.map(|(m, _)| m) == mark {
             return;
         }
         let reshaped = prior.map(|(m, _)| m.shape) != mark.map(|m| m.shape);
         match (prior, mark) {
             (Some((_, shown)), Some(mark)) if !reshaped => {
-                self.check_marks[i] = Some((mark, shown));
+                self.check_marks.insert(i, (mark, shown));
                 self.move_look(id, LookValue::Check(mark.rest()), mark.timing(), None);
             }
             _ => {
                 self.settle(id, &LookValue::Check(0.0));
-                self.check_marks[i] = mark.map(|m| (m, m.rest()));
+                self.check_marks.set(i, mark.map(|m| (m, m.rest())));
                 // A new shape may add or drop the cross a chip's "Remove"
                 // action stands for.
                 self.mark_dirty(
@@ -4048,8 +4071,8 @@ impl NodeStore {
         self.content_payload[index] = None;
         // The handlers and the controls' parts go with the node: a handle to a
         // control it rooted goes stale now.
-        self.handlers[index] = None;
-        self.key_handlers[index] = None;
+        self.handlers.remove(index);
+        self.key_handlers.remove(index);
         if !self.control_parts.is_empty() {
             self.control_parts
                 .retain(|(slot, _)| *slot as usize != index);
@@ -4613,7 +4636,7 @@ impl NodeStore {
             },
             LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
             LookValue::Rotation(_) => LookValue::Rotation(self.turn[i].rotation),
-            LookValue::Check(_) => match self.check_marks[i] {
+            LookValue::Check(_) => match self.check_marks.copied(i) {
                 Some((_, shown)) => LookValue::Check(shown),
                 None => *of,
             },
@@ -4641,7 +4664,7 @@ impl NodeStore {
             LookValue::Translate(offset) => self.set_translate(id, offset),
             LookValue::Thumb(shown) => self.slide_thumb(id, shown),
             LookValue::Check(progress) => {
-                if let Some((mark, shown)) = &mut self.check_marks[self.arena.slot(id)]
+                if let Some((mark, shown)) = self.check_marks.get_mut(self.arena.slot(id))
                     && *shown != progress
                 {
                     *shown = progress;
@@ -5160,13 +5183,13 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers[self.arena.slot(id)] = Some(handler);
+        self.handlers.insert(self.arena.slot(id), handler);
     }
 
     /// Whether a live node currently carries a pointer handler.
     #[inline]
     pub fn has_handler(&self, id: NodeId) -> bool {
-        self.arena.is_live(id) && self.handlers[self.arena.slot(id)].is_some()
+        self.arena.is_live(id) && self.handlers.contains(self.arena.slot(id))
     }
 
     /// Move a node's handler out of the store so the router can call it while
@@ -5179,7 +5202,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        self.handlers[self.arena.slot(id)].take()
+        self.handlers.remove(self.arena.slot(id))
     }
 
     /// Put a handler moved out by [`take_handler`](Self::take_handler) back in
@@ -5189,7 +5212,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers[self.arena.slot(id)] = Some(handler);
+        self.handlers.insert(self.arena.slot(id), handler);
     }
 
     /// The currently focused node, or `None` when nothing holds focus.
@@ -5336,7 +5359,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.key_handlers[self.arena.slot(id)] = Some(handler);
+        self.key_handlers.insert(self.arena.slot(id), handler);
     }
 
     /// Detach a node's pointer and key handlers, as a reload does before it
@@ -5345,14 +5368,14 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers[self.arena.slot(id)] = None;
-        self.key_handlers[self.arena.slot(id)] = None;
+        self.handlers.remove(self.arena.slot(id));
+        self.key_handlers.remove(self.arena.slot(id));
     }
 
     /// Whether a live node currently carries a key handler.
     #[inline]
     pub fn has_key_handler(&self, id: NodeId) -> bool {
-        self.arena.is_live(id) && self.key_handlers[self.arena.slot(id)].is_some()
+        self.arena.is_live(id) && self.key_handlers.contains(self.arena.slot(id))
     }
 
     /// Move a node's key handler out of the store so the router can call it while
@@ -5366,7 +5389,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        self.key_handlers[self.arena.slot(id)].take()
+        self.key_handlers.remove(self.arena.slot(id))
     }
 
     /// Put a key handler moved out by
@@ -5377,7 +5400,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.key_handlers[self.arena.slot(id)] = Some(handler);
+        self.key_handlers.insert(self.arena.slot(id), handler);
     }
 
     /// Mark `class` dirty on `id` and propagate each class up the parent chain
@@ -5800,13 +5823,13 @@ impl NodeStore {
             self.disabled_count -= 1;
         }
         self.opacity[i] = 1.0;
-        self.handlers[i] = None;
-        self.key_handlers[i] = None;
-        self.interaction[i] = None;
-        self.semantics[i] = None;
-        self.semantic_state[i] = None;
+        self.handlers.remove(i);
+        self.key_handlers.remove(i);
+        self.interaction.remove(i);
+        self.semantics.remove(i);
+        self.semantic_state.remove(i);
         self.content_payload[i] = None;
-        self.check_marks[i] = None;
+        self.check_marks.remove(i);
         self.text_request[i] = None;
         self.owner[i] = owner;
         id
@@ -5844,13 +5867,13 @@ impl NodeStore {
             self.measured.push(Measured::default());
             self.flags.push(NodeFlags::FRESH);
             self.opacity.push(1.0);
-            self.handlers.push(None);
-            self.key_handlers.push(None);
-            self.interaction.push(None);
-            self.semantics.push(None);
-            self.semantic_state.push(None);
+            self.handlers.push_empty();
+            self.key_handlers.push_empty();
+            self.interaction.push_empty();
+            self.semantics.push_empty();
+            self.semantic_state.push_empty();
             self.content_payload.push(None);
-            self.check_marks.push(None);
+            self.check_marks.push_empty();
             self.text_request.push(None);
             self.owner.push(NO_OWNER);
         }
@@ -6004,7 +6027,7 @@ impl NodeStore {
             if !self.dirty[index].intersects(DirtyClass::STYLE) {
                 continue;
             }
-            let Some(interaction) = self.interaction[index] else {
+            let Some(interaction) = self.interaction.copied(index) else {
                 continue;
             };
             self.style[index] = interaction.resolve(states);
@@ -6732,7 +6755,7 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn content_natural(&self, index: u32) -> Option<Vec2> {
         let content = self.content_payload[index as usize].as_deref();
-        match self.check_marks[index as usize] {
+        match self.check_marks.copied(index as usize) {
             Some((mark, shown)) => {
                 let (text, baseline) = caption_of(content);
                 Some(mark.natural(text, baseline, shown))
@@ -6745,7 +6768,7 @@ impl LayoutTree for NodeStore {
     fn content_min_width(&self, index: u32) -> f32 {
         let content = self.content_payload[index as usize].as_deref();
         let min = content.map_or(0.0, |c| c.min_width());
-        match self.check_marks[index as usize] {
+        match self.check_marks.copied(index as usize) {
             Some((mark, shown)) => {
                 let (text, baseline) = caption_of(content);
                 let lead = mark.natural(text, baseline, shown).x - text.x;
@@ -6759,7 +6782,7 @@ impl LayoutTree for NodeStore {
     fn content_baseline(&self, index: u32) -> Option<f32> {
         let content = self.content_payload[index as usize].as_deref();
         let baseline = content.and_then(|c| c.baseline());
-        match self.check_marks[index as usize] {
+        match self.check_marks.copied(index as usize) {
             Some((mark, shown)) => {
                 let (text, line) = caption_of(content);
                 baseline.map(|b| b + mark.place(text, line, Vec2::ZERO, false, shown).text.y)
@@ -6820,7 +6843,7 @@ impl LayoutTree for NodeStore {
         // a continuous drag-resize assigns a slightly different sub-pixel width
         // every frame, and reshaping on every one would defeat the text cache
         // ("unchanged width must not reshape").
-        let width = match self.check_marks[index as usize] {
+        let width = match self.check_marks.copied(index as usize) {
             Some((mark, shown)) => {
                 let (text, baseline) = caption_of(self.content_payload[index as usize].as_deref());
                 mark.caption_width(width, text, baseline, shown)
@@ -9364,7 +9387,7 @@ mod tests {
         );
         // A column that grows, or a new one, moves this: weigh it against
         // every node paying for it.
-        assert_eq!(store.bytes_per_node(), 602);
+        assert_eq!(store.bytes_per_node(), 314);
     }
 
     #[test]
@@ -9392,8 +9415,6 @@ mod tests {
         assert_eq!(store.layout.len(), 2);
         assert_eq!(store.style.len(), 2);
         assert_eq!(store.measured.len(), 2);
-        assert_eq!(store.key_handlers.len(), 2);
-        assert_eq!(store.semantics.len(), 2);
     }
 
     #[test]

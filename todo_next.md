@@ -389,9 +389,21 @@ Rules (as for `todo_features.md`):
     `NodeFlags` is one byte. The ui lib tests and clippy pass.
   - Verified: `node_arena` and `hover_diff` ran A/B at the default profile and at
     `opt-level=3`. Every row is within noise (±1.5%).
-- [ ] Move rarely set dense `Option` columns (`semantics`, `semantic_state`, `check_marks`,
+- [x] Move rarely set dense `Option` columns (`semantics`, `semantic_state`, `check_marks`,
   `interaction`) to sparse storage. Verify that column bytes drop and `semantic_projection` does not
   regress.
+  - Built: a `Sparse<T>` column keeps a `u32` per slot and packs the values, each with its slot.
+    Taking a value out moves the last one into its place. The four columns moved to it, and so did
+    the two handler columns (`handlers`, `key_handlers`).
+  - Built: handler presence reads only the slot word. Setting a semantic state looks its slot up
+    once.
+  - Verified: `bytes_per_node` drops from 602 to 314. A unit test covers insert, remove, set and
+    in-place change.
+  - Verified: three interleaved `semantic_projection` A/B runs at the default profile.
+    `project_wake` is +0.3–2%, `derive_with_state` is +1–6%, and
+    `derive_full_single_label_change` is +0.5–3%. The cost is the extra lookup per sparse read.
+    That is within noise to a few percent, not a clean zero.
+  - The ui lib, viso lib and clippy runs pass.
 - [ ] Derive semantics per dirty subtree: keep the last tree and diff only re-derived branches.
   Verify on 10k nodes that one label change re-derives O(depth) nodes and that the delta equals a
   full re-derive's.
