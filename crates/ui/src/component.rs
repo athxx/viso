@@ -727,6 +727,10 @@ pub struct NodeStore {
     /// made and since its or a descendant's size inputs last changed; one bit
     /// a node. See [`unsettle`](Self::unsettle).
     settled: SlotBits,
+    /// Warm: by slot, whether the node may show only some of its children —
+    /// it has been folded or paged — so a child of any other parent is in
+    /// layout without asking the folds and pages. One bit a node.
+    pub(crate) choosers: SlotBits,
     /// Hot: each node's yes/no properties, one byte a node (see
     /// [`NodeFlags`]).
     flags: Vec<NodeFlags>,
@@ -1259,6 +1263,7 @@ impl NodeStore {
         let warm = warm
             + log
             + self.settled.held_bytes()
+            + self.choosers.held_bytes()
             + self.row_lane.held_bytes()
             + boxed_bytes(&self.grid_tracks)
             + self.box_rules.len() * size_of::<(BoxRules, Vec2)>()
@@ -4612,8 +4617,14 @@ impl NodeStore {
     /// Whether the slot `i` is out of layout and paint.
     #[inline]
     fn concealed(&self, i: usize) -> bool {
+        if self.flags[i].has(NodeFlags::HIDDEN) {
+            return true;
+        }
         let index = crate::node::NodeIndex::new(i as u32);
-        self.flags[i].has(NodeFlags::HIDDEN) || self.folded_away(index) || self.paged_away(index)
+        let parent = self.arena.parent_of(index);
+        !parent.is_none()
+            && self.choosers.get(parent.slot())
+            && (self.folded_away(index) || self.paged_away(index))
     }
 
     /// Set whether a node (and its subtree) is folded out of layout, paint and
@@ -5985,6 +5996,7 @@ impl NodeStore {
         self.style[i] = style;
         self.measured[i] = Measured::default();
         self.settled.set(i, false);
+        self.choosers.set(i, false);
         self.folds.forget(i as u32);
         self.paged.forget(i as u32);
         self.fields.forget(i as u32);

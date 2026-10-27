@@ -590,7 +590,11 @@ Rules (as for `todo_features.md`):
     are drawn from, and placed with `MeshPlace`. paint_tree went from 54.6 µs to 0.76 µs, and the
     golden still matches. The picker tests had reused one run's node handles in another run's
     tree, which the debug owner check rejects; they now resolve each run's parts in it.
-  - `data_grid/layout` costs 138 µs for 200 cells; check it.
+  - [x] `data_grid/layout` costs 138 µs for 200 cells; check it. Done: on a quiet machine it is
+    26 µs, as fast per node as the other layouts, so the 138 µs was load from parallel builds.
+    The profile showed `concealed` asking the folds and pages for every node, so a per-slot
+    `choosers` bit now gates that on the parent having been folded or paged. That is neutral
+    here and saves the scans in trees with a pager or a fold.
   - [x] Virtual-list rows with `Length::fill()` seem to take the surface's width rather than the
     list's (or the list doesn't clip), so a scroll damages the whole surface. Not a bug: the bench
     lays the list out as the root, and the root stretches to the surface.

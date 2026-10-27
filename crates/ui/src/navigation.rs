@@ -192,6 +192,8 @@ impl NodeStore {
         }
         let Some(at) = self.paged.stacks.iter().position(|&(n, _)| n == stack) else {
             self.paged.stacks.push((stack, page));
+            let slot = self.arena().slot(stack);
+            self.choosers.set(slot, true);
             let mut child = self.arena().first_child(stack);
             while let Some(c) = child {
                 child = self.arena().next_sibling(c);

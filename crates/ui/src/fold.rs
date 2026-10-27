@@ -46,6 +46,8 @@ impl NodeStore {
         }
         if folded {
             self.folds.nodes.push(id);
+            let slot = self.arena().slot(id);
+            self.choosers.set(slot, true);
         } else {
             self.folds.forget(id.index());
         }
