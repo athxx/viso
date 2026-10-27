@@ -332,8 +332,9 @@ impl WindowState {
     /// Commit the text worker's finished layouts within the frame's commit
     /// budget and redraw each run they replaced, at the width it last wrapped
     /// to. Until a run's layout is committed it keeps drawing its last good
-    /// one. A no-op when the worker owes nothing (the steady case).
-    pub(crate) fn commit_text_work(&mut self) {
+    /// one. Inline shaping spends from `pace`. A no-op when the worker owes
+    /// nothing (the steady case).
+    pub(crate) fn commit_text_work(&mut self, pace: &mut super::pace::FramePace) {
         let (Some(gpu), Some(text)) = (self.gpu.as_mut(), self.text.as_mut()) else {
             return;
         };
@@ -345,9 +346,15 @@ impl WindowState {
         let budget = if cfg!(feature = "headless") {
             std::time::Duration::MAX
         } else {
-            text_content::text_commit_budget(text_content::DEFAULT_FRAME_INTERVAL)
+            text_content::text_commit_budget(pace.interval())
         };
-        text.pump(&mut gpu.backend, budget, &mut self.text_updated);
+        let shaping = text.pump(
+            &mut gpu.backend,
+            budget,
+            pace.slice(),
+            &mut self.text_updated,
+        );
+        pace.charge(shaping);
         let dpi = self.dpi;
         for slot in self.text_updated.drain(..) {
             let Some(id) = self

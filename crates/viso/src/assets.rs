@@ -49,6 +49,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread;
+use std::time::Duration;
 
 use viso_gpu::{GpuBackend, SampledFormats, TextureDesc};
 use viso_platform::LoopWaker;
@@ -283,9 +284,14 @@ struct Done {
     result: Result<Decoded, AssetError>,
 }
 
-/// The main thread's slice for decoding where no worker thread runs: a
-/// quarter of a 60Hz frame.
-const INLINE_SLICE: std::time::Duration = std::time::Duration::from_millis(4);
+/// What one [`Assets::serve`] did on the main thread.
+#[must_use]
+pub(crate) struct Served {
+    /// Some decodes wait for the next frame's slice.
+    pub(crate) deferred: bool,
+    /// The time decodes took here, with no worker.
+    pub(crate) inline: Duration,
+}
 
 /// The decode thread.
 struct Worker {
@@ -648,16 +654,18 @@ impl Assets {
     /// the worker (`waker` wakes the loop when it is done), and uploads the
     /// rasters not resident into `gpu`, releasing what they replace.
     ///
-    /// With no worker the decodes run here, in an idle slice
-    /// ([`INLINE_SLICE`], at least one decode); `true` when some wait for the
-    /// next frame's.
+    /// With no worker the decodes run here, within `slice` (at least one
+    /// decode; none when it is `None`). What they took is
+    /// [`Served::inline`]; [`Served::deferred`] when some wait for the next
+    /// frame's slice.
     pub(crate) fn serve<B: GpuBackend>(
         &mut self,
         store: &mut NodeStore,
         gpu: Option<(&mut B, &mut Renderer)>,
         waker: &dyn Fn() -> LoopWaker,
-    ) -> bool {
-        let start = viso_platform::Instant::now();
+        slice: Option<Duration>,
+    ) -> Served {
+        let mut inline = Duration::ZERO;
         let mut deferred = false;
         if let Some((backend, _)) = &gpu {
             let caps = backend.caps().sampled;
@@ -734,7 +742,7 @@ impl Assets {
                     .flatten();
                 self.inline = self.worker.is_none();
             }
-            if self.inline && start.elapsed() >= INLINE_SLICE {
+            if self.inline && slice.is_none_or(|slice| inline >= slice) {
                 deferred = true;
                 continue;
             }
@@ -749,10 +757,13 @@ impl Assets {
                     self.decoding.insert(id, revision);
                 }
                 _ => {
+                    let start = viso_platform::Instant::now();
+                    let result = input.decode(sampled);
+                    inline += start.elapsed();
                     let done = Done {
                         id,
                         revision,
-                        result: input.decode(sampled),
+                        result,
                     };
                     let (id, revision, payload) = self.settle(done);
                     give(store, id, revision, payload);
@@ -763,7 +774,7 @@ impl Assets {
         if let Some((backend, renderer)) = gpu {
             self.upload(store, backend, renderer);
         }
-        deferred
+        Served { deferred, inline }
     }
 
     /// Uploads the rasters of `store` not resident into `backend`, releasing
@@ -849,7 +860,6 @@ impl Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
     use viso_gpu::{CpuRaster, RawWindowHandle};
     use viso_ui::{AssetDraw, AssetFit, BoxStyle, BuildCx, Content, LeafStyle, NodeId, Sizing};
 
@@ -903,10 +913,11 @@ mod tests {
     fn serve(assets: &mut Assets, store: &mut NodeStore, gpu: &mut Gpu) {
         for _ in 0..2000 {
             assets.provide(std::iter::once(&mut *store));
-            assets.serve(
+            let _ = assets.serve(
                 store,
                 Some((&mut gpu.backend, &mut gpu.renderer)),
                 &LoopWaker::inert,
+                Some(Duration::MAX),
             );
             if assets.decoding.is_empty() && assets.arrived.is_empty() {
                 return;
@@ -1011,10 +1022,11 @@ mod tests {
 
         // A table offering the build's bytes is served the newest instead.
         let (mut later, _) = store(&[(photo, JPEG)]);
-        assets.serve(
+        let _ = assets.serve(
             &mut later,
             Some((&mut gpu.backend, &mut gpu.renderer)),
             &LoopWaker::inert,
+            Some(Duration::MAX),
         );
         assert_eq!(
             later

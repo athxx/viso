@@ -3927,7 +3927,12 @@ mod tests {
         later.root = Some(build(&mut later, mount_counter));
         session.adopt(|| unreachable!(), &mut later);
         let icon = children(&later.store, later.root.unwrap())[2];
-        assets.serve::<viso_gpu::CpuRaster>(&mut later.store, None, &LoopWaker::inert);
+        let _ = assets.serve::<viso_gpu::CpuRaster>(
+            &mut later.store,
+            None,
+            &LoopWaker::inert,
+            Some(Duration::MAX),
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while !matches!(shown(&later, icon).0, viso_ui::AssetDraw::Vector(_)) {
             assert!(Instant::now() < deadline, "never served");

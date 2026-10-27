@@ -1995,16 +1995,25 @@ impl TextShaper {
     /// at least one per call, so a backlog always drains — and push every slot
     /// whose drawn content changed onto `updated`, for the caller to redraw.
     /// What the budget leaves waits for the next frame.
+    ///
+    /// Without a worker thread the shaping itself runs here first, within
+    /// `inline` (none when it is `None`); returns the time that took.
     pub(crate) fn pump<B: GpuBackend>(
         &mut self,
         backend: &mut B,
         budget: Duration,
+        inline: Option<Duration>,
         updated: &mut Vec<ParagraphSlot>,
-    ) {
+    ) -> Duration {
         self.dispatch();
-        // Without a worker thread the shaping itself runs here, in an idle
-        // slice of eight commit budgets: 4 ms of a 60Hz frame.
-        self.worker.run_inline(budget.saturating_mul(8));
+        let mut shaping = Duration::ZERO;
+        if let Some(slice) = inline
+            && self.worker.is_inline()
+        {
+            let start = Instant::now();
+            self.worker.run_inline(slice);
+            shaping = start.elapsed();
+        }
         loop {
             match self.worker.try_recv() {
                 Ok(message) => self.receive(message),
@@ -2017,7 +2026,7 @@ impl TextShaper {
             }
         }
         if self.ready.is_empty() {
-            return;
+            return shaping;
         }
         let start = Instant::now();
         let mut commits = 0;
@@ -2032,6 +2041,7 @@ impl TextShaper {
             .record_commits(commits, self.ready.len(), start.elapsed());
         self.upload_dirty(backend);
         self.dispatch();
+        shaping
     }
 
     fn receive(&mut self, message: FromWorker) {
@@ -3305,7 +3315,7 @@ mod tests {
         shaper.wait_idle();
         let mut updated = Vec::new();
         for (frame, left) in [3, 2, 1, 0].into_iter().enumerate() {
-            shaper.pump(&mut gpu, Duration::ZERO, &mut updated);
+            shaper.pump(&mut gpu, Duration::ZERO, Some(Duration::MAX), &mut updated);
             let counters = shaper.counters();
             assert_eq!(counters.commits(), frame as u64 + 1, "one commit a frame");
             assert_eq!(counters.deferred(), left);
@@ -3335,7 +3345,7 @@ mod tests {
             let mut frames = 0;
             while shaper.has_pending_work() {
                 shaper.wait_idle();
-                shaper.pump(&mut gpu, budget, &mut updated);
+                shaper.pump(&mut gpu, budget, Some(Duration::MAX), &mut updated);
                 frames += 1;
             }
             let drawn: Vec<_> = (0..)
@@ -3364,7 +3374,7 @@ mod tests {
         let mut updated = Vec::new();
         while shaper.has_pending_work() {
             shaper.wait_idle();
-            shaper.pump(gpu, Duration::MAX, &mut updated);
+            shaper.pump(gpu, Duration::MAX, Some(Duration::MAX), &mut updated);
         }
         updated
     }

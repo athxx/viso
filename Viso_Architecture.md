@@ -2365,7 +2365,7 @@ Tokio/Smol adapter crate（`viso-tokio`、`viso-smol`）目标，尚未建立；
 
 ### 13.3 Worker 数量由 profile 决定
 
-worker 线程池是可选资源，不是正确性前提。各 footprint profile 的默认 worker 数：desktop / mobile / web 按机器（核数 − 1，1–8；wasm32 为 0），`embedded-gpu` 为 1，`embedded-cpu` 为 0（`VISO_WORKERS` 可覆盖）。`workers = 0` 时，text shaping、image decode、font parse 这类 TextWork / AssetWork 留在队列里，由主线程每帧按时间预算执行，结果与多线程路径一致：通用 job 在 `RunContinuations` 内执行（`viso_ui::work::run_inline`），text 在 Layout 内执行；有积压时 driver 持续请求帧直到排空。当前预算是按 60 Hz 帧间隔推算的定值（各约 4 ms）；按实际 frame deadline 推算预算是目标（尚未实现）。任何 subsystem 都不得假设「至少存在一个 worker」。
+worker 线程池是可选资源，不是正确性前提。各 footprint profile 的默认 worker 数：desktop / mobile / web 按机器（核数 − 1，1–8；wasm32 为 0），`embedded-gpu` 为 1，`embedded-cpu` 为 0（`VISO_WORKERS` 可覆盖）。`workers = 0` 时，text shaping、image decode、font parse 这类 TextWork / AssetWork 留在队列里，由主线程每帧按时间预算执行，结果与多线程路径一致：通用 job 在 `RunContinuations` 内执行（`viso_ui::work::run_inline`），text 在 Layout 内执行；有积压时 driver 持续请求帧直到排空。预算来自 driver 的 `FramePace`：帧间隔取实测的帧间 delta 的平滑值（超过 100 ms 的空闲间隔不计入）；每帧按距上一帧的时间挣得 1/4 的额度，最多攒一个间隔的 1/4。所有窗口的通用 job、text shaping、asset decode 都从这一个账户里花，花了多少就扣多少。额度花完的帧不再做 inline 工作；某个 job 超出切片时额度变负，由后面的帧补回。这样不管有几个窗口、它们的 beat 每个显示间隔触发几帧，inline 工作都只占墙钟时间的 1/4。text 的主线程 commit 预算也按实测间隔推算（`min(500µs, 5%)`）。headless 下不限额。任何 subsystem 都不得假设「至少存在一个 worker」。
 
 ---
 

@@ -483,8 +483,22 @@ Rules (as for `todo_features.md`):
   - Verified: `dev-protocol/tests/steady_frames.rs` sees 0 allocations over 200 frames.
   - The `game_netplay` and `fuzz_seeds` tests pass, and clippy is clean on the touched crates and
     on viso `hot-reload` native and wasm32.
-- [ ] Derive the inline work slice from the measured frame interval and share it across windows.
+- [x] Derive the inline work slice from the measured frame interval and share it across windows.
   Verify at 120 Hz emulation that the slice holds with N windows.
+  - Built: the driver's `FramePace` smooths the frame deltas into an interval estimate, ignoring
+    idle gaps over 100 ms. Each frame earns a quarter of its delta, capped at a quarter interval.
+    Generic inline jobs, inline text shaping and inline asset decodes, across every window, spend
+    from that one account and are charged what they took. A spent account runs nothing inline,
+    and an overrun is a debt that later frames repay. The text commit budget now follows the
+    measured interval. `TextShaper::pump` takes the inline slice and returns the shaping time.
+    `Assets::serve` takes the slice and returns `Served { deferred, inline }`. The three fixed
+    4 ms slices are gone. Headless stays unlimited.
+  - Verified: `driver::pace` tests emulate 120 Hz with 1, 2, 4 and 8 windows, each beat running a
+    frame with three consumers per window, and jobs of 0, 300 µs and 3 ms past each slice. Over
+    2 s the inline time stays between 95% of a quarter of the clock and a quarter plus one head
+    start and one job. The interval converges to 8.33 ms, and a frame after idle holds one
+    interval's share. text_content, assets and playback lib tests pass. clippy is clean on viso
+    host, headless and wasm32.
 - [x] Cancel a freed node's tasks through a per-node chain instead of scanning every task. Verify
   with a bench that frees 1k rows with 100 live tasks.
   - Built: `TaskSet` keeps tasks in a slab, each owner's tasks on a doubly linked chain, with chain

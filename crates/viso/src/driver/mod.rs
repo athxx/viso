@@ -23,6 +23,7 @@ use crate::{
 mod access_keys;
 mod convert;
 mod frame;
+mod pace;
 mod window_state;
 
 /// Bridges the UI-agnostic runtime [`viso_runtime::FrameDriver`] to the user's
@@ -69,6 +70,9 @@ pub(crate) struct AppDriver<A: Application> {
     pub(crate) services: Option<Rc<dyn Any>>,
     /// The assets the windows show, decoded once for all of them.
     pub(crate) assets: assets::Assets,
+    /// The measured frame interval, and the share of it every window's
+    /// inline work draws from.
+    pub(crate) pace: pace::FramePace,
     /// The session's hard memory limits, checked after every frame.
     pub(crate) budget_watch: footprint::BudgetWatch,
     /// Whether the backend announces semantics to assistive technology
@@ -534,6 +538,7 @@ impl<A: Application> AppDriver<A> {
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
             assets: assets::Assets::with_loader(A::image_loader()),
+            pace: pace::FramePace::default(),
             budget_watch: footprint::BudgetWatch::default(),
             accessibility: true,
             app_menu: None,

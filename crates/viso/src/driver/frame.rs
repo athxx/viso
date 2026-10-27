@@ -1202,6 +1202,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         };
         match phase {
             FramePhase::RunContinuations => {
+                // The frame earns its share of inline work.
+                self.pace.begin_frame(cx.frame_delta());
                 // The faults the games raised last frame: to `viso run` when
                 // it is attached, to stderr otherwise.
                 let faults = viso_view::take_game_faults();
@@ -1319,13 +1321,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // run each finished one's continuation; what it writes joins
                     // this frame's transaction. No woken task (the steady case)
                     // takes no lock and polls nothing.
-                    // Off-loop jobs a build without worker threads runs here:
-                    // all of them headless, else an idle slice.
-                    viso_ui::work::run_inline(if cfg!(feature = "headless") {
-                        std::time::Duration::MAX
-                    } else {
-                        std::time::Duration::from_millis(4)
-                    });
+                    // Off-loop jobs a build without worker threads runs here,
+                    // within what is left of the frame's inline share.
+                    self.pace.run(|slice| slice.map(viso_ui::work::run_inline));
                     if ws.store.tasks_woken() {
                         ws.store.poll_tasks(&mut ws.continuations);
                         for then in ws.continuations.drain(..).flatten() {
@@ -1461,7 +1459,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         continue;
                     }
                     let gpu = ws.gpu.as_mut().map(|g| (&mut g.backend, &mut g.renderer));
-                    if self.assets.serve(&mut ws.store, gpu, &|| cx.loop_waker()) {
+                    let served = self.assets.serve(
+                        &mut ws.store,
+                        gpu,
+                        &|| cx.loop_waker(),
+                        self.pace.slice(),
+                    );
+                    self.pace.charge(served.inline);
+                    if served.deferred {
                         // Decodes left for the next frame's slice.
                         cx.request_redraw(ws.window);
                     } else {
@@ -1665,7 +1670,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ws.store.set_dirty_cause(DirtyCause::Text);
                     {
                         let _text = crate::profile::time(Span::Text);
-                        ws.commit_text_work();
+                        ws.commit_text_work(&mut self.pace);
                         ws.settle_text_edits();
                         // Shape any text (re)declared this frame — a rebuilt
                         // list row, an applied text edit, or a future reactive

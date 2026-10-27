@@ -1090,6 +1090,11 @@ impl TextWorker {
         }
     }
 
+    /// Whether the jobs run on this thread, in [`run_inline`](Self::run_inline).
+    pub(crate) fn is_inline(&self) -> bool {
+        self.inline.is_some()
+    }
+
     /// Inline, runs the jobs waiting until `slice` is spent — at least one,
     /// so a backlog always drains; the results are the threaded path's.
     pub(crate) fn run_inline(&mut self, slice: Duration) {

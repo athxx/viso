@@ -539,10 +539,11 @@ mod tests {
             assets.playback.inline = Some(Decoders::default());
             for _ in 0..2000 {
                 assets.provide(std::iter::once(&mut store));
-                assets.serve(
+                let _ = assets.serve(
                     &mut store,
                     Some((&mut backend, &mut renderer)),
                     &LoopWaker::inert,
+                    Some(Duration::MAX),
                 );
                 if store.assets().texture(gif.id).is_some() {
                     break;

@@ -169,7 +169,12 @@ impl TextHarness {
         if !self.shaper.has_pending_work() {
             return 0;
         }
-        self.shaper.pump(&mut self.gpu, budget, &mut self.updated);
+        self.shaper.pump(
+            &mut self.gpu,
+            budget,
+            Some(Duration::MAX),
+            &mut self.updated,
+        );
         let changed = self.updated.len();
         self.updated.clear();
         changed
@@ -179,8 +184,12 @@ impl TextHarness {
     pub fn settle(&mut self) {
         let start = Instant::now();
         while self.shaper.has_pending_work() {
-            self.shaper
-                .pump(&mut self.gpu, Duration::MAX, &mut self.updated);
+            self.shaper.pump(
+                &mut self.gpu,
+                Duration::MAX,
+                Some(Duration::MAX),
+                &mut self.updated,
+            );
             assert!(
                 start.elapsed() < SETTLE_DEADLINE,
                 "the text worker did not settle"
