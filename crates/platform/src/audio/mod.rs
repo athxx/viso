@@ -27,7 +27,9 @@ use apple as imp;
 #[cfg(target_os = "windows")]
 use wasapi as imp;
 
+use std::cell::UnsafeCell;
 use std::fmt;
+use std::sync::Arc;
 
 /// What a device renders: its rate, its channels and the most frames one
 /// block holds.
@@ -63,7 +65,9 @@ impl std::error::Error for AudioError {}
 pub type AudioRender = Box<dyn FnMut(&mut [f32]) + Send>;
 
 /// The default output device, opened; it renders once
-/// [`started`](Self::start) and stops when dropped.
+/// [`started`](Self::start), [`pause`](Self::pause)s and
+/// [`resume`](Self::resume)s with what it renders kept, and stops when
+/// dropped.
 pub struct AudioOutput {
     #[cfg(any(
         target_vendor = "apple",
@@ -73,7 +77,32 @@ pub struct AudioOutput {
     ))]
     device: imp::Output,
     format: AudioFormat,
+    /// What renders, while started: kept across a pause.
+    render: Option<Arc<RenderSlot>>,
+    /// Whether the device renders it now.
+    running: bool,
 }
+
+/// What renders, shared by the output and the device's callback.
+///
+/// The callback is the only user while the device runs and nothing uses it
+/// while the device is stopped: the output stops the device (whose `stop`
+/// returns once no render runs) before it starts it again or drops the
+/// slot's last other owner.
+#[cfg_attr(
+    not(any(
+        target_vendor = "apple",
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "android"
+    )),
+    expect(dead_code, reason = "no backend renders it")
+)]
+struct RenderSlot(UnsafeCell<AudioRender>);
+
+// SAFETY: one thread at a time reaches the render, as above, and the render
+// is `Send`.
+unsafe impl Sync for RenderSlot {}
 
 impl AudioOutput {
     /// Opens the default output device, stereo at its own rate.
@@ -90,7 +119,12 @@ impl AudioOutput {
         ))]
         {
             let (device, format) = imp::Output::open()?;
-            Ok(AudioOutput { device, format })
+            Ok(AudioOutput {
+                device,
+                format,
+                render: None,
+                running: false,
+            })
         }
         #[cfg(not(any(
             target_vendor = "apple",
@@ -117,6 +151,38 @@ impl AudioOutput {
         &mut self,
         render: impl FnMut(&mut [f32]) + Send + 'static,
     ) -> Result<(), AudioError> {
+        self.stop();
+        self.render = Some(Arc::new(RenderSlot(UnsafeCell::new(Box::new(render)))));
+        self.resume()
+    }
+
+    /// Stops rendering and keeps what renders, for [`resume`](Self::resume);
+    /// whether it was rendering.
+    pub fn pause(&mut self) -> bool {
+        let was = self.running;
+        if was {
+            #[cfg(any(
+                target_vendor = "apple",
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "android"
+            ))]
+            self.device.stop();
+            self.running = false;
+        }
+        was
+    }
+
+    /// Renders again what rendered before a [`pause`](Self::pause); nothing
+    /// when nothing was started or it renders already.
+    ///
+    /// # Errors
+    ///
+    /// When the device does not start.
+    pub fn resume(&mut self) -> Result<(), AudioError> {
+        let Some(slot) = self.render.as_ref().filter(|_| !self.running) else {
+            return Ok(());
+        };
         #[cfg(any(
             target_vendor = "apple",
             target_os = "windows",
@@ -124,7 +190,16 @@ impl AudioOutput {
             target_os = "android"
         ))]
         {
-            self.device.start(Box::new(render), self.format)
+            let slot = Arc::clone(slot);
+            let forward = move |block: &mut [f32]| {
+                // SAFETY: the device is running, so its callback is the
+                // render's only user (`RenderSlot`).
+                let render = unsafe { &mut *slot.0.get() };
+                render(block);
+            };
+            self.device.start(Box::new(forward), self.format)?;
+            self.running = true;
+            Ok(())
         }
         #[cfg(not(any(
             target_vendor = "apple",
@@ -133,20 +208,28 @@ impl AudioOutput {
             target_os = "android"
         )))]
         {
-            let _ = render;
+            let _ = slot;
             Err(AudioError::Unsupported)
         }
     }
 
-    /// Stops rendering; [`start`](Self::start) renders again.
+    /// Whether it renders now: started and not paused.
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Stops rendering and drops what rendered; [`start`](Self::start)
+    /// renders again.
     pub fn stop(&mut self) {
-        #[cfg(any(
-            target_vendor = "apple",
-            target_os = "windows",
-            target_os = "linux",
-            target_os = "android"
-        ))]
-        self.device.stop();
+        self.pause();
+        self.render = None;
+    }
+}
+
+impl Drop for AudioOutput {
+    fn drop(&mut self) {
+        // The device stops before the render goes.
+        self.pause();
     }
 }
 

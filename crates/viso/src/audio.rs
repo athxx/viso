@@ -88,6 +88,14 @@ impl GameAudioDevice for GameAudio {
     fn collect(&mut self) {
         self.swap.collect();
     }
+
+    fn pause(&mut self) -> bool {
+        self.output.pause()
+    }
+
+    fn resume(&mut self) -> Result<(), String> {
+        self.output.resume().map_err(|e| e.to_string())
+    }
 }
 
 /// Starts the audio of the games this thread's views run on the default

@@ -32,12 +32,19 @@ impl NodeStore {
     }
 
     /// Runs every suspend hook against `states`, the window's cells, dropping
-    /// those whose owner is gone: the app goes to the background, or the
-    /// window is about to close.
+    /// those whose owner is gone, and stops what the frame clients play: the
+    /// app goes to the background, or the window is about to close.
     pub fn suspend(&mut self, states: &StateStore) {
         self.suspend_hooks_mut()
             .hooks
             .retain_mut(|hook| hook(states));
+        self.suspend_frame_clients();
+    }
+
+    /// Plays again what [`suspend`](Self::suspend) stopped the frame clients
+    /// playing: the app is back in the foreground.
+    pub fn resume(&mut self) {
+        self.resume_frame_clients();
     }
 
     /// The number of suspend hooks registered.

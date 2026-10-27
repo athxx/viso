@@ -65,6 +65,15 @@ pub trait FrameClient: Any {
         let _ = states;
     }
 
+    /// The app went to the background, or the client's window is about to
+    /// close: stop what plays in real time. Default: nothing plays.
+    fn suspend(&mut self) {}
+
+    /// The app is back in the foreground: play again what
+    /// [`suspend`](Self::suspend) stopped, and nothing else. Default:
+    /// nothing plays.
+    fn resume(&mut self) {}
+
     /// The client, to reach its concrete type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -170,6 +179,25 @@ impl NodeStore {
             }
         }
         self.mark_committed_scenes();
+    }
+
+    /// Tells every client the app went to the background or the window is
+    /// about to close.
+    pub(crate) fn suspend_frame_clients(&mut self) {
+        for (_, client) in &self.frame_clients().clients {
+            if let Ok(mut client) = client.try_borrow_mut() {
+                client.suspend();
+            }
+        }
+    }
+
+    /// Tells every client the app is back in the foreground.
+    pub(crate) fn resume_frame_clients(&mut self) {
+        for (_, client) in &self.frame_clients().clients {
+            if let Ok(mut client) = client.try_borrow_mut() {
+                client.resume();
+            }
+        }
     }
 
     /// Lets every client write what its frame changed into `states`.

@@ -50,6 +50,22 @@ pub trait GameAudioDevice {
     /// playing.
     fn reload(&mut self, module: &Module, natives: &Natives) -> Result<(), String>;
 
+    /// Stops the output, keeping the audio systems for
+    /// [`resume`](Self::resume); whether it was playing. Default: nothing
+    /// plays.
+    fn pause(&mut self) -> bool {
+        false
+    }
+
+    /// Plays again what [`pause`](Self::pause) stopped.
+    ///
+    /// # Errors
+    ///
+    /// When the output does not start again.
+    fn resume(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Drops what the device handed back since, here rather than on its
     /// thread: called once a frame.
     fn collect(&mut self);
@@ -141,6 +157,9 @@ pub struct GameSession {
     /// a reloaded build is interpreted.
     native: Option<&'static NativeCode>,
     audio: Option<Box<dyn GameAudioDevice>>,
+    /// Whether [`suspend`](Self::suspend) paused the audio, so a resume
+    /// plays it again.
+    audio_held: bool,
     /// The system and code of the fault last reported, so a system faulting
     /// every tick is reported once until it faults otherwise or the build
     /// swaps.
@@ -240,6 +259,7 @@ impl GameSession {
             natives,
             native,
             audio: None,
+            audio_held: false,
             reported: None,
             audio_faults: 0,
             observed: Vec::new(),
@@ -450,6 +470,29 @@ impl GameSession {
     pub fn attach_audio(&mut self, link: AudioLink, device: Box<dyn GameAudioDevice>) {
         self.scheduler.attach_audio(link);
         self.audio = Some(device);
+    }
+
+    /// Pauses the audio output, the app going to the background or the
+    /// window closing.
+    pub fn suspend(&mut self) {
+        if let Some(audio) = &mut self.audio
+            && !self.audio_held
+        {
+            self.audio_held = audio.pause();
+        }
+    }
+
+    /// Plays the audio output again if [`suspend`](Self::suspend) paused
+    /// it; why it did not start is queued for [`take_game_faults`].
+    pub fn resume(&mut self) {
+        if !std::mem::take(&mut self.audio_held) {
+            return;
+        }
+        if let Some(audio) = &mut self.audio
+            && let Err(why) = audio.resume()
+        {
+            queue_fault(format!("the game's audio did not resume: {why}"));
+        }
     }
 
     /// Whether an audio device is attached.
@@ -711,6 +754,14 @@ impl FrameClient for GameClient {
 
     fn wants_frame(&self) -> bool {
         !self.0.borrow().scheduler.clock().paused()
+    }
+
+    fn suspend(&mut self) {
+        self.0.borrow_mut().suspend();
+    }
+
+    fn resume(&mut self) {
+        self.0.borrow_mut().resume();
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

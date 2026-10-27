@@ -3906,9 +3906,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         match event {
             // Frames were skipped while suspended and a surface may have been
             // recreated underneath, so every window paints once on return.
+            // What the suspend paused plays again.
             Lifecycle::Resumed => {
-                for ws in &self.windows {
+                for ws in &mut self.windows {
                     cx.request_redraw(ws.window);
+                    ws.store.resume();
+                    ws.videos.resume(&ws.store);
                 }
                 self.tell_lifecycle(event);
             }
@@ -3924,11 +3927,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 self.tell_lifecycle(event);
             }
             // The app may not come back: what the app writes as it goes is
-            // made durable with the rest of the persisted writes.
+            // made durable with the rest of the persisted writes. Nothing
+            // plays in the background: the videos and the games' audio
+            // pause.
             Lifecycle::Suspended => {
                 self.tell_lifecycle(event);
                 self.places.flush();
                 for ws in &mut self.windows {
+                    ws.videos.suspend();
                     persist::suspend(&mut ws.store, &ws.states);
                 }
             }

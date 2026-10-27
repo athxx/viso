@@ -203,9 +203,14 @@ mod audio {
     thread_local! {
         static STARTS: Cell<u32> = const { Cell::new(0) };
         static RELOADS: Cell<u32> = const { Cell::new(0) };
+        /// Whether the device's output plays.
+        static PLAYING: Cell<bool> = const { Cell::new(true) };
+        static PAUSES: Cell<u32> = const { Cell::new(0) };
+        static RESUMES: Cell<u32> = const { Cell::new(0) };
     }
 
-    /// A device that renders nothing, counting the swaps it is handed.
+    /// A device that renders nothing, counting the swaps, pauses and resumes
+    /// it is handed.
     struct Quiet(AudioHost);
 
     impl GameAudioDevice for Quiet {
@@ -215,6 +220,17 @@ mod audio {
         }
 
         fn collect(&mut self) {}
+
+        fn pause(&mut self) -> bool {
+            PAUSES.with(|n| n.set(n.get() + 1));
+            PLAYING.with(|p| p.replace(false))
+        }
+
+        fn resume(&mut self) -> Result<(), String> {
+            RESUMES.with(|n| n.set(n.get() + 1));
+            PLAYING.with(|p| p.set(true));
+            Ok(())
+        }
     }
 
     fn start(
@@ -299,6 +315,24 @@ system Synth implements AudioProcess {
         swap(&session, true);
         assert_eq!(RELOADS.with(Cell::get), 1, "swapped on the running device");
         assert_eq!(STARTS.with(Cell::get), 2);
+
+        // The app goes to the background and comes back: the output pauses
+        // once and plays again once.
+        let count = |n: &'static std::thread::LocalKey<Cell<u32>>| n.with(Cell::get);
+        store.suspend(&states);
+        store.suspend(&states);
+        assert_eq!(count(&PAUSES), 1, "paused once");
+        assert!(!PLAYING.with(Cell::get));
+        store.resume();
+        store.resume();
+        assert_eq!(count(&RESUMES), 1, "played again once");
+        assert!(PLAYING.with(Cell::get));
+
+        // An output that was not playing is not started by a resume.
+        PLAYING.with(|p| p.set(false));
+        store.suspend(&states);
+        store.resume();
+        assert_eq!(count(&RESUMES), 1, "not the framework's to start");
         install_game_audio(None);
     }
 }

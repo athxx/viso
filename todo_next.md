@@ -132,8 +132,18 @@ Rules (as for `todo_features.md`):
     `storage.persist`) scripts Suspended/Resumed/LowMemory. It checks the order, that the store
     already held the hook's write when the app resumed, and that a later launch loads it.
     Moving the hook after the flush makes the test fail.
-- [ ] On Suspended, pause the playing videos and the game's audio output; on Resumed, resume only
+- [x] On Suspended, pause the playing videos and the game's audio output; on Resumed, resume only
   those the framework paused. Verify with the scripted player and a fake audio output.
+  - Built: `Videos::suspend`/`resume`, where a resume plays a held video only if the app still
+    asks for it. `FrameClient::suspend`/`resume`, reached from `NodeStore::suspend` and the new
+    `NodeStore::resume`. `GameSession` holds the device it paused (`GameAudioDevice::pause`/
+    `resume`). `AudioOutput::pause`/`resume`/`is_running` keep the render in a shared slot that
+    only the running device touches, so every backend restarts on the same render.
+    Architecture §50 updated.
+  - Verified: the videos unit test covers a playing video, one the app paused, and one the app
+    paused while suspended. `game_session` audio uses a fake device that pauses once, resumes
+    once, and is not started when it was not playing. check-targets is clean on android, wasm32,
+    windows, linux and macOS.
 - [ ] Make game sessions' `@persist` states durable on Suspended, through a store suspend hook.
   Verify with a `game_persist` test that suspends without dropping the session.
 - [ ] Typed routes: a Rust `Route` enum, `Navigator<R>`, `RouterView` and `routes!` (DSL U11),

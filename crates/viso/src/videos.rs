@@ -122,6 +122,8 @@ struct Played<P> {
     player: Option<P>,
     /// What was last asked of the player.
     asked: Playback,
+    /// Paused by [`Videos::suspend`] while the app asked it to play.
+    held: bool,
     ready: bool,
     /// Since when a picture is due though it is paused: the first, or one
     /// sought to, which a player may hand over a little later.
@@ -159,6 +161,41 @@ pub(crate) struct Step {
 impl<P: Play> Videos<P> {
     pub(crate) fn is_empty(&self) -> bool {
         self.players.is_empty()
+    }
+
+    /// Pauses every video playing as the app goes to the background.
+    pub(crate) fn suspend(&mut self) {
+        for p in &mut self.players {
+            if let Some(player) = &mut p.player
+                && p.asked.playing
+                && !p.held
+            {
+                player.pause();
+                p.held = true;
+            }
+        }
+    }
+
+    /// Plays again the videos [`suspend`](Self::suspend) paused that the app
+    /// still asks to play; one it asked to pause meanwhile stays paused.
+    pub(crate) fn resume(&mut self, store: &NodeStore) {
+        for p in &mut self.players {
+            if !std::mem::take(&mut p.held) {
+                continue;
+            }
+            let Some(player) = &mut p.player else {
+                continue;
+            };
+            let wished = store
+                .videos()
+                .get(p.node)
+                .is_some_and(|e| e.playback.playing);
+            if wished {
+                player.play();
+            } else {
+                p.asked.playing = false;
+            }
+        }
     }
 
     /// Opens a player for each new video node and closes those of nodes
@@ -221,6 +258,7 @@ impl<P: Play> Videos<P> {
                     playing: false,
                     ..Playback::default()
                 },
+                held: false,
                 ready: false,
                 awaits: None,
                 refused: false,
@@ -1087,5 +1125,43 @@ mod tests {
         assert!(b.borrow().dropped);
         assert_eq!(win.shown().0, AssetDraw::Failed);
         assert_eq!(win.store.assets().texture_bytes(), 0);
+    }
+
+    #[test]
+    fn a_suspend_pauses_what_plays_and_a_resume_plays_only_that_again() {
+        let mut win = Window::new(VideoSource::file("clip.mp4"));
+        win.step(SCREEN);
+        let script = opened(0);
+        script.borrow_mut().events.push_back(ready(8, 6));
+        win.store.set_video_playing(win.leaf, true);
+        win.step(SCREEN);
+        assert!(script.borrow().playing);
+        win.videos.suspend();
+        assert!(!script.borrow().playing, "paused in the background");
+        win.videos.resume(&win.store);
+        assert!(script.borrow().playing, "played again");
+        win.step(SCREEN);
+        assert!(script.borrow().playing);
+
+        // Paused by the app: a suspend and a resume leave it paused.
+        win.store.set_video_playing(win.leaf, false);
+        win.step(SCREEN);
+        win.videos.suspend();
+        win.videos.resume(&win.store);
+        win.step(SCREEN);
+        assert!(!script.borrow().playing);
+
+        // Paused by the app while in the background: it stays paused, and
+        // plays when the app asks again.
+        win.store.set_video_playing(win.leaf, true);
+        win.step(SCREEN);
+        win.videos.suspend();
+        win.store.set_video_playing(win.leaf, false);
+        win.videos.resume(&win.store);
+        win.step(SCREEN);
+        assert!(!script.borrow().playing);
+        win.store.set_video_playing(win.leaf, true);
+        win.step(SCREEN);
+        assert!(script.borrow().playing);
     }
 }
