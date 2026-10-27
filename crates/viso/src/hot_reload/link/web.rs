@@ -24,7 +24,7 @@ use viso_platform::LoopWaker;
 use viso_view::dev::wire::{
     Blobs, Domains, HostMessage, MAX_FRAME, Message, Reject, RuntimeHello, RuntimeMessage,
     SchemaFingerprint, WEB_DEV_PATH, WEB_RELOAD_CLOSE, WindowGeometry, WireError, accept_host,
-    write_frame,
+    frame_into, write_frame,
 };
 
 use super::{Frame, Incoming, Outgoing, host_frame, identity, launch_identity, write_outgoing};
@@ -48,6 +48,8 @@ struct Shared {
 pub(crate) struct DevLink {
     socket: WebSocket,
     shared: Rc<RefCell<Shared>>,
+    /// Builds every frame the loop sends.
+    enc: RefCell<viso_ende::Encoder>,
     _on_open: Closure<dyn FnMut()>,
     _on_message: Closure<dyn FnMut(MessageEvent)>,
     _on_close: Closure<dyn FnMut(CloseEvent)>,
@@ -122,6 +124,7 @@ impl DevLink {
         Some(DevLink {
             socket,
             shared,
+            enc: RefCell::new(viso_ende::Encoder::new()),
             _on_open: on_open,
             _on_message: on_message,
             _on_close: on_close,
@@ -168,7 +171,9 @@ impl DevLink {
         }
         if shared.accepted {
             drop(shared);
-            send_frame(&self.socket, message);
+            if let Ok(frame) = frame_into(message, &mut self.enc.borrow_mut()) {
+                let _ = self.socket.send_with_u8_array(frame);
+            }
         } else if let Some(frame) = frame(message) {
             shared.unsent.push(frame);
         }

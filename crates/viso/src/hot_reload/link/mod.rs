@@ -48,6 +48,7 @@ use viso_view::dev::wire::{
 #[cfg(not(target_arch = "wasm32"))]
 use viso_view::dev::wire::{
     DEV_RUNTIME_ENV, FrameError, Reject, accept_host, read_body, read_frame, write_frame,
+    write_frame_with,
 };
 use viso_view::inspect::InspectAsk;
 
@@ -523,8 +524,13 @@ fn load_assets(patch: &PatchBundle, blobs: &mut Blobs) -> Vec<LoadedAsset> {
 /// fails.
 #[cfg(not(target_arch = "wasm32"))]
 fn write_all(mut stream: TcpStream, to_send: &Receiver<Outgoing>) {
+    // One encoder builds every frame.
+    let mut enc = viso_ende::Encoder::new();
     for outgoing in to_send {
-        if write_outgoing(outgoing, |message| write_frame(&mut stream, message)).is_err() {
+        let sent = write_outgoing(outgoing, |message| {
+            write_frame_with(&mut stream, message, &mut enc)
+        });
+        if sent.is_err() {
             return;
         }
     }

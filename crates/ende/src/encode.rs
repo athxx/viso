@@ -39,6 +39,23 @@ impl Encoder {
         }
     }
 
+    /// An encoder writing into `buf`'s storage: `buf` is emptied, its
+    /// capacity kept. Hand back a buffer [`into_bytes`](Self::into_bytes)
+    /// gave out to write the next message without allocating.
+    #[inline]
+    pub fn from_vec(mut buf: Vec<u8>) -> Self {
+        buf.clear();
+        Self { buf }
+    }
+
+    /// Forgets what was written, keeping the buffer's capacity: one encoder
+    /// written, read through [`as_bytes`](Self::as_bytes) and cleared each
+    /// time allocates only while a message outgrows every earlier one.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
     /// The bytes written so far.
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {

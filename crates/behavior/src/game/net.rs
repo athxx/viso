@@ -32,7 +32,7 @@ use core::fmt;
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
 use super::{GameSnapshot, MAX_PLAYERS, Scheduler, TickInput};
-use crate::wire::{malformed, read_list, write_list};
+use crate::wire::{malformed, read_list};
 
 /// How a [`RollbackSession`] plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +374,19 @@ impl RollbackSession {
     ///
     /// If `peer` is this peer or no player of the game.
     pub fn packet_for(&self, peer: u32) -> Vec<u8> {
+        let mut enc = Encoder::new();
+        self.write_packet_for(peer, &mut enc);
+        enc.into_bytes()
+    }
+
+    /// Writes [the packet for `peer`](Self::packet_for) after whatever `enc`
+    /// holds. An encoder [cleared](Encoder::clear) and written each tick
+    /// allocates nothing once it has held the largest packet.
+    ///
+    /// # Panics
+    ///
+    /// If `peer` is this peer or no player of the game.
+    pub fn write_packet_for(&self, peer: u32, enc: &mut Encoder) {
         assert!(
             peer != self.config.local && peer < self.config.players,
             "player {peer} is no remote player"
@@ -381,39 +394,27 @@ impl RollbackSession {
         let local = &self.tracks[self.config.local as usize];
         let from = self.tracks[peer as usize].acked.max(local.start);
         let skip = (from - local.start) as usize;
-        let inputs: Vec<TickInput> = local
-            .inputs
-            .iter()
-            .skip(skip)
-            .take(PACKET_INPUTS)
-            .copied()
-            .collect();
-        let hashes: Vec<(u64, u64)> = self
-            .hashes
-            .iter()
-            .rev()
-            .take(PACKET_HASHES)
-            .copied()
-            .collect();
-        let mut enc = Encoder::new();
-        ProtocolTag::current().encode(&mut enc);
+        ProtocolTag::current().encode(enc);
         enc.write_raw(&MAGIC);
         enc.write_u64(self.build);
         enc.write_varint(u64::from(self.config.local));
         enc.write_varint(self.tracks[peer as usize].end());
         enc.write_varint(from);
-        write_list(&mut enc, &inputs, |enc, input| {
+        let inputs = local.inputs.iter().skip(skip).take(PACKET_INPUTS);
+        enc.write_varint(inputs.len() as u64);
+        for input in inputs {
             enc.write_u64(input.held);
             enc.write_u64(input.pressed);
             enc.write_u64(input.released);
             enc.write_u64(input.axes[0]);
             enc.write_u64(input.axes[1]);
-        });
-        write_list(&mut enc, &hashes, |enc, (tick, hash)| {
+        }
+        let hashes = self.hashes.iter().rev().take(PACKET_HASHES);
+        enc.write_varint(hashes.len() as u64);
+        for (tick, hash) in hashes {
             enc.write_varint(*tick);
             enc.write_u64(*hash);
-        });
-        enc.into_bytes()
+        }
     }
 
     /// Takes a packet from another peer: its new inputs, rolling back and

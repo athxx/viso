@@ -469,8 +469,20 @@ Rules (as for `todo_features.md`):
   - Text §29.1's MTSDF rows.
 - [ ] Reorder-safe spans in the batch planner, so text over sibling cards rejoins one glyph draw.
   Verify with planner order tests and a draw-count drop in `paint_scale`.
-- [ ] `Encoder::clear` and `Encoder::from_vec`; reuse one encoder for game net packets and dev
+- [x] `Encoder::clear` and `Encoder::from_vec`; reuse one encoder for game net packets and dev
   frames. Verify that a counting allocator sees 0 allocations per steady-state packet.
+  - Built: `Encoder::clear` keeps the capacity, and `Encoder::from_vec` takes a buffer back.
+  - Built: `RollbackSession::write_packet_for` writes a packet into a caller's encoder straight
+    from the input and hash queues, with no intermediate lists. `packet_for` wraps it.
+  - Built: the dev protocol gains `frame_into` (a frame built in an encoder) and
+    `write_frame_with`. The native dev link's writer thread and the web link's send path each
+    reuse one encoder.
+  - Verified: `dsl/tests/steady_packets.rs` runs a counting global allocator. Two peers exchange
+    packets; after warm-up, 180 packets into one cleared encoder allocate 0 times and match
+    `packet_for`'s bytes. Sabotage with one allocation in the writer gave 180.
+  - Verified: `dev-protocol/tests/steady_frames.rs` sees 0 allocations over 200 frames.
+  - The `game_netplay` and `fuzz_seeds` tests pass, and clippy is clean on the touched crates and
+    on viso `hot-reload` native and wasm32.
 - [ ] Derive the inline work slice from the measured frame interval and share it across windows.
   Verify at 120 Hz emulation that the slice holds with N windows.
 - [ ] Cancel a freed node's tasks through a per-node chain instead of scanning every task. Verify

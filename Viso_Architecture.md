@@ -1783,7 +1783,7 @@ pub trait Decode: Sized {
 }
 ```
 
-- `Encoder` 是 append-only 的 `Vec<u8>` writer，不会失败，因此 encode 路径没有 `Result`；
+- `Encoder` 是 append-only 的 `Vec<u8>` writer，不会失败，因此 encode 路径没有 `Result`；`clear` 清空而保留容量，`from_vec` 接回一个缓冲区：每帧/每包重复编码的路径（游戏 rollback 包 `RollbackSession::write_packet_for`、dev 通道帧 `write_frame_with` / `frame_into`）复用一个 encoder，稳态下每包零分配；
 - Binary 只有一种格式，trait 直接取具体 `Encoder` / `Decoder`，不做 format 泛型；JSON 走独立的 `JsonWriter`；
 - `Decoder<'a>` 借用输入：`read_bytes` / `read_str` / `read_array::<N>` 返回 `&'a` 借用，borrowed decode 直接在 `Decoder` 上完成（§10.5.12）；`Decode` trait 只产生 owned 值。
 

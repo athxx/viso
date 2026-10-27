@@ -1004,19 +1004,40 @@ pub fn encode<M: Message>(message: &M) -> Vec<u8> {
 
 /// Writes `message` to `out` as one frame.
 pub fn write_frame<M: Message>(out: &mut impl Write, message: &M) -> io::Result<()> {
-    let mut enc = Encoder::new();
+    write_frame_with(out, message, &mut Encoder::new())
+}
+
+/// [`write_frame`], building the frame in `enc`, which is cleared first: one
+/// encoder reused for every frame allocates only while a frame outgrows
+/// every earlier one.
+pub fn write_frame_with<M: Message>(
+    out: &mut impl Write,
+    message: &M,
+    enc: &mut Encoder,
+) -> io::Result<()> {
+    let frame = frame_into(message, enc)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    out.write_all(frame)
+}
+
+/// `message` as one frame, built in `enc`, which is cleared first.
+///
+/// # Errors
+///
+/// [`WireError::FrameTooLarge`] for a body over [`MAX_FRAME`].
+pub fn frame_into<'a, M: Message>(
+    message: &M,
+    enc: &'a mut Encoder,
+) -> Result<&'a [u8], WireError> {
+    enc.clear();
     enc.write_raw(&[0; 4]);
-    message.write(&mut enc);
-    let mut frame = enc.into_bytes();
-    let len = frame.len() - 4;
+    message.write(enc);
+    let len = enc.len() - 4;
     if len > MAX_FRAME {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            WireError::FrameTooLarge { len }.to_string(),
-        ));
+        return Err(WireError::FrameTooLarge { len });
     }
-    frame[..4].copy_from_slice(&(len as u32).to_le_bytes());
-    out.write_all(&frame)
+    enc.patch_u32(0, len as u32);
+    Ok(enc.as_bytes())
 }
 
 /// Why reading a frame failed.
