@@ -1146,7 +1146,7 @@ Viso 1.0 的标准身份类型如下：
 | handler index / `Route` | handler table 下标 + 事件 tag + capture 位 | `u32` + enum | artifact 内 | `viso_schema::view`，hot（dispatch） |
 | `ProgramSlot` | renderer 中 user program 的槽 | `u32` | 否 | `viso_render`，hot/warm |
 | `BufferId` / `TextureId` / `PipelineId` / `SamplerId` / `BindGroupId` / `SurfaceId` | GPU resource handle | `u32 index + u32 generation` | 否 | `viso-gpu-abi`，hot |
-| `NodeId` | 具体 Runtime Node 实例的外部句柄 | `u32 index + u32 generation` | 否 | `viso_ui`，hot |
+| `NodeId` | 具体 Runtime Node 实例的外部句柄 | `u32 index + u32 generation`（debug 另带 `u32` owner） | 否 | `viso_ui`，hot |
 | `NodeIndex` | arena 内部链接（tree link、binding target、dirty worklist、paint owner） | `u32` | 否 | `viso_ui`，hot |
 | `StateId` | state cell 实例 | `u32 index + u32 generation` | 否 | `viso_ui`，hot |
 | `StableKey` | 动态集合中业务对象身份 | typed value | 由业务语义决定 | reconciliation |
@@ -1411,10 +1411,12 @@ NodeId   = 当前 Runtime 中“这个实例是谁”
 采用：
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy)] // PartialEq/Eq/Hash/Debug 只看 index + generation
 pub struct NodeId {
     index: u32,
     generation: u32,
+    #[cfg(debug_assertions)]
+    owner: u32, // 签发它的 arena
 }
 
 #[repr(transparent)]
@@ -1431,6 +1433,8 @@ TodoRow template SymbolId
 ```
 
 `NodeId` 是外部句柄：holder 可能活得比 node 久（Inspector、DSL runtime、app 持有的句柄），`generation`（live node 恒为奇数）以一次比较发现 stale handle。`NodeIndex` 是内部链接：tree link、binding target、dirty worklist 与 paint owner 用它直接索引 NodeArena/hot stores；arena 在释放前先 unlink，内部链接不会指向已释放的槽，因此不做 generation 检查。
+
+每个窗口一棵树、一个 NodeArena，句柄只在签发它的树上有意义：另一棵树同一槽位上是别的 node，generation 还可能恰好相同。debug 构建里每个 arena 创建时取一个全局递增的 owner 号，签发的句柄都带上它；`is_live` 与 `NodeStore` 按槽直接索引列的访问（`NodeArena::slot`）都断言句柄属于本 arena，窗口 A 的句柄用在窗口 B 上当场 panic，而不是静默读写 B 的另一个 node。相等、hash 与 `Debug` 不看 owner，debug 与 release 行为一致；release 构建里没有这个字段，`NodeId` 仍是 8 字节。满载的固定容量 store 拒绝时给出的永不 live 句柄不属于任何 arena，可以问任何 store。
 
 Node hot arrays **不得为每个 Node 固定携带 16-byte `SymbolId`**。需要 debug/hot-reload reverse mapping 时使用：
 
@@ -2372,10 +2376,12 @@ worker 线程池是可选资源，不是正确性前提。各 footprint profile 
 Viso 使用 generational arena + integer ID（`crates/ui/src/node.rs`）。
 
 ```rust
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy)] // PartialEq/Eq/Hash/Debug 只看 index + generation
 pub struct NodeId {
     index: u32,
     generation: u32,
+    #[cfg(debug_assertions)]
+    owner: u32, // 签发它的 arena
 }
 ```
 

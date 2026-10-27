@@ -1164,7 +1164,7 @@ impl NodeStore {
     /// [`world`](Self::world).
     #[inline]
     pub fn bounds(&self, id: NodeId) -> Rect {
-        self.bounds[id.index() as usize]
+        self.bounds[self.arena.slot(id)]
     }
 
     /// A node's on-screen rect: its [`bounds`](Self::bounds) displaced by its
@@ -1174,7 +1174,7 @@ impl NodeStore {
     /// for a node nothing moves. Derived on demand by walking the ancestors —
     /// paint and hit testing carry it down their walks instead.
     pub fn world(&self, id: NodeId) -> Rect {
-        let bounds = self.bounds[id.index() as usize];
+        let bounds = self.bounds[self.arena.slot(id)];
         let at = self.world_transform(id);
         if at.is_translation() {
             let t = at.translation();
@@ -1186,13 +1186,13 @@ impl NodeStore {
 
     /// [`world`](Self::world) before it is snapped to the device pixels.
     fn unsnapped_world(&self, id: NodeId) -> Rect {
-        self.bounds[id.index() as usize].transform_bounds(&self.world_transform(id))
+        self.bounds[self.arena.slot(id)].transform_bounds(&self.world_transform(id))
     }
 
     /// Where a point of the screen falls in `id`'s box: from its top-left
     /// corner, along its own axes as layout laid them, before any turn.
     pub fn to_local(&self, id: NodeId, x: f32, y: f32) -> Vec2 {
-        let bounds = self.bounds[id.index() as usize];
+        let bounds = self.bounds[self.arena.slot(id)];
         let at = self.world_transform(id);
         let p = if at.is_translation() {
             let t = self.snap_shift(at.translation());
@@ -1215,7 +1215,7 @@ impl NodeStore {
     /// viewport, which clips them.
     #[inline]
     pub fn reach(&self, id: NodeId) -> Rect {
-        self.reach[id.index() as usize]
+        self.reach[self.arena.slot(id)]
     }
 
     /// The part of `id`'s on-screen rect no enclosing scroll viewport clips
@@ -1273,7 +1273,7 @@ impl NodeStore {
 
     /// `id`'s reach from its box and its children's current reaches.
     fn joined_reach(&self, id: NodeId) -> Rect {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let own = self.bounds[i];
         if self.concealed(i)
             || self.clips[i]
@@ -1296,7 +1296,7 @@ impl NodeStore {
     /// Record `id`'s reach, reporting whether it changed. A fade composites
     /// over its reach, so a fading node whose reach moved repaints its layer.
     fn set_reach(&mut self, id: NodeId, reach: Rect) -> bool {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if self.reach[i] == reach {
             return false;
         }
@@ -1319,7 +1319,7 @@ impl NodeStore {
 
     /// Re-join the reach of every node in `id`'s subtree, children first.
     pub(crate) fn rejoin_subtree(&mut self, id: NodeId) {
-        if !self.concealed(id.index() as usize) {
+        if !self.concealed(self.arena.slot(id)) {
             let mut child = self.arena.first_child(id);
             while let Some(c) = child {
                 self.rejoin_subtree(c);
@@ -1336,7 +1336,7 @@ impl NodeStore {
     /// not move.
     pub(crate) fn lift_reach(&mut self, mut id: NodeId, mut was: Rect) {
         while let Some(parent) = self.arena.parent(id) {
-            let now = self.reach_in_parent(id.index() as usize);
+            let now = self.reach_in_parent(self.arena.slot(id));
             let own = self.bounds[parent.index() as usize];
             if within(was, own) && within(now, own) {
                 return;
@@ -1398,13 +1398,13 @@ impl NodeStore {
     /// translate.
     #[inline]
     pub fn self_shift(&self, id: NodeId) -> Vec2 {
-        self.translate[id.index() as usize]
+        self.translate[self.arena.slot(id)]
     }
 
     /// The affine a node applies to itself and its subtree, from its layout
     /// space: its turn about its origin, then its translate.
     pub fn self_transform(&self, id: NodeId) -> Affine2 {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let t = self.translate[i];
         let turn = self.turn[i];
         if !turn.turns() {
@@ -1458,7 +1458,7 @@ impl NodeStore {
     /// A node's turn: its scale and rotation about its transform origin.
     #[inline]
     pub fn turn(&self, id: NodeId) -> crate::transform::Turn {
-        self.turn[id.index() as usize]
+        self.turn[self.arena.slot(id)]
     }
 
     /// Turns a node: scales and rotates it and its subtree about its origin
@@ -1509,7 +1509,7 @@ impl NodeStore {
         id: NodeId,
         edit: impl FnOnce(crate::transform::Turn) -> crate::transform::Turn,
     ) {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let mut model = self.turn[i];
         if let LookValue::Scale(scale) = self.shown(id, &LookValue::Scale(0.0)) {
             model.scale = scale;
@@ -1530,7 +1530,7 @@ impl NodeStore {
 
     /// Shows `turn` as node `id`'s. `id` is live.
     fn show_turn(&mut self, id: NodeId, turn: crate::transform::Turn) {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if self.turn[i] == turn {
             return;
         }
@@ -1550,7 +1550,7 @@ impl NodeStore {
     /// scroll, and a bounced pull past its end.
     #[inline]
     pub fn content_shift(&self, id: NodeId) -> Vec2 {
-        -self.scroll[id.index() as usize] - self.pull_shift_at(id.index())
+        -self.scroll[self.arena.slot(id)] - self.pull_shift_at(id.index())
     }
 
     /// What a scroll viewport applies to its content: its
@@ -1600,7 +1600,7 @@ impl NodeStore {
     /// [`is_scroll`](Self::is_scroll).
     #[inline]
     pub fn is_transform_root(&self, id: NodeId) -> bool {
-        self.transform_root[id.index() as usize]
+        self.transform_root[self.arena.slot(id)]
     }
 
     /// The transform roots of the last paint and their displacements.
@@ -1623,21 +1623,21 @@ impl NodeStore {
     /// A node's scroll offset (nonzero only on scroll viewports).
     #[inline]
     pub fn scroll(&self, id: NodeId) -> Vec2 {
-        self.scroll[id.index() as usize]
+        self.scroll[self.arena.slot(id)]
     }
 
     /// A node's world-space translate (nonzero only on nodes being slid/animated).
     /// See [`set_translate`](Self::set_translate).
     #[inline]
     pub fn translate(&self, id: NodeId) -> Vec2 {
-        self.translate[id.index() as usize]
+        self.translate[self.arena.slot(id)]
     }
 
     /// A scroll viewport's content extent (the laid-out size of its content).
     /// `(0,0)` for non-scroll nodes.
     #[inline]
     pub fn content(&self, id: NodeId) -> Vec2 {
-        self.content[id.index() as usize]
+        self.content[self.arena.slot(id)]
     }
 
     /// Set a node's main-axis offset inside an [`LayoutInput::AbsoluteRows`]
@@ -1645,14 +1645,14 @@ impl NodeStore {
     /// virtual-list reconcile writes this when it mounts or re-anchors a row.
     #[inline]
     pub fn set_row_offset(&mut self, id: NodeId, offset: f32) {
-        self.row_offset[id.index() as usize] = offset;
+        self.row_offset[self.arena.slot(id)] = offset;
     }
 
     /// Whether node `id` is a row an `AbsoluteRows` canvas positions: a
     /// virtual list's row host.
     #[inline]
     pub fn is_positioned_row(&self, id: NodeId) -> bool {
-        !self.row_offset[id.index() as usize].is_nan()
+        !self.row_offset[self.arena.slot(id)].is_nan()
     }
 
     /// Clear a node's positioned-row offset back to the "not a row" sentinel, so
@@ -1660,7 +1660,7 @@ impl NodeStore {
     /// recycled out of the mounted window.
     #[inline]
     pub fn clear_row_offset(&mut self, id: NodeId) {
-        self.row_offset[id.index() as usize] = f32::NAN;
+        self.row_offset[self.arena.slot(id)] = f32::NAN;
         self.set_row_lane(id, crate::virtual_grid::FULL_LANE);
     }
 
@@ -1668,7 +1668,7 @@ impl NodeStore {
     /// sits on, [`FULL_LANE`](crate::virtual_grid::FULL_LANE) for across them
     /// all.
     pub fn set_row_lane(&mut self, id: NodeId, lane: u16) {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if i >= self.row_lane.len() {
             if lane == crate::virtual_grid::FULL_LANE {
                 return;
@@ -1686,12 +1686,12 @@ impl NodeStore {
 
     /// Grid `id`'s track payload, if it has one.
     pub(crate) fn grid_tracks_mut(&mut self, id: NodeId) -> Option<&mut GridTracks> {
-        self.grid_tracks[id.index() as usize].as_deref_mut()
+        self.grid_tracks[self.arena.slot(id)].as_deref_mut()
     }
 
     /// Grid `id`'s track payload slot.
     pub(crate) fn grid_tracks_slot(&mut self, id: NodeId) -> &mut Option<Box<GridTracks>> {
-        &mut self.grid_tracks[id.index() as usize]
+        &mut self.grid_tracks[self.arena.slot(id)]
     }
 
     /// Store a grid node's track templates (its warm side payload): a
@@ -1704,7 +1704,7 @@ impl NodeStore {
         columns: Vec<TrackSizing>,
         rows: Vec<TrackSizing>,
     ) {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let gap_pct = self.grid_tracks[i].as_ref().map_or([0.0; 2], |t| t.gap_pct);
         let authored = columns
             .iter()
@@ -1761,7 +1761,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let was = match self.placed_at[i] {
             NO_PLACEMENT => None,
             slot => Some(self.placements[slot as usize]),
@@ -1856,7 +1856,7 @@ impl NodeStore {
     /// children is off layer 0, or a child of it is pinned.
     #[inline]
     pub(crate) fn is_layered(&self, id: NodeId) -> bool {
-        (matches!(self.layout[id.index() as usize], LayoutInput::Stack { .. })
+        (matches!(self.layout[self.arena.slot(id)], LayoutInput::Stack { .. })
             && self.arena.children(id).any(|c| self.stack_layer(c) != 0))
             || self.raises_children(id)
             || self.lifts_child(id)
@@ -1871,7 +1871,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let LayoutInput::Grid {
             column_count,
             row_count,
@@ -1923,7 +1923,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let LayoutInput::Grid {
             column_gap,
             row_gap,
@@ -1994,14 +1994,14 @@ impl NodeStore {
     /// clip and narrow the descent.
     #[inline]
     pub fn is_scroll(&self, id: NodeId) -> bool {
-        matches!(self.layout[id.index() as usize], LayoutInput::Scroll { .. })
+        matches!(self.layout[self.arena.slot(id)], LayoutInput::Scroll { .. })
     }
 
     /// Whether a node was asked to clip its children to its box (its
     /// `clip`), default `false`.
     #[inline]
     pub fn clips(&self, id: NodeId) -> bool {
-        self.clips[id.index() as usize]
+        self.clips[self.arena.slot(id)]
     }
 
     /// Whether a node's children are seen and hit only inside its box,
@@ -2019,7 +2019,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if self.clips[i] == clip {
             return;
         }
@@ -2039,7 +2039,7 @@ impl NodeStore {
     /// container from a flex box.
     #[inline]
     pub fn is_grid(&self, id: NodeId) -> bool {
-        matches!(self.layout[id.index() as usize], LayoutInput::Grid { .. })
+        matches!(self.layout[self.arena.slot(id)], LayoutInput::Grid { .. })
     }
 
     /// The axis a scroll viewport scrolls along, or `None` for a non-scroll node:
@@ -2048,7 +2048,7 @@ impl NodeStore {
     /// whether it scrolls a way.
     #[inline]
     pub fn scroll_axis(&self, id: NodeId) -> Option<Axis> {
-        match self.layout[id.index() as usize] {
+        match self.layout[self.arena.slot(id)] {
             LayoutInput::Scroll { axis, .. } => Some(axis),
             _ => None,
         }
@@ -2058,7 +2058,7 @@ impl NodeStore {
     /// axis, or across it too.
     #[inline]
     pub fn scrolls_on(&self, id: NodeId, axis: Axis) -> bool {
-        match self.layout[id.index() as usize] {
+        match self.layout[self.arena.slot(id)] {
             LayoutInput::Scroll {
                 axis: along,
                 across,
@@ -2092,7 +2092,7 @@ impl NodeStore {
     /// not exceed the viewport (nothing to scroll).
     #[inline]
     pub fn scroll_range(&self, id: NodeId, axis: Axis) -> f32 {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let b = self.bounds[i];
         let gutter = self.scroll_gutter(id);
         let viewport = match axis {
@@ -2106,7 +2106,7 @@ impl NodeStore {
     /// one, `y` under a horizontal one.
     #[inline]
     pub(crate) fn scroll_gutter(&self, id: NodeId) -> Vec2 {
-        match self.layout[id.index() as usize] {
+        match self.layout[self.arena.slot(id)] {
             LayoutInput::Scroll { gutter, .. } => gutter,
             _ => Vec2::ZERO,
         }
@@ -2117,7 +2117,7 @@ impl NodeStore {
     /// main extent to size the visible window.
     #[inline]
     pub fn bounds_main(&self, id: NodeId, axis: Axis) -> f32 {
-        let b = self.bounds[id.index() as usize];
+        let b = self.bounds[self.arena.slot(id)];
         match axis {
             Axis::Row => b.w,
             Axis::Column => b.h,
@@ -2129,7 +2129,7 @@ impl NodeStore {
     /// back into the height model.
     #[inline]
     pub fn measured_main(&self, id: NodeId, axis: Axis) -> f32 {
-        let m = self.measured[id.index() as usize];
+        let m = self.measured[self.arena.slot(id)];
         match axis {
             Axis::Row => m.w,
             Axis::Column => m.h,
@@ -2227,7 +2227,7 @@ impl NodeStore {
 
     /// The layout input of live node `id`.
     pub(crate) fn layout_input_mut(&mut self, id: NodeId) -> &mut LayoutInput {
-        &mut self.layout[id.index() as usize]
+        &mut self.layout[self.arena.slot(id)]
     }
 
     /// The parent of `child` in the arena, or `None` for a root or a stale handle.
@@ -2441,7 +2441,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let slot = self.layout[id.index() as usize].size_mut();
+        let slot = self.layout[self.arena.slot(id)].size_mut();
         if *slot == size {
             return;
         }
@@ -2473,7 +2473,7 @@ impl NodeStore {
     pub fn size_request(&self, id: NodeId) -> Option<Sizing> {
         self.arena
             .is_live(id)
-            .then(|| self.layout[id.index() as usize].size())
+            .then(|| self.layout[self.arena.slot(id)].size())
     }
 
     /// A Flex container's axis, main-axis placement and cross-axis
@@ -2482,7 +2482,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        match self.layout[id.index() as usize] {
+        match self.layout[self.arena.slot(id)] {
             LayoutInput::Flex {
                 axis,
                 justify,
@@ -2506,7 +2506,7 @@ impl NodeStore {
             justify,
             align,
             ..
-        } = &mut self.layout[id.index() as usize]
+        } = &mut self.layout[self.arena.slot(id)]
         else {
             return;
         };
@@ -2530,7 +2530,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        match &mut self.layout[id.index() as usize] {
+        match &mut self.layout[self.arena.slot(id)] {
             LayoutInput::Flex { gap, .. } => {
                 if *gap == value {
                     return;
@@ -2563,7 +2563,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let LayoutInput::Stack { align, .. } = &mut self.layout[id.index() as usize] else {
+        let LayoutInput::Stack { align, .. } = &mut self.layout[self.arena.slot(id)] else {
             return;
         };
         if *align == to {
@@ -2591,7 +2591,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        match &mut self.layout[id.index() as usize] {
+        match &mut self.layout[self.arena.slot(id)] {
             LayoutInput::Flex { padding, .. }
             | LayoutInput::Grid { padding, .. }
             | LayoutInput::Stack { padding, .. }
@@ -2617,7 +2617,7 @@ impl NodeStore {
         if !self.arena.is_live(id) || self.box_rules(id) == rules {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if rules == BoxRules::NONE {
             self.drop_rules(i);
         } else if self.rules_at[i] != NO_RULES {
@@ -2644,7 +2644,7 @@ impl NodeStore {
 
     /// `id`'s box rules; [`BoxRules::NONE`] for a node with none.
     pub fn box_rules(&self, id: NodeId) -> BoxRules {
-        match self.rules_at.get(id.index() as usize) {
+        match self.rules_at.get(self.arena.slot(id)) {
             Some(&slot) if slot != NO_RULES && self.arena.is_live(id) => {
                 self.box_rules[slot as usize].0
             }
@@ -2760,7 +2760,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let ((x0, x1), (y0, y1)) = (
             self.scroll_span(id, Axis::Row),
             self.scroll_span(id, Axis::Column),
@@ -2792,7 +2792,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let ((x0, x1), (y0, y1)) = (
             self.scroll_span(id, Axis::Row),
             self.scroll_span(id, Axis::Column),
@@ -2816,7 +2816,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let along = if axis == Axis::Row
             && self.direction_at(id.index()) == crate::adaptive::LayoutDirection::Rtl
         {
@@ -2986,7 +2986,7 @@ impl NodeStore {
 
     /// Writes `offset` as node `id`'s whole translate. `id` is live.
     pub(crate) fn put_translate(&mut self, id: NodeId, offset: Vec2) {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if offset == self.translate[i] {
             return;
         }
@@ -3017,7 +3017,7 @@ impl NodeStore {
     /// Mark a translated node: `TRANSFORM` once it is a transform root; the
     /// first translate makes it one, which the paint that records it needs.
     fn mark_moved(&mut self, id: NodeId) {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if self.transform_root[i] {
             self.mark_dirty(id, DirtyClass::TRANSFORM);
         } else {
@@ -3030,20 +3030,20 @@ impl NodeStore {
     /// A node's layout parameters: its kind, its size request and what it
     /// arranges its children by. Cold path, for an inspector.
     pub fn layout_input(&self, id: NodeId) -> LayoutInput {
-        self.layout[id.index() as usize]
+        self.layout[self.arena.slot(id)]
     }
 
     /// A node's paint style.
     #[inline]
     pub fn style(&self, id: NodeId) -> BoxStyle {
-        self.style[id.index() as usize]
+        self.style[self.arena.slot(id)]
     }
 
     /// A node's interaction-state box selection, if it has one. `None` means the
     /// node paints its literal `style` unconditionally.
     #[inline]
     pub fn interaction_style(&self, id: NodeId) -> Option<InteractionStyle> {
-        self.interaction[id.index() as usize]
+        self.interaction[self.arena.slot(id)]
     }
 
     /// Bind a node's `style` to an interaction-state box selection, replacing
@@ -3061,7 +3061,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.interaction[id.index() as usize] = Some(interaction);
+        self.interaction[self.arena.slot(id)] = Some(interaction);
         self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
     }
 
@@ -3069,7 +3069,7 @@ impl NodeStore {
     /// node (the derive pass still gives an interactive node a default role).
     #[inline]
     pub fn semantics(&self, id: NodeId) -> Option<&Semantics> {
-        self.semantics[id.index() as usize].as_ref()
+        self.semantics[self.arena.slot(id)].as_ref()
     }
 
     /// Set a node's authored semantics, replacing any prior value, and mark it
@@ -3080,7 +3080,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.semantics[id.index() as usize] = Some(semantics);
+        self.semantics[self.arena.slot(id)] = Some(semantics);
         self.mark_dirty(id, DirtyClass::SEMANTICS);
     }
 
@@ -3139,7 +3139,7 @@ impl NodeStore {
     /// container, a label, or a control before its projection binding has run).
     #[inline]
     pub fn semantic_state(&self, id: NodeId) -> Option<SemanticState> {
-        self.semantic_state[id.index() as usize]
+        self.semantic_state[self.arena.slot(id)]
     }
 
     /// Set a node's live accessibility state, replacing any prior value, and mark
@@ -3158,7 +3158,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let slot = &mut self.semantic_state[id.index() as usize];
+        let slot = &mut self.semantic_state[self.arena.slot(id)];
         if slot.and_then(|s| s.selected) != state.selected {
             self.interaction_states.moved();
         }
@@ -3184,7 +3184,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        match self.content_payload[id.index() as usize].as_deref_mut() {
+        match self.content_payload[self.arena.slot(id)].as_deref_mut() {
             Some(Content::PageDots(dots)) => Some(dots),
             _ => None,
         }
@@ -3196,7 +3196,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        match self.content_payload[id.index() as usize].as_deref_mut() {
+        match self.content_payload[self.arena.slot(id)].as_deref_mut() {
             Some(Content::Progress(progress)) => Some(progress),
             _ => None,
         }
@@ -3204,7 +3204,7 @@ impl NodeStore {
 
     /// Node `id`'s content, to change in place; the caller marks it.
     pub(crate) fn content_payload_mut(&mut self, id: NodeId) -> Option<&mut Content> {
-        self.content_payload[id.index() as usize].as_deref_mut()
+        self.content_payload[self.arena.slot(id)].as_deref_mut()
     }
 
     /// Node `id`'s spinner, to change in place; the caller marks it.
@@ -3212,7 +3212,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        match self.content_payload[id.index() as usize].as_deref_mut() {
+        match self.content_payload[self.arena.slot(id)].as_deref_mut() {
             Some(Content::Spinner(spinner)) => Some(spinner),
             _ => None,
         }
@@ -3222,13 +3222,13 @@ impl NodeStore {
     /// check.
     #[inline]
     pub fn check_mark(&self, id: NodeId) -> Option<CheckMark> {
-        self.check_marks[id.index() as usize].map(|(mark, _)| mark)
+        self.check_marks[self.arena.slot(id)].map(|(mark, _)| mark)
     }
 
     /// How far a check's mark shows moved toward checked, `0` to `1`: its
     /// state at rest, between them while it moves.
     pub(crate) fn check_progress(&self, id: NodeId) -> f32 {
-        self.check_marks[id.index() as usize].map_or(0.0, |(_, shown)| shown)
+        self.check_marks[self.arena.slot(id)].map_or(0.0, |(_, shown)| shown)
     }
 
     /// Makes a node a check drawing `mark` beside its caption, or no check.
@@ -3242,7 +3242,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         let prior = self.check_marks[i];
         if prior.map(|(m, _)| m) == mark {
             return;
@@ -3273,7 +3273,7 @@ impl NodeStore {
     /// draws only its background quad (the common case).
     #[inline]
     pub fn content_payload(&self, id: NodeId) -> Option<&Content> {
-        self.content_payload[id.index() as usize].as_deref()
+        self.content_payload[self.arena.slot(id)].as_deref()
     }
 
     /// Set a node's drawable content, replacing any prior value, and mark it
@@ -3299,7 +3299,7 @@ impl NodeStore {
         let mut content = content;
         self.arriving(id, &mut content);
         self.leave_content(id);
-        self.content_payload[id.index() as usize] = Some(Box::new(content));
+        self.content_payload[self.arena.slot(id)] = Some(Box::new(content));
         self.mark_dirty(id, classes);
     }
 
@@ -3343,7 +3343,7 @@ impl NodeStore {
         } else {
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT
         };
-        self.content_payload[id.index() as usize] = Some(Box::new(Content::Shader {
+        self.content_payload[self.arena.slot(id)] = Some(Box::new(Content::Shader {
             program: slot,
             params,
             images,
@@ -3365,7 +3365,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let Some(content) = self.content_payload[id.index() as usize].as_deref_mut() else {
+        let Some(content) = self.content_payload[self.arena.slot(id)].as_deref_mut() else {
             return;
         };
         let Content::Shader {
@@ -3421,12 +3421,12 @@ impl NodeStore {
             tint,
             mirrored,
         };
-        if self.content_payload[id.index() as usize].as_deref() == Some(&content) {
+        if self.content_payload[self.arena.slot(id)].as_deref() == Some(&content) {
             return;
         }
         self.assets.hold(resource, id);
         self.leave_content(id);
-        let slot = &mut self.content_payload[id.index() as usize];
+        let slot = &mut self.content_payload[self.arena.slot(id)];
         let same_size = matches!(
             slot.as_deref(),
             Some(Content::Asset { natural: n, .. }) if *n == natural
@@ -3678,7 +3678,7 @@ impl NodeStore {
             return;
         };
         if let Some(Content::Asset { mirrored, .. }) =
-            self.content_payload[id.index() as usize].as_deref_mut()
+            self.content_payload[self.arena.slot(id)].as_deref_mut()
             && *mirrored != mirror
         {
             *mirrored = mirror;
@@ -3890,7 +3890,7 @@ impl NodeStore {
         }
         self.leave_content(id);
         let slot = self.scenes.take(id);
-        self.content_payload[id.index() as usize] =
+        self.content_payload[self.arena.slot(id)] =
             Some(Box::new(Content::Scene { slot, revision: 0 }));
         self.mark_dirty(
             id,
@@ -4075,7 +4075,7 @@ impl NodeStore {
         }
         self.arriving(id, &mut content);
         self.leave_content(id);
-        self.content_payload[id.index() as usize] = Some(Box::new(content));
+        self.content_payload[self.arena.slot(id)] = Some(Box::new(content));
         self.mark_dirty(
             id,
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
@@ -4087,7 +4087,7 @@ impl NodeStore {
     /// [`Self::take_text_requests`]).
     #[inline]
     pub fn text_request(&self, id: NodeId) -> Option<&TextRequest> {
-        self.text_request[id.index() as usize].as_deref()
+        self.text_request[self.arena.slot(id)].as_deref()
     }
 
     /// Record an unshaped text request on a node, replacing any prior request.
@@ -4111,7 +4111,7 @@ impl NodeStore {
                 .unzip();
             self.set_links(id, targets, labels);
         }
-        self.text_request[id.index() as usize] = Some(Box::new(request));
+        self.text_request[self.arena.slot(id)] = Some(Box::new(request));
     }
 
     /// Show `request` on text node `id` in place of the text it shows: it is
@@ -4383,13 +4383,13 @@ impl NodeStore {
     /// A node's current pending invalidation set.
     #[inline]
     pub fn dirty(&self, id: NodeId) -> DirtyClass {
-        self.dirty[id.index() as usize]
+        self.dirty[self.arena.slot(id)]
     }
 
     /// Whether a node participates in hit testing (default `true`).
     #[inline]
     pub fn hittable(&self, id: NodeId) -> bool {
-        self.hittable[id.index() as usize]
+        self.hittable[self.arena.slot(id)]
     }
 
     /// Set whether a node participates in hit testing. A live-guarded write, so
@@ -4403,14 +4403,14 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.hittable[id.index() as usize] = hit;
+        self.hittable[self.arena.slot(id)] = hit;
     }
 
     /// Whether a node is folded out of layout and paint (default `false`):
     /// hidden itself, or a child past the first of a folded node.
     #[inline]
     pub fn hidden(&self, id: NodeId) -> bool {
-        self.concealed(id.index() as usize)
+        self.concealed(self.arena.slot(id))
     }
 
     /// Whether node `id` shows: live, and neither it nor an ancestor hidden
@@ -4449,10 +4449,10 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        if self.hidden[id.index() as usize] == hidden {
+        if self.hidden[self.arena.slot(id)] == hidden {
             return;
         }
-        self.hidden[id.index() as usize] = hidden;
+        self.hidden[self.arena.slot(id)] = hidden;
         self.shown_changed(id);
     }
 
@@ -4477,7 +4477,7 @@ impl NodeStore {
     /// A node's opacity (default `1.0`).
     #[inline]
     pub fn opacity(&self, id: NodeId) -> f32 {
-        self.opacity[id.index() as usize]
+        self.opacity[self.arena.slot(id)]
     }
 
     /// Set the opacity a node and its subtree paint at, clamped to `[0, 1]`
@@ -4503,7 +4503,7 @@ impl NodeStore {
         } else {
             1.0
         };
-        let slot = &mut self.opacity[id.index() as usize];
+        let slot = &mut self.opacity[self.arena.slot(id)];
         if *slot != opacity {
             // A node that keeps fading through its layer only re-tints it; one
             // that starts or stops fading paints another stream, and one that
@@ -4532,7 +4532,7 @@ impl NodeStore {
     }
 
     fn write_fill(&mut self, id: NodeId, fill: Rgba) {
-        let style = &mut self.style[id.index() as usize];
+        let style = &mut self.style[self.arena.slot(id)];
         if style.fill != fill {
             style.fill = fill;
             self.mark_dirty(id, DirtyClass::PAINT);
@@ -4546,7 +4546,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let style = &mut self.style[id.index() as usize];
+        let style = &mut self.style[self.arena.slot(id)];
         let (radius, pct) = (radius.max(0.0), pct.max(0.0));
         if style.radius != radius || style.radius_pct != pct {
             style.radius = radius;
@@ -4562,7 +4562,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let style = &mut self.style[id.index() as usize];
+        let style = &mut self.style[self.arena.slot(id)];
         if style.border != border {
             style.border = border;
             self.mark_dirty(id, DirtyClass::PAINT);
@@ -4576,7 +4576,7 @@ impl NodeStore {
         if let Some(running) = self.animations.iter().find(|a| a.motion.moves(id, of)) {
             return running.model;
         }
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         match *of {
             LookValue::Fill(_) => LookValue::Fill(self.style[i].fill),
             LookValue::Opacity(_) => LookValue::Opacity(self.opacity[i]),
@@ -4617,7 +4617,7 @@ impl NodeStore {
             LookValue::Radius { dp, pct } => self.write_corner_radius(id, dp, pct),
             LookValue::TextColor(ink) => {
                 if let Some(Content::Text { color, .. }) =
-                    self.content_payload[id.index() as usize].as_deref_mut()
+                    self.content_payload[self.arena.slot(id)].as_deref_mut()
                     && *color != ink
                 {
                     *color = ink;
@@ -4627,7 +4627,7 @@ impl NodeStore {
             LookValue::Translate(offset) => self.set_translate(id, offset),
             LookValue::Thumb(shown) => self.slide_thumb(id, shown),
             LookValue::Check(progress) => {
-                if let Some((mark, shown)) = &mut self.check_marks[id.index() as usize]
+                if let Some((mark, shown)) = &mut self.check_marks[self.arena.slot(id)]
                     && *shown != progress
                 {
                     *shown = progress;
@@ -5071,7 +5071,7 @@ impl NodeStore {
     /// The value node `id` presents of the property `of` names, of those an
     /// animation moves.
     pub(crate) fn presented(&self, id: NodeId, of: &LookValue) -> LookValue {
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         match *of {
             LookValue::Translate(_) => LookValue::Translate(self.translate[i] - self.pin_of(id)),
             LookValue::Scale(_) => LookValue::Scale(self.turn[i].scale),
@@ -5084,7 +5084,7 @@ impl NodeStore {
     /// Shows `value` on node `id`, past any animation's hold: the presented
     /// values an animation moves. `id` is live.
     pub(crate) fn show_look(&mut self, id: NodeId, value: LookValue) {
-        let turn = self.turn[id.index() as usize];
+        let turn = self.turn[self.arena.slot(id)];
         match value {
             LookValue::Translate(offset) => self.show_translate(id, offset),
             LookValue::Opacity(opacity) => self.show_opacity(id, opacity),
@@ -5100,7 +5100,7 @@ impl NodeStore {
     /// every non-overlay node regardless of tree position (default `false`).
     #[inline]
     pub fn is_overlay(&self, id: NodeId) -> bool {
-        self.overlay[id.index() as usize]
+        self.overlay[self.arena.slot(id)]
     }
 
     /// Set whether a node (and its subtree) paints in the top layer. A
@@ -5115,7 +5115,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.overlay[id.index() as usize] = overlay;
+        self.overlay[self.arena.slot(id)] = overlay;
         self.rejoin_above(id);
         self.mark_dirty(id, DirtyClass::PAINT);
         self.repaint_pending = true;
@@ -5125,7 +5125,7 @@ impl NodeStore {
     /// laid out along the viewport's edge and not scrolled with its content.
     #[inline]
     pub fn is_chrome(&self, id: NodeId) -> bool {
-        self.chrome[id.index() as usize]
+        self.chrome[self.arena.slot(id)]
     }
 
     /// Mark a scroll viewport's child its chrome. Its viewport lays it out
@@ -5134,7 +5134,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.chrome[id.index() as usize] = chrome;
+        self.chrome[self.arena.slot(id)] = chrome;
         if let Some(parent) = self.parent(id) {
             self.mark_dirty(parent, DirtyClass::LAYOUT | DirtyClass::PAINT);
         }
@@ -5146,13 +5146,13 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers[id.index() as usize] = Some(handler);
+        self.handlers[self.arena.slot(id)] = Some(handler);
     }
 
     /// Whether a live node currently carries a pointer handler.
     #[inline]
     pub fn has_handler(&self, id: NodeId) -> bool {
-        self.arena.is_live(id) && self.handlers[id.index() as usize].is_some()
+        self.arena.is_live(id) && self.handlers[self.arena.slot(id)].is_some()
     }
 
     /// Move a node's handler out of the store so the router can call it while
@@ -5165,7 +5165,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        self.handlers[id.index() as usize].take()
+        self.handlers[self.arena.slot(id)].take()
     }
 
     /// Put a handler moved out by [`take_handler`](Self::take_handler) back in
@@ -5175,7 +5175,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers[id.index() as usize] = Some(handler);
+        self.handlers[self.arena.slot(id)] = Some(handler);
     }
 
     /// The currently focused node, or `None` when nothing holds focus.
@@ -5242,7 +5242,7 @@ impl NodeStore {
     /// Whether a node can hold focus (default `false`).
     #[inline]
     pub fn focusable(&self, id: NodeId) -> bool {
-        self.focusable[id.index() as usize]
+        self.focusable[self.arena.slot(id)]
     }
 
     /// Set whether a node can hold focus. A live-guarded write, so a stale handle
@@ -5251,14 +5251,14 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.focusable[id.index() as usize] = focusable;
+        self.focusable[self.arena.slot(id)] = focusable;
     }
 
     /// Whether a node takes input as far as its own `enabled` goes (default
     /// `true`); [`inert`](Self::inert) says whether an ancestor turned it off.
     #[inline]
     pub fn enabled(&self, id: NodeId) -> bool {
-        !self.disabled[id.index() as usize]
+        !self.disabled[self.arena.slot(id)]
     }
 
     /// Whether input does not reach `id`: it or an ancestor is disabled. An
@@ -5286,7 +5286,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let at = id.index() as usize;
+        let at = self.arena.slot(id);
         if self.disabled[at] != enabled {
             return;
         }
@@ -5322,7 +5322,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.key_handlers[id.index() as usize] = Some(handler);
+        self.key_handlers[self.arena.slot(id)] = Some(handler);
     }
 
     /// Detach a node's pointer and key handlers, as a reload does before it
@@ -5331,14 +5331,14 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.handlers[id.index() as usize] = None;
-        self.key_handlers[id.index() as usize] = None;
+        self.handlers[self.arena.slot(id)] = None;
+        self.key_handlers[self.arena.slot(id)] = None;
     }
 
     /// Whether a live node currently carries a key handler.
     #[inline]
     pub fn has_key_handler(&self, id: NodeId) -> bool {
-        self.arena.is_live(id) && self.key_handlers[id.index() as usize].is_some()
+        self.arena.is_live(id) && self.key_handlers[self.arena.slot(id)].is_some()
     }
 
     /// Move a node's key handler out of the store so the router can call it while
@@ -5352,7 +5352,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        self.key_handlers[id.index() as usize].take()
+        self.key_handlers[self.arena.slot(id)].take()
     }
 
     /// Put a key handler moved out by
@@ -5363,7 +5363,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.key_handlers[id.index() as usize] = Some(handler);
+        self.key_handlers[self.arena.slot(id)] = Some(handler);
     }
 
     /// Mark `class` dirty on `id` and propagate each class up the parent chain
@@ -5388,7 +5388,7 @@ impl NodeStore {
             journal.record(id, class);
         }
         // Everything lands on the node itself.
-        self.dirty[id.index() as usize] |= class;
+        self.dirty[self.arena.slot(id)] |= class;
         self.dirty_lists.note(id.index(), class);
 
         let bubbling = class & DirtyClass::BUBBLING;
@@ -5734,7 +5734,7 @@ impl NodeStore {
                 Err(full) => (self.refuse(full), NO_OWNER),
             },
         };
-        let i = id.index() as usize;
+        let i = self.arena.slot(id);
         if i >= self.bounds.len() {
             debug_assert_eq!(i, self.bounds.len(), "arena index must stay dense");
             self.grow_columns(i + 1);
@@ -5931,7 +5931,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return None;
         }
-        let owner = self.owner[id.index() as usize];
+        let owner = self.owner[self.arena.slot(id)];
         (owner != NO_OWNER).then_some(owner & !OWNER_KEPT)
     }
 
@@ -6191,7 +6191,7 @@ impl NodeStore {
         let Some(parent) = self.arena.parent(id) else {
             return false;
         };
-        if id == root || self.concealed(id.index() as usize) {
+        if id == root || self.concealed(self.arena.slot(id)) {
             return false;
         }
         if self.redone_alone(id) {
@@ -6202,7 +6202,7 @@ impl NodeStore {
             LayoutInput::Flex { axis, .. } => {
                 fixed_on_both_axes(self.layout[p])
                     && matches!(
-                        self.layout[id.index() as usize].size().on(axis),
+                        self.layout[self.arena.slot(id)].size().on(axis),
                         Length::Fixed(_) | Length::Fill { .. }
                     )
             }
@@ -6217,7 +6217,7 @@ impl NodeStore {
 
     /// The absolute-rows canvas `id` is a positioned row of, and its axis.
     fn row_canvas(&self, id: NodeId) -> Option<(NodeId, Axis)> {
-        if self.row_offset[id.index() as usize].is_nan() {
+        if self.row_offset[self.arena.slot(id)].is_nan() {
             return None;
         }
         let parent = self.arena.parent(id)?;
@@ -6264,7 +6264,7 @@ impl NodeStore {
             Some(parent) if id != root => {
                 let (above, child) = (
                     self.layout[parent.index() as usize],
-                    self.layout[id.index() as usize],
+                    self.layout[self.arena.slot(id)],
                 );
                 let basis = self.basis_of(parent, root);
                 match above {
@@ -6404,7 +6404,7 @@ impl NodeStore {
     /// so the parent can link it. Pre-order, mirroring the paint walk.
     /// `inert` is whether an ancestor is disabled.
     fn derive_into(&self, id: NodeId, inert: bool, tree: &mut SemanticsTree) -> usize {
-        let disabled = inert || self.disabled[id.index() as usize];
+        let disabled = inert || self.disabled[self.arena.slot(id)];
         let my_index = tree.nodes.len();
         // Resolve role/label: authored wins; else an interactive node (a pointer
         // or key handler present) defaults to Button so an assistive-technology
@@ -8356,7 +8356,8 @@ impl<'a> BuildCx<'a> {
             self.root = Some(id);
         }
         if let Some(placement) = self.pending_placement.take() {
-            self.store.keep_placement(id.index() as usize, placement);
+            self.store
+                .keep_placement(self.store.arena.slot(id), placement);
         }
         id
     }
@@ -8394,6 +8395,45 @@ mod tests {
             w,
             h,
         }
+    }
+
+    /// Two windows' trees, each one leaf, so both have a node at slot 0.
+    fn two_windows() -> (NodeStore, NodeId, NodeStore, NodeId) {
+        let leaf = LeafStyle {
+            size: Sizing::fixed(10.0, 10.0),
+            style: BoxStyle::solid(RED),
+        };
+        let mut a = NodeStore::new();
+        let a_leaf = BuildCx::new(&mut a).leaf(leaf).id();
+        let mut b = NodeStore::new();
+        let b_leaf = BuildCx::new(&mut b).leaf(leaf).id();
+        (a, a_leaf, b, b_leaf)
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "belongs to another tree")]
+    fn a_handle_from_one_window_read_on_another_panics() {
+        let (_a, a_leaf, b, b_leaf) = two_windows();
+        assert_eq!(a_leaf, b_leaf, "the two handles name the same slot");
+        let _ = b.bounds(a_leaf);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "belongs to another tree")]
+    fn a_handle_from_one_window_checked_on_another_panics() {
+        let (_a, a_leaf, b, _) = two_windows();
+        let _ = b.arena().is_live(a_leaf);
+    }
+
+    #[test]
+    fn a_handle_is_used_freely_on_its_own_window_and_a_refused_one_on_any() {
+        let (a, a_leaf, b, b_leaf) = two_windows();
+        assert!(a.arena().is_live(a_leaf));
+        assert!(b.arena().is_live(b_leaf));
+        assert_eq!(a.bounds(a_leaf), b.bounds(b_leaf));
+        assert!(!b.arena().is_live(NodeId::refused(0)));
     }
 
     #[test]

@@ -793,10 +793,9 @@ mod tests {
 
     #[test]
     fn a_non_live_root_yields_an_empty_tree() {
-        // An id minted in one store names nothing in a fresh one — inspecting it
-        // there is a non-live root and snapshots to an empty tree.
-        let mut minted = NodeStore::new();
-        let id = leaf(&mut minted);
+        // A handle that is never live is a non-live root and snapshots to an
+        // empty tree.
+        let id = NodeId::refused(0);
         let empty = NodeStore::new();
         assert!(!empty.arena().is_live(id));
         assert!(empty.inspect_tree(id).is_empty());
@@ -1078,8 +1077,7 @@ mod tests {
         // A stale/never-live root: every UI surface is empty and no frame has
         // been encoded, yet the JSON shape is intact — empty arrays, zero
         // counters. This is the headless / no-GPU degradation contract.
-        let mut minted = NodeStore::new();
-        let dead = leaf(&mut minted);
+        let dead = NodeId::refused(0);
         let store = NodeStore::new();
         let json = snapshot_ui(
             &store,

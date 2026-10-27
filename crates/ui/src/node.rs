@@ -55,19 +55,56 @@ impl NodeIndex {
 ///
 /// The generation of a live node is always odd (see [`NodeArena`]), so a stale
 /// handle is detectable with one comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// A debug build also stamps each handle with the arena that issued it, and
+/// that arena asserts a handle it is given is its own: one window's handle
+/// used on another window's tree panics instead of naming whichever node
+/// holds that slot there. Equality, hashing and `Debug` ignore the stamp, so
+/// a debug build behaves as a release one does.
+#[derive(Clone, Copy)]
 pub struct NodeId {
     index: u32,
     generation: u32,
+    #[cfg(debug_assertions)]
+    owner: u32,
+}
+
+impl PartialEq for NodeId {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.generation == other.generation
+    }
+}
+
+impl Eq for NodeId {}
+
+impl core::hash::Hash for NodeId {
+    #[inline]
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+        self.generation.hash(state);
+    }
+}
+
+impl core::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NodeId")
+            .field("index", &self.index)
+            .field("generation", &self.generation)
+            .finish()
+    }
 }
 
 impl NodeId {
     /// A handle to slot `index` that is never live: what a full
-    /// fixed-capacity store hands out for a node it refuses.
+    /// fixed-capacity store hands out for a node it refuses. It belongs to no
+    /// arena, so any arena may be asked about it.
     pub(crate) const fn refused(index: u32) -> NodeId {
         NodeId {
             index,
             generation: 0,
+            #[cfg(debug_assertions)]
+            owner: Owner::NONE,
         }
     }
 
@@ -129,6 +166,25 @@ pub struct TreeLinks {
     pub next_sibling: Option<NodeId>,
 }
 
+/// Which arena issued a handle, in a debug build: each arena takes the next
+/// number when it is made.
+#[cfg(debug_assertions)]
+struct Owner(u32);
+
+#[cfg(debug_assertions)]
+impl Owner {
+    /// No arena's: a handle any arena may be asked about.
+    const NONE: u32 = 0;
+}
+
+#[cfg(debug_assertions)]
+impl Default for Owner {
+    fn default() -> Self {
+        static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+        Owner(NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 /// The arena is full: it was built with [`NodeArena::with_fixed_capacity`] and
 /// every slot is live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +232,8 @@ pub struct NodeArena {
     /// fewer than [`TOUCHES`].
     touched: Vec<(u32, NodeId)>,
     overflowed: bool,
+    #[cfg(debug_assertions)]
+    owner: Owner,
 }
 
 /// How much of a parent's children change the log knows.
@@ -213,7 +271,41 @@ impl NodeArena {
             logged: Vec::with_capacity(capacity as usize),
             touched: Vec::with_capacity(TOUCHES.min(capacity as usize)),
             overflowed: false,
+            #[cfg(debug_assertions)]
+            owner: Owner::default(),
         }
+    }
+
+    /// The handle to slot `index` at `generation`, stamped as this arena's.
+    #[inline]
+    fn handle(&self, index: u32, generation: u32) -> NodeId {
+        NodeId {
+            index,
+            generation,
+            #[cfg(debug_assertions)]
+            owner: self.owner.0,
+        }
+    }
+
+    /// The slot of `id`, for indexing a store's columns without a liveness
+    /// check. A debug build asserts `id` is this arena's.
+    #[inline]
+    #[track_caller]
+    pub fn slot(&self, id: NodeId) -> usize {
+        self.assert_owns(id);
+        id.index as usize
+    }
+
+    /// In a debug build, panics unless this arena issued `id`.
+    #[inline]
+    #[track_caller]
+    fn assert_owns(&self, id: NodeId) {
+        #[cfg(debug_assertions)]
+        assert!(
+            id.owner == self.owner.0 || id.owner == Owner::NONE,
+            "{id:?} belongs to another tree: a handle from one window used on another"
+        );
+        let _ = id;
     }
 
     /// Drop every node, keeping the storage and any fixed capacity.
@@ -352,10 +444,7 @@ impl NodeArena {
             self.generation[i] = self.generation[i].wrapping_add(1);
             self.links[i] = NodeLinks::ORPHAN;
             self.live += 1;
-            return Ok(NodeId {
-                index,
-                generation: self.generation[i],
-            });
+            return Ok(self.handle(index, self.generation[i]));
         }
         let index = self.generation.len() as u32;
         if let Some(capacity) = self.fixed
@@ -366,10 +455,7 @@ impl NodeArena {
         self.generation.push(1);
         self.links.push(NodeLinks::ORPHAN);
         self.live += 1;
-        Ok(NodeId {
-            index,
-            generation: 1,
-        })
+        Ok(self.handle(index, 1))
     }
 
     /// Free a node. Bumps the slot generation so any surviving [`NodeId`]
@@ -428,10 +514,7 @@ impl NodeArena {
         self.generation[i] = self.generation[i].wrapping_add(1);
         self.links[i] = NodeLinks::ORPHAN;
         self.live += 1;
-        NodeId {
-            index,
-            generation: self.generation[i],
-        }
+        self.handle(index, self.generation[i])
     }
 
     /// Give back the block of `len` slots at `base`, every one of them free,
@@ -452,7 +535,7 @@ impl NodeArena {
     #[inline]
     pub fn live_id(&self, index: u32) -> Option<NodeId> {
         let generation = *self.generation.get(index as usize)?;
-        (generation & 1 == 1).then_some(NodeId { index, generation })
+        (generation & 1 == 1).then(|| self.handle(index, generation))
     }
 
     /// The live handle of an internal link. `None` for [`NodeIndex::NONE`].
@@ -473,7 +556,9 @@ impl NodeArena {
 
     /// Whether an id refers to a currently-live node.
     #[inline]
+    #[track_caller]
     pub fn is_live(&self, id: NodeId) -> bool {
+        self.assert_owns(id);
         self.generation.get(id.index as usize) == Some(&id.generation) && id.generation & 1 == 1
     }
 
@@ -564,10 +649,7 @@ impl NodeArena {
         if target.is_none() {
             return None;
         }
-        Some(NodeId {
-            index: target.0,
-            generation: self.generation[target.slot()],
-        })
+        Some(self.handle(target.0, self.generation[target.slot()]))
     }
 
     /// Ancestry links for a live node, as live handles.
@@ -726,10 +808,10 @@ impl Iterator for ChildIds<'_> {
     fn next(&mut self) -> Option<NodeId> {
         let current = self.next.get_some()?;
         self.next = self.arena.links[current.slot()].next_sibling;
-        Some(NodeId {
-            index: current.0,
-            generation: self.arena.generation[current.slot()],
-        })
+        Some(
+            self.arena
+                .handle(current.0, self.arena.generation[current.slot()]),
+        )
     }
 }
 

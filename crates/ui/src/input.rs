@@ -3620,30 +3620,9 @@ mod tests {
         // focus in a dead subtree. The live-guard on set_focus_scope rejects it,
         // so the slot stays None and focus_next walks the whole tree.
         let (mut store, root, outside, _scope, _inner) = scoped_scene();
-        // A handle from a different, larger arena: its index is out of range here,
-        // so is_live is false — a stand-in for a scope whose node was freed.
-        let mut other = NodeStore::new();
-        let mut stale = None;
-        {
-            let mut cx = BuildCx::new(&mut other);
-            cx.flex(
-                FlexStyle {
-                    axis: Axis::Row,
-                    size: Sizing::fixed(10.0, 10.0),
-                    ..Default::default()
-                },
-                |cx| {
-                    for _ in 0..64 {
-                        let leaf = cx.leaf(LeafStyle {
-                            size: Sizing::fixed(1.0, 1.0),
-                            ..Default::default()
-                        });
-                        stale = Some(leaf.id());
-                    }
-                },
-            );
-        }
-        let stale = stale.unwrap();
+        // A handle that is never live: a stand-in for a scope whose node was
+        // freed.
+        let stale = NodeId::refused(0);
         store.set_focus_scope(Some(stale));
         assert_eq!(
             store.focus_scope(),

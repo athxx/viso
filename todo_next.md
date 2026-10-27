@@ -361,8 +361,19 @@ Rules (as for `todo_features.md`):
     unit test that assumed a 64-bit `usize`.
   - The schema, dev-protocol and behavior tests pass.
   - The CI job itself has not run yet.
-- [ ] A debug-only owner-store tag on `NodeId`, with an assertion on cross-window use. Verify with
+- [x] A debug-only owner-store tag on `NodeId`, with an assertion on cross-window use. Verify with
   a debug test that uses window A's handle on window B.
+  - Built: each `NodeArena` takes an owner number from a global counter in a debug build and stamps
+    every handle it issues. `is_live` and `NodeArena::slot` assert that a handle is the arena's own.
+    Every `NodeStore` accessor that indexes a column by a handle goes through `slot`. Equality,
+    hashing and `Debug` ignore the stamp. A release build has no field, so `NodeId` stays 8 bytes.
+    A refused handle belongs to no arena.
+  - Verified: two debug tests build two windows' trees, each with a node at slot 0, and use A's
+    handle on B. Reading B's bounds panics, and so does asking B whether the handle is live. A third
+    test checks own-window use and a refused handle on either store.
+  - Three ui tests used another store's handle to stand for a stale one. They now use a refused
+    handle.
+  - The ui, dsl and multi-window facade tests pass. Clippy is clean on debug and release builds.
 
 ## N4 — Performance
 
