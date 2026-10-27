@@ -396,41 +396,34 @@ pub type PointerHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 pub type KeyHandler = Box<dyn FnMut(&mut EventCx<'_>)>;
 
 /// Applies one method call to every index-aligned column of [`NodeStore`] in
-/// lockstep, so a column added to the store is added in one place.
+/// lockstep, so a column added to the store is added in one place; with
+/// `@bytes`, sums the bytes one slot of every column takes.
 macro_rules! node_columns {
-    ($store:ident . $op:ident ( $($arg:expr),* )) => {
-        $store.bounds.$op($($arg),*);
-        $store.reach.$op($($arg),*);
-        $store.rules_at.$op($($arg),*);
-        $store.transform_root.$op($($arg),*);
-        $store.scroll.$op($($arg),*);
-        $store.translate.$op($($arg),*);
-        $store.content.$op($($arg),*);
-        $store.row_offset.$op($($arg),*);
-        $store.grid_tracks.$op($($arg),*);
-        $store.placed_at.$op($($arg),*);
-        $store.dirty.$op($($arg),*);
-        $store.layout.$op($($arg),*);
-        $store.style.$op($($arg),*);
-        $store.measured.$op($($arg),*);
-        $store.hittable.$op($($arg),*);
-        $store.hidden.$op($($arg),*);
-        $store.clips.$op($($arg),*);
-        $store.overlay.$op($($arg),*);
-        $store.chrome.$op($($arg),*);
-        $store.opacity.$op($($arg),*);
-        $store.handlers.$op($($arg),*);
-        $store.focusable.$op($($arg),*);
-        $store.disabled.$op($($arg),*);
-        $store.key_handlers.$op($($arg),*);
-        $store.interaction.$op($($arg),*);
-        $store.semantics.$op($($arg),*);
-        $store.semantic_state.$op($($arg),*);
-        $store.content_payload.$op($($arg),*);
-        $store.check_marks.$op($($arg),*);
-        $store.text_request.$op($($arg),*);
-        $store.owner.$op($($arg),*);
+    (@list $cb:ident $($cx:tt)*) => {
+        node_columns!(@$cb [$($cx)*]
+            bounds reach rules_at scroll translate turn content row_offset grid_tracks
+            placed_at dirty layout style measured flags opacity handlers key_handlers
+            interaction semantics semantic_state content_payload check_marks
+            text_request owner
+        )
     };
+    (@each [$store:ident $op:ident $args:tt] $($col:ident)*) => {
+        $($store.$col.$op $args;)*
+    };
+    (@bytes [$store:ident] $($col:ident)*) => {
+        0 $(+ slot_bytes(&$store.$col))*
+    };
+    (@bytes $store:ident) => {
+        node_columns!(@list bytes $store)
+    };
+    ($store:ident . $op:ident $args:tt) => {
+        node_columns!(@list each $store $op $args)
+    };
+}
+
+/// The bytes one slot of `column` takes.
+fn slot_bytes<T>(_column: &Vec<T>) -> usize {
+    core::mem::size_of::<T>()
 }
 
 /// A node with no [`BoxRules`].
@@ -509,6 +502,56 @@ struct AssetFallbacks {
     failed: Option<NodeId>,
 }
 
+/// A node's yes/no properties, one bit each: one byte a node in place of a
+/// `bool` column for each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeFlags(u8);
+
+impl NodeFlags {
+    /// Takes part in hit testing; on by default, including on a transparent
+    /// pure-layout container, so a point in its padding resolves to it.
+    /// Turning it off makes a node pass-through without a structural change.
+    const HITTABLE: u8 = 1 << 0;
+    /// Folded out of layout, paint and semantics with its subtree: it
+    /// measures to zero, lays out to a zero rect and paints nothing, without
+    /// a rebuild.
+    const HIDDEN: u8 = 1 << 1;
+    /// Clips its children to its box.
+    const CLIPS: u8 = 1 << 2;
+    /// Paints with its subtree in the deferred top layer, after every
+    /// non-overlay node, while still laid out in place.
+    const OVERLAY: u8 = 1 << 3;
+    /// Its scroll viewport's chrome (a scroll bar track): laid out along the
+    /// viewport's edge, not scrolled with its content.
+    const CHROME: u8 = 1 << 4;
+    /// Can hold focus; a node opts in.
+    const FOCUSABLE: u8 = 1 << 5;
+    /// Turned its own input off (its `enabled` is `false`), which makes it
+    /// and its subtree inert.
+    const DISABLED: u8 = 1 << 6;
+    /// Moves its own box without a relayout: set by its first translate or
+    /// turn and kept while it lives. Scroll viewports move their content and
+    /// need no flag.
+    const TRANSFORM_ROOT: u8 = 1 << 7;
+
+    /// A fresh node's: hittable and nothing else.
+    const FRESH: NodeFlags = NodeFlags(Self::HITTABLE);
+
+    #[inline(always)]
+    fn has(self, flag: u8) -> bool {
+        self.0 & flag != 0
+    }
+
+    #[inline(always)]
+    fn set(&mut self, flag: u8, on: bool) {
+        if on {
+            self.0 |= flag;
+        } else {
+            self.0 &= !flag;
+        }
+    }
+}
+
 /// The retained node store: the arena plus parallel side-storage arrays, all
 /// indexed by [`NodeId::index`]. Allocation pushes to every array in lockstep
 /// so the index stays aligned; freeing leaves stale values in place and relies
@@ -538,10 +581,6 @@ pub struct NodeStore {
     free_rules: Vec<u32>,
     /// How many nodes have rules: while none does, layout reads no slot.
     ruled: u32,
-    /// Warm: whether a node moves its own box without a relayout — set by its
-    /// first translate and kept, so it stays a transform root while it
-    /// lives. Scroll viewports move their content and need no flag.
-    transform_root: Vec<bool>,
     /// Hot: per-node scroll offset, nonzero only on [`LayoutInput::Scroll`]
     /// nodes; default `(0,0)`. A scroll node shifts its content subtree's world
     /// rect by `-scroll` without a relayout (TRANSFORM-class, not LAYOUT).
@@ -605,35 +644,9 @@ pub struct NodeStore {
     style: Vec<BoxStyle>,
     /// Warm: measured natural size cache (recomputed each frame).
     measured: Vec<Measured>,
-    /// Hot: whether a node participates in hit testing. Default `true` — a
-    /// laid-out node is hittable, including a transparent pure-layout container
-    /// (so a point in its padding/gap resolves to it). Flipping it to `false`
-    /// makes a node pass-through without a structural change.
-    hittable: Vec<bool>,
-    /// Hot: whether a node (and its subtree) is folded out of layout and paint.
-    /// Default `false` — unlike `hittable`, a node opts *in* to hiding (the
-    /// hide/show family of controls flips it on demand). A hidden node measures
-    /// to zero (contributing nothing to a parent's main-axis sum), lays out to a
-    /// zero rect, and emits no paint primitive for itself or any descendant — all
-    /// without a structural rebuild. Shared substrate for Tabs and the wider
-    /// hide/show family (NavigationStack/Modal/Popup/Sheet).
-    hidden: Vec<bool>,
-    /// Hot: whether a node clips its children to its box (its `clip`), which
-    /// paint, hit testing and the reach read.
-    clips: Vec<bool>,
-    /// Hot: whether a node is an overlay — painted in a deferred top layer, after
-    /// every non-overlay node, regardless of its position in the tree. Default
-    /// `false` — a node opts *in* to the top layer (the overlay family:
-    /// Popup/Modal/Sheet/Toast). Unlike `hidden` it does not touch layout: an
-    /// overlay still lays out in place (a popup is anchored to its parent's box),
-    /// so flipping it marks PAINT only, not LAYOUT. Paint collects overlay subtrees
-    /// during the main walk and emits them last, so top-layer content draws over
-    /// the rest of the scene without a z-index sort.
-    overlay: Vec<bool>,
-    /// Hot: whether a node is its scroll viewport's chrome (a scroll bar
-    /// track): laid out along the viewport's edge, not scrolled with its
-    /// content. Default `false`.
-    chrome: Vec<bool>,
+    /// Hot: each node's yes/no properties, one byte a node (see
+    /// [`NodeFlags`]).
+    flags: Vec<NodeFlags>,
     /// Hot: each node's opacity, applied to it and its subtree as one layer.
     /// Default `1.0`; `0.0` paints nothing.
     opacity: Vec<f32>,
@@ -673,13 +686,6 @@ pub struct NodeStore {
     hovered: Option<NodeId>,
     /// The interaction states a style reads, for the nodes asked for them.
     pub(crate) interaction_states: crate::interaction::InteractionStates,
-    /// Cold flag column: whether a node can hold focus. Default `false` — unlike
-    /// `hittable`, a node opts *in* to focus (only interactive nodes participate
-    /// in the focus ring). Maintained index-aligned with the arena.
-    focusable: Vec<bool>,
-    /// Cold flag column: whether a node turned its own input off (its
-    /// `enabled` is `false`), which makes it and its subtree inert.
-    disabled: Vec<bool>,
     /// How many nodes are disabled, so a tree with none answers
     /// [`inert`](Self::inert) without walking an ancestry.
     disabled_count: u32,
@@ -1153,6 +1159,13 @@ impl NodeStore {
         &mut self.pending_projections
     }
 
+    /// The bytes every node takes in the store's dense per-node columns,
+    /// the arena's included; what a node opts into on top (rules,
+    /// placements, handlers' boxes, side tables) is not counted.
+    pub fn bytes_per_node(&self) -> usize {
+        NodeArena::SLOT_BYTES + node_columns!(@bytes self)
+    }
+
     /// The arena backing the tree.
     #[inline]
     pub fn arena(&self) -> &NodeArena {
@@ -1235,7 +1248,7 @@ impl NodeStore {
             if self.concealed(i) {
                 return Rect::ZERO;
             }
-            clipped &= !self.overlay[i];
+            clipped &= !self.flags[i].has(NodeFlags::OVERLAY);
             let Some(parent) = self.arena.parent(at) else {
                 break;
             };
@@ -1276,7 +1289,7 @@ impl NodeStore {
         let i = self.arena.slot(id);
         let own = self.bounds[i];
         if self.concealed(i)
-            || self.clips[i]
+            || self.flags[i].has(NodeFlags::CLIPS)
             || matches!(self.layout[i], LayoutInput::Scroll { .. })
         {
             return own;
@@ -1285,7 +1298,7 @@ impl NodeStore {
         let mut child = self.arena.first_child(id);
         while let Some(c) = child {
             let ci = c.index() as usize;
-            if !self.concealed(ci) && !self.overlay[ci] {
+            if !self.concealed(ci) && !self.flags[ci].has(NodeFlags::OVERLAY) {
                 reach = reach.accumulate(self.reach_in_parent(ci));
             }
             child = self.arena.next_sibling(c);
@@ -1383,7 +1396,7 @@ impl NodeStore {
             // Grouped as `transform_above` composes, so the two agree to the bit
             // while nothing is turned.
             let scrolled = self.scroll[i.slot()] + self.pull_shift_at(i.slot() as u32);
-            if scrolled == Vec2::ZERO || !self.chrome[from.slot()] {
+            if scrolled == Vec2::ZERO || !self.flags[from.slot()].has(NodeFlags::CHROME) {
                 shift += self.translate[i.slot()] - scrolled;
             } else {
                 shift += self.translate[i.slot()];
@@ -1600,7 +1613,7 @@ impl NodeStore {
     /// [`is_scroll`](Self::is_scroll).
     #[inline]
     pub fn is_transform_root(&self, id: NodeId) -> bool {
-        self.transform_root[self.arena.slot(id)]
+        self.flags[self.arena.slot(id)].has(NodeFlags::TRANSFORM_ROOT)
     }
 
     /// The transform roots of the last paint and their displacements.
@@ -2001,7 +2014,7 @@ impl NodeStore {
     /// `clip`), default `false`.
     #[inline]
     pub fn clips(&self, id: NodeId) -> bool {
-        self.clips[self.arena.slot(id)]
+        self.flags[self.arena.slot(id)].has(NodeFlags::CLIPS)
     }
 
     /// Whether a node's children are seen and hit only inside its box,
@@ -2020,10 +2033,10 @@ impl NodeStore {
             return;
         }
         let i = self.arena.slot(id);
-        if self.clips[i] == clip {
+        if self.flags[i].has(NodeFlags::CLIPS) == clip {
             return;
         }
-        self.clips[i] = clip;
+        self.flags[i].set(NodeFlags::CLIPS, clip);
         let before = self.reach_in_parent(i);
         let reach = self.joined_reach(id);
         if self.set_reach(id, reach) {
@@ -3018,10 +3031,10 @@ impl NodeStore {
     /// first translate makes it one, which the paint that records it needs.
     fn mark_moved(&mut self, id: NodeId) {
         let i = self.arena.slot(id);
-        if self.transform_root[i] {
+        if self.flags[i].has(NodeFlags::TRANSFORM_ROOT) {
             self.mark_dirty(id, DirtyClass::TRANSFORM);
         } else {
-            self.transform_root[i] = true;
+            self.flags[i].set(NodeFlags::TRANSFORM_ROOT, true);
             self.mark_dirty(id, DirtyClass::TRANSFORM | DirtyClass::PAINT);
             self.repaint_pending = true;
         }
@@ -4389,7 +4402,7 @@ impl NodeStore {
     /// Whether a node participates in hit testing (default `true`).
     #[inline]
     pub fn hittable(&self, id: NodeId) -> bool {
-        self.hittable[self.arena.slot(id)]
+        self.flags[self.arena.slot(id)].has(NodeFlags::HITTABLE)
     }
 
     /// Set whether a node participates in hit testing. A live-guarded write, so
@@ -4403,7 +4416,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.hittable[self.arena.slot(id)] = hit;
+        self.flags[self.arena.slot(id)].set(NodeFlags::HITTABLE, hit);
     }
 
     /// Whether a node is folded out of layout and paint (default `false`):
@@ -4434,7 +4447,7 @@ impl NodeStore {
     #[inline]
     fn concealed(&self, i: usize) -> bool {
         let index = crate::node::NodeIndex::new(i as u32);
-        self.hidden[i] || self.folded_away(index) || self.paged_away(index)
+        self.flags[i].has(NodeFlags::HIDDEN) || self.folded_away(index) || self.paged_away(index)
     }
 
     /// Set whether a node (and its subtree) is folded out of layout, paint and
@@ -4449,10 +4462,11 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        if self.hidden[self.arena.slot(id)] == hidden {
+        let flags = &mut self.flags[self.arena.slot(id)];
+        if flags.has(NodeFlags::HIDDEN) == hidden {
             return;
         }
-        self.hidden[self.arena.slot(id)] = hidden;
+        flags.set(NodeFlags::HIDDEN, hidden);
         self.shown_changed(id);
     }
 
@@ -5100,7 +5114,7 @@ impl NodeStore {
     /// every non-overlay node regardless of tree position (default `false`).
     #[inline]
     pub fn is_overlay(&self, id: NodeId) -> bool {
-        self.overlay[self.arena.slot(id)]
+        self.flags[self.arena.slot(id)].has(NodeFlags::OVERLAY)
     }
 
     /// Set whether a node (and its subtree) paints in the top layer. A
@@ -5115,7 +5129,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.overlay[self.arena.slot(id)] = overlay;
+        self.flags[self.arena.slot(id)].set(NodeFlags::OVERLAY, overlay);
         self.rejoin_above(id);
         self.mark_dirty(id, DirtyClass::PAINT);
         self.repaint_pending = true;
@@ -5125,7 +5139,7 @@ impl NodeStore {
     /// laid out along the viewport's edge and not scrolled with its content.
     #[inline]
     pub fn is_chrome(&self, id: NodeId) -> bool {
-        self.chrome[self.arena.slot(id)]
+        self.flags[self.arena.slot(id)].has(NodeFlags::CHROME)
     }
 
     /// Mark a scroll viewport's child its chrome. Its viewport lays it out
@@ -5134,7 +5148,7 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.chrome[self.arena.slot(id)] = chrome;
+        self.flags[self.arena.slot(id)].set(NodeFlags::CHROME, chrome);
         if let Some(parent) = self.parent(id) {
             self.mark_dirty(parent, DirtyClass::LAYOUT | DirtyClass::PAINT);
         }
@@ -5242,7 +5256,7 @@ impl NodeStore {
     /// Whether a node can hold focus (default `false`).
     #[inline]
     pub fn focusable(&self, id: NodeId) -> bool {
-        self.focusable[self.arena.slot(id)]
+        self.flags[self.arena.slot(id)].has(NodeFlags::FOCUSABLE)
     }
 
     /// Set whether a node can hold focus. A live-guarded write, so a stale handle
@@ -5251,14 +5265,14 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        self.focusable[self.arena.slot(id)] = focusable;
+        self.flags[self.arena.slot(id)].set(NodeFlags::FOCUSABLE, focusable);
     }
 
     /// Whether a node takes input as far as its own `enabled` goes (default
     /// `true`); [`inert`](Self::inert) says whether an ancestor turned it off.
     #[inline]
     pub fn enabled(&self, id: NodeId) -> bool {
-        !self.disabled[self.arena.slot(id)]
+        !self.flags[self.arena.slot(id)].has(NodeFlags::DISABLED)
     }
 
     /// Whether input does not reach `id`: it or an ancestor is disabled. An
@@ -5271,7 +5285,7 @@ impl NodeStore {
         }
         let mut at = Some(id);
         while let Some(node) = at {
-            if self.disabled[node.index() as usize] {
+            if self.flags[node.index() as usize].has(NodeFlags::DISABLED) {
                 return true;
             }
             at = self.arena.parent(node);
@@ -5287,10 +5301,10 @@ impl NodeStore {
             return;
         }
         let at = self.arena.slot(id);
-        if self.disabled[at] != enabled {
+        if self.flags[at].has(NodeFlags::DISABLED) != enabled {
             return;
         }
-        self.disabled[at] = !enabled;
+        self.flags[at].set(NodeFlags::DISABLED, !enabled);
         if enabled {
             self.disabled_count -= 1;
         } else {
@@ -5742,7 +5756,6 @@ impl NodeStore {
         self.bounds[i] = Rect::ZERO;
         self.reach[i] = Rect::ZERO;
         self.drop_rules(i);
-        self.transform_root[i] = false;
         self.scroll[i] = Vec2::ZERO;
         self.translate[i] = Vec2::ZERO;
         self.turn[i] = crate::transform::Turn::NONE;
@@ -5757,8 +5770,6 @@ impl NodeStore {
         self.layout[i] = input;
         self.style[i] = style;
         self.measured[i] = Measured::default();
-        self.hittable[i] = true;
-        self.hidden[i] = false;
         self.folds.forget(i as u32);
         self.paged.forget(i as u32);
         self.fields.forget(i as u32);
@@ -5785,15 +5796,11 @@ impl NodeStore {
         self.actives.forget(i as u32);
         self.validities.forget(i as u32);
         self.tables.forget(i as u32);
-        self.clips[i] = false;
-        self.overlay[i] = false;
-        self.chrome[i] = false;
-        self.opacity[i] = 1.0;
-        self.handlers[i] = None;
-        self.focusable[i] = false;
-        if std::mem::take(&mut self.disabled[i]) {
+        if std::mem::replace(&mut self.flags[i], NodeFlags::FRESH).has(NodeFlags::DISABLED) {
             self.disabled_count -= 1;
         }
+        self.opacity[i] = 1.0;
+        self.handlers[i] = None;
         self.key_handlers[i] = None;
         self.interaction[i] = None;
         self.semantics[i] = None;
@@ -5819,7 +5826,6 @@ impl NodeStore {
             self.bounds.push(Rect::ZERO);
             self.reach.push(Rect::ZERO);
             self.rules_at.push(NO_RULES);
-            self.transform_root.push(false);
             self.scroll.push(Vec2::ZERO);
             self.translate.push(Vec2::ZERO);
             self.turn.push(crate::transform::Turn::NONE);
@@ -5836,15 +5842,9 @@ impl NodeStore {
             });
             self.style.push(BoxStyle::NONE);
             self.measured.push(Measured::default());
-            self.hittable.push(true);
-            self.hidden.push(false);
-            self.clips.push(false);
-            self.overlay.push(false);
-            self.chrome.push(false);
+            self.flags.push(NodeFlags::FRESH);
             self.opacity.push(1.0);
             self.handlers.push(None);
-            self.focusable.push(false);
-            self.disabled.push(false);
             self.key_handlers.push(None);
             self.interaction.push(None);
             self.semantics.push(None);
@@ -6404,7 +6404,7 @@ impl NodeStore {
     /// so the parent can link it. Pre-order, mirroring the paint walk.
     /// `inert` is whether an ancestor is disabled.
     fn derive_into(&self, id: NodeId, inert: bool, tree: &mut SemanticsTree) -> usize {
-        let disabled = inert || self.disabled[self.arena.slot(id)];
+        let disabled = inert || self.flags[self.arena.slot(id)].has(NodeFlags::DISABLED);
         let my_index = tree.nodes.len();
         // Resolve role/label: authored wins; else an interactive node (a pointer
         // or key handler present) defaults to Button so an assistive-technology
@@ -6566,7 +6566,7 @@ impl LayoutTree for NodeStore {
 
     #[inline]
     fn chrome(&self, index: u32) -> bool {
-        self.chrome[index as usize]
+        self.flags[index as usize].has(NodeFlags::CHROME)
     }
 
     #[inline]
@@ -9354,6 +9354,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn a_node_takes_the_bytes_its_dense_columns_add_up_to() {
+        let store = NodeStore::new();
+        assert_eq!(
+            core::mem::size_of::<NodeFlags>(),
+            1,
+            "eight flags, one byte"
+        );
+        // A column that grows, or a new one, moves this: weigh it against
+        // every node paying for it.
+        assert_eq!(store.bytes_per_node(), 602);
+    }
+
+    #[test]
     fn alloc_keeps_arrays_index_aligned() {
         let mut store = NodeStore::new();
         let a = store.alloc(
@@ -9372,13 +9386,12 @@ mod tests {
         assert_eq!(b.index(), 1);
         // Every parallel array grew in lockstep with the arena.
         assert_eq!(store.bounds.len(), 2);
-        assert_eq!(store.transform_root.len(), 2);
+        assert_eq!(store.flags.len(), 2);
         assert_eq!(store.scroll.len(), 2);
         assert_eq!(store.content.len(), 2);
         assert_eq!(store.layout.len(), 2);
         assert_eq!(store.style.len(), 2);
         assert_eq!(store.measured.len(), 2);
-        assert_eq!(store.focusable.len(), 2);
         assert_eq!(store.key_handlers.len(), 2);
         assert_eq!(store.semantics.len(), 2);
     }
@@ -9781,7 +9794,7 @@ mod tests {
 
         store.clear();
         assert_eq!(store.focused(), None);
-        assert_eq!(store.focusable.len(), 0);
+        assert_eq!(store.flags.len(), 0);
         assert_eq!(store.key_handlers.len(), 0);
     }
 

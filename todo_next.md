@@ -377,9 +377,18 @@ Rules (as for `todo_features.md`):
 
 ## N4 — Performance
 
-- [ ] Pack the per-node bool columns (`hittable`, `hidden`, `clips`, `overlay`, `chrome`,
+- [x] Pack the per-node bool columns (`hittable`, `hidden`, `clips`, `overlay`, `chrome`,
   `focusable`, `disabled`, `transform_root`) into one `NodeFlags` column. Verify with
   `node_arena`/`hover_diff` benches and a per-node bytes assertion.
+  - Built: one `NodeFlags` byte holds the eight flags, and a fresh node is `FRESH` (hittable only).
+    The column list macro now names each column once. It also sums one slot of every column, which
+    `NodeStore::bytes_per_node` reports, the arena's `SLOT_BYTES` included.
+  - Built: the `turn` column was missing from the list, so `clear` and `reserve` skipped it. It is
+    now in the list.
+  - Verified: a test pins `bytes_per_node` at 602 on 64-bit targets, down from 609, and checks that
+    `NodeFlags` is one byte. The ui lib tests and clippy pass.
+  - Verified: `node_arena` and `hover_diff` ran A/B at the default profile and at
+    `opt-level=3`. Every row is within noise (±1.5%).
 - [ ] Move rarely set dense `Option` columns (`semantics`, `semantic_state`, `check_marks`,
   `interaction`) to sparse storage. Verify that column bytes drop and `semantic_projection` does not
   regress.

@@ -252,6 +252,9 @@ pub(crate) enum Logged {
 const TOUCHES: usize = 1024;
 
 impl NodeArena {
+    /// The bytes one slot takes: its generation and its links.
+    pub const SLOT_BYTES: usize = size_of::<u32>() + size_of::<NodeLinks>();
+
     pub fn new() -> Self {
         Self::default()
     }
