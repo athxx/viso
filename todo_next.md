@@ -271,9 +271,17 @@ Rules (as for `todo_features.md`):
   `WireError::Bound`), the AOT track reader and the 13 region-table counts use them. Verified:
   an ende test reads a `u64::MAX` count with zero-byte items and fails at once, reading none;
   ende, schema, dev-protocol and behavior lib tests pass; the workspace checks clean.
-- [ ] cargo-fuzz targets for `GameNet::receive` packets, AOT and view packages, behavior modules,
+- [x] cargo-fuzz targets for `GameNet::receive` packets, AOT and view packages, behavior modules,
   the raster, SVG, glTF and font decoders, and text segmentation. Verify that each runs 10 minutes
   in `fuzz.yml` without a crash, with `encode(decode(x))` stable.
+  — Built: nine targets (`game_packet`, `aot_package`, `view_package`, `behavior_module`, `raster`,
+  `svg`, `gltf`, `font`, `text`); the package and module targets check that the encoding of what
+  decodes decodes to the same encoding. `crates/dsl/tests/fuzz_seeds.rs` writes their seeds, and
+  `fuzz.yml` runs every target 600 s after running all three seed writers. `raster` found two
+  allocations sized by a frame header: an APNG `fcTL` past the canvas (zune-png sizes its output by
+  the frame) and a GIF frame past the pixel cap. Each is refused before allocating, with the crash
+  inputs kept as fixtures. Verified locally: each target ran 60 s without a crash and `raster` ran
+  5 min after the fixes. The 10-minute CI runs happen on the nightly schedule, not here.
 - [ ] Record `FINGERPRINT_VERSION` in persisted artifacts (view package, persist store) and refuse
   a mismatch with a diagnostic. Verify with a test that bumps the version and gets the error
   instead of silently dropped state.

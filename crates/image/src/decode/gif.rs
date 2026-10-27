@@ -91,6 +91,10 @@ impl GifFrames {
             .current_frame_info()
             .ok_or_else(|| AssetError::Decode("a GIF frame without a header".to_owned()))?;
         let (x, y, w, h) = (frame.left, frame.top, frame.width, frame.height);
+        // Its pixels are sized by the frame, not the screen: one past the
+        // pixel cap is refused before they are allocated. One reaching past
+        // the screen is clipped to it when composited.
+        check_size(w.into(), h.into())?;
         let delay = Duration::from_millis(u64::from(frame.delay) * 10);
         let dispose = match frame.dispose {
             DisposalMethod::Background => Dispose::Clear,

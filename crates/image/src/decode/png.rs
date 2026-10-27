@@ -38,6 +38,7 @@ fn decode(bytes: &[u8]) -> Result<(Raw, Option<u16>), AssetError> {
         .dimensions()
         .ok_or_else(|| AssetError::Decode("the PNG has no header".to_owned()))?;
     let (width, height) = check_size(w, h)?;
+    frames_fit(bytes, w, h)?;
     let pixels = decoder.decode_raw().map_err(|e| error(&e))?;
     let channels = pixels.len() / (width as usize * height as usize);
     let orientation = decoder
@@ -51,6 +52,43 @@ fn decode(bytes: &[u8]) -> Result<(Raw, Option<u16>), AssetError> {
         pixels,
     };
     Ok((raw, orientation))
+}
+
+/// Fails unless every frame an `fcTL` of `bytes` places lies within the
+/// `width × height` canvas, as APNG requires. The decoder sizes its output by
+/// the frame it is at, so this is checked on the chunks before any pixels are:
+/// a frame declaring a size past the canvas allocates nothing.
+fn frames_fit(bytes: &[u8], width: usize, height: usize) -> Result<(), AssetError> {
+    let field = |data: &[u8], at: usize| {
+        u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize
+    };
+    let inside = |at: usize, len: usize, edge: usize| {
+        len > 0 && at.checked_add(len).is_some_and(|end| end <= edge)
+    };
+    let mut at = 8;
+    while let Some(head) = bytes.get(at..at + 8) {
+        let len = field(head, 0);
+        match &head[4..8] {
+            b"fcTL" => {
+                let fits = bytes.get(at + 8..at + 28).is_some_and(|data| {
+                    inside(field(data, 12), field(data, 4), width)
+                        && inside(field(data, 16), field(data, 8), height)
+                });
+                if !fits {
+                    return Err(AssetError::Decode(
+                        "an APNG frame reaches past its canvas".to_owned(),
+                    ));
+                }
+            }
+            b"IEND" => break,
+            _ => {}
+        }
+        let Some(next) = at.checked_add(12 + len) else {
+            break;
+        };
+        at = next;
+    }
+    Ok(())
 }
 
 /// The frame count and plays an APNG's `acTL` declares, read from the
@@ -96,6 +134,7 @@ pub(crate) fn apng_frames(bytes: &AssetBytes) -> Result<Option<(PngFrames, Heade
         .dimensions()
         .ok_or_else(|| AssetError::Decode("the PNG has no header".to_owned()))?;
     check_size(w, h)?;
+    frames_fit(bytes, w, h)?;
     let header = Header {
         width: w,
         height: h,
@@ -131,7 +170,7 @@ impl PngFrames {
             }
             self.left -= 1;
             let count = info.width * info.height;
-            if count == 0 || raw.len() % count != 0 {
+            if raw.len() % count != 0 {
                 return Err(AssetError::Decode(
                     "an APNG frame's texels are not its size".to_owned(),
                 ));

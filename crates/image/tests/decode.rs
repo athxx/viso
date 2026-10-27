@@ -206,3 +206,21 @@ fn a_jpeg_turns_upright_as_its_exif_says() {
     let [r, b] = texel(&turned, 2, 6);
     assert!(b > 150 && r < 100, "{r} {b}");
 }
+
+#[test]
+fn a_png_frame_past_its_canvas_is_refused_before_its_pixels_are_allocated() {
+    // A 16 × 16 APNG whose frames' `fcTL`s declare sizes far past the canvas,
+    // one of them over four gigabytes of texels.
+    let bytes = fixture!("frame_past_canvas.png");
+    assert!(decode_raster(bytes).is_err());
+    let shared = AssetBytes::Shared(bytes.into());
+    if let Ok(Some(mut animation)) = Animation::open(&shared) {
+        while let Ok(Some(_)) = animation.next_frame() {}
+    }
+}
+
+#[test]
+fn a_gif_frame_past_the_pixel_cap_is_refused_before_its_pixels_are_allocated() {
+    // A 16 × 16 GIF whose first frame declares over four billion pixels.
+    assert!(decode_raster(fixture!("gif_frame_past_cap.gif")).is_err());
+}

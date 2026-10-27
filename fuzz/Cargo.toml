@@ -1,5 +1,7 @@
 # Coverage-guided fuzzing of the decoders that read bytes from outside the
-# process: dev frames both ways, the dev and game snapshots, input tapes.
+# process: dev frames both ways, the dev and game snapshots, input tapes, game
+# packets, AOT and view packages, behavior modules, raster, SVG, glTF and font
+# decoders, and text segmentation.
 # `cargo +nightly fuzz run <target>`; outside the workspace, as cargo-fuzz
 # builds it with its own flags.
 [package]
@@ -16,6 +18,13 @@ libfuzzer-sys = "0.4"
 viso-dev-protocol = { path = "../crates/dev-protocol" }
 viso-view = { path = "../crates/view", features = ["hot-reload"] }
 viso-behavior = { path = "../crates/behavior" }
+viso-dsl = { path = "../crates/dsl" }
+viso-ende = { path = "../crates/ende" }
+viso-image = { path = "../crates/image" }
+viso-render = { path = "../crates/render" }
+viso-schema = { path = "../crates/schema" }
+viso-svg = { path = "../crates/svg" }
+viso-text = { path = "../crates/text" }
 
 [workspace]
 members = ["."]
@@ -44,6 +53,69 @@ bench = false
 [[bin]]
 name = "input_tape"
 path = "fuzz_targets/input_tape.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "game_packet"
+path = "fuzz_targets/game_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "aot_package"
+path = "fuzz_targets/aot_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "view_package"
+path = "fuzz_targets/view_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "behavior_module"
+path = "fuzz_targets/behavior_module.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raster"
+path = "fuzz_targets/raster.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "svg"
+path = "fuzz_targets/svg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gltf"
+path = "fuzz_targets/gltf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "font"
+path = "fuzz_targets/font.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
 test = false
 doc = false
 bench = false

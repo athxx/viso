@@ -2162,7 +2162,7 @@ bounded decoder never exceeds configured allocation budget
 encode(decode(valid_bytes)) preserves semantic value
 ```
 
-现有 target：`dev_wire`、`dev_snapshot`、`game_snapshot`、`input_tape`，每个同时检查 encode(decode(x)) 的再解码一致。AOT/view package、behavior module 与 game net packet 只有截断测试，尚无 fuzz target。
+target：`dev_wire`、`dev_snapshot`、`game_snapshot`、`input_tape`、`aot_package`、`view_package`、`behavior_module`（含校验）检查 encode(decode(x)) 的再解码一致；`game_packet` 让一个 rollback session 接收任意字节并继续推进；`raster`（含动画逐帧）、`svg`（解析后栅格化）、`gltf`、`font`（`parses` 后对前几个 glyph 做 coverage 与 color 栅格化）与 `text`（grapheme / word / line 边界落在字符边界上，bidi 解析）只要求不 panic、不超出分配上限。种子由 `crates/dsl/tests/fuzz_seeds.rs`（编译器产出的 package、module，session 产出的 packet，以及仓库内的图片、SVG、字体与文本样本）和各 crate 的 `fuzz_seeds` 测试写出。`raster` 曾找到两处按帧头尺寸分配：APNG 的 `fcTL` 超出画布（zune-png 按帧分配输出），GIF 帧超出像素上限；现在解码前先扫描 `fcTL` 是否在画布内，GIF 帧尺寸同样经过 `check_size`。
 
 ### 10.5.19 Ende 的非目标
 
@@ -4513,7 +4513,7 @@ Dev artifact 与 headless 构建中，任何直接标记的 dirty 都可查询�
 
 ### Fuzz
 
-`fuzz/` 的 cargo-fuzz target（nightly CI，每个 600 s）：`dev_wire`、`dev_snapshot`、`game_snapshot`、`input_tape`。lexer、parser 与 formatter 由测试内的随机输入 smoke 覆盖（`crates/dsl/tests/{lexer,parser,format_fuzz}.rs`）。目标（尚未实现）：text Unicode 边界与资源解码器（raster、SVG、glTF、字体）的 fuzz target。
+`fuzz/` 的 cargo-fuzz target（nightly CI，每个 600 s）：wire 与快照（`dev_wire`、`dev_snapshot`、`game_snapshot`、`input_tape`、`game_packet`）、package 与 module（`aot_package`、`view_package`、`behavior_module`）、资源解码器（`raster`、`svg`、`gltf`、`font`）与 text 的 Unicode 边界（`text`），清单见 §10.5.18。lexer、parser 与 formatter 由测试内的随机输入 smoke 覆盖（`crates/dsl/tests/{lexer,parser,format_fuzz}.rs`）。
 
 ### Headless
 

@@ -1,8 +1,10 @@
 name: viso-fuzz
 
 # Coverage-guided fuzzing of the decoders that read outside bytes, nightly and
-# on demand. The corpus starts from the sample messages the tests encode and
-# grows from run to run through the cache.
+# on demand. The corpus starts from the sample messages the tests encode, the
+# packages, module and packets the compiler and a session produce, and the
+# image, SVG, glTF, font and text samples; it grows from run to run through the
+# cache. Each target runs ten minutes; what decodes must encode back stably.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -13,7 +15,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [dev_wire, dev_snapshot, game_snapshot, input_tape]
+        target:
+          - dev_wire
+          - dev_snapshot
+          - game_snapshot
+          - input_tape
+          - game_packet
+          - aot_package
+          - view_package
+          - behavior_module
+          - raster
+          - svg
+          - gltf
+          - font
+          - text
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +41,10 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Seeds
-        run: cargo test -p viso-view --features hot-reload --lib fuzz_seeds -- --ignored
+        run: |
+          cargo test -p viso-view --features hot-reload --lib fuzz_seeds -- --ignored
+          cargo test -p viso-dev-protocol --lib fuzz_seeds -- --ignored
+          cargo test -p viso-dsl --test fuzz_seeds -- --ignored
       - name: Fuzz
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=600
       - name: Crash inputs
