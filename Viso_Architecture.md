@@ -1663,7 +1663,7 @@ Serde 只用于生态互操作（§10.5.14）；Ende 是 Viso internal architect
 `viso-ende`（`crates/ende`，ADR 0012）是 `no_std + alloc`、零第三方依赖的 DAG 叶子（xtask allowlist 中它的依赖列表为空）。模块：
 
 - `encode.rs` / `decode.rs`：binary `Encoder` / `Decoder` 与 `Encode` / `Decode` trait；
-- `wire.rs`：`ProtocolTag`（`b"VE"` magic + `WIRE_VERSION`）、`content_hash`（跨 toolchain 稳定的 64-bit FNV-1a）；
+- `wire.rs`：`ProtocolTag`（`b"VE"` magic + `WIRE_VERSION`；magic 不符为 `Malformed { offset }`）、`content_hash`（跨 toolchain 稳定的 64-bit FNV-1a）；
 - `section.rs` / `aligned.rs`：XIP section table（`SectionWriter` / `Sections`）与 8 字节对齐的 static blob 包装 `Aligned<B>`（`SECTION_ALIGN`）；
 - `json.rs`：只写 `JsonWriter`；`json_value.rs`：有界 JSON reader `JsonValue::parse`。
 
@@ -1871,6 +1871,8 @@ enc.write_u64(id.lo);
 ```
 
 因此 32-bit、64-bit、wasm32 可以得到同一 wire value。
+
+这由 `crates/ende/tests/golden.rs` 钉住：每种标量、varint、字符串、section table 与 `content_hash` 的字节逐个写死。CI 的 `ende-32bit` job 在 `i686-unknown-linux-gnu` 上跑同一套测试，连同长度或计数超过 `u32` 时报错、不截断的检查。
 
 ### 10.5.8 `usize`、pointer 与 platform handle
 

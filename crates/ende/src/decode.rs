@@ -442,9 +442,12 @@ mod tests {
             reads += 1;
             Ok::<(), DecodeError>(())
         });
+        // Past the bytes left on a 64-bit target; past what a `usize` holds,
+        // the cap here, on a 32-bit one.
         assert!(matches!(
             read,
-            Err(DecodeError::UnexpectedEof { offset: 0, .. })
+            Err(DecodeError::UnexpectedEof { offset: 0, .. }
+                | DecodeError::TooMany { offset: 0, .. })
         ));
         assert_eq!(
             reads, 0,

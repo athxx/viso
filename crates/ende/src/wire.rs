@@ -63,16 +63,10 @@ impl Encode for ProtocolTag {
 
 impl Decode for ProtocolTag {
     fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let magic = dec.read_raw(Self::MAGIC.len())?;
-        if magic != Self::MAGIC {
-            // A wrong magic is not our stream at all; surface it as EOF-shaped
-            // corruption at the header offset rather than adding a variant for a
-            // case that only occurs on a completely foreign input.
-            return Err(DecodeError::UnexpectedEof {
-                offset: 0,
-                needed: Self::MAGIC.len(),
-                available: Self::MAGIC.len(),
-            });
+        let offset = dec.position();
+        if *dec.read_array::<2>()? != Self::MAGIC {
+            // Not an `ende` stream at all.
+            return Err(DecodeError::Malformed { offset });
         }
         let version = dec.read_u16()?;
         Ok(Self { version })
@@ -100,6 +94,9 @@ mod tests {
     #[test]
     fn bad_magic_is_rejected() {
         let bytes = [b'X', b'Y', 1, 0];
-        assert!(ProtocolTag::decode_from_slice(&bytes).is_err());
+        assert_eq!(
+            ProtocolTag::decode_from_slice(&bytes),
+            Err(DecodeError::Malformed { offset: 0 })
+        );
     }
 }

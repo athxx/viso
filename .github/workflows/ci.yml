@@ -136,6 +136,20 @@ jobs:
       - name: MCU smoke check
         run: cargo xtask mcu-smoke
 
+  # The wire format on a 32-bit target, where `usize` is narrower than the
+  # counts and lengths on the wire: Ende's golden bytes and its bounds.
+  ende-32bit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-gnu
+      - name: 32-bit linker
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+      - name: Ende tests, i686
+        run: cargo test -p viso-ende --target i686-unknown-linux-gnu
+
   # What the dev layer costs the frame loop of a dev build: alternating release
   # runs of the frame-loop bench with and without `hot-reload`, best against
   # best.

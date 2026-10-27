@@ -342,8 +342,25 @@ Rules (as for `todo_features.md`):
     It passes headless both on the desktop profile and with `VISO_FOOTPRINT=embedded-cpu`: no
     panic, the store full, the root laid out, and the `ArenaFull` line printed.
   - Clippy -D warnings is clean.
-- [ ] `ProtocolTag` bad magic returns `DecodeError::Malformed { offset }`. Ende golden-byte tests
+- [x] `ProtocolTag` bad magic returns `DecodeError::Malformed { offset }`. Ende golden-byte tests
   run on a 32-bit target. Verify both in CI.
+  — Built:
+  - A bad magic in `ProtocolTag` is now `Malformed` at the offset where the tag starts.
+  - `crates/ende/tests/golden.rs` fixes the exact bytes of every scalar, varint, string and
+    byte string, a two-section table with its aligned offsets, and `content_hash`. It also
+    checks that a length or count past `u32` is an error rather than a wrapped value, and that
+    a foreign preamble is malformed at its offset.
+  - CI has a new `ende-32bit` job that runs `cargo test -p viso-ende` on
+    `i686-unknown-linux-gnu`.
+  - The huge-count unit test now accepts `TooMany` as well as EOF: on a 32-bit target the count
+    is past `usize`.
+
+  Verified:
+  - Every ende test passes on the host. They also pass on i686: built for
+    `i686-unknown-linux-musl` and run in an emulated `linux/386` container. That run found the
+    unit test that assumed a 64-bit `usize`.
+  - The schema, dev-protocol and behavior tests pass.
+  - The CI job itself has not run yet.
 - [ ] A debug-only owner-store tag on `NodeId`, with an assertion on cross-window use. Verify with
   a debug test that uses window A's handle on window B.
 
