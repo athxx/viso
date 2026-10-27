@@ -467,7 +467,7 @@ impl RollbackSession {
         // it leaves a gap and adds none.
         if let Some(skip) = known.checked_sub(first) {
             let skip = usize::try_from(skip).unwrap_or(usize::MAX);
-            let inputs = inputs.chunks_exact(INPUT_BYTES).skip(skip);
+            let inputs = inputs.as_chunks::<INPUT_BYTES>().0.iter().skip(skip);
             track.inputs.extend(inputs.map(tick_input));
         }
         if track.end() > known {
@@ -594,12 +594,9 @@ impl fmt::Debug for RollbackSession {
 }
 
 /// A packet's input from its [`INPUT_BYTES`] bytes.
-fn tick_input(bytes: &[u8]) -> TickInput {
-    let word = |i: usize| {
-        let mut word = [0; 8];
-        word.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
-        u64::from_le_bytes(word)
-    };
+fn tick_input(bytes: &[u8; INPUT_BYTES]) -> TickInput {
+    let words = bytes.as_chunks::<8>().0;
+    let word = |i: usize| u64::from_le_bytes(words[i]);
     TickInput {
         held: word(0),
         pressed: word(1),
