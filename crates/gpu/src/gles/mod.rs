@@ -189,6 +189,8 @@ unsafe impl Send for CompileContext {}
 /// The GLES3 backend.
 pub struct Gles3Backend {
     libs: Arc<Libs>,
+    /// Set once EGL reports the context lost (`EGL_CONTEXT_LOST`).
+    lost: bool,
     wayland: Option<WaylandEgl>,
     display: Option<Display>,
     compile: Arc<Mutex<Option<CompileContext>>>,
@@ -219,14 +221,20 @@ impl Gles3Backend {
     ///
     /// When `libEGL` or `libGLESv2` cannot be loaded.
     pub fn new() -> Self {
-        Self::try_new().unwrap_or_else(|why| panic!("no usable GLES 3 driver: {why}"))
+        Self::load().unwrap_or_else(|why| panic!("no usable GLES 3 driver: {why}"))
+    }
+
+    /// Loads EGL and GLES, or `None` when they cannot be.
+    pub fn try_new() -> Option<Self> {
+        Self::load().ok()
     }
 
     /// Loads EGL and GLES, or says why not.
-    pub fn try_new() -> Result<Self, String> {
+    pub fn load() -> Result<Self, String> {
         let libs = Arc::new(Libs::load()?);
         Ok(Self {
             libs,
+            lost: false,
             wayland: None,
             display: None,
             compile: Arc::new(Mutex::new(None)),
@@ -376,7 +384,12 @@ impl Gles3Backend {
         // SAFETY: `surface` and the context belong to `d.display`; the
         // context is only current on this thread.
         let ok = unsafe { (egl.eglMakeCurrent)(d.display, surface, surface, d.context) };
-        assert_eq!(ok, EGL_TRUE, "eglMakeCurrent failed: {:#x}", egl_error(egl));
+        if ok != EGL_TRUE {
+            let error = egl_error(egl);
+            assert_eq!(error, EGL_CONTEXT_LOST, "eglMakeCurrent failed: {error:#x}");
+            self.lost = true;
+            return;
+        }
         self.current = Some(surface);
     }
 
@@ -1731,8 +1744,8 @@ impl GpuBackend for Gles3Backend {
                 }
             };
             let visual = match raw {
-                // SAFETY: the platform keeps the scanout alive with its window.
                 RawWindowHandle::Scanout { scanout } => {
+                    // SAFETY: the platform keeps the scanout alive with its window.
                     Some(fourcc(unsafe { (*scanout).format() }))
                 }
                 _ => None,
@@ -1876,6 +1889,9 @@ impl GpuBackend for Gles3Backend {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
+        if self.lost {
+            return None;
+        }
         let s = self.surfaces.get_mut(surface.into())?;
         s.region_set = false;
         let egl = s.egl;
@@ -1888,6 +1904,9 @@ impl GpuBackend for Gles3Backend {
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
+        if self.lost {
+            return;
+        }
         self.ctx();
         self.upload_uniforms(list.commands);
         self.reserve_instance_chunks(list);
@@ -1950,7 +1969,8 @@ impl GpuBackend for Gles3Backend {
             _ => unsafe { (egl.eglSwapBuffers)(d.display, s.egl) },
         };
         if ok != EGL_TRUE && egl_error(egl) == EGL_CONTEXT_LOST {
-            panic!("the GLES context was lost");
+            self.lost = true;
+            return;
         }
         if let (true, Native::Scanout(scanout)) = (ok == EGL_TRUE, &s.native) {
             // SAFETY: the platform keeps the scanout alive with its window;
@@ -1972,7 +1992,11 @@ impl GpuBackend for Gles3Backend {
         age.max(0) as u32
     }
 
-    fn device_lost(&mut self, surface: SurfaceId) {
+    fn is_lost(&self) -> bool {
+        self.lost
+    }
+
+    fn abandon_frame(&mut self, surface: SurfaceId) {
         // The swap chain is the driver's; nothing is held between frames.
         let _ = surface;
     }

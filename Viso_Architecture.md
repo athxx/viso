@@ -4206,8 +4206,8 @@ Build scanner 按 target profile 做资源转换，runtime 不再做格式转换
 - lazy load：第一次有节点显示时才读取与解码；
 - async decode：在 asset worker 上（无 worker 时在 idle 时间片内），上传在帧内；
 - eviction policy：无人显示的图片在 `images` 预算内保留，按最近显示时间逐出，显示中的从不释放（§50A.4）；
-- drawable 丢失：backend 的 `device_lost` 丢弃持有的 drawable、解开 retire 队列，持久资源保留，下一帧重新取 drawable；
-- device loss recreate（目标（尚未实现））：GPU device 本身丢失后重建 device 并从 asset table 重新上传；今天 D3D12 的 device removed 直接 panic，其余后端也不重建；
+- 放弃的帧：backend 的 `abandon_frame` 丢弃持有的 drawable、解开 retire 队列，持久资源保留，下一帧重新取 drawable；
+- device loss recreate：backend 报告 `is_lost()` 后，facade 下一帧放下窗口的 GPU 状态，用 `try_create_device` 开新 device（打不开时退避重试），asset table 的 texture/model 全部忘掉，再从保留的编码字节（无 origin 的资源）或 origin 重新解码、上传；等待期间节点按原尺寸画空（Viso_Rendering.md §6.4）；
 - hot reload。
 
 ---
@@ -4747,7 +4747,7 @@ InvariantError 框架内部 bug
 - UserError：`viso-project` 的 `ConfigDiagnostic`（`C####`）、CLI usage error（exit 2）；
 - CompileError：`viso_dsl::diag::Diagnostic`（`E1xxx`–`E9xxx`），shader IR 的 `viso_shader::diag::Diagnostic`；
 - RuntimeError：behavior fault `E7101`–`E7106`（只影响出错的 handler）、跨帧 effect 环 `E4202`、`BudgetExceeded`、service 的 `ServiceError`；
-- DeviceError：`GpuBackend::device_lost` 重建 surface 资源，WebGPU 的 `lost` promise；
+- DeviceError：`GpuBackend::abandon_frame` 放弃未 present 的帧；`GpuBackend::is_lost` 报告 device 丢失（D3D12 removed/reset、Vulkan `VK_ERROR_DEVICE_LOST`、WebGPU `lost` promise、EGL context lost、Metal device removed），facade 在新 device 上重建窗口；
 - InvariantError：Debug panic，Release 尽量输出上下文并安全终止/降级，不 silent corruption。
 
 ### 62.1 Diagnostics 统一结构

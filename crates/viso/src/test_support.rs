@@ -172,6 +172,11 @@ impl<A: Application> DrivenApp<A> {
         Some((w, h, gpu.backend.read_pixels_bgra8(surface)))
     }
 
+    /// How many devices the launch window lost and drew on anew.
+    pub fn devices_replaced(&self) -> u32 {
+        self.driver.windows[0].devices_replaced
+    }
+
     /// How much each layer recomputed on the first window's most recent
     /// frame. A pure TRANSFORM animation frame has `laid_out == 0` yet
     /// `painted > 0` — the observable proof that world moved without a
@@ -424,4 +429,30 @@ thread_local! {
 /// submit, or stops with `None`.
 pub fn probe_frames(probe: Option<FrameProbe>) {
     FRAME_PROBE.with(|p| *p.borrow_mut() = probe);
+}
+
+thread_local! {
+    static LOSE_DEVICE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Loses the device of the window this thread's next drive submits a frame
+/// on after `submits` frames, once, as a GPU reset would; `None` loses none.
+pub fn lose_device_after(submits: Option<u32>) {
+    LOSE_DEVICE.with(|l| l.set(submits));
+}
+
+/// Whether the frame just submitted is the one to lose the device after.
+#[cfg(feature = "headless")]
+pub(crate) fn device_lost_now() -> bool {
+    LOSE_DEVICE.with(|l| match l.get() {
+        Some(0) | None => false,
+        Some(1) => {
+            l.set(None);
+            true
+        }
+        Some(n) => {
+            l.set(Some(n - 1));
+            false
+        }
+    })
 }

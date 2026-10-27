@@ -34,14 +34,14 @@ use objc2_foundation::NSString;
 use objc2_io_surface::IOSurfaceRef;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
-    MTLCommandEncoder, MTLCommandQueue, MTLCompareFunction, MTLCompileOptions,
-    MTLCreateSystemDefaultDevice, MTLCullMode, MTLDepthStencilDescriptor, MTLDepthStencilState,
-    MTLDevice, MTLGPUFamily, MTLIndexType, MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat,
-    MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResourceOptions, MTLSamplerAddressMode,
-    MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState,
-    MTLScissorRect, MTLSize, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
-    MTLViewport, MTLWinding,
+    MTLCommandBufferError, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+    MTLCompareFunction, MTLCompileOptions, MTLCreateSystemDefaultDevice, MTLCullMode,
+    MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLGPUFamily, MTLIndexType,
+    MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
+    MTLRenderPipelineState, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor,
+    MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState, MTLScissorRect, MTLSize,
+    MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport, MTLWinding,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer, CATransaction};
 use viso_handle::{ExternalImage, RawWindowHandle};
@@ -263,6 +263,9 @@ pub struct MetalBackend {
     /// this via `fetch_max`; `begin_frame` reads it to build a [`Fence`] and
     /// reclaim everything parked at or below it.
     completed: Arc<AtomicU64>,
+    /// Set by a completion handler whose command buffer failed because the
+    /// device was removed.
+    lost: Arc<AtomicBool>,
     /// Reused across `begin_frame` calls to drain the retire queue without a
     /// per-frame heap allocation.
     reclaim_scratch: Vec<Retired>,
@@ -322,13 +325,17 @@ impl MetalBackend {
     /// Panics if no Metal device is available (Metal is required on the macOS
     /// path; there is no software fallback here — that is [`CpuRaster`]).
     pub fn new() -> Self {
-        let device = MTLCreateSystemDefaultDevice().expect("no system default Metal device");
-        let queue = device
-            .newCommandQueue()
-            .expect("failed to create a Metal command queue");
+        Self::try_new().expect("no system default Metal device with a command queue")
+    }
+
+    /// Create the backend on the system default Metal device, or `None` when
+    /// there is none (an external GPU unplugged and no other present).
+    pub fn try_new() -> Option<Self> {
+        let device = MTLCreateSystemDefaultDevice()?;
+        let queue = device.newCommandQueue()?;
         let max_texture_size = 16384;
         let sampled = sampled_formats(&device);
-        Self {
+        Some(Self {
             device,
             queue,
             buffers: SlotMap::new(),
@@ -365,7 +372,8 @@ impl MetalBackend {
                 slots: Default::default(),
             }),
             clock_reported: 0,
-        }
+            lost: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// Resolve a buffer handle, panicking on a stale/unknown one (an internal
@@ -1057,6 +1065,9 @@ impl GpuBackend for MetalBackend {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
+        if self.is_lost() {
+            return None;
+        }
         // Free slots parked by frames the GPU has since finished. (Reclamation is
         // gated by the completion fence, not the epoch, so it is safe to do before
         // knowing whether this acquire succeeds.)
@@ -1089,6 +1100,9 @@ impl GpuBackend for MetalBackend {
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
+        if self.is_lost() {
+            return;
+        }
         autoreleasepool(|_| {
             for pass in list.passes {
                 self.encode_pass(pass, &list.commands[pass.command_range()]);
@@ -1099,6 +1113,7 @@ impl GpuBackend for MetalBackend {
     fn present(&mut self, frame: Frame) {
         let epoch = self.current_epoch.0;
         let completed = Arc::clone(&self.completed);
+        let lost = Arc::clone(&self.lost);
         let s = self.surface_mut(frame.surface);
         if let Some(drawable) = s.current.take() {
             autoreleasepool(|_| {
@@ -1107,18 +1122,30 @@ impl GpuBackend for MetalBackend {
                     .commandBuffer()
                     .expect("failed to create a command buffer for present");
                 // Raise the shared completion counter to this frame's epoch when
-                // the GPU finishes it. The block runs on a Metal-owned background
-                // thread, so it may only touch the atomic — `fetch_max` keeps the
-                // counter monotonic under out-of-order handler invocation. The
-                // next `begin_frame` reads it to reclaim parked slots.
+                // the GPU finishes it, and note a device removed under it. The
+                // block runs on a Metal-owned background thread, so it may only
+                // touch the atomics — `fetch_max` keeps the counter monotonic
+                // under out-of-order handler invocation. The next `begin_frame`
+                // reads it to reclaim parked slots.
                 let handler =
-                    RcBlock::new(move |_cb: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                    RcBlock::new(move |cb: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
+                        // SAFETY: Metal hands the handler the command buffer it
+                        // completed, live for the call.
+                        let cb = unsafe { cb.as_ref() };
+                        if cb.status() == MTLCommandBufferStatus::Error
+                            && cb.error().is_some_and(|e| {
+                                e.code() as usize == MTLCommandBufferError::DeviceRemoved.0
+                            })
+                        {
+                            lost.store(true, Ordering::Release);
+                        }
                         completed.fetch_max(epoch, Ordering::Release);
                     });
                 // SAFETY: `handler` is a valid block matching `MTLCommandBufferHandler`
                 // (`Fn(NonNull<ProtocolObject<dyn MTLCommandBuffer>>)`); Metal copies
                 // it and invokes it at most once, after which the `RcBlock` here is
-                // dropped. It captures only an `Arc<AtomicU64>`, which is `Send`.
+                // dropped. It captures only an `Arc<AtomicU64>` and an
+                // `Arc<AtomicBool>`, which are `Send`.
                 unsafe {
                     cmd.addCompletedHandler(RcBlock::as_ptr(&handler));
                 }
@@ -1128,7 +1155,11 @@ impl GpuBackend for MetalBackend {
         }
     }
 
-    fn device_lost(&mut self, surface: SurfaceId) {
+    fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
+    }
+
+    fn abandon_frame(&mut self, surface: SurfaceId) {
         // Drop any drawable held between `begin_frame` and `present`: the present
         // that would have signalled its epoch will never run, so it must not be
         // returned to the compositor.

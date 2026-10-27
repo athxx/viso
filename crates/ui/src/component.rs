@@ -3457,6 +3457,19 @@ impl NodeStore {
         }
     }
 
+    /// Forgets every GPU object the store's tables hold, unreleased, as when
+    /// the device they were made on is lost: the textures and models its
+    /// assets were uploaded as, and what the renderer held of its 3D scenes.
+    /// The nodes showing an asset draw nothing, at the size they drew, until
+    /// it is decoded and uploaded into the next device; each scene is filled
+    /// afresh.
+    pub fn forget_device(&mut self) {
+        for resource in self.assets.forget_device() {
+            self.refresh_asset(resource);
+        }
+        self.scenes.forget_renderer();
+    }
+
     /// Records `texture`, uploaded from `resource`'s raster at `revision`, and
     /// rewrites the nodes showing it. Returns the texture for the caller to
     /// release once no frame in flight draws it: the one replaced, or `texture`

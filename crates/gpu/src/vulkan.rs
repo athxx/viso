@@ -43,6 +43,7 @@
 //!   uniform block. Like the built-ins, a program's SPIR-V flips clip-space y
 //!   in its vertex stage.
 
+use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_void};
 use std::ffi::CString;
 use std::io::Cursor;
@@ -281,6 +282,9 @@ pub struct VulkanBackend {
     /// The validation-error counter the debug messenger increments; boxed so its
     /// address stays fixed while the messenger holds it.
     validation_errors: Box<AtomicU32>,
+    /// Set once a submit, acquire, present or fence wait reports
+    /// `VK_ERROR_DEVICE_LOST`.
+    lost: Cell<bool>,
     physical: vk::PhysicalDevice,
     memory_props: vk::PhysicalDeviceMemoryProperties,
     device: ash::Device,
@@ -692,6 +696,7 @@ impl VulkanBackend {
             surface_fn,
             debug,
             validation_errors,
+            lost: Cell::new(false),
             physical,
             memory_props,
             device,
@@ -1816,12 +1821,14 @@ impl VulkanBackend {
         // chunks, so both may be reset and re-recorded.
         unsafe {
             if slot.submitted {
-                self.device
-                    .wait_for_fences(&[slot.fence], true, u64::MAX)
-                    .expect("wait for a frame slot");
-                self.device
-                    .reset_fences(&[slot.fence])
-                    .expect("reset a frame fence");
+                match self.device.wait_for_fences(&[slot.fence], true, u64::MAX) {
+                    Ok(()) => self
+                        .device
+                        .reset_fences(&[slot.fence])
+                        .expect("reset a frame fence"),
+                    Err(vk::Result::ERROR_DEVICE_LOST) => self.lost.set(true),
+                    Err(e) => panic!("wait for a frame slot: {e}"),
+                }
                 slot.submitted = false;
             }
             if let Some(clock) = &mut self.clock {
@@ -1906,9 +1913,11 @@ impl VulkanBackend {
             self.device
                 .end_command_buffer(slot.draw)
                 .expect("end the draw command buffer");
-            self.device
-                .queue_submit(self.queue, &infos, slot.fence)
-                .expect("Vulkan queue submit failed");
+            match self.device.queue_submit(self.queue, &infos, slot.fence) {
+                Ok(()) => {}
+                Err(vk::Result::ERROR_DEVICE_LOST) => self.lost.set(true),
+                Err(e) => panic!("Vulkan queue submit failed: {e}"),
+            }
         }
         slot.submitted = true;
         slot.epoch = epoch;
@@ -3310,7 +3319,7 @@ impl GpuBackend for VulkanBackend {
         }
         // Abandoning an open frame also idles the device.
         if self.acquired.is_some() {
-            self.device_lost(id);
+            self.abandon_frame(id);
         } else {
             self.submit(None, None);
             // SAFETY: waiting for the device to idle has no preconditions.
@@ -3341,11 +3350,14 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
+        if self.lost.get() {
+            return None;
+        }
         self.reclaim_completed();
         if self.acquired.is_some() {
             // A frame begun and never presented: drop it as a lost frame.
             let open = self.acquired.map(|a| a.surface).expect("checked");
-            self.device_lost(open);
+            self.abandon_frame(open);
         }
         if self.surface(surface).stale && !self.rebuild_swapchain(surface) {
             return None;
@@ -3370,6 +3382,10 @@ impl GpuBackend for VulkanBackend {
                 self.surface_mut(surface).stale = true;
                 return None;
             }
+            Err(vk::Result::ERROR_DEVICE_LOST) => {
+                self.lost.set(true);
+                return None;
+            }
             Err(e) => panic!("Vulkan swapchain acquire failed: {e}"),
         };
         let presented = self.surface(surface).images[image as usize].presented > 0;
@@ -3390,6 +3406,9 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
+        if self.lost.get() {
+            return;
+        }
         self.ensure_recording();
         for pass in list.passes {
             self.record_pass(pass, &list.commands[pass.command_range()]);
@@ -3486,11 +3505,16 @@ impl GpuBackend for VulkanBackend {
             | Err(vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 self.surface_mut(frame.surface).stale = true;
             }
+            Err(vk::Result::ERROR_DEVICE_LOST) => self.lost.set(true),
             Err(e) => panic!("Vulkan present failed: {e}"),
         }
     }
 
-    fn device_lost(&mut self, _surface: SurfaceId) {
+    fn is_lost(&self) -> bool {
+        self.lost.get()
+    }
+
+    fn abandon_frame(&mut self, _surface: SurfaceId) {
         if let Some(acq) = self.acquired.take() {
             // The acquired image is abandoned: submit only the uploads, waiting on
             // the acquire so its semaphore is consumed, and rebuild the swapchain

@@ -181,11 +181,11 @@ fn steady_state_retires_nothing() {
     assert_eq!(gpu.retired_count(), 0);
 }
 
-/// `device_lost` must not strand a parked buffer: a backend that loses its device
-/// mid-frame signals the current epoch and drains, so a buffer retired in an
-/// in-flight frame is freed rather than leaked when no further `begin_frame` comes.
+/// `abandon_frame` must not strand a parked buffer: a frame given up mid-way
+/// signals the current epoch and drains, so a buffer retired in it is freed
+/// rather than leaked when no further `begin_frame` comes.
 #[test]
-fn device_loss_drains_parked_buffers() {
+fn an_abandoned_frame_drains_parked_buffers() {
     let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 16, 16);
     let mut pool: InstancePool<QuadInstance> = InstancePool::new(BufferUsage::INSTANCE, "quads");
@@ -194,15 +194,15 @@ fn device_loss_drains_parked_buffers() {
     pool.sync(&mut gpu, &frame(3));
     let cap0 = pool.capacity();
 
-    // Grow in an in-flight frame, then lose the device before presenting.
+    // Grow in an in-flight frame, then abandon it before presenting.
     gpu.begin_frame(surface).expect("acquire frame 1");
     pool.sync(&mut gpu, &frame(cap0 + 1));
     assert_eq!(gpu.retired_count(), 1);
 
-    gpu.device_lost(surface);
+    gpu.abandon_frame(surface);
     assert_eq!(
         gpu.retired_count(),
         0,
-        "device loss drains the stalled queue rather than leaking it"
+        "an abandoned frame drains the stalled queue rather than leaking it"
     );
 }

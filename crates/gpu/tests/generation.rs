@@ -247,11 +247,11 @@ fn destroying_a_stale_handle_is_a_no_op() {
     gpu.write_buffer(live, 0, &[2u8; 64]);
 }
 
-// --- Surface lifecycle: device loss, resize, out-of-date acquire -------------
+// --- Surface lifecycle: abandoned frames, resize, out-of-date acquire -------------
 //
 // `begin_frame` is fallible: a `None` acquire is a transient skip that must not
 // advance the epoch, or it would park a frame no `present` ever completes and
-// stall the retire queue behind it. `device_lost` exists to break exactly that
+// stall the retire queue behind it. `abandon_frame` exists to break exactly that
 // stall — dropping the held drawable and treating the current epoch as finished
 // so parked slots reclaim. `resize_surface` re-lays-out the surface without
 // leaking the drawable it may have been holding. Driven through the public API
@@ -259,10 +259,10 @@ fn destroying_a_stale_handle_is_a_no_op() {
 
 /// A frame opened but abandoned — presented via neither `present` nor a clean
 /// second `begin_frame` — would leave the fence one epoch behind forever, so a
-/// slot retired in that frame could never reclaim. `device_lost` treats the
+/// slot retired in that frame could never reclaim. `abandon_frame` treats the
 /// current epoch as finished and drains the stalled queue.
 #[test]
-fn device_lost_unblocks_a_stalled_retire_queue() {
+fn an_abandoned_frame_unblocks_a_stalled_retire_queue() {
     let mut gpu = CpuRaster::new();
     let surface = gpu.create_surface(RawWindowHandle::Headless, 8, 8);
 
@@ -286,12 +286,12 @@ fn device_lost_unblocks_a_stalled_retire_queue() {
         "without completion the parked slot cannot reclaim"
     );
 
-    // Recover: `device_lost` signals the current epoch complete and drains.
-    gpu.device_lost(surface);
+    // Recover: `abandon_frame` signals the current epoch complete and drains.
+    gpu.abandon_frame(surface);
     assert_eq!(
         gpu.retired_count(),
         0,
-        "device_lost treats the current epoch as finished and reclaims"
+        "abandon_frame treats the current epoch as finished and reclaims"
     );
 
     // The slot is back on the free-list: the next create reuses it at a bumped

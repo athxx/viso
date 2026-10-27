@@ -339,6 +339,10 @@ pub(crate) struct WindowState {
     /// The revision of the store's asset table the app last served: a frame
     /// that moved nothing in it serves nothing.
     pub(crate) assets_served: u64,
+    /// The device was lost and no new one opened yet.
+    pub(crate) lost_gpu: Option<LostGpu>,
+    /// How many lost devices were replaced.
+    pub(crate) devices_replaced: u32,
     /// What the window's renderer holds of the programs its nodes paint
     /// with.
     pub(crate) shaders: shaders::InstalledShaders,
@@ -412,6 +416,15 @@ pub(crate) struct GpuState {
     pub(crate) surface: Option<SurfaceId>,
     /// Current surface size in physical pixels `(width, height)`.
     pub(crate) size: (u32, u32),
+}
+
+/// A window waiting for a device to replace the one it lost.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LostGpu {
+    /// How many times none opened.
+    pub(crate) tries: u32,
+    /// When to try again.
+    pub(crate) due: viso_runtime::Instant,
 }
 
 /// The loop ended — the last window closed, or a quit broke the pump with

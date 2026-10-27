@@ -440,10 +440,10 @@ Device loss 分两级，行为固定：
 
 | 级别 | 触发 | 行为 |
 |---|---|---|
-| Surface / drawable loss | GPU reset、driver restart、display reconfiguration、abandoned frame | `GpuBackend::device_lost(surface)`：丢弃持有的 drawable；把当前 epoch 视为完成以解除 RetireQueue 阻塞；下一次 `begin_frame` 重新 acquire。Persistent buffer/texture/pipeline 保留。 |
-| Full device loss | 设备被移除/重建 | 旧 device 的所有 GPU handle 失效（generation 检查使其 resolve 为 `None`，不得命中新对象）；Renderer 从 retained CPU stores（PrimitiveStore、path geometry、image source、glyph source）重建 GPU residency，从 PipelineManifest 重建 pipeline；retained scene 状态不丢失；恢复后第一帧允许 full upload，并计入 counters |
+| Abandoned frame | `begin_frame` 后没有 `present` | `GpuBackend::abandon_frame(surface)`：丢弃持有的 drawable；把当前 epoch 视为完成以解除 RetireQueue 阻塞；下一次 `begin_frame` 重新 acquire。Persistent buffer/texture/pipeline 保留。 |
+| Full device loss | GPU reset、driver 更新或重启、外接 GPU 拔出：D3D12 `DXGI_ERROR_DEVICE_REMOVED`/`RESET`、Vulkan `VK_ERROR_DEVICE_LOST`、WebGPU `device.lost`、EGL `EGL_CONTEXT_LOST`、Metal command buffer 的 `DeviceRemoved` | backend 记下丢失，`GpuBackend::is_lost()` 为真：此后 `begin_frame` 为 `None`、encode 丢弃，backend 可安全 drop。facade 不再在它上面建任何东西，在下一帧开头放下窗口的整份 GPU 状态（backend、Renderer、glyph atlas），不释放旧 handle；`viso_gpu::try_create_device()` 开新 device（打不开时按 250 ms 起、翻倍到 4 s 重试，期间窗口不画；浏览器里异步向 WebGPU 要新 device）；在新 device 上重建 surface 与 Renderer，text 重新 shape，asset table 的 texture/model 全部忘掉后从保留的编码字节（无 origin 的资源）或 origin 重新解码上传，等待期间节点按原尺寸画空；3D scene slot 标为未填、由 filler 重画；brush program 重新安装；整棵树 PAINT。retained tree 与 state 不丢失。 |
 
-Full device loss 的重建路径必须有 headless 模拟测试（§32）。
+Full device loss 的重建路径有 headless 测试：`CpuRaster::lose_device` 模拟丢失，窗口在新 device 上画出与未丢失时逐字节相同的帧（`crates/viso/tests/device_loss.rs`）。D3D12 另有 `D3D12Backend::remove_device`，在真机上触发真实 removal。
 
 ## 6.5 Resource generation
 
@@ -1727,7 +1727,7 @@ Compute Lane 只有在测得 crossover 点后才启用默认 heuristic。测试 
 | degenerate geometry / NaN | math `legality.rs` tests + golden |
 | DPI scaling、surface recreation | gpu surface tests（`metal_uikit_surface.rs` 等） |
 | resource lifetime stress、generation | `gpu/tests/generation.rs`、`render/tests/fence_recycle.rs` |
-| device-loss simulation | headless backend（full device loss 路径待建，§6.4） |
+| device-loss simulation | headless backend：`CpuRaster::lose_device`（§6.4） |
 | ABI | `gpu_instance_compile_fail.rs`、`instance_abi_frozen.rs` |
 
 Path/geometry 还应有 fuzz/property tests。Unsafe/SIMD kernel 必须与 scalar oracle 做等价测试（§23.3）。

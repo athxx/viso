@@ -792,7 +792,7 @@ The RHI is one static `GpuBackend` per target (`crates/gpu/src/backend.rs`) with
 ```text
 Buffer / Texture / Sampler / Pipeline / BindGroup / Surface   (create / write / destroy)
 begin_frame -> encode(DrawList) -> present / present_with_damage
-Caps, device_lost
+Caps, abandon_frame, is_lost
 ```
 
 There is no command encoder, fence, barrier or compute API; pass order is the synchronization. Formats and ABI types live in the leaf `viso-gpu-abi`. Add an RHI concept only with a measured need.

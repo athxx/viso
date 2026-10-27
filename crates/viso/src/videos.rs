@@ -176,6 +176,17 @@ impl<P: Play> Videos<P> {
         }
     }
 
+    /// Forgets every video's texture, unreleased, as when the device holding
+    /// it is lost: the next picture goes into a texture of the next device,
+    /// asked again whether it takes pictures where they lie.
+    pub(crate) fn forget_device(&mut self) {
+        for p in &mut self.players {
+            p.texture = None;
+            p.refused = false;
+            p.copied = false;
+        }
+    }
+
     /// Plays again the videos [`suspend`](Self::suspend) paused that the app
     /// still asks to play; one it asked to pause meanwhile stays paused.
     pub(crate) fn resume(&mut self, store: &NodeStore) {

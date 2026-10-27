@@ -214,6 +214,13 @@ pub(crate) struct AssetEntry {
     pub(crate) bytes: Option<AssetBytes>,
     /// Where its bytes are fetched from, when they are not at hand.
     pub(crate) origin: Option<AssetOrigin>,
+    /// The newest bytes offered of a resource with no origin, and their
+    /// revision, kept after they decode: what its texture or model is decoded
+    /// from again when the device holding it is lost.
+    pub(crate) source: Option<(ResourceRevision, AssetBytes)>,
+    /// The size of the picture it drew when its device was lost, drawn as
+    /// nothing until it is resident again.
+    pub(crate) lost: Option<[f32; 2]>,
     /// The newest revision that could not be read or did not decode.
     pub(crate) failed: Option<ResourceRevision>,
     /// The newest payload provided, and its revision: a vector's for as long
@@ -252,6 +259,8 @@ impl AssetEntry {
             offered,
             bytes: None,
             origin: None,
+            source: None,
+            lost: None,
             failed: None,
             payload: None,
             texture: None,
@@ -336,6 +345,9 @@ impl AssetTable {
             && (entry.bytes.is_none() || revision > entry.offered);
         if newer {
             entry.offered = revision;
+            if entry.origin.is_none() {
+                entry.source = Some((revision, bytes.clone()));
+            }
             entry.bytes = Some(bytes);
             self.revision += 1;
         }
@@ -646,7 +658,7 @@ impl AssetTable {
             }
             (_, Some(t)) => (AssetDraw::Raster(t.texture), t.size),
             (Some((_, payload)), None) => (AssetDraw::Nothing, payload.size()),
-            (None, None) => (AssetDraw::Nothing, [0.0; 2]),
+            (None, None) => (AssetDraw::Nothing, entry.lost.unwrap_or_default()),
         }
     }
 
@@ -672,6 +684,7 @@ impl AssetTable {
             entry.offered = revision;
         }
         entry.payload = Some((revision, payload));
+        entry.lost = None;
         self.unswept |= entry.users.is_empty();
         self.revision += 1;
         true
@@ -842,6 +855,41 @@ impl AssetTable {
         Some(old.texture)
     }
 
+    /// Forgets every texture and model the table holds, unreleased: the
+    /// device they were made on is gone. Each is decoded again — from the
+    /// bytes kept, or read again from its origin — and uploaded into the
+    /// window's next device; until then it draws nothing at the size it
+    /// drew. A video's picture is forgotten for its player to write anew.
+    /// Returns the resources that lost one.
+    pub(crate) fn forget_device(&mut self) -> Vec<ResourceId> {
+        let mut lost = Vec::new();
+        for (id, e) in &mut self.entries {
+            let size = e.texture.take().map(|t| t.size);
+            let model = e.model.take();
+            if size.is_none() && model.is_none() {
+                continue;
+            }
+            lost.push(*id);
+            if e.hosted.is_some() {
+                continue;
+            }
+            e.lost = size;
+            if e.bytes.is_none()
+                && e.payload.is_none()
+                && let Some((revision, bytes)) = &e.source
+                && *revision == e.offered
+            {
+                e.bytes = Some(bytes.clone());
+            }
+        }
+        self.retired.clear();
+        self.texture_bytes = 0;
+        if !lost.is_empty() {
+            self.revision += 1;
+        }
+        lost
+    }
+
     pub(crate) fn clear(&mut self) {
         if !self.entries.is_empty() {
             self.revision += 1;
@@ -942,6 +990,50 @@ mod tests {
         assert_eq!(store.assets_mut().evict_unshown(|t| released.push(t)), 1);
         assert_eq!(released, [TextureId::new(2)]);
         assert_eq!(store.assets().texture_bytes(), 64);
+    }
+
+    #[test]
+    fn a_texture_lost_with_its_device_is_decoded_again_from_the_bytes_kept() {
+        let (mut store, leaves, ids) = shown(2);
+        let located = ResourceId::of("far.png");
+        store.assets_mut().locate(
+            located,
+            AssetOrigin::Url("https://example.org/far.png".into()),
+        );
+        let r = ResourceRevision(1);
+        store
+            .assets_mut()
+            .offer(located, r, AssetBytes::Static(b"png"));
+        store.set_asset(leaves[1], located, AssetFit::Fill, None);
+        store.provide_asset(located, r, raster());
+        store.attach_texture(located, r, TextureId::new(9));
+        assert_eq!(store.assets().undecoded().count(), 0);
+
+        store.forget_device();
+        assert_eq!(store.assets().texture_bytes(), 0);
+        assert_eq!(store.assets().texture(ids[0]), None);
+        // The offered bytes decode again; the fetched ones are fetched again.
+        let undecoded: Vec<_> = store
+            .assets()
+            .undecoded()
+            .map(|(id, r, _)| (id, r))
+            .collect();
+        assert!(undecoded.contains(&(ids[0], r)), "{undecoded:?}");
+        assert!(!undecoded.iter().any(|(id, _)| *id == located));
+        assert!(store.assets().unread().any(|(id, ..)| id == located));
+        // Its node draws nothing meanwhile, at the size it drew.
+        match store.content_payload(leaves[0]) {
+            Some(Content::Asset { draw, natural, .. }) => {
+                assert_eq!(*draw, AssetDraw::Nothing);
+                assert_eq!([natural.x, natural.y], [4.0, 4.0]);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        store.provide_asset(ids[0], r, raster());
+        assert!(store.assets().unresident().any(|(id, ..)| id == ids[0]));
+        assert_eq!(store.attach_texture(ids[0], r, TextureId::new(5)), None);
+        assert_eq!(store.assets().texture(ids[0]), Some((r, TextureId::new(5))));
     }
 
     #[test]

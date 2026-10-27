@@ -292,9 +292,36 @@ Rules (as for `todo_features.md`):
   the version in a package (schema, and through `load_view` in view) and in a persisted value
   (behavior) get the error, and a `VPS1` value still loads. ende/schema/dev-protocol/dsl resolve
   tests pass, workspace check is clean, and clippy -D warnings is clean on the changed crates.
-- [ ] Recreate the GPU device after a loss (D3D12 removed or reset, `VK_ERROR_DEVICE_LOST`,
+- [x] Recreate the GPU device after a loss (D3D12 removed or reset, `VK_ERROR_DEVICE_LOST`,
   WebGPU `device.lost`) and re-upload from the asset tables. Verify by forcing a removal and
   checking that the next frame redraws without a panic.
+  — Built:
+  - The RHI's old `device_lost` is renamed `abandon_frame`, and the new `GpuBackend::is_lost`
+    reports a device that is gone. Each backend latches the loss from its API: D3D12
+    removed/reset at present; Vulkan `ERROR_DEVICE_LOST` from submit, acquire, present or a
+    fence wait; Metal command buffers that fail with `DeviceRemoved`; WebGPU `device.lost`;
+    GLES `EGL_CONTEXT_LOST`. Once lost, no frame begins on it and nothing is encoded.
+  - `try_create_device` opens a new device. In a browser it asks WebGPU for one
+    asynchronously.
+  - On loss the window drops its GPU state and its text stack, and forgets every GPU object
+    in its tables: asset textures and models, scene slots, brush programs, video textures.
+    It then rebuilds on the new device: it shapes its text again, re-decodes its assets from
+    the encoded bytes the table now keeps (or from their origin), and paints the whole tree.
+    While no device opens, it retries with a 0.25–4 s backoff.
+  - Replacing the renderer after a surface-format change now also reinstalls brush programs
+    and refills scenes.
+  - ADR 0056.
+
+  Verified:
+  - `tests/device_loss.rs` loses the headless device (`CpuRaster::lose_device`) after each
+    frame of a window showing text and a photo. Every run redraws on a new device, byte for
+    byte identical, with no panic. The test fails if either the asset forget or the text
+    re-shape is removed.
+  - A unit test in the ui asset table covers forget and re-decode.
+  - Clippy -D warnings is clean on host, windows-msvc, wasm32, and linux vulkan and gles.
+  - `check-deps` passes.
+  - Not run: a real removal on Windows (`D3D12Backend::remove_device` exists for that). Losses
+    first seen while creating a resource can still panic in the native backends' create paths.
 - [ ] Fixed-capacity `NodeStore` under the embedded profiles, sized from the footprint profile; a
   full store reports `ArenaFull` instead of panicking. Verify with an embedded-cpu headless test
   that overfills it.

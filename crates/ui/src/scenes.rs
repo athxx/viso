@@ -157,6 +157,17 @@ impl SceneSlots {
         }
     }
 
+    /// Forgets what the window's renderer held of every slot, as when it is
+    /// replaced or its device lost: each is marked not yet filled, so its
+    /// filler draws it afresh for the next renderer.
+    pub fn forget_renderer(&mut self) {
+        self.released.clear();
+        for entry in self.entries.iter_mut().flatten() {
+            entry.fresh = true;
+            entry.unsent = false;
+        }
+    }
+
     /// Hands the frame of `slot` over as its next revision: its node paints
     /// it and the renderer takes it.
     pub fn commit(&mut self, slot: SceneSlot) {

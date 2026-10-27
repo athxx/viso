@@ -408,6 +408,8 @@ pub struct D3D12Backend {
     info_queue: Option<ID3D12InfoQueue>,
     /// Errors the debug layer has reported, accumulated as they are drained.
     validation_errors: Cell<u32>,
+    /// Set once a present reports the device removed or reset.
+    lost: bool,
     root_signature: ID3D12RootSignature,
     /// The scene built-in's root signature: the shared one with its uniforms
     /// a constant-buffer view on the bind group's uniform buffer.
@@ -484,6 +486,18 @@ impl D3D12Backend {
     /// Panics if no adapter (not even WARP) supports Direct3D 12.
     pub fn new() -> Self {
         Self::try_new().expect("no usable Direct3D 12 device")
+    }
+
+    /// Removes the device, as a driver reset would: the next present reports
+    /// it removed and the backend [`is_lost`](GpuBackend::is_lost). For
+    /// exercising the recovery on a real device.
+    pub fn remove_device(&mut self) {
+        if let Ok(device) = self.device.cast::<ID3D12Device5>() {
+            // SAFETY: removing the device has no preconditions; every later
+            // call on it fails with `DXGI_ERROR_DEVICE_REMOVED`, as after a
+            // real removal.
+            unsafe { device.RemoveDevice() };
+        }
     }
 
     /// Create the backend, or `None` if Direct3D 12 is unavailable. Enables the
@@ -585,6 +599,7 @@ impl D3D12Backend {
             queue,
             info_queue,
             validation_errors: Cell::new(0),
+            lost: false,
             root_signature,
             scene_root_signature,
             srv_heap,
@@ -2502,7 +2517,7 @@ impl GpuBackend for D3D12Backend {
             return;
         }
         if self.acquired.is_some() {
-            self.device_lost(id);
+            self.abandon_frame(id);
         } else {
             self.submit();
             self.wait_idle();
@@ -2519,10 +2534,13 @@ impl GpuBackend for D3D12Backend {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
+        if self.lost {
+            return None;
+        }
         self.reclaim_completed();
         if let Some(open) = self.acquired.map(|a| a.surface) {
             // A frame begun and never presented: drop it as a lost frame.
-            self.device_lost(open);
+            self.abandon_frame(open);
         }
         if self.surface(surface).stale && !self.rebuild_swapchain(surface) {
             return None;
@@ -2552,6 +2570,9 @@ impl GpuBackend for D3D12Backend {
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
+        if self.lost {
+            return;
+        }
         self.ensure_recording();
         for pass in list.passes {
             self.record_pass(pass, &list.commands[pass.command_range()]);
@@ -2650,14 +2671,20 @@ impl GpuBackend for D3D12Backend {
         if hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET {
             // SAFETY: querying the removal reason has no preconditions.
             let reason = unsafe { self.device.GetDeviceRemovedReason() };
-            panic!("Direct3D 12 device removed: {reason:?}");
+            eprintln!("[viso] the Direct3D 12 device was removed: {reason:?}");
+            self.lost = true;
+            return;
         }
         if hr.is_err() {
             s.stale = true;
         }
     }
 
-    fn device_lost(&mut self, _surface: SurfaceId) {
+    fn is_lost(&self) -> bool {
+        self.lost
+    }
+
+    fn abandon_frame(&mut self, _surface: SurfaceId) {
         if let Some(acq) = self.acquired.take() {
             // The frame is abandoned: execute only the uploads and discard the
             // draw list (its allocator is reset when the slot reopens), leaving

@@ -473,19 +473,29 @@ pub trait GpuBackend {
         self.present(frame);
     }
 
-    /// Recover from a lost or reset device on `surface`.
+    /// Give up the frame begun on `surface` and not presented.
     ///
-    /// A device loss (GPU reset, driver restart, display reconfiguration) or an
-    /// abandoned frame invalidates any drawable held between
-    /// [`begin_frame`](Self::begin_frame) and [`present`](Self::present): the
-    /// present that would have signalled its epoch will never run, so the fence
-    /// would stall and parked slots would never reclaim. This hook drops the held
-    /// drawable and unblocks the retire queue by treating the current epoch as
+    /// A frame abandoned between [`begin_frame`](Self::begin_frame) and
+    /// [`present`](Self::present) leaves a drawable held and an epoch no present
+    /// will signal, so the fence would stall and parked slots would never
+    /// reclaim. This drops the held drawable and treats the current epoch as
     /// finished, so the next [`begin_frame`](Self::begin_frame) reclaims cleanly
-    /// and re-acquires a fresh drawable. Surface-owned GPU state is otherwise
-    /// re-derived lazily on the next frame; persistent resources (buffers,
-    /// textures, pipelines) survive, since a lost drawable does not free them.
-    fn device_lost(&mut self, surface: SurfaceId);
+    /// and acquires a fresh drawable. Persistent resources (buffers, textures,
+    /// pipelines) are untouched.
+    fn abandon_frame(&mut self, surface: SurfaceId);
+
+    /// Whether the device is gone: removed or reset under the process (a
+    /// driver update or restart, a GPU hang recovered by the OS, an external
+    /// GPU unplugged), as D3D12's `DXGI_ERROR_DEVICE_REMOVED`, Vulkan's
+    /// `VK_ERROR_DEVICE_LOST`, WebGPU's `device.lost`, EGL's
+    /// `EGL_CONTEXT_LOST` or a Metal command buffer's removed device report it.
+    ///
+    /// Every object the device made is gone with it. From then on no frame
+    /// begins ([`begin_frame`](Self::begin_frame) is `None`) and what is
+    /// encoded is dropped; dropping the backend is safe. The owner makes a new
+    /// device ([`try_create_device`](crate::try_create_device)) before creating
+    /// anything else, and builds again on it what it showed.
+    fn is_lost(&self) -> bool;
 
     /// Static device capabilities.
     fn caps(&self) -> &Caps;

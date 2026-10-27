@@ -19,7 +19,8 @@ use viso_view::profile::Span;
 use super::access_keys::{access_key_of, alt_access};
 use super::convert::{drag_out, lower_modifiers, outside_data, play};
 use super::window_state::{
-    drawn_menu_bar, to_platform_config, wrap_root_in_safe_area, wrap_root_with_caption,
+    drawn_menu_bar, native_handle, to_platform_config, wrap_root_in_safe_area,
+    wrap_root_with_caption,
 };
 use super::{AppDriver, SessionFonts, WindowState};
 use crate::{
@@ -910,6 +911,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         let Some(ws) = self.window_mut(window) else {
             return;
         };
+        // A lost device makes no surface: the frame replacing it does.
+        if ws.gpu_lost() {
+            cx.request_redraw(window);
+            return;
+        }
         let Some(gpu) = &mut ws.gpu else {
             return;
         };
@@ -927,6 +933,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             || gpu.backend.surface_color_space(surface) != gpu.renderer.color_space()
         {
             gpu.renderer = footprint::renderer(&mut gpu.backend, surface);
+            ws.shaders = crate::shaders::InstalledShaders::default();
+            ws.store.scenes_mut().forget_renderer();
         }
         gpu.surface = Some(surface);
         gpu.renderer.damage_all();
@@ -1204,6 +1212,14 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
                 // The window places that settled.
                 self.places.store_due(cx.frame_now());
+                // A window whose device was lost draws on a new one from this
+                // frame, once one opens.
+                for ws in &mut self.windows {
+                    if ws.gpu_lost() {
+                        let raw = native_handle(cx, ws.window);
+                        ws.recover_gpu(raw, &self.fonts, cx.frame_now());
+                    }
+                }
                 for ws in &mut self.windows {
                     // Arm any one-shot timers a handler requested this frame (a
                     // toast's auto-dismiss), then fire every timer whose deadline
@@ -1946,6 +1962,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 [0.1, 0.1, 0.1, 1.0],
                                 viewport,
                             );
+                            #[cfg(feature = "headless")]
+                            if crate::__test_support::device_lost_now() {
+                                gpu.backend.lose_device();
+                            }
                             #[cfg(any(feature = "hot-reload", feature = "headless"))]
                             if self.profiler.is_on() {
                                 let after = gpu.renderer.damage_stats();
@@ -2127,6 +2147,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     .chain(w.caret_due)
                     .chain(w.animation_due)
                     .chain(w.video_step.due)
+                    .chain(w.lost_gpu.map(|l| l.due))
             })
             .chain(self.places.deadline())
             .min()

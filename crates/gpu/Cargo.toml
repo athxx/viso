@@ -85,7 +85,7 @@ objc2 = "0.6"
 # Objective-C blocks: the command-buffer completion handler that advances the
 # frame fence when the GPU finishes a submission.
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSRange"] }
+objc2-foundation = { version = "0.3", features = ["NSError", "NSString", "NSRange"] }
 # `CGSize` / `CGFloat` for CAMetalLayer drawable-size and contents-scale. Pulled
 # in transitively by objc2-quartz-core; named directly so we can build the types.
 objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }

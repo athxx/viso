@@ -3,8 +3,9 @@
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
-use viso_gpu::GpuBackend;
+use viso_gpu::{Backend, GpuBackend};
 use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, TextEntry, WindowId};
 use viso_render::Rect;
 use viso_runtime::{Instant, RuntimeCx};
@@ -17,7 +18,7 @@ use viso_view::profile::Span;
 use viso_widgets::caption_bar;
 
 use super::access_keys::AccessKey;
-use super::{CARET_BLINK, CARET_IDLE, FieldKey, GpuState, SessionFonts, WindowState};
+use super::{CARET_BLINK, CARET_IDLE, FieldKey, GpuState, LostGpu, SessionFonts, WindowState};
 use crate::text_content::{self, ParagraphSlot, TextShaper};
 use crate::{
     WindowChrome, WindowConfig, app_menu, edit_menu, environment, footprint, playback, shaders,
@@ -120,6 +121,8 @@ impl WindowState {
             style_seen: 0,
             awaiting_first_frame: true,
             assets_served: 0,
+            lost_gpu: None,
+            devices_replaced: 0,
             shaders: shaders::InstalledShaders::default(),
             clock_origin: None,
             draws_clock: false,
@@ -191,61 +194,13 @@ impl WindowState {
 
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
-        // the renderer for its format. A headless window reports a
-        // `RawWindowHandle::Headless` (or no handle at all) — there is no
-        // surface to attach, and on a real-GPU target such as Metal
-        // `create_surface` would reject the non-native handle — so we stay
-        // `gpu = None` for the session and draw nothing. The retained tree below
-        // is built and driven regardless; this is the headless backend as a
-        // first-class path, not a degraded one.
-        let native_handle = match cx.raw_handle(window) {
-            // A headless build draws every window through the software raster,
-            // which takes the headless handle.
-            Some(RawWindowHandle::Headless) if cfg!(feature = "headless") => {
-                Some(RawWindowHandle::Headless)
-            }
-            Some(RawWindowHandle::Headless) | None => None,
-            Some(handle) => Some(handle),
-        };
+        // the renderer for its format.
+        let native_handle = native_handle(cx, window);
         // A browser without WebGPU keeps the window without a GPU surface.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         let native_handle = native_handle.filter(|_| viso_gpu::webgpu::is_prepared());
         if let Some(raw) = native_handle {
-            let mut backend = viso_gpu::create_device();
-            #[cfg(not(feature = "headless"))]
-            backend.set_cpu_workers(footprint::workers());
-            let surface = backend.create_surface(raw, w.max(1), h.max(1));
-            // Both the format and the color space come from the surface, so the
-            // renderer's intermediate targets are planned for the domain this
-            // window actually composites in.
-            let renderer = footprint::renderer(&mut backend, surface);
-
-            ws.gpu = Some(GpuState {
-                backend,
-                renderer,
-                surface: Some(surface),
-                size: (w.max(1), h.max(1)),
-            });
-            // Stand up the font stack now that a backend exists to allocate the
-            // atlas, then register the app's own faces (from `AppCx::load_font`)
-            // into it in call order — the first becomes the primary, ahead of any
-            // system fallback resolved later. Each face's bytes must be a raw sfnt
-            // (`.ttf`/`.otf`): the core knows nothing about compressed web fonts.
-            // A developer with WOFF2 bytes decompresses them to sfnt first with the
-            // standalone `viso-woff2` library, then passes the result here. A face
-            // whose bytes are not a valid sfnt is skipped, leaving the system
-            // default in place. An app that loaded no font gets an empty chain the
-            // first shape seeds from the system.
-            let mut shaper = TextShaper::new();
-            shaper.use_packaged_fonts(fonts.packaged);
-            for face in &fonts.loaded {
-                // Each window gets its own shaper, so hand it a fresh copy of the
-                // sfnt bytes rather than moving the shared registration out. A face
-                // whose bytes are not a valid sfnt is skipped, keeping the system
-                // default in place.
-                shaper.load_font(face.clone(), 0);
-            }
-            ws.text = Some(shaper);
+            ws.attach_gpu(viso_gpu::create_device(), raw, fonts);
         }
 
         // Build the retained UI tree once, now that we have a surface size. The
@@ -469,6 +424,8 @@ impl WindowState {
             || self.store.frame_clients_want_frame()
             || self.video_step.beating
             || self.draws_clock
+            // A device lost in the last frame is replaced in the next.
+            || self.gpu.as_ref().is_some_and(|g| g.backend.is_lost())
     }
 
     /// Whether the text worker still owes results a later frame commits.
@@ -533,6 +490,103 @@ impl WindowState {
             + r.transient_bytes
             + self.text.as_ref().map_or(0, TextShaper::atlas_bytes)
             + self.store.assets().texture_bytes()
+    }
+
+    /// Bring the window's GPU up on `backend`: a surface on the native window
+    /// `raw`, the renderer for the surface's format and color space, and the
+    /// text stack on that device, the session's fonts registered into it.
+    fn attach_gpu(&mut self, mut backend: Backend, raw: RawWindowHandle, fonts: &SessionFonts) {
+        let (w, h) = self.surface_size;
+        #[cfg(not(feature = "headless"))]
+        backend.set_cpu_workers(footprint::workers());
+        let surface = backend.create_surface(raw, w, h);
+        // Both the format and the color space come from the surface, so the
+        // renderer's intermediate targets are planned for the domain this
+        // window actually composites in.
+        let renderer = footprint::renderer(&mut backend, surface);
+        self.gpu = Some(GpuState {
+            backend,
+            renderer,
+            surface: Some(surface),
+            size: (w, h),
+        });
+        // Stand up the font stack now that a backend exists to allocate the
+        // atlas, then register the app's own faces (from `AppCx::load_font`)
+        // into it in call order — the first becomes the primary, ahead of any
+        // system fallback resolved later. Each face's bytes must be a raw sfnt
+        // (`.ttf`/`.otf`): the core knows nothing about compressed web fonts.
+        // A developer with WOFF2 bytes decompresses them to sfnt first with the
+        // standalone `viso-woff2` library, then passes the result here. A face
+        // whose bytes are not a valid sfnt is skipped, leaving the system
+        // default in place. An app that loaded no font gets an empty chain the
+        // first shape seeds from the system.
+        let mut shaper = TextShaper::new();
+        shaper.use_packaged_fonts(fonts.packaged);
+        for face in &fonts.loaded {
+            // Each window gets its own shaper, so hand it a fresh copy of the
+            // sfnt bytes rather than moving the shared registration out.
+            shaper.load_font(face.clone(), 0);
+        }
+        self.text = Some(shaper);
+    }
+
+    /// Whether the window's device was lost, its GPU state let go of and
+    /// waiting for a new one.
+    pub(crate) fn gpu_lost(&self) -> bool {
+        self.lost_gpu.is_some() || self.gpu.as_ref().is_some_and(|g| g.backend.is_lost())
+    }
+
+    /// Replaces a lost device, once a new one opens and the platform has a
+    /// native window `raw` to draw in. What the old device held — the window's
+    /// GPU state, its glyph atlases, the textures, models and scenes its
+    /// tables uploaded, its programs — is let go of unreleased, and built again
+    /// on the new one from what the window keeps: the tree is painted whole,
+    /// its text shaped again, its assets decoded again. While no device opens
+    /// (the GPU still resetting, an external one unplugged), the window draws
+    /// nothing and retries, a quarter second after the first try and doubling
+    /// up to four. Returns whether it has a device again.
+    pub(crate) fn recover_gpu(
+        &mut self,
+        raw: Option<RawWindowHandle>,
+        fonts: &SessionFonts,
+        now: Instant,
+    ) -> bool {
+        if self.lost_gpu.is_none() {
+            eprintln!("[viso] the GPU device was lost; drawing the window again on a new one");
+            self.gpu = None;
+            self.text = None;
+            self.store.forget_device();
+            self.videos.forget_device();
+            self.shaders = shaders::InstalledShaders::default();
+            self.lost_gpu = Some(LostGpu { tries: 0, due: now });
+        }
+        let Some(lost) = &mut self.lost_gpu else {
+            return true;
+        };
+        if now < lost.due {
+            return false;
+        }
+        let Some(raw) = raw else {
+            return false;
+        };
+        let Some(backend) = viso_gpu::try_create_device() else {
+            lost.due = now + Duration::from_millis(250 << lost.tries.min(4));
+            lost.tries = lost.tries.saturating_add(1);
+            return false;
+        };
+        self.lost_gpu = None;
+        self.devices_replaced += 1;
+        self.attach_gpu(backend, raw, fonts);
+        // Every table is served again, uploading into the new device.
+        self.assets_served = u64::MAX;
+        for (&id, request) in &self.text_sources {
+            self.store.set_text_request(id, (**request).clone());
+        }
+        self.shape_pending_text();
+        if let Some(root) = self.root {
+            self.store.mark_dirty(root, DirtyClass::PAINT);
+        }
+        true
     }
 
     /// Give back every GPU cache the next frame can rebuild: idle pooled
@@ -1787,5 +1841,23 @@ mod fullscreen_tests {
             !store.hidden(cap),
             "leaving fullscreen restores the caption"
         );
+    }
+}
+
+/// The native window `window` draws in, when it has one a device can draw
+/// in. A headless window reports a `RawWindowHandle::Headless` (or no handle
+/// at all) — there is no surface to attach, and on a real-GPU target such as
+/// Metal `create_surface` would reject the non-native handle — so it stays
+/// without a GPU for the session and draws nothing; its retained tree is built
+/// and driven regardless: the headless backend is a first-class path, not a
+/// degraded one. A headless build draws every window through the software
+/// raster, which takes the headless handle.
+pub(crate) fn native_handle(cx: &RuntimeCx<'_>, window: WindowId) -> Option<RawWindowHandle> {
+    match cx.raw_handle(window) {
+        Some(RawWindowHandle::Headless) if cfg!(feature = "headless") => {
+            Some(RawWindowHandle::Headless)
+        }
+        Some(RawWindowHandle::Headless) | None => None,
+        Some(handle) => Some(handle),
     }
 }

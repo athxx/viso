@@ -267,6 +267,8 @@ pub struct CpuRaster {
     pass_layer: Vec<u16>,
     blitter: Option<Box<dyn Blitter>>,
     defer_layers: bool,
+    /// Set by [`lose_device`](Self::lose_device).
+    lost: bool,
 }
 
 impl Default for CpuRaster {
@@ -310,7 +312,21 @@ impl CpuRaster {
             pass_layer: Vec::new(),
             blitter: None,
             defer_layers: true,
+            lost: false,
         }
+    }
+
+    /// Loses the device as a removal would: from now on it
+    /// [`is_lost`](GpuBackend::is_lost), and no frame begins on it. Memory
+    /// never goes away under a CPU, so this is how its owner's recovery from a
+    /// lost device is exercised.
+    pub fn lose_device(&mut self) {
+        self.lost = true;
+    }
+
+    /// A CPU raster, as [`new`](Self::new): one is always at hand.
+    pub fn try_new() -> Option<Self> {
+        Some(Self::new())
     }
 
     /// Whether offscreen passes that are only composited are deferred to the
@@ -915,6 +931,9 @@ impl GpuBackend for CpuRaster {
     }
 
     fn begin_frame(&mut self, surface: SurfaceId) -> Option<Frame> {
+        if self.lost {
+            return None;
+        }
         // A resource destroyed in epoch N is reclaimed no earlier than the
         // begin_frame after N was presented. A framebuffer in memory is never
         // out of date, so acquisition always succeeds.
@@ -927,6 +946,9 @@ impl GpuBackend for CpuRaster {
     }
 
     fn encode(&mut self, list: &DrawList<'_>) {
+        if self.lost {
+            return;
+        }
         #[cfg(not(target_family = "wasm"))]
         let started = self.timed.is_some().then(std::time::Instant::now);
         plan_layers(
@@ -1025,7 +1047,11 @@ impl GpuBackend for CpuRaster {
             .map_or(0, |s| u32::from(s.presented))
     }
 
-    fn device_lost(&mut self, _surface: SurfaceId) {
+    fn is_lost(&self) -> bool {
+        self.lost
+    }
+
+    fn abandon_frame(&mut self, _surface: SurfaceId) {
         // Nothing to rebuild; but a frame opened and never presented must not
         // leave the fence behind, or parked slots would never reclaim.
         self.fence.signal(self.current_epoch);

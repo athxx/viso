@@ -268,8 +268,12 @@ impl GpuBackend for NagaMetal {
         self.metal.present(frame);
     }
 
-    fn device_lost(&mut self, surface: SurfaceId) {
-        self.metal.device_lost(surface);
+    fn is_lost(&self) -> bool {
+        self.metal.is_lost()
+    }
+
+    fn abandon_frame(&mut self, surface: SurfaceId) {
+        self.metal.abandon_frame(surface);
     }
 
     fn caps(&self) -> &Caps {

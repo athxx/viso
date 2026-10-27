@@ -415,6 +415,8 @@ async fn open() -> Option<Opened> {
 thread_local! {
     /// The device [`prepare`] opened, taken by the next [`WebGpuBackend::new`].
     static PREPARED: RefCell<Option<Opened>> = const { RefCell::new(None) };
+    /// Whether [`WebGpuBackend::try_new`] is waiting on a [`prepare`].
+    static PREPARING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Open the WebGPU device so a later synchronous [`WebGpuBackend::new`] (and so
@@ -862,6 +864,23 @@ impl WebGpuBackend {
         Self::from_opened(opened)
     }
 
+    /// Take the device [`prepare`] opened, or `None` while there is none: then
+    /// one is asked of the browser, for a call made once it answered to take.
+    /// This is how a lost device is replaced, the browser opening its
+    /// successor asynchronously.
+    pub fn try_new() -> Option<Self> {
+        if let Some(opened) = PREPARED.with(|p| p.borrow_mut().take()) {
+            return Some(Self::from_opened(opened));
+        }
+        if !PREPARING.with(|p| p.replace(true)) {
+            wasm_bindgen_futures::spawn_local(async {
+                prepare().await;
+                PREPARING.with(|p| p.set(false));
+            });
+        }
+        None
+    }
+
     /// Open a device and build the backend on it, or `None` without WebGPU.
     pub async fn request() -> Option<Self> {
         open().await.map(Self::from_opened)
@@ -1093,11 +1112,6 @@ impl WebGpuBackend {
     /// before reading this for work just submitted.
     pub fn validation_errors(&self) -> u32 {
         self.validation_errors.get()
-    }
-
-    /// Whether the device has been lost.
-    pub fn is_lost(&self) -> bool {
-        self.lost.get()
     }
 
     /// Whether `R32Float` textures are filterable on this device (the depth
@@ -2509,7 +2523,7 @@ impl GpuBackend for WebGpuBackend {
         }
         if let Some(open) = self.acquired.as_ref().map(|a| a.surface) {
             // A frame begun and never presented: drop it as a lost frame.
-            self.device_lost(open);
+            self.abandon_frame(open);
         }
         self.reclaim_completed();
         self.evict_idle_program_groups();
@@ -2557,7 +2571,11 @@ impl GpuBackend for WebGpuBackend {
         }
     }
 
-    fn device_lost(&mut self, _surface: SurfaceId) {
+    fn is_lost(&self) -> bool {
+        self.lost.get()
+    }
+
+    fn abandon_frame(&mut self, _surface: SurfaceId) {
         // Every encode has already been submitted; the abandoned canvas texture
         // is simply not drawn into again.
         self.acquired = None;

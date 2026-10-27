@@ -206,6 +206,15 @@ macro_rules! __linux_backend {
 pub fn create_device() -> Backend {
     Backend::new()
 }
+
+/// Create the device as [`create_device`] does, or `None` when there is none
+/// to open now: what replaces a device that was
+/// [lost](GpuBackend::is_lost) while the GPU is still gone (a reset not
+/// finished, an external GPU unplugged), or, in a browser, until the one it
+/// is asked for is opened. Asked again later, it may answer.
+pub fn try_create_device() -> Option<Backend> {
+    Backend::try_new()
+}
 pub use viso_gpu_abi::{
     AddressMode, AttrFormat, BindGroupDesc, BindGroupId, Binding, BlendMode, BufferDesc, BufferId,
     BufferUsage, BuiltinShader, Caps, ColorDomain, ColorSpace, CompareFunction, CpuDraw,
