@@ -171,14 +171,14 @@ pub fn lower(
         .iter()
         .map(|gm| gm.path.display(interner))
         .collect();
+    let unit_at = crate::resolve::unit_index(units);
     let modules: Vec<Option<(CompilationUnit, ModuleScope)>> = graph
         .modules()
         .iter()
         .enumerate()
         .map(|(i, gm)| {
             let resolved_module = resolved.get(i)?;
-            let module_text = gm.path.display(interner);
-            let cu = unit_for(units, &module_text, interner)?;
+            let cu = crate::resolve::compilation_unit_of(&units[*unit_at.get(&gm.path)?])?;
             let scope = ModuleScope::build(
                 &cu,
                 &resolved_module.table,
@@ -1402,19 +1402,6 @@ fn callee_symbols(refs: &[ResolvedRef], node: &SyntaxNode) -> Vec<SymbolId> {
         }
     }
     out
-}
-
-/// Recovers a compilation unit for a module-path text (a replica of the resolver's `unit_for`:
-/// the graph and units share one interner, so module paths render to the same text).
-fn unit_for(
-    units: &[SourceUnit],
-    module_text: &str,
-    interner: &NameInterner,
-) -> Option<CompilationUnit> {
-    units
-        .iter()
-        .find(|u| u.path.display(interner) == module_text)
-        .and_then(|u| CompilationUnit::cast(SyntaxNode::new_root(u.parse.root.clone())))
 }
 
 // --- Capability call graph builder ------------------------------------------------------

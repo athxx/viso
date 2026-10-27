@@ -169,6 +169,7 @@ pub fn resolve(
         .map(|unit| qualify(unit, graph, interner))
         .collect();
     let units = &*units;
+    let unit_at = unit_index(units);
     let prelude = Prelude::load(interner);
     // First pass: every module's public symbol table, so cross-module imports can be
     // resolved before any module body is walked.
@@ -177,7 +178,9 @@ pub fn resolve(
     let mut early_errors: Vec<Vec<Diagnostic>> = Vec::with_capacity(graph.modules().len());
     for gm in graph.modules() {
         let module_text = gm.path.display(interner);
-        let cu = unit_for(units, &module_text, interner);
+        let cu = unit_at
+            .get(&gm.path)
+            .and_then(|&at| compilation_unit_of(&units[at]));
         let (table, decls, errors) =
             build_symbol_table(cu.as_ref(), package, &module_text, interner);
         tables.push(table);
@@ -191,12 +194,10 @@ pub fn resolve(
     let members: MemberTables<'_> = tables.iter().flat_map(SymbolTable::member_tables).collect();
     let mut passes = Vec::with_capacity(graph.modules().len());
     for (i, gm) in graph.modules().iter().enumerate() {
-        let module_text = gm.path.display(interner);
-        let cu = unit_for(units, &module_text, interner);
+        let at = unit_at.get(&gm.path).copied();
+        let cu = at.and_then(|at| compilation_unit_of(&units[at]));
         let mut errors = std::mem::take(&mut early_errors[i]);
-        let heads = units
-            .iter()
-            .position(|u| u.path.display(interner) == module_text)
+        let heads = at
             .map(|at| std::mem::take(&mut qualified[at]))
             .unwrap_or_default();
         let package = Package {
@@ -309,23 +310,20 @@ pub(super) fn resolve_standalone(
 /// Every component's and system's member table in a package, by the owner's symbol.
 type MemberTables<'t> = std::collections::HashMap<SymbolId, &'t SymbolTable>;
 
-/// The compilation unit for a module path text, if a unit with that path parsed.
-///
-/// The graph and the units share one interner, so each unit's module path renders to
-/// the same `::`-joined text the graph keys modules by — a direct string match.
-fn unit_for(
+/// Each unit's index by its module path. The graph and the units share one
+/// interner, so a graph module's path is its unit's, segment for segment.
+pub(crate) fn unit_index(
     units: &[SourceUnit],
-    module_text: &str,
-    interner: &NameInterner,
-) -> Option<CompilationUnit> {
+) -> std::collections::HashMap<&super::ModulePath, usize> {
     units
         .iter()
-        .find(|u| u.path.display(interner) == module_text)
-        .and_then(compilation_unit_of)
+        .enumerate()
+        .map(|(at, u)| (&u.path, at))
+        .collect()
 }
 
 /// The typed compilation unit of a source unit, if its root casts.
-fn compilation_unit_of(unit: &SourceUnit) -> Option<CompilationUnit> {
+pub(crate) fn compilation_unit_of(unit: &SourceUnit) -> Option<CompilationUnit> {
     CompilationUnit::cast(SyntaxNode::new_root(unit.parse.root.clone()))
 }
 

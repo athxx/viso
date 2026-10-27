@@ -598,8 +598,10 @@ Rules (as for `todo_features.md`):
   - [x] Virtual-list rows with `Length::fill()` seem to take the surface's width rather than the
     list's (or the list doesn't clip), so a scroll damages the whole surface. Not a bug: the bench
     lays the list out as the root, and the root stretches to the surface.
-  - `resolve` calls `path.display()` per comparison, which allocates and is quadratic in the
-    module count.
+  - [x] `resolve` calls `path.display()` per comparison, which allocates and is quadratic in the
+    module count. Done: resolve and lowering index the units by module path once (one interner,
+    so paths compare by segment). Neutral at 110 modules (link 52.6 → 52.5 ms), with no
+    allocation per module pair.
   - A small component recompile costs about 1.7 ms of fixed cost (natives, prelude); profile it.
   - `JsonWriter` can't reuse its buffer, and `RollbackSession::receive` allocates two Vecs a
     packet.
