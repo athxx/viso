@@ -9,6 +9,7 @@
 //! - `ende_bin_decode_owned/event`         — one event decoded into its owned form;
 //! - `ende_bin_decode_borrowed/event`      — one event read in place, borrowing the input;
 //! - `ende_json_diagnostic_1k/write`       — 1k diagnostic objects through a `JsonWriter`;
+//! - `ende_json_diagnostic_1k/write_reused` — the same into one writer cleared each time;
 //! - `ende_json_diagnostic_1k/parse`       — the same document read by `JsonValue::parse`.
 //!
 //! Before timing, each prints the bytes a message takes and the heap
@@ -376,6 +377,12 @@ fn location(w: &mut JsonWriter, d: &Diagnostic, start: u64, end: u64) {
 /// The diagnostics as one JSON array of diagnostic objects.
 fn write_diagnostics(diagnostics: &[Diagnostic]) -> String {
     let mut w = JsonWriter::new();
+    write_into(&mut w, diagnostics);
+    w.into_string()
+}
+
+/// The diagnostics' array, written into `w` after what it holds.
+fn write_into(w: &mut JsonWriter, diagnostics: &[Diagnostic]) {
     w.begin_array();
     for d in diagnostics {
         w.begin_object();
@@ -389,13 +396,13 @@ fn write_diagnostics(diagnostics: &[Diagnostic]) -> String {
         w.string(&d.message);
         w.name("primary");
         w.begin_object();
-        location(&mut w, d, d.start, d.end);
+        location(w, d, d.start, d.end);
         w.end_object();
         w.name("related");
         w.begin_array();
         if let Some((start, end, label)) = d.related {
             w.begin_object();
-            location(&mut w, d, start, end);
+            location(w, d, start, end);
             w.name("message");
             w.string(label);
             w.end_object();
@@ -439,7 +446,6 @@ fn write_diagnostics(diagnostics: &[Diagnostic]) -> String {
         w.end_object();
     }
     w.end_array();
-    w.into_string()
 }
 
 fn json_diagnostics(c: &mut Criterion) {
@@ -462,12 +468,18 @@ fn json_diagnostics(c: &mut Criterion) {
     let (write_allocs, write_bytes) = per_run(4, || {
         black_box(write_diagnostics(black_box(&diagnostics)));
     });
+    let mut reused = JsonWriter::new();
+    let (reused_allocs, _) = per_run(4, || {
+        reused.clear();
+        write_into(&mut reused, black_box(&diagnostics));
+        black_box(reused.as_str());
+    });
     let (parse_allocs, parse_bytes) = per_run(4, || {
         black_box(JsonValue::parse(black_box(&text)).unwrap());
     });
     eprintln!(
         "ende_json_diagnostic_1k: {:.1} bytes/diagnostic ({} bytes); write {:.2} allocations/diagnostic ({write_bytes} bytes), \
-         parse {:.2} allocations/diagnostic ({parse_bytes} bytes); 1k CLI diagnostic objects as one array",
+         {reused_allocs} allocations a reused write, parse {:.2} allocations/diagnostic ({parse_bytes} bytes); 1k CLI diagnostic objects as one array",
         text.len() as f64 / N as f64,
         text.len(),
         write_allocs / N as f64,
@@ -477,6 +489,14 @@ fn json_diagnostics(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(text.len() as u64));
     g.bench_function("write", |b| {
         b.iter(|| write_diagnostics(black_box(&diagnostics)))
+    });
+    g.bench_function("write_reused", |b| {
+        let mut w = JsonWriter::new();
+        b.iter(|| {
+            w.clear();
+            write_into(&mut w, black_box(&diagnostics));
+            black_box(w.as_str().len())
+        })
     });
     g.bench_function("parse", |b| {
         b.iter(|| JsonValue::parse(black_box(&text)).unwrap())

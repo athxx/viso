@@ -39,6 +39,23 @@ impl JsonWriter {
         }
     }
 
+    /// A writer that writes into `buffer`, emptied first and its capacity kept.
+    #[inline]
+    pub fn with_buffer(mut buffer: String) -> Self {
+        buffer.clear();
+        Self {
+            out: buffer,
+            needs_comma: false,
+        }
+    }
+
+    /// Empties the writer for a new document, keeping its capacity.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.out.clear();
+        self.needs_comma = false;
+    }
+
     /// The JSON written so far.
     #[inline]
     pub fn as_str(&self) -> &str {
@@ -178,28 +195,53 @@ impl JsonWriter {
 /// `\u00XX` otherwise. All other characters, including non-ASCII UTF-8, pass
 /// through verbatim (valid in JSON).
 fn write_escaped(out: &mut String, value: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.reserve(value.len() + 2);
     out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                let code = c as u32;
+    let bytes = value.as_bytes();
+    let mut start = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        let escape = ESCAPE[byte as usize];
+        if escape == 0 {
+            continue;
+        }
+        // Only ASCII bytes escape, so `i` is a char boundary.
+        out.push_str(&value[start..i]);
+        start = i + 1;
+        match escape {
+            b'u' => {
                 out.push_str("\\u00");
-                out.push(HEX[((code >> 4) & 0xf) as usize] as char);
-                out.push(HEX[(code & 0xf) as usize] as char);
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0xf) as usize] as char);
             }
-            c => out.push(c),
+            short => {
+                out.push('\\');
+                out.push(short as char);
+            }
         }
     }
+    out.push_str(&value[start..]);
     out.push('"');
 }
+
+/// Per byte, 0 when it is written as is, else the letter after its `\`
+/// (`u` for a `\u00XX` escape).
+static ESCAPE: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut b = 0;
+    while b < 0x20 {
+        table[b] = b'u';
+        b += 1;
+    }
+    table[0x08] = b'b';
+    table[0x09] = b't';
+    table[0x0a] = b'n';
+    table[0x0c] = b'f';
+    table[0x0d] = b'r';
+    table[b'"' as usize] = b'"';
+    table[b'\\' as usize] = b'\\';
+    table
+};
 
 /// A tiny stack integer formatter so the JSON writer needs no allocation per
 /// number and no third-party dependency. `u64::MAX` and `i64::MIN` both fit in
@@ -333,5 +375,20 @@ mod tests {
             w.as_str(),
             "[-9223372036854775808,-1,0,18446744073709551615,1.5,null,null]"
         );
+    }
+
+    #[test]
+    fn a_cleared_writer_starts_a_new_document_in_the_same_buffer() {
+        let mut w = JsonWriter::with_buffer(String::from("stale"));
+        w.begin_array();
+        w.uint(1);
+        w.uint(2);
+        w.end_array();
+        assert_eq!(w.as_str(), "[1,2]");
+        let capacity = w.as_str().len();
+        w.clear();
+        w.string("a");
+        assert_eq!(w.as_str(), "\"a\"");
+        assert!(w.into_string().capacity() >= capacity);
     }
 }

@@ -30,6 +30,8 @@ pub(super) struct Stream {
     session: String,
     command: Option<String>,
     started: Instant,
+    /// The last event's line, kept for its capacity.
+    line: String,
 }
 
 impl Stream {
@@ -40,6 +42,7 @@ impl Stream {
             session: session_id(),
             command: command.map(str::to_string),
             started: Instant::now(),
+            line: String::new(),
         }
     }
 
@@ -362,7 +365,7 @@ impl Stream {
     }
 
     fn write(&mut self, kind: &str, payload: impl FnOnce(&mut JsonWriter)) {
-        let mut w = JsonWriter::new();
+        let mut w = JsonWriter::with_buffer(std::mem::take(&mut self.line));
         w.begin_object();
         w.name("schema");
         w.string(SCHEMA);
@@ -390,6 +393,7 @@ impl Stream {
         // A consumer that closed the pipe gets no more events; the exit code still
         // says how the command went.
         let _ = std::io::stdout().lock().write_all(line.as_bytes());
+        self.line = line;
     }
 }
 

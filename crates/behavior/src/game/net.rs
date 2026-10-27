@@ -32,7 +32,7 @@ use core::fmt;
 use viso_ende::{Decode, DecodeError, Decoder, Encode, Encoder, ProtocolTag};
 
 use super::{GameSnapshot, MAX_PLAYERS, Scheduler, TickInput};
-use crate::wire::{malformed, read_list};
+use crate::wire::malformed;
 
 /// How a [`RollbackSession`] plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +198,9 @@ const PACKET_INPUTS: usize = 128;
 /// The confirmed hashes kept, and how many recent ones a packet carries.
 const HASHES_KEPT: usize = 64;
 const PACKET_HASHES: usize = 4;
+/// The bytes a packet's input takes: its held, pressed and released bits and
+/// two words of axes.
+const INPUT_BYTES: usize = 5 * 8;
 
 /// A game played by several peers with rollback, this peer one player.
 pub struct RollbackSession {
@@ -435,17 +438,15 @@ impl RollbackSession {
         let from = dec.read_varint()?;
         let ack = dec.read_varint()?;
         let first = dec.read_varint()?;
-        let inputs = read_list(&mut dec, |dec| {
-            Ok(TickInput {
-                held: dec.read_u64()?,
-                pressed: dec.read_u64()?,
-                released: dec.read_u64()?,
-                axes: [dec.read_u64()?, dec.read_u64()?],
-            })
-        })?;
-        let hashes = read_list(&mut dec, |dec| Ok((dec.read_varint()?, dec.read_u64()?)))?;
-        if inputs.len() > PACKET_INPUTS {
+        let count = dec.read_count(usize::MAX)?;
+        if count > PACKET_INPUTS {
             return Err(malformed(&dec).into());
+        }
+        let inputs = dec.read_raw(count * INPUT_BYTES)?;
+        let hash_count = dec.read_count(PACKET_HASHES)?;
+        let mut hashes = [(0, 0); PACKET_HASHES];
+        for hash in &mut hashes[..hash_count] {
+            *hash = (dec.read_varint()?, dec.read_u64()?);
         }
         dec.finish()?;
         if build != self.build {
@@ -462,16 +463,17 @@ impl RollbackSession {
         let track = &mut self.tracks[peer as usize];
         track.acked = track.acked.max(ack.min(local_end));
         let known = track.end();
-        for (i, input) in inputs.into_iter().enumerate() {
-            let tick = first + i as u64;
-            if tick == track.end() {
-                track.inputs.push_back(input);
-            }
+        // The inputs from the first this peer lacks on; a packet starting past
+        // it leaves a gap and adds none.
+        if let Some(skip) = known.checked_sub(first) {
+            let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+            let inputs = inputs.chunks_exact(INPUT_BYTES).skip(skip);
+            track.inputs.extend(inputs.map(tick_input));
         }
         if track.end() > known {
             self.reconcile(peer as usize, known);
         }
-        for (tick, hash) in hashes {
+        for &(tick, hash) in &hashes[..hash_count] {
             self.check_hash(peer, tick, hash);
         }
         self.confirm();
@@ -588,5 +590,20 @@ impl fmt::Debug for RollbackSession {
             .field("confirmed", &self.confirmed)
             .field("stats", &self.stats)
             .finish_non_exhaustive()
+    }
+}
+
+/// A packet's input from its [`INPUT_BYTES`] bytes.
+fn tick_input(bytes: &[u8]) -> TickInput {
+    let word = |i: usize| {
+        let mut word = [0; 8];
+        word.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+        u64::from_le_bytes(word)
+    };
+    TickInput {
+        held: word(0),
+        pressed: word(1),
+        released: word(2),
+        axes: [word(3), word(4)],
     }
 }

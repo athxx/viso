@@ -606,8 +606,12 @@ Rules (as for `todo_features.md`):
     The prelude was parsed and resolved twice a compile (by resolve and by lowering), over half the
     time. Now each thread parses it once, and one compile resolves it once and lowers against that.
     hot_reload_small_component 1.17 → 0.50 ms.
-  - `JsonWriter` can't reuse its buffer, and `RollbackSession::receive` allocates two Vecs a
-    packet.
+  - [x] `JsonWriter` can't reuse its buffer, and `RollbackSession::receive` allocates two Vecs a
+    packet. `JsonWriter::with_buffer` and `clear` keep a buffer, and the CLI's event stream reuses
+    one line. A reused write of 1k diagnostics allocates nothing (was 20, 1 MB). Escaping now
+    copies unescaped runs whole, which halves the write (681 → 343 µs). `receive` reads the
+    inputs in place and the hashes into a fixed array: 0 allocations a packet (was 2, 104 B),
+    86.6 → 60.8 ns a round trip.
   - `DrivenApp` has no damage accessor.
 
   Verify each with its bench.
