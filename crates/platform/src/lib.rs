@@ -79,8 +79,8 @@ pub use accessibility::{
 pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, PasteReply};
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
-    LogicalRect, Loupe, PlatformCaps, PlatformError, TextEntry, WindowChrome, WindowConfig,
-    WindowId, WindowMode,
+    LogicalRect, Loupe, PlatformCaps, PlatformError, SurroundingText, TextEntry, WindowChrome,
+    WindowConfig, WindowId, WindowMode,
 };
 pub use cursor::{CursorError, CursorImage, CustomCursor, MAX_CURSOR_SIDE, ScaledCursor};
 pub use drop::{
@@ -89,9 +89,9 @@ pub use drop::{
 };
 pub use event::{
     AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
-    DisplayFeatureKind, GesturePhase, KeyCode, LogicalInsets, Modifiers, PointerButtons, PointerId,
-    PointerKind, PointerPhase, RawEvent, RawGesture, RawImePreedit, RawKey, RawPointer, RawScroll,
-    RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
+    DisplayFeatureKind, GesturePhase, ImeEdit, KeyCode, LogicalInsets, Modifiers, PointerButtons,
+    PointerId, PointerKind, PointerPhase, RawEvent, RawGesture, RawImeEdit, RawImePreedit, RawKey,
+    RawPointer, RawScroll, RawText, ScrollPhase, clipboard_shortcut, primary_is_logo,
 };
 pub use gamepad::{GamepadButton, GamepadEvent, GamepadId, GamepadInfo, GamepadState, Rumble};
 pub use handler::AppHandler;
@@ -247,6 +247,15 @@ pub trait PlatformApp {
     /// is and whether it takes a secret. `None` means no text field has
     /// focus: the IME is disabled for the window.
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>);
+
+    /// Tell the input method the text around the focused field's selection,
+    /// after [`set_text_entry`](Self::set_text_entry) and again as the text
+    /// or the selection changes. `None` means the field shows it none: a
+    /// secret, or a control that keeps its own document. What the input
+    /// method then makes of it arrives as [`RawEvent::ImeEdit`].
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&SurroundingText>) {
+        let _ = (window, text);
+    }
 
     /// Show or hide the on-screen keyboard. A no-op where there is none.
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool);

@@ -67,7 +67,7 @@ use crate::node::NodeId;
 use crate::number_format::NumberFormat;
 use crate::text_style::{FontSize, TextOverflow, TextSpan, TextStyle};
 use viso_render::{Rect, Rgba};
-use viso_runtime::InputKind;
+use viso_runtime::{ImeEdit, InputKind};
 use viso_text::caret::Caret;
 use viso_text::hit_test::HitTester;
 use viso_text::ime::{ImeComposition, Revision};
@@ -314,6 +314,8 @@ pub enum EditIntent {
     /// the composing state. `text` is the final segment (may differ from the last
     /// preedit). With no composition it is typed text.
     CommitCompose(String),
+    /// An input method's edit of the text around the caret.
+    Ime(ImeEdit),
     /// Take back the last undo step.
     Undo,
     /// Make the last undone step again.
@@ -353,6 +355,7 @@ impl EditIntent {
                 | EditIntent::Cut
                 | EditIntent::Compose { .. }
                 | EditIntent::CommitCompose(_)
+                | EditIntent::Ime(ImeEdit::Replace { .. } | ImeEdit::Recompose { .. })
                 | EditIntent::Undo
                 | EditIntent::Redo
                 | EditIntent::Step(_)
@@ -905,6 +908,7 @@ impl Buffer {
             EditIntent::SelectAt { x, y, unit } => self.select_at(placed, *x, *y, *unit),
             EditIntent::Compose { text, caret } => self.compose(text, *caret),
             EditIntent::CommitCompose(text) => self.commit_compose(text),
+            EditIntent::Ime(edit) => self.ime_edit(edit),
             EditIntent::Undo => self.walk_history(true),
             EditIntent::Redo => self.walk_history(false),
             EditIntent::Step(steps) => {
@@ -1552,6 +1556,105 @@ impl Buffer {
             caret -= 1;
         }
         self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + caret)));
+    }
+
+    /// Apply an input method's edit of the text around the caret. An offset
+    /// past the text or inside a character moves back to a boundary.
+    fn ime_edit(&mut self, edit: &ImeEdit) {
+        match edit {
+            ImeEdit::Replace { range, text } => {
+                let (start, end) = self.span(range.start, range.end);
+                self.replace_range(start, end, text);
+            }
+            ImeEdit::Recompose { range, text, caret } => {
+                let (start, end) = self.span(range.start, range.end);
+                self.end_composition();
+                self.history.close();
+                self.sel = Selection {
+                    anchor: TextPosition::downstream(start),
+                    focus: TextPosition::upstream(end),
+                };
+                self.compose(text, TextOffset(*caret));
+            }
+            ImeEdit::Select { anchor, focus } => {
+                self.history.close();
+                self.sel = Selection {
+                    anchor: TextPosition::downstream(self.boundary(*anchor)),
+                    focus: TextPosition::upstream(self.boundary(*focus)),
+                };
+            }
+        }
+    }
+
+    /// Byte `at`, within the text and on a `char` boundary.
+    fn boundary(&self, at: usize) -> TextOffset {
+        let mut at = at.min(self.text.len());
+        while !self.text.is_char_boundary(at) {
+            at -= 1;
+        }
+        TextOffset(at)
+    }
+
+    /// The ordered range between bytes `a` and `b`, on boundaries.
+    fn span(&self, a: usize, b: usize) -> (TextOffset, TextOffset) {
+        let (a, b) = (self.boundary(a), self.boundary(b));
+        (a.min(b), a.max(b))
+    }
+
+    /// Replace `[start, end)` with `s` as an input method's edit. A
+    /// composition the range keeps clear of goes on, moved with the text
+    /// before it; one it touches ends first. A selection the range keeps
+    /// clear of keeps its place; else the caret follows `s`.
+    fn replace_range(&mut self, start: TextOffset, end: TextOffset, s: &str) {
+        let composing = self
+            .composition
+            .is_active()
+            .then(|| self.composition.range());
+        if composing.is_some_and(|(c0, c1)| start < c1 && end > c0) {
+            self.end_composition();
+        }
+        let composing = self
+            .composition
+            .is_active()
+            .then(|| self.composition.range());
+        let Some(s) = self.admit(s, start, end) else {
+            return;
+        };
+        let (s0, s1) = self.sel.logical_range();
+        let outside = end < s0 || start > s1 || (start != end && (end <= s0 || start >= s1));
+        let kind = if composing.is_some() {
+            None
+        } else {
+            self.history.close();
+            Some(EditKind::Other)
+        };
+        let before = self.revision;
+        self.splice(start, end, &s, kind);
+        if self.revision == before {
+            return;
+        }
+        let by = s.len() as isize - (end.0 - start.0) as isize;
+        let moved = |p: TextPosition| {
+            if p.offset >= end {
+                TextPosition {
+                    offset: TextOffset(p.offset.0.saturating_add_signed(by)),
+                    ..p
+                }
+            } else {
+                p
+            }
+        };
+        if outside {
+            self.sel = Selection {
+                anchor: moved(self.sel.anchor),
+                focus: moved(self.sel.focus),
+            };
+        } else {
+            self.sel = Selection::caret(TextPosition::upstream(TextOffset(start.0 + s.len())));
+        }
+        if composing.is_some_and(|(c0, _)| c0 >= end) {
+            self.composition.shift(by, self.revision);
+        }
     }
 
     /// Finalize the composition: replace the range it stands for with the final

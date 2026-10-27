@@ -159,7 +159,6 @@ impl AccessBridge {
     }
 
     /// Every node last published.
-    #[cfg(feature = "headless")]
     pub(crate) fn published(&self) -> impl Iterator<Item = &AccessNode> {
         self.published.values()
     }

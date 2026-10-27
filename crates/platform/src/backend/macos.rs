@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 mod shell;
 
 use super::drive::Drive;
+use super::ime_text::ImeText;
 use super::macos_access::{MacAccess, Sink, wake_pump};
 use super::macos_clipboard;
 use super::macos_panel::{LayerScanout, emulation};
@@ -69,15 +70,15 @@ use objc2_foundation::{
 use crate::RawWindowHandle;
 use crate::clipboard::{ClipboardData, ClipboardKinds, ClipboardReply, PasteReply};
 use crate::control::{
-    ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, TextEntry,
-    WindowChrome, WindowConfig, WindowId,
+    ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, SurroundingText,
+    TextEntry, WindowChrome, WindowConfig, WindowId,
 };
 use crate::cursor::{CursorCache, CursorImage};
 use crate::drop::{DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop};
 use crate::event::{
     AcceptCell, Appearance, ClipboardShortcut, ColorScheme, CursorIcon, DisplayFeature,
-    DisplayFeatureKind, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawImePreedit,
-    RawKey, RawPointer, RawScroll, RawText, clipboard_shortcut,
+    DisplayFeatureKind, KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey,
+    RawPointer, RawScroll, clipboard_shortcut,
 };
 use crate::handler::AppHandler;
 use crate::locale;
@@ -987,6 +988,12 @@ impl PlatformApp for MacApp {
     fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         if let Some(win) = self.windows.iter().find(|w| w.id == window) {
             win.content_view.set_text_entry(entry);
+        }
+    }
+
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&SurroundingText>) {
+        if let Some(win) = self.windows.iter().find(|w| w.id == window) {
+            win.content_view.set_surrounding_text(text);
         }
     }
 
@@ -1943,15 +1950,15 @@ fn accel_to_key_equivalent(accel: Option<&Accel>) -> (String, Option<NSEventModi
 }
 
 /// Ivars for the content view: window identity, the shared queue, the current
-/// pointer-button mask, and the live IME composition string.
+/// pointer-button mask, and the text the input method edits.
 struct ViewIvars {
     window: WindowId,
     shared: Shared,
     /// Buttons currently held, as a [`PointerButtons`] mask.
     buttons: Cell<u8>,
-    /// The current IME composition (marked) text, echoed to the widget as a
-    /// preedit. Empty when no composition is active.
-    marked: RefCell<String>,
+    /// The text the input method edits: the focused field's around its
+    /// caret, and the composition under way.
+    ime: RefCell<ImeText>,
     /// Draggable caption regions for self-drawn chrome, logical points,
     /// top-left origin — the cache the app pushes down via
     /// [`PlatformApp::set_draggable_regions`](crate::PlatformApp::set_draggable_regions).
@@ -2347,21 +2354,21 @@ define_class!(
         }
     }
 
-    // The `NSTextInputClient` protocol: IME composition + committed text.
+    // The `NSTextInputClient` protocol: the input method composes, commits
+    // and reads the text around the caret through it. Ranges count UTF-16
+    // units of the text the app shows, the composition included.
     unsafe impl NSTextInputClient for VisoContentView {
         #[unsafe(method(insertText:replacementRange:))]
-        unsafe fn insert_text(&self, string: &AnyObject, _replacement: NSRange) {
+        unsafe fn insert_text(&self, string: &AnyObject, replacement: NSRange) {
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 let text = any_to_string(string);
                 let ivars = self.ivars();
-                // A commit ends any composition: clear the marked state (no
-                // extra empty-preedit event — the committed text supersedes it).
-                ivars.marked.borrow_mut().clear();
-                if !text.is_empty() {
-                    self.push(RawEvent::Text(RawText {
-                        window: ivars.window,
-                        text,
-                    }));
+                let mut ime = ivars.ime.borrow_mut();
+                let over = self.range_bytes(&ime, replacement);
+                let event = ime.insert(ivars.window, &text, over);
+                drop(ime);
+                if let Some(event) = event {
+                    self.push(event);
                 }
             }));
         }
@@ -2370,66 +2377,83 @@ define_class!(
         unsafe fn set_marked_text(
             &self,
             string: &AnyObject,
-            _selected: NSRange,
-            _replacement: NSRange,
+            selected: NSRange,
+            replacement: NSRange,
         ) {
             let _ = catch_unwind(AssertUnwindSafe(|| {
                 let text = any_to_string(string);
                 let ivars = self.ivars();
-                *ivars.marked.borrow_mut() = text.clone();
-                // Echo the composing string inline as a preedit (empty = clear).
-                self.push(RawEvent::ImePreedit(RawImePreedit {
-                    window: ivars.window,
-                    caret: text.len(),
-                    text,
-                }));
+                let at = |units: usize| super::utf16::byte_offset(&text, units);
+                let selected = (
+                    at(selected.location),
+                    at(selected.location.saturating_add(selected.length)),
+                );
+                let mut ime = ivars.ime.borrow_mut();
+                let over = self.range_bytes(&ime, replacement);
+                let event = ime.set_marked(ivars.window, &text, selected, over);
+                drop(ime);
+                if let Some(event) = event {
+                    self.push(event);
+                }
             }));
         }
 
         #[unsafe(method(unmarkText))]
         fn unmark_text(&self) {
             let _ = catch_unwind(AssertUnwindSafe(|| {
+                // The composition is accepted as it stands.
                 let ivars = self.ivars();
-                if !ivars.marked.borrow().is_empty() {
-                    ivars.marked.borrow_mut().clear();
-                    // The composition was discarded (Escape / session break):
-                    // an empty preedit clears the inline preview.
-                    self.push(RawEvent::ImePreedit(RawImePreedit {
-                        window: ivars.window,
-                        text: String::new(),
-                        caret: 0,
-                    }));
+                let event = ivars.ime.borrow_mut().unmark(ivars.window);
+                if let Some(event) = event {
+                    self.push(event);
                 }
             }));
         }
 
         #[unsafe(method(hasMarkedText))]
         fn has_marked_text(&self) -> bool {
-            !self.ivars().marked.borrow().is_empty()
+            self.ivars().ime.borrow().is_marked()
         }
 
         #[unsafe(method(markedRange))]
         fn marked_range(&self) -> NSRange {
-            let len = self.ivars().marked.borrow().len();
-            if len == 0 {
-                NSRange::new(usize::MAX, 0)
-            } else {
-                NSRange::new(0, len)
+            let ime = self.ivars().ime.borrow();
+            match ime.marked() {
+                Some((a, b)) => units_range(&ime, a, b),
+                None => NSRange::new(NOT_FOUND, 0),
             }
         }
 
         #[unsafe(method(selectedRange))]
         fn selected_range(&self) -> NSRange {
-            NSRange::new(0, 0)
+            let ime = self.ivars().ime.borrow();
+            let (a, b) = ime.selection();
+            units_range(&ime, a, b)
         }
 
         #[unsafe(method_id(attributedSubstringForProposedRange:actualRange:))]
         unsafe fn attributed_substring(
             &self,
-            _range: NSRange,
-            _actual: NSRangePointer,
+            range: NSRange,
+            actual: NSRangePointer,
         ) -> Option<Retained<NSAttributedString>> {
-            None
+            catch_unwind(AssertUnwindSafe(|| {
+                let ime = self.ivars().ime.borrow();
+                let (a, b) = self.range_bytes(&ime, range)?;
+                if a == b && ime.text().is_empty() {
+                    return None;
+                }
+                if !actual.is_null() {
+                    // SAFETY: AppKit passes either null (checked above) or a
+                    // pointer to an `NSRange` it owns for this call.
+                    unsafe { *actual = units_range(&ime, a, b) };
+                }
+                Some(NSAttributedString::from_nsstring(&NSString::from_str(
+                    &ime.text()[a..b],
+                )))
+            }))
+            .ok()
+            .flatten()
         }
 
         #[unsafe(method_id(validAttributesForMarkedText))]
@@ -2458,7 +2482,7 @@ define_class!(
 
         #[unsafe(method(characterIndexForPoint:))]
         fn character_index(&self, _point: NSPoint) -> usize {
-            0
+            NOT_FOUND
         }
 
         #[unsafe(method(doCommandBySelector:))]
@@ -2534,7 +2558,7 @@ impl VisoContentView {
             window,
             shared,
             buttons: Cell::new(0),
-            marked: RefCell::new(String::new()),
+            ime: RefCell::new(ImeText::default()),
             draggable_regions: RefCell::new(Vec::new()),
             cursor: Cell::new(CursorIcon::Default),
             cursor_hidden: Cell::new(false),
@@ -3122,16 +3146,34 @@ impl VisoContentView {
         };
         if caret.is_some() {
             ctx.invalidateCharacterCoordinates();
-        } else if !ivars.marked.borrow().is_empty() {
-            // Focus left the field mid-composition: drop it on both sides.
-            ctx.discardMarkedText();
-            ivars.marked.borrow_mut().clear();
-            self.push(RawEvent::ImePreedit(RawImePreedit {
-                window: ivars.window,
-                text: String::new(),
-                caret: 0,
-            }));
+        } else {
+            // Focus left the field: a composition under way ends on both
+            // sides, and the input method sees no text.
+            let mut ime = ivars.ime.borrow_mut();
+            let dropped = ime.cancel(ivars.window);
+            ime.show(None);
+            drop(ime);
+            if let Some(event) = dropped {
+                ctx.discardMarkedText();
+                self.push(event);
+            }
         }
+    }
+
+    /// Show the input method the text around the focused field's caret.
+    fn set_surrounding_text(&self, text: Option<&SurroundingText>) {
+        self.ivars().ime.borrow_mut().show(text);
+    }
+
+    /// The bytes of the input method's text that UTF-16 range `range`
+    /// names, `None` for `NSNotFound`.
+    fn range_bytes(&self, ime: &ImeText, range: NSRange) -> Option<(usize, usize)> {
+        (range.location != NOT_FOUND).then(|| {
+            ime.span(
+                ime.byte(range.location),
+                ime.byte(range.location.saturating_add(range.length)),
+            )
+        })
     }
 
     /// Records whether the window is key, holding secure input only while
@@ -3574,6 +3616,15 @@ fn class_cursor(sel: Sel) -> Option<Retained<NSCursor>> {
 
 /// Extract the string from an `NSString` or `NSAttributedString` argument (the
 /// two types AppKit passes to the text-input methods).
+/// `NSNotFound`: no such range or index.
+const NOT_FOUND: usize = isize::MAX as usize;
+
+/// Bytes `a..b` of the input method's text as a UTF-16 range.
+fn units_range(ime: &ImeText, a: usize, b: usize) -> NSRange {
+    let start = ime.units(a);
+    NSRange::new(start, ime.units(b) - start)
+}
+
 fn any_to_string(string: &AnyObject) -> String {
     // Per the NSTextInputClient contract the argument is always an NSString or
     // NSAttributedString; downcast defensively and read its characters.

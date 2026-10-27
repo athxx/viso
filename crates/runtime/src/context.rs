@@ -12,7 +12,8 @@ use viso_platform::{GamepadId, Instant, LoopWaker, Rumble};
 
 use viso_platform::{
     Appearance, CursorIcon, EditLabels, EditMenu, LogicalRect, Loupe, PlatformApp, PlatformCaps,
-    PlatformError, RawEvent, RawWindowHandle, SemanticsDelta, TextEntry, WindowConfig, WindowId,
+    PlatformError, RawEvent, RawWindowHandle, SemanticsDelta, SurroundingText, TextEntry,
+    WindowConfig, WindowId,
 };
 
 /// Capabilities available to a frame driver for the duration of one callback.
@@ -279,6 +280,12 @@ impl<'a> RuntimeCx<'a> {
     /// whether it takes a secret); `None` disables the IME for `window`.
     pub fn set_text_entry(&mut self, window: WindowId, entry: Option<TextEntry>) {
         self.app.set_text_entry(window, entry);
+    }
+
+    /// Tell the input method the text around `window`'s focused field's
+    /// selection; `None` shows it none.
+    pub fn set_surrounding_text(&mut self, window: WindowId, text: Option<&SurroundingText>) {
+        self.app.set_surrounding_text(window, text);
     }
 
     /// Show or hide the on-screen keyboard for `window`.

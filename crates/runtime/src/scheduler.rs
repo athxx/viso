@@ -26,9 +26,9 @@ use crate::context::RuntimeCx;
 use crate::driver::{FrameDriver, Lifecycle};
 use crate::frame::run_frame;
 use crate::input::{
-    CopySample, DropSample, EditMenuSample, GestureSample, ImePreeditSample, InputSample,
-    KeySample, Modifiers, PasteRequestSample, PasteSample, PointerPhase, PointerSample,
-    ScrollSample, TextSample,
+    CopySample, DropSample, EditMenuSample, GestureSample, ImeEditSample, ImePreeditSample,
+    InputSample, KeySample, Modifiers, PasteRequestSample, PasteSample, PointerPhase,
+    PointerSample, ScrollSample, TextSample,
 };
 use crate::schedule::{RedrawReason, RedrawReasons};
 
@@ -315,6 +315,7 @@ fn input_window(event: &RawEvent) -> Option<WindowId> {
         RawEvent::Key(k) => k.window,
         RawEvent::Text(t) => t.window,
         RawEvent::ImePreedit(p) => p.window,
+        RawEvent::ImeEdit(e) => e.window,
         RawEvent::Scroll(s) => s.window,
         RawEvent::Gesture(g) => g.window,
         RawEvent::Paste { window, .. }
@@ -476,6 +477,17 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                         window: p.window,
                         text: p.text,
                         caret: p.caret,
+                    }),
+                    self.clock.peek(),
+                );
+                self.reasons.add(RedrawReason::InputDirty);
+            }
+            RawEvent::ImeEdit(e) => {
+                // An input method's edit of the text around the caret.
+                self.driver.on_input(
+                    InputSample::ImeEdit(ImeEditSample {
+                        window: e.window,
+                        edit: e.edit,
                     }),
                     self.clock.peek(),
                 );

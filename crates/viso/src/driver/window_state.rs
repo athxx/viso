@@ -6,7 +6,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use viso_gpu::{Backend, GpuBackend};
-use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, TextEntry, WindowId};
+use viso_platform::{
+    LogicalInsets, LogicalRect, RawWindowHandle, SurroundingText, TextEntry, WindowId,
+};
 use viso_render::Rect;
 use viso_runtime::{Instant, RuntimeCx};
 use viso_ui::{
@@ -18,6 +20,7 @@ use viso_view::profile::Span;
 use viso_widgets::caption_bar;
 
 use super::access_keys::AccessKey;
+use super::surrounding;
 use super::{CARET_BLINK, CARET_IDLE, FieldKey, GpuState, LostGpu, SessionFonts, WindowState};
 use crate::text_content::{self, ParagraphSlot, TextShaper};
 use crate::{
@@ -90,6 +93,7 @@ impl WindowState {
             changed: Vec::new(),
             root: None,
             text_entry: None,
+            surrounding: None,
             edit_menu: None,
             context_menu: None,
             drawn_menu: edit_menu::DrawnMenu::new(),
@@ -1306,6 +1310,40 @@ impl WindowState {
         }
         self.text_entry = Some(entry);
         true
+    }
+
+    /// Recompute the text around the focused field's selection that the
+    /// input method reads, and return it when it differs from what was last
+    /// pushed. Only a field that shows its text shows it: not a secret, a
+    /// read-only field or a control that keeps its own document.
+    pub(crate) fn surrounding_changed(&mut self) -> Option<Option<SurroundingText>> {
+        let field = self.focused_text_node().and_then(|id| {
+            let buffer = self.text_edits.get(id)?;
+            (!buffer.look.read_only && !buffer.look.secure).then_some((id, buffer))
+        });
+        let Some((id, buffer)) = field else {
+            return self.surrounding.take().map(|_| None);
+        };
+        let composition = buffer.composition();
+        let composition = composition
+            .is_active()
+            .then(|| composition.range())
+            .map(|(a, b)| (a.0, b.0));
+        let key = (
+            id,
+            buffer.revision(),
+            (buffer.sel.anchor.offset.0, buffer.sel.focus.offset.0),
+            composition.unwrap_or_default(),
+        );
+        let kept = match &self.surrounding {
+            Some((last, _)) if *last == key => return None,
+            Some((last, Some(shown))) if last.0 == id => Some(shown.offset),
+            _ => None,
+        };
+        let shown = surrounding::surrounding(&buffer.text, key.2.0, key.2.1, composition, kept);
+        let changed = self.surrounding.as_ref().is_none_or(|(_, s)| *s != shown);
+        self.surrounding = Some((key, shown.clone()));
+        changed.then_some(shown)
     }
 
     /// Give the focused text field its caret, selection and composition

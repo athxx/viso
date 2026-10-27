@@ -293,6 +293,9 @@ pub enum ImeEvent {
     Commit { text: String },
     /// Text pasted from the clipboard, which replaces the selection.
     Paste { text: String },
+    /// An input method's edit of the text around the caret, read from the
+    /// surrounding text the focused field publishes.
+    Edit(crate::ImeEdit),
 }
 
 use crate::binding::BindingTable;
@@ -4005,6 +4008,7 @@ mod tests {
                         ImeEvent::Preedit { text, .. } => format!("pre:{text}"),
                         ImeEvent::Commit { text } => format!("commit:{text}"),
                         ImeEvent::Paste { text } => format!("paste:{text}"),
+                        ImeEvent::Edit(edit) => format!("edit:{edit:?}"),
                     };
                     seen2.borrow_mut().push(s);
                 }

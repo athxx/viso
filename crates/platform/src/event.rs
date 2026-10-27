@@ -758,6 +758,39 @@ pub struct RawImePreedit {
     pub caret: usize,
 }
 
+/// An input method's edit of the text around the caret, which it reads
+/// from the [`SurroundingText`](crate::SurroundingText) the app publishes.
+/// Offsets are bytes into the field's whole text, as it stands once the
+/// events before this one are applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImeEdit {
+    /// Replace `range` with `text`, as typed; an empty `text` deletes it. A
+    /// composition outside the range goes on, one it touches ends first. A
+    /// selection outside the range keeps its place; else the caret follows
+    /// the new text.
+    Replace {
+        range: core::ops::Range<usize>,
+        text: String,
+    },
+    /// End any composition as typed, then make `range` the composition,
+    /// shown as `text` with the caret `caret` bytes into it: an autocorrect
+    /// taking up a typed word again, or a reconversion of committed text.
+    Recompose {
+        range: core::ops::Range<usize>,
+        text: String,
+        caret: usize,
+    },
+    /// Select from `anchor` to `focus`.
+    Select { anchor: usize, focus: usize },
+}
+
+/// An [`ImeEdit`] to `window`'s focused field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawImeEdit {
+    pub window: WindowId,
+    pub edit: ImeEdit,
+}
+
 /// A raw, un-normalized platform event.
 ///
 /// Not `Copy`: some variants ([`RawEvent::CloseRequested`], [`RawEvent::Text`])
@@ -821,6 +854,8 @@ pub enum RawEvent {
     Text(RawText),
     /// An in-progress IME composition update (preedit); commit arrives as `Text`.
     ImePreedit(RawImePreedit),
+    /// An input method's edit of the text around the caret.
+    ImeEdit(RawImeEdit),
     /// The user picked a custom application-menu item; carries the app-assigned
     /// [`MenuCommandId`](crate::menu::MenuCommandId). Standard actions (Quit,
     /// Close, …) route through the OS instead and never surface here.

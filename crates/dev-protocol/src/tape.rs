@@ -226,6 +226,19 @@ pub enum TapeInput {
     Text(String),
     /// An IME composition in progress, its caret a byte offset.
     Preedit { text: String, caret: u32 },
+    /// An input method replaced bytes `start..end` of the field's text
+    /// with `text`.
+    ImeReplace { start: u64, end: u64, text: String },
+    /// An input method made bytes `start..end` the composition, shown as
+    /// `text` with its caret `caret` bytes in.
+    ImeRecompose {
+        start: u64,
+        end: u64,
+        text: String,
+        caret: u32,
+    },
+    /// An input method selected from byte `anchor` to `focus`.
+    ImeSelect { anchor: u64, focus: u64 },
     /// Clipboard text pasted.
     Paste(String),
     /// A copy, or a cut, of the selection.
@@ -483,6 +496,29 @@ impl Encode for TapeInput {
                     enc.write_str(file);
                 }
             }
+            TapeInput::ImeReplace { start, end, text } => {
+                enc.write_u8(14);
+                enc.write_varint(*start);
+                enc.write_varint(*end);
+                enc.write_str(text);
+            }
+            TapeInput::ImeRecompose {
+                start,
+                end,
+                text,
+                caret,
+            } => {
+                enc.write_u8(15);
+                enc.write_varint(*start);
+                enc.write_varint(*end);
+                enc.write_str(text);
+                enc.write_varint(u64::from(*caret));
+            }
+            TapeInput::ImeSelect { anchor, focus } => {
+                enc.write_u8(16);
+                enc.write_varint(*anchor);
+                enc.write_varint(*focus);
+            }
             TapeInput::Gesture {
                 x,
                 y,
@@ -654,6 +690,30 @@ impl Decode for TapeInput {
                 }
                 TapeInput::Drop { phase, x, y, offer }
             }
+            14 => TapeInput::ImeReplace {
+                start: dec.read_varint()?,
+                end: dec.read_varint()?,
+                text: dec.read_str()?.to_owned(),
+            },
+            15 => {
+                let (start, end) = (dec.read_varint()?, dec.read_varint()?);
+                let text = dec.read_str()?.to_owned();
+                let at = dec.position();
+                let caret = u32::try_from(dec.read_varint()?)
+                    .ok()
+                    .filter(|&c| text.is_char_boundary(c as usize))
+                    .ok_or(DecodeError::Malformed { offset: at })?;
+                TapeInput::ImeRecompose {
+                    start,
+                    end,
+                    text,
+                    caret,
+                }
+            }
+            16 => TapeInput::ImeSelect {
+                anchor: dec.read_varint()?,
+                focus: dec.read_varint()?,
+            },
             _ => return Err(malformed),
         })
     }
@@ -727,6 +787,21 @@ mod tests {
                             caret: 3,
                         },
                         TapeInput::Paste("x".into()),
+                        TapeInput::ImeReplace {
+                            start: 4,
+                            end: 7,
+                            text: "the".into(),
+                        },
+                        TapeInput::ImeRecompose {
+                            start: 0,
+                            end: 6,
+                            text: "かんじ".into(),
+                            caret: 9,
+                        },
+                        TapeInput::ImeSelect {
+                            anchor: 9,
+                            focus: 2,
+                        },
                         TapeInput::Copy { cut: true },
                         TapeInput::Focus(false),
                         TapeInput::Resize(TapeSurface::default()),

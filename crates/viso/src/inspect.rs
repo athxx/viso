@@ -519,6 +519,7 @@ pub(crate) fn input_name(
         InputSample::Text(t) => (format!("text {:?}", t.text), None),
         InputSample::Paste(_) => ("paste".to_owned(), None),
         InputSample::ImePreedit(_) => ("ime_preedit".to_owned(), None),
+        InputSample::ImeEdit(_) => ("ime_edit".to_owned(), None),
         InputSample::Scroll(s) => (
             format!("scroll {} {}", s.delta_x / scale, s.delta_y / scale),
             Some([s.x / scale, s.y / scale]),

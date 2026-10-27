@@ -87,12 +87,32 @@ pub mod web;
 pub(crate) mod web_translate;
 
 #[cfg(any(
+    target_os = "macos",
     target_os = "ios",
     target_os = "android",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
     all(target_arch = "wasm32", target_os = "unknown"),
     test
 ))]
 mod utf16;
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    test
+))]
+mod ime_text;
 
 #[cfg(any(target_os = "windows", test))]
 #[path = "windows/translate.rs"]

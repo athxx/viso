@@ -21,7 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::RawWindowHandle;
 use crate::clipboard::{ClipboardData, ClipboardKinds, ClipboardReply, PasteReply};
 use crate::control::{
-    EditLabels, EditMenu, Loupe, PlatformCaps, PlatformError, TextEntry, WindowConfig, WindowId,
+    EditLabels, EditMenu, Loupe, PlatformCaps, PlatformError, SurroundingText, TextEntry,
+    WindowConfig, WindowId,
 };
 use crate::event::{Appearance, CursorIcon, DisplayFeature, RawEvent};
 use crate::gamepad::{GamepadEvent, GamepadId, GamepadState, Pads, Rumble};
@@ -245,6 +246,14 @@ impl HeadlessApp {
             .and_then(|w| w.text_entry)
     }
 
+    /// The text around the caret last shown to `window`'s input method.
+    pub fn surrounding_text(&self, window: WindowId) -> Option<&SurroundingText> {
+        self.windows
+            .iter()
+            .find(|w| w.id == window)
+            .and_then(|w| w.surrounding.as_ref())
+    }
+
     /// The edit menu last shown for `window`, while it shows.
     pub fn edit_menu(&self, window: WindowId) -> Option<EditMenu> {
         self.windows
@@ -332,6 +341,7 @@ impl PlatformApp for HeadlessApp {
             physical_size: ((w * scale).round() as u32, (h * scale).round() as u32),
             cursor: CursorIcon::Default,
             text_entry: None,
+            surrounding: None,
             edit_menu: None,
             context_menu: None,
             loupe: None,
@@ -528,6 +538,12 @@ impl PlatformApp for HeadlessApp {
         }
     }
 
+    fn set_surrounding_text(&mut self, window: WindowId, text: Option<&SurroundingText>) {
+        if let Some(w) = self.window_mut(window) {
+            w.surrounding = text.cloned();
+        }
+    }
+
     fn show_soft_keyboard(&mut self, window: WindowId, show: bool) {
         if let Some(w) = self.window_mut(window) {
             w.soft_keyboard = show;
@@ -695,6 +711,7 @@ pub struct HeadlessWindow {
     physical_size: (u32, u32),
     cursor: CursorIcon,
     text_entry: Option<TextEntry>,
+    surrounding: Option<SurroundingText>,
     edit_menu: Option<EditMenu>,
     context_menu: Option<(EditMenu, EditLabels)>,
     loupe: Option<Loupe>,
@@ -961,6 +978,13 @@ mod tests {
         assert!(!app.soft_keyboard_shown(b));
         app.set_text_entry(a, None);
         assert_eq!(app.text_entry(a), None);
+        let text = crate::SurroundingText {
+            text: "ab".into(),
+            ..Default::default()
+        };
+        app.set_surrounding_text(a, Some(&text));
+        assert_eq!(app.surrounding_text(a), Some(&text));
+        assert_eq!(app.surrounding_text(b), None);
         // Unknown windows are ignored.
         app.set_cursor(WindowId(99), CursorIcon::Wait);
         assert_eq!(app.cursor(WindowId(99)), None);

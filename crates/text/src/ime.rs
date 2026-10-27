@@ -229,6 +229,21 @@ impl ImeComposition {
         self.anchor = anchor;
     }
 
+    /// Move the whole composition `by` bytes, as text edited before it moves
+    /// it, at `revision`.
+    pub fn shift(&mut self, by: isize, revision: Revision) {
+        let at = |o: TextOffset| TextOffset(o.0.saturating_add_signed(by));
+        let span = |(a, b): (TextOffset, TextOffset)| (at(a), at(b));
+        self.range = span(self.range);
+        for clause in &mut self.clauses {
+            clause.range = span(clause.range);
+        }
+        self.selected = self.selected.map(span);
+        self.replacement = self.replacement.map(span);
+        self.anchor.offset = at(self.anchor.offset);
+        self.revision = revision;
+    }
+
     /// Whether a composition is currently active (its preedit range is
     /// non-empty).
     pub fn is_active(&self) -> bool {

@@ -16,8 +16,8 @@
 
 pub use viso_platform::{
     ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, DropAction, DropOffer,
-    DropPhase, DropReply, GesturePhase, KeyCode as Key, PasteReply, PointerId, PointerKind,
-    ScrollPhase, primary_is_logo,
+    DropPhase, DropReply, GesturePhase, ImeEdit, KeyCode as Key, PasteReply, PointerId,
+    PointerKind, ScrollPhase, primary_is_logo,
 };
 use viso_platform::{EditMenuAction, WindowId};
 
@@ -130,6 +130,13 @@ pub struct ImePreeditSample {
     pub caret: usize,
 }
 
+/// An input method's edit of the text around the caret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImeEditSample {
+    pub window: WindowId,
+    pub edit: ImeEdit,
+}
+
 /// A step of a drag from outside the app, at (`x`, `y`) in physical pixels.
 /// The driver answers through `reply` with what a drop there would do.
 #[derive(Debug, Clone, PartialEq)]
@@ -203,6 +210,8 @@ pub enum InputSample {
     Text(TextSample),
     /// An in-progress IME composition update (preedit).
     ImePreedit(ImePreeditSample),
+    /// An input method's edit of the text around the caret.
+    ImeEdit(ImeEditSample),
     /// A paste gesture asking which kinds the focused content takes.
     PasteRequest(PasteRequestSample),
     /// What the clipboard holds for a paste.
@@ -237,6 +246,7 @@ impl InputSample {
             InputSample::Key(k) => k.window,
             InputSample::Text(t) => t.window,
             InputSample::ImePreedit(p) => p.window,
+            InputSample::ImeEdit(e) => e.window,
             InputSample::PasteRequest(p) => p.window,
             InputSample::Paste(p) => p.window,
             InputSample::Copy(c) => c.window,

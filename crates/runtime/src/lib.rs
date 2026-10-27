@@ -31,9 +31,9 @@ pub use frame::run_frame;
 pub use input::{
     ClipboardData, ClipboardImage, ClipboardKinds, ClipboardReply, CopySample, DropAction,
     DropOffer, DropPhase, DropReply, DropSample, EditMenuSample, GesturePhase, GestureSample,
-    ImePreeditSample, InputSample, Key, KeySample, Modifiers, PasteReply, PasteRequestSample,
-    PasteSample, PointerId, PointerKind, PointerPhase, PointerSample, ScrollPhase, ScrollSample,
-    TextSample, primary_is_logo,
+    ImeEdit, ImeEditSample, ImePreeditSample, InputSample, Key, KeySample, Modifiers, PasteReply,
+    PasteRequestSample, PasteSample, PointerId, PointerKind, PointerPhase, PointerSample,
+    ScrollPhase, ScrollSample, TextSample, primary_is_logo,
 };
 pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};

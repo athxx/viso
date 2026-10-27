@@ -405,11 +405,17 @@ mod tests {
         let (mut store, _, viewport, items) = column(None);
         assert!(!store.can_scroll(viewport, Axis::Column, false));
         assert!(store.can_scroll(viewport, Axis::Column, true));
-        assert_eq!(store.scroll_page(items[0], Axis::Column, true), Some(viewport));
+        assert_eq!(
+            store.scroll_page(items[0], Axis::Column, true),
+            Some(viewport)
+        );
         // A page key's step, there already rather than gliding.
         assert_eq!(store.scroll(viewport).y, 87.5);
         assert!(!store.is_scroll_moving());
-        assert_eq!(store.scroll_page(items[0], Axis::Column, false), Some(viewport));
+        assert_eq!(
+            store.scroll_page(items[0], Axis::Column, false),
+            Some(viewport)
+        );
         assert_eq!(store.scroll(viewport).y, 0.0);
         assert_eq!(store.scroll_page(items[0], Axis::Column, false), None);
         assert_eq!(store.scroll_page(items[0], Axis::Row, true), None);
@@ -418,7 +424,10 @@ mod tests {
     #[test]
     fn a_page_turned_on_a_snapping_viewport_rests_on_an_item() {
         let (mut store, _, viewport, items) = column(Some(ScrollSnap::START));
-        assert_eq!(store.scroll_page(items[3], Axis::Column, true), Some(viewport));
+        assert_eq!(
+            store.scroll_page(items[3], Axis::Column, true),
+            Some(viewport)
+        );
         assert_eq!(store.scroll(viewport).y, 100.0);
     }
 }

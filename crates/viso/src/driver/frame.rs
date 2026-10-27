@@ -722,6 +722,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     &mut ws.route_chain,
                 );
             }
+            viso_runtime::InputSample::ImeEdit(e) => {
+                // An input method's edit of the text around the caret routes
+                // as the preedit does.
+                KeyRouter::route_ime(
+                    &mut ws.store,
+                    &mut ws.states,
+                    &ws.bindings,
+                    &mut ws.text_edits,
+                    root,
+                    ImeEvent::Edit(e.edit),
+                    &mut ws.route_chain,
+                );
+            }
             viso_runtime::InputSample::Scroll(s) => {
                 if ws.drawn_menu.shown() == Some(edit_menu::MenuLook::List) {
                     ws.close_drawn_menu();
@@ -1767,6 +1780,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         if was_editing != entry.is_some() {
                             cx.show_soft_keyboard(ws.window, entry.is_some());
                         }
+                    }
+                    // And the text around the caret, which it reads to
+                    // reconvert, correct and predict.
+                    if let Some(text) = ws.surrounding_changed() {
+                        cx.set_surrounding_text(ws.window, text.as_ref());
                     }
                     // A drag carried past the window's edge goes on as the
                     // OS's, where the OS takes one.

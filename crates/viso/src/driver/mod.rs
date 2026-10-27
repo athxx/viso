@@ -5,7 +5,7 @@ use std::any::Any;
 use std::rc::Rc;
 
 use viso_gpu::{Backend, SurfaceId};
-use viso_platform::{LogicalInsets, LogicalRect, TextEntry, WindowId};
+use viso_platform::{LogicalInsets, LogicalRect, SurroundingText, TextEntry, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{Instant, RuntimeCx};
 use viso_ui::{
@@ -24,7 +24,17 @@ mod access_keys;
 mod convert;
 mod frame;
 mod pace;
+mod surrounding;
 mod window_state;
+
+/// What a field's surrounding text was made from: the field, its text's
+/// revision, the selection's anchor and focus and the composition's range.
+pub(crate) type SurroundingKey = (
+    NodeId,
+    viso_text::ime::Revision,
+    (usize, usize),
+    (usize, usize),
+);
 
 /// Bridges the UI-agnostic runtime [`viso_runtime::FrameDriver`] to the user's
 /// [`Application`].
@@ -262,6 +272,10 @@ pub(crate) struct WindowState {
     /// against it so a steady frame pushes nothing and the soft keyboard is
     /// shown or hidden only when focus moves into or out of text entry.
     pub(crate) text_entry: Option<Option<TextEntry>>,
+    /// The text around the focused field's selection last pushed to the
+    /// platform, with the field, its text's revision, selection and
+    /// composition it was made from; `None` while none is shown.
+    pub(crate) surrounding: Option<(SurroundingKey, Option<SurroundingText>)>,
     /// The edit menu last pushed to the platform, while it shows.
     pub(crate) edit_menu: Option<viso_platform::EditMenu>,
     /// The context menu last asked for, while the field asks for it.

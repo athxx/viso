@@ -220,6 +220,7 @@ pub fn field_input(cx: &mut EventCx<'_>, multiline: bool) -> Option<FieldEvent> 
         },
         ImeEvent::Commit { text } => EditIntent::CommitCompose(text.clone()),
         ImeEvent::Paste { text } => EditIntent::Paste(text.clone()),
+        ImeEvent::Edit(edit) => EditIntent::Ime(edit.clone()),
     };
     cx.record_edit(intent);
     None

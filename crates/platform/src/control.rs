@@ -58,6 +58,32 @@ pub struct TextEntry {
     pub multiline: bool,
 }
 
+/// The text around the focused field's selection, which the input method
+/// reads to reconvert committed text, correct a typed word and predict the
+/// next. A stretch of the field's text, not all of it, so a long document
+/// costs no more than a short one. Offsets are bytes; `anchor`, `focus` and
+/// `composition` are into `text`, on `char` boundaries.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SurroundingText {
+    /// The stretch of the field's text around the selection.
+    pub text: String,
+    /// Where `text` starts in the field's text.
+    pub offset: usize,
+    /// Where the selection starts.
+    pub anchor: usize,
+    /// Where the selection ends: the caret.
+    pub focus: usize,
+    /// The composition under way, which `text` holds as the field draws it.
+    pub composition: Option<(usize, usize)>,
+}
+
+impl SurroundingText {
+    /// The selection's ordered bounds.
+    pub fn selection(&self) -> (usize, usize) {
+        (self.anchor.min(self.focus), self.anchor.max(self.focus))
+    }
+}
+
 /// The menu of edits a text field offers for its selection, shown beside
 /// it: on a phone or tablet after a long press, a double tap or a tap on the
 /// caret, as the platform draws it, and as a context menu where a secondary

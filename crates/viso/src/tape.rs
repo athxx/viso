@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
-use viso_platform::{EditMenuAction, GesturePhase, Instant, ScrollPhase, WindowId};
+use viso_platform::{EditMenuAction, GesturePhase, ImeEdit, Instant, ScrollPhase, WindowId};
 use viso_runtime::{FrameClock, InputSample, PointerKind};
 use viso_view::tape::{
     BuildId, MAX_FRAMES, MAX_INPUTS, TapeDropPhase, TapeFrame, TapeGesturePhase, TapeInput,
@@ -155,6 +155,23 @@ impl TapeRecorder {
             InputSample::ImePreedit(p) => TapeInput::Preedit {
                 text: p.text.clone(),
                 caret: u32::try_from(p.caret).unwrap_or(u32::MAX),
+            },
+            InputSample::ImeEdit(e) => match &e.edit {
+                ImeEdit::Replace { range, text } => TapeInput::ImeReplace {
+                    start: range.start as u64,
+                    end: range.end as u64,
+                    text: text.clone(),
+                },
+                ImeEdit::Recompose { range, text, caret } => TapeInput::ImeRecompose {
+                    start: range.start as u64,
+                    end: range.end as u64,
+                    text: text.clone(),
+                    caret: u32::try_from(*caret).unwrap_or(u32::MAX),
+                },
+                ImeEdit::Select { anchor, focus } => TapeInput::ImeSelect {
+                    anchor: *anchor as u64,
+                    focus: *focus as u64,
+                },
             },
             // A paste's text replays as a gesture's; what the clipboard
             // held beyond it, and the asking, are the OS's.
@@ -463,8 +480,10 @@ impl TapePlayer {
 fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
     use viso_platform::{
         ClipboardReply, KeyCode, Modifiers, PointerButtons, PointerId, PointerPhase, RawEvent,
-        RawGesture, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
+        RawGesture, RawImeEdit, RawImePreedit, RawKey, RawPointer, RawScroll, RawText,
     };
+    let at = |offset: u64| usize::try_from(offset).unwrap_or(usize::MAX);
+    let ime = |edit| RawEvent::ImeEdit(RawImeEdit { window, edit });
     let mods = |m: TapeModifiers| Modifiers {
         shift: m.holds(TapeModifiers::SHIFT),
         control: m.holds(TapeModifiers::CONTROL),
@@ -574,6 +593,24 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             window,
             text: text.clone(),
             caret: *caret as usize,
+        }),
+        TapeInput::ImeReplace { start, end, text } => ime(ImeEdit::Replace {
+            range: at(*start)..at(*end),
+            text: text.clone(),
+        }),
+        TapeInput::ImeRecompose {
+            start,
+            end,
+            text,
+            caret,
+        } => ime(ImeEdit::Recompose {
+            range: at(*start)..at(*end),
+            text: text.clone(),
+            caret: *caret as usize,
+        }),
+        TapeInput::ImeSelect { anchor, focus } => ime(ImeEdit::Select {
+            anchor: at(*anchor),
+            focus: at(*focus),
         }),
         TapeInput::Paste(text) => RawEvent::Paste {
             window,

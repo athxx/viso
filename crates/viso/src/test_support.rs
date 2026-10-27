@@ -170,6 +170,12 @@ impl<A: Application> DrivenApp<A> {
         self.driver.windows[0].text_entry
     }
 
+    /// The text around the focused field's selection last shown to the
+    /// first window's input method.
+    pub fn surrounding_text(&self) -> Option<&viso_platform::SurroundingText> {
+        self.driver.windows[0].surrounding.as_ref()?.1.as_ref()
+    }
+
     /// The launch window's last frame as the software raster drew it:
     /// its size in device pixels and its BGRA bytes; `None` without a
     /// surface.
