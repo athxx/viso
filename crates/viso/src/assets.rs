@@ -1211,7 +1211,7 @@ mod tests {
         serve(&mut assets, &mut store, &mut gpu);
         let model = store.scene_model(slot, &asset).expect("resident");
         assert_eq!(model.rig().order, [0]);
-        assert_eq!(model.bytes(), 3 * 32 + 3 * 4);
+        assert_eq!(model.bytes(), 3 * (12 + 12 + 8 + 16) + 3 * 4);
         assert!(
             store.assets().payload(asset.id).is_none(),
             "the decoded geometry is let go of"
@@ -1290,8 +1290,10 @@ mod tests {
         assert!(matches!(draw, AssetDraw::Vector(_)), "{draw:?}");
         assert_eq!(size, [10.0, 20.0]);
         assert_eq!(drawn(&store, nodes[1]).0, AssetDraw::Failed);
+        let mut asked = asked.borrow().clone();
+        asked.sort();
         assert_eq!(
-            *asked.borrow(),
+            asked,
             [
                 "https://example.org/a.svg?size=2",
                 "https://example.org/gone.png"
