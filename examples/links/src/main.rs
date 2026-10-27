@@ -4,8 +4,6 @@
 //! link and counts them in a state cell.
 
 use viso::prelude::*;
-use viso::render::Rgba;
-use viso::ui::{BoxStyle, EventCx, Sizing};
 
 struct Links {
     opened: Option<State<i32>>,

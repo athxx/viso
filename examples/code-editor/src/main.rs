@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use viso::prelude::*;
-use viso::ui::{Axis, Component, Key, Sizing};
+use viso::ui::Key;
 use viso_code_editor::service::LanguageService;
 use viso_code_editor::{EditorSlot, code_editor};
 

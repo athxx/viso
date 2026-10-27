@@ -405,20 +405,22 @@ facade 的 feature 少而稳定，普通应用不手工设置任何 feature：�
 
 ```text
 应用入口      Application, run, AppCx, ServicesExt
-场景构建      BuildCx, StateId, StateValue, NodeId, DirtyClass,
+场景构建      BuildCx, EventCx, State, StateId, StateValue, NodeId, DirtyClass,
+              Component, Sizing, Axis, Align, Justify, Inset, BoxStyle, Rgba,
               FlexStyle, LeafStyle, GridStyle, GridPlacement, TrackSizing, TrackMax,
               AdaptiveColumns, VirtualListStyle, SpanStyle, TextRequest,
               Semantics, Role, CursorIcon, InputKind
+路由          Navigator, router_view, routes!
 控件          每个官方控件的 builder 函数、类型、Style 与 Handle
               （label, button, image, scroll, virtual_list, grid, tabs, modal,
               sheet, popup, toast, navigation_stack, text_input, form, data_grid …）
 窗口与菜单    window, WindowBuilder, WindowHandle, WindowConfig, WindowChrome,
               Menu, MenuCommandId, Accel, SystemAction
 几何          Point, Rect, Vec2
-宏            ui!
+宏            ui!, component!, view!
 ```
 
-其余宏在 crate 根：`viso::component!`、`viso::view!`、`viso::asset!`、`viso::packaged_fonts!`，以及 `viso::print!` / `println!` / `eprint!` / `eprintln!`（Web 上写入页面 console）。`routes!` 与 `Navigator<R>` / `router_view` 在 prelude 中（§6.1）。
+其余宏在 crate 根：`viso::asset!`、`viso::packaged_fonts!`，以及 `viso::print!` / `println!` / `eprint!` / `eprintln!`（Web 上写入页面 console）。`hello_world`、`01-counter`、`links` 与 `04-navigation` 的视图代码只 `use viso::prelude::*`；其余示例另外引用的是指针、光标、托盘、native 等高级模块。
 
 高级模块必须显式进入：
 
@@ -6098,16 +6100,18 @@ Heap allocations/frame                   0
 
 当前包含（摘要）：
 
-- 入口：`Application`、`run`、`AppCx`、`BuildCx`、`ServicesExt`；
-- tree 与 state：`NodeId`、`DirtyClass`、`StateId` / `StateValue`；
+- 入口：`Application`、`run`、`AppCx`、`BuildCx`、`EventCx`、`ServicesExt`；
+- tree 与 state：`NodeId`、`DirtyClass`、`State`、`StateId` / `StateValue`；
+- 手写组件：`Component`、`Sizing`、`Axis`、`Align`、`Justify`、`Inset`、`BoxStyle`、`Rgba`；
+- 路由：`Navigator`、`router_view`、`routes!`；
 - layout 与内容：`FlexStyle`、`LeafStyle`、`GridStyle`、`GridPlacement`、`TrackSizing` / `TrackMax`、`AdaptiveColumns`、`VirtualListStyle`、`SpanStyle`、`TextRequest`、`CursorIcon`、`InputKind`；
 - semantics：`Role`、`Semantics`；
 - 官方 widget 及其 style、builder 函数与控件 handle / handle slot（Tier 1–4，以及 Avatar、Badge、Chip、Calendar、DatePicker、TimePicker、ColorPicker、NumberField、SearchField、SegmentedControl、RangeSlider、Stepper、Spinner、ProgressIndicator 等）；forms（`Form`、`Field`、`Fieldset`）；`DataGrid`；
 - 窗口与菜单：`window`、`WindowBuilder`、`WindowConfig`、`WindowChrome`、`WindowHandle`、`Menu`、`MenuCommandId`、`Accel`、`SystemAction`；
 - 几何：`viso_math` 的 `Point`、`Rect`、`Vec2`；
-- 宏：`ui!`。
+- 宏：`ui!`、`component!`、`view!`。
 
-`component!` / `view!` / `asset!` 在 crate 根导出（`viso::view!("…vs")`），不在 prelude；颜色（`viso::render::Rgba`）、`Theme`、`EventCx` 经 `viso::render` / `viso::ui` 引用。目标（尚未实现）：`routes!` 与 typed Route（§72）落地后进入 prelude。不提供 `#[component]` 属性宏：`component!`、`view!` 与 `Component` trait 已覆盖 Rust 侧组件，第四个入口违背三入口合同（§0.2）。
+`asset!` 在 crate 根导出，不在 prelude；`Theme` 经 `viso::ui` 引用。不提供 `#[component]` 属性宏：`component!`、`view!` 与 `Component` trait 已覆盖 Rust 侧组件，第四个入口违背三入口合同（§0.2）。
 
 ---
 

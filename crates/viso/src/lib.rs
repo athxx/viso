@@ -5343,6 +5343,12 @@ pub mod prelude {
     };
     // Typed routes: the back stack, its outlet, and the route → page table.
     pub use viso_ui::{Navigator, router_view, routes};
+    // What a hand-written component is and lays out with: the trait, its size
+    // request, the flex axis, alignment along and across it, insets, a box's
+    // fill and corners, and a colour; and the context a handler writes state
+    // through (`Application::on_open_url`, `on_click`).
+    pub use viso_render::Rgba;
+    pub use viso_ui::{Align, Axis, BoxStyle, Component, EventCx, Inset, Justify, Sizing};
 
     // Tier 1 widgets: the base layout container, the static text control, the
     // texture-backed image control, and the vector icon control — plus the Tier 2
@@ -5394,13 +5400,13 @@ pub mod prelude {
     // and shortcuts through `Accel`; standard entries use `SystemAction`. Menus
     // are an application-level concern like `window`, so they belong here.
     pub use viso_platform::{Accel, Menu, MenuCommandId, SystemAction};
-    // The declarative view-fragment entry point: a small local `ui! { … }`
-    // fragment lowers, at Rust compile time, to a static `BuildCx` builder closure.
-    pub use crate::ui;
+    // The DSL entry points: a small local `ui! { … }` fragment, a Rust-adjacent
+    // `component! { … }`, and an external `view!("x.vs")`, each lowered at Rust
+    // compile time to a static `BuildCx` builder.
+    pub use crate::{component, ui, view};
     // 2D geometry, owned by `viso-math`.
     pub use viso_math::{Point, Rect, Vec2};
-    // `component!`, `view!` and `asset!` are exported from the crate root
-    // (`viso::component!`, …), not from here.
+    // `asset!` is exported from the crate root (`viso::asset!`), not from here.
 }
 
 // -- Advanced escape hatches. Opt-in, clearly namespaced. --

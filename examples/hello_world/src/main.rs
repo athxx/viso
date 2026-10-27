@@ -14,8 +14,6 @@
 //! (it measures to the shaped run), both axes have slack to center against.
 
 use viso::prelude::*;
-use viso::render::Rgba;
-use viso::ui::{Align, Component, Justify, Sizing};
 
 struct Hello;
 

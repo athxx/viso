@@ -207,9 +207,16 @@ Rules (as for `todo_features.md`):
     §6, DSL §40.1.
   - Verified: `crates/viso/tests/ui_macro.rs` mounts a hand-written `Swatch` and a `component!`
     `Tally` side by side, and a `Swatch` as a fragment's root.
-- [ ] Add `Component`, `Sizing`, `Align`, `Justify`, `Axis`, `Inset`, `BoxStyle` and `Rgba` to the
+- [x] Add `Component`, `Sizing`, `Align`, `Justify`, `Axis`, `Inset`, `BoxStyle` and `Rgba` to the
   prelude, with `component!`/`view!` re-exported from it. Verify that the examples build with
   `use viso::prelude::*` as their only `viso` import.
+  - Built: those, `EventCx` (every handler and `on_open_url` takes it) and `component!`/`view!`
+    beside `ui!`. `01-counter` clicks a `button` widget built with `cx.component`, so it needs
+    no pointer phases. Architecture §5.1 and Appendix E.
+  - Verified: `hello_world`, `01-counter`, `links`, `shell`'s and `04-navigation`'s views
+    import only the prelude from `viso` for UI (`shell` adds its tray module, `04-navigation`
+    `viso::native`); `pointer` and `code-editor` keep only pointer, cursor, text-style and key
+    types. `cargo check --workspace --all-targets` passes.
 - [ ] Split `crates/viso/src/lib.rs` (5.6k lines: `AppDriver`, per-window state, frame phases,
   access keys) into modules, leaving docs, `mod` and `pub use`. Verify that the `cargo doc` item list
   is unchanged and that the facade tests pass.

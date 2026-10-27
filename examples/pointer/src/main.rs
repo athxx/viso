@@ -9,11 +9,7 @@
 
 use viso::cursor::{CursorImage, CustomCursor};
 use viso::prelude::*;
-use viso::render::Rgba;
-use viso::ui::{
-    Align, Axis, BoxStyle, Component, FontSize, Inset, Justify, LeafStyle, PointerPhase, Sizing,
-    TextRequest, TextStyle,
-};
+use viso::ui::{FontSize, PointerPhase, TextStyle};
 
 struct Pointer;
 

@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use viso::prelude::*;
 use viso::shell::{self, AppBadge, IconImage, Tray, TrayEvent};
-use viso::ui::{Axis, Component, Inset, Sizing};
 
 const HELLO: MenuCommandId = MenuCommandId(1);
 const HIDE: MenuCommandId = MenuCommandId(2);

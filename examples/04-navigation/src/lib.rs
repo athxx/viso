@@ -6,7 +6,6 @@
 
 use viso::native::{NativeData, NativeLibrary};
 use viso::prelude::*;
-use viso::ui::EventCx;
 
 /// A page of the app.
 #[derive(Debug, Clone, PartialEq, NativeData)]

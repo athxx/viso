@@ -1,20 +1,13 @@
 //! The first interactive Viso app: a counter.
 //!
 //! Clicking the button increments a reactive state cell. The cell is bound to
-//! two nodes, so a click drives exactly a targeted update — no full-tree rebuild:
-//!
-//! - the button carries a `Label` role, bound `SEMANTICS`, so the count is
-//!   exposed to assistive technology and re-derived when it changes;
-//! - a "bar" leaf is bound `PAINT`, a visual proxy that repaints on each change.
-//!
-//! The count's label is accessible semantics plus a paint proxy, not rendered
-//! text: there is no text control yet, so nothing here fakes glyphs. When a text
-//! control lands, the label becomes real text (gaining measure/layout/paint on
-//! top of semantics). Everything below is the public facade — no internal crates.
+//! one node, a "bar" leaf, so a click drives exactly a targeted update — no
+//! full-tree rebuild: the bar carries a `Label` role, bound `SEMANTICS`, so the
+//! count is exposed to assistive technology and re-derived when it changes, and
+//! bound `PAINT`, a visual proxy that repaints on each change. Everything below
+//! is the prelude.
 
 use viso::prelude::*;
-use viso::render::Rgba;
-use viso::ui::{Axis, BoxStyle, Inset, PointerPhase, Sizing};
 
 struct Counter {
     // Allocated in `build`, where the state store is reachable — not in `new`
@@ -34,22 +27,19 @@ impl Application for Counter {
 
         cx.flex(row_style(), |cx| {
             // The button: clicking it increments the count.
-            let button = cx.leaf(button_style());
-            let button = cx.on_pointer(button, move |ev| {
-                // Act on release, so one press/release pair counts as one click;
-                // the router runs the handler on every phase of the gesture.
-                if ev.pointer().map(|p| p.phase) != Some(PointerPhase::Up) {
-                    return;
-                }
-                count.update(ev, |n| n + 1);
-            });
-            // The button carries the count as an accessible label; bound
-            // SEMANTICS so a change re-derives just this node's semantics.
-            let button = cx.semantics(button, Semantics::role(Role::Label).with_label("Count"));
-            cx.bind(count, button, DirtyClass::SEMANTICS);
+            cx.component(
+                &button("Count")
+                    .size(Sizing::fixed(96.0, 48.0))
+                    .on_click(move |ev| {
+                        count.update(ev, |n| n + 1);
+                    }),
+            );
 
-            // The visual proxy: a bar that repaints when the count changes.
+            // The bar carries the count as an accessible label, re-derived
+            // when it changes, and repaints with it.
             let bar = cx.leaf(bar_style());
+            let bar = cx.semantics(bar, Semantics::role(Role::Label).with_label("Count"));
+            cx.bind(count, bar, DirtyClass::SEMANTICS);
             cx.bind(count, bar, DirtyClass::PAINT);
         });
     }
@@ -69,20 +59,6 @@ fn row_style() -> FlexStyle {
             a: 1.0,
         }),
         ..Default::default()
-    }
-}
-
-/// The button: a fixed, rounded, clickable box.
-fn button_style() -> LeafStyle {
-    LeafStyle {
-        size: Sizing::fixed(96.0, 48.0),
-        style: BoxStyle::solid(Rgba {
-            r: 0.20,
-            g: 0.45,
-            b: 0.95,
-            a: 1.0,
-        })
-        .with_radius(8.0),
     }
 }
 
