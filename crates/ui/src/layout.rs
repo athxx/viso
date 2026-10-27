@@ -99,6 +99,27 @@ pub enum LayoutInput {
         /// The container's own size request within its parent.
         size: Sizing,
     },
+    /// A container that lays its children along `axis` in lines, starting a
+    /// new line where the next child would overflow its content box, and
+    /// stacks the lines across it: a row of tags or chips that wraps. It
+    /// measures its lines at the extent it was last laid out in.
+    Flow {
+        /// The axis each line runs along.
+        axis: Axis,
+        /// Gap between adjacent children of a line.
+        gap: f32,
+        /// Gap between adjacent lines.
+        line_gap: f32,
+        /// Inner padding on all four edges.
+        padding: Inset,
+        /// Where each child sits across its line; `stretch` makes a fit one
+        /// as thick as the line.
+        align: Align,
+        /// Where each line's children sit along it.
+        justify: Justify,
+        /// The container's own size request within its parent.
+        size: Sizing,
+    },
     /// A container that layers its children in its content box: each sits
     /// where its own [`StackPlacement::align`] or the stack's `align` puts it,
     /// and the stack fits the largest.
@@ -204,6 +225,7 @@ impl LayoutInput {
     pub fn size(self) -> Sizing {
         match self {
             LayoutInput::Flex { size, .. }
+            | LayoutInput::Flow { size, .. }
             | LayoutInput::Stack { size, .. }
             | LayoutInput::Absolute { size, .. }
             | LayoutInput::Leaf { size }
@@ -220,6 +242,7 @@ impl LayoutInput {
     pub fn size_mut(&mut self) -> &mut Sizing {
         match self {
             LayoutInput::Flex { size, .. }
+            | LayoutInput::Flow { size, .. }
             | LayoutInput::Stack { size, .. }
             | LayoutInput::Absolute { size, .. }
             | LayoutInput::Leaf { size }
@@ -438,6 +461,19 @@ pub trait LayoutTree {
     fn put_grid_scratch(&mut self, scratch: GridScratch) {
         let _ = scratch;
     }
+    /// The main-axis content extent flow container `index` was last laid
+    /// out in, which it measures its lines at; NaN before its first layout,
+    /// when it measures as one line.
+    fn flow_extent(&self, index: u32) -> f32 {
+        let _ = index;
+        f32::NAN
+    }
+    /// Record that flow container `index` was laid out in a main-axis
+    /// content extent `extent`. A pure data write: the tree decides whether
+    /// the container measures again at it. Keeps nothing by default.
+    fn flow_laid(&mut self, index: u32, extent: f32) {
+        let _ = (index, extent);
+    }
 }
 
 /// Whether a box is a definite percent basis on each axis: its extent does not
@@ -500,6 +536,24 @@ impl Basis {
                     Length::Fill { .. } => cross,
                     Length::Fit => cross && align == Align::Stretch,
                     Length::MinContent | Length::MaxContent => false,
+                };
+                Self::pack(axis, main, cross)
+            }
+            // A line's thickness follows its content, so only a fixed or a
+            // relative extent across is a basis.
+            LayoutInput::Flow { axis, .. } => {
+                let main = self.on(axis);
+                let cross = self.on(cross_of(axis));
+                let main = match size.on(axis) {
+                    Length::Fixed(_) => true,
+                    Length::Relative { fixed, .. } => main || fixed != 0.0,
+                    Length::Fill { .. } => main,
+                    Length::Fit | Length::MinContent | Length::MaxContent => false,
+                };
+                let cross = match size.cross(axis) {
+                    Length::Fixed(_) => true,
+                    Length::Relative { fixed, .. } => cross || fixed != 0.0,
+                    _ => false,
                 };
                 Self::pack(axis, main, cross)
             }
@@ -660,6 +714,72 @@ fn measure_from<const KEEP: bool>(
             main_sum += padding.main(axis);
             cross_max += padding.cross(axis);
             let content = axis_pack_vec(axis, main_sum, cross_max);
+            Measured::sized(size, content, min_w + padding.main(Axis::Row))
+        }
+        LayoutInput::Flow {
+            axis,
+            gap,
+            line_gap,
+            padding,
+            size,
+            ..
+        } => {
+            // Along its lines it asks for them all on one; across, for its
+            // lines as they break at the extent it was last laid out in. Its
+            // narrowest width is its widest child's, each line holding one.
+            let extent = tree.flow_extent(root);
+            let cross = cross_of(axis);
+            let (mut main_sum, mut cross_max, mut min_w) = (0.0f32, 0.0f32, 0.0f32);
+            let (mut shown, mut lines, mut line_main, mut line_cross) = (0usize, 0.0f32, 0.0, 0.0);
+            let mut line_count = 0usize;
+            for i in 0..child_count {
+                let child = scratch[start + i];
+                if tree.hidden(child) {
+                    continue;
+                }
+                let m = tree.measured(child);
+                let margin = margin_of(tree, child, INDEFINITE);
+                main_sum += m.on(axis) + margin.main(axis) + if shown > 0 { gap } else { 0.0 };
+                cross_max = cross_max.max(m.on(cross) + margin.cross(axis));
+                min_w = min_w.max(m.min_w + margin.main(Axis::Row));
+                shown += 1;
+                if extent.is_nan() {
+                    continue;
+                }
+                // The lines break as layout breaks them in that extent.
+                let item = flow_item(
+                    tree,
+                    child,
+                    axis,
+                    (extent, true),
+                    (f32::NAN, false),
+                    INDEFINITE,
+                    false,
+                );
+                let (main, across) = (item.outer(axis), item.cross + item.margin.cross(axis));
+                if line_count > 0 && line_main + gap + main > extent + LINE_SLACK {
+                    lines += line_cross + line_gap;
+                    (line_main, line_cross) = (main, across);
+                } else {
+                    line_main += if line_count > 0 { gap + main } else { main };
+                    line_cross = line_cross.max(across);
+                }
+                line_count += 1;
+            }
+            let thick = if extent.is_nan() {
+                cross_max
+            } else {
+                lines + line_cross
+            };
+            let content = axis_pack_vec(
+                axis,
+                main_sum + padding.main(axis),
+                thick + padding.cross(axis),
+            );
+            let min_w = match axis {
+                Axis::Row => min_w,
+                Axis::Column => content.x - padding.main(Axis::Row),
+            };
             Measured::sized(size, content, min_w + padding.main(Axis::Row))
         }
         LayoutInput::Stack { padding, size, .. } => {
@@ -1139,6 +1259,10 @@ pub fn layout_on(
             layout_scroll(tree, root, bounds, axis, basis, scratch);
             return;
         }
+        LayoutInput::Flow { .. } => {
+            layout_flow(tree, root, bounds, basis, within, scratch);
+            return;
+        }
         LayoutInput::AbsoluteRows { axis, .. } => {
             layout_absolute_rows(tree, root, bounds, axis, basis, scratch);
             return;
@@ -1387,6 +1511,216 @@ pub fn layout_on(
     }
 
     // Release the child-id slice back to the caller's scratch high-water mark.
+    scratch.truncate(start);
+}
+
+/// How far past its content box a line may run before the next child
+/// starts another, absorbing the rounding of sizes that sum to it exactly.
+const LINE_SLACK: f32 = 0.01;
+
+/// One child of a flow container as a line holds it: its extent along the
+/// line, the extent it asks across (its natural one, or its own fixed or
+/// relative request), and its margin.
+#[derive(Clone, Copy)]
+struct FlowItem {
+    main: f32,
+    cross: f32,
+    margin: Inset,
+}
+
+impl FlowItem {
+    /// The room it takes along a line, margin included.
+    #[inline]
+    fn outer(self, axis: Axis) -> f32 {
+        self.main + self.margin.main(axis)
+    }
+}
+
+/// Flow child `child` of a container along `axis`, its content box
+/// `extent` long (`definite` where it is a percent basis) and `across` thick
+/// on `cross_definite`, `inner` its content box as percentages read it. A
+/// fill takes a whole line; a fit its content, no longer than a line. A
+/// percentage on an indefinite basis is reported when `report`.
+fn flow_item(
+    tree: &mut impl LayoutTree,
+    child: u32,
+    axis: Axis,
+    (extent, definite): (f32, bool),
+    (across, cross_definite): (f32, bool),
+    inner: Vec2,
+    report: bool,
+) -> FlowItem {
+    let size = tree.input(child).size();
+    let m = tree.measured(child);
+    let rules = tree.rules(child).copied();
+    let margin = rules.map_or(Inset::all(0.0), |r| margin_in(&r, inner));
+    let main = match size.on(axis) {
+        Length::Fixed(v) => v,
+        Length::Fill { .. } => extent - margin.main(axis),
+        Length::Fit => m.fit(axis, extent - margin.main(axis)),
+        Length::MinContent | Length::MaxContent => m.on(axis),
+        Length::Relative { fixed, pct } => {
+            if report && !definite {
+                tree.report_length(child, LengthIssue::IndefiniteBasis);
+            }
+            relative_extent(fixed, pct, extent, definite, m.on(axis))
+        }
+    };
+    let cross = cross_of(axis);
+    let thick = match size.cross(axis) {
+        Length::Fixed(v) => v,
+        Length::Relative { fixed, pct } => {
+            if report && !cross_definite {
+                tree.report_length(child, LengthIssue::IndefiniteBasis);
+            }
+            relative_extent(fixed, pct, across, cross_definite, m.on(cross))
+        }
+        _ => m.on(cross),
+    };
+    match rules {
+        Some(r) => FlowItem {
+            main: r.clamp(axis, main, extent, definite),
+            cross: r.clamp(cross, thick, across, cross_definite),
+            margin,
+        },
+        None => FlowItem {
+            main,
+            cross: thick,
+            margin,
+        },
+    }
+}
+
+/// Lay out flow container `root` in `bounds`: break its children into lines
+/// along its axis, each child on the line it fits on (a child too long for
+/// any line alone on its own), the lines stacked across from the near edge.
+/// `justify` places each line's children along it and `align` each child
+/// across its line, a fill or a stretched fit as thick as the line. A hidden
+/// child takes no room, not even a gap. Right to left, a row's lines run
+/// from the right and a column's lines stack from the right.
+fn layout_flow(
+    tree: &mut impl LayoutTree,
+    root: u32,
+    bounds: Rect,
+    basis: Basis,
+    within: Vec2,
+    scratch: &mut Vec<u32>,
+) {
+    let LayoutInput::Flow {
+        axis,
+        gap,
+        line_gap,
+        padding,
+        align,
+        justify,
+        ..
+    } = tree.input(root)
+    else {
+        return;
+    };
+    let padding = padded(padding, tree.keep_within(root, within), within);
+    let cross = cross_of(axis);
+    let extent = rect_len(bounds, axis) - padding.main(axis);
+    let across = rect_len(bounds, cross) - padding.cross(axis);
+    tree.flow_laid(root, extent);
+    let start = scratch.len();
+    tree.children(root, scratch);
+    let child_count = scratch.len() - start;
+    let inner = content_within(bounds, padding, basis);
+    let main_room = (extent, basis.on(axis));
+    let cross_room = (across, basis.on(cross));
+    let main_origin = rect_start(bounds, axis) + padding.main_start(axis);
+    let cross_origin = rect_start(bounds, cross) + padding.cross_start(axis);
+    let rtl = tree.rtl(root);
+    let mut line_at = cross_origin;
+    let mut first = start;
+    let end = start + child_count;
+    let mut any_line = false;
+    while first < end {
+        // Find the line: the children from `first` that fit along it, and
+        // how long and thick they make it.
+        let (mut last, mut used, mut thick, mut held) = (first, 0.0f32, 0.0f32, 0usize);
+        while last < end {
+            let child = scratch[last];
+            if tree.hidden(child) {
+                last += 1;
+                continue;
+            }
+            let item = flow_item(tree, child, axis, main_room, cross_room, inner, false);
+            let outer = item.outer(axis);
+            if held > 0 && used + gap + outer > extent + LINE_SLACK {
+                break;
+            }
+            used += if held > 0 { gap + outer } else { outer };
+            thick = thick.max(item.cross + item.margin.cross(axis));
+            held += 1;
+            last += 1;
+        }
+        if held > 0 {
+            if any_line {
+                line_at += line_gap;
+            }
+            any_line = true;
+        }
+        let mut cursor = main_origin
+            + match justify {
+                Justify::Start => 0.0,
+                Justify::Center => (extent - used) * 0.5,
+                Justify::End => extent - used,
+            };
+        for at in first..last {
+            let child = scratch[at];
+            let input = tree.input(child);
+            let reflect_main = |pos: f32, len: f32| match (rtl, axis) {
+                (true, Axis::Row) => 2.0 * main_origin + extent - pos - len,
+                _ => pos,
+            };
+            let reflect_cross = |pos: f32, len: f32| match (rtl, axis) {
+                (true, Axis::Column) => 2.0 * cross_origin + across - pos - len,
+                _ => pos,
+            };
+            if tree.hidden(child) {
+                let child_box = axis_rect(
+                    axis,
+                    reflect_main(cursor, 0.0),
+                    reflect_cross(line_at, 0.0),
+                    0.0,
+                    0.0,
+                );
+                let child_basis = basis.child(tree.input(root), input);
+                layout_on(tree, child, child_box, child_basis, inner, scratch);
+                continue;
+            }
+            let item = flow_item(tree, child, axis, main_room, cross_room, inner, true);
+            let room = thick - item.margin.cross(axis);
+            let size = match input.size().cross(axis) {
+                Length::Fill { .. } => room,
+                Length::Fit if align == Align::Stretch => room,
+                _ => item.cross,
+            };
+            let size = match tree.rules(child) {
+                Some(r) => r.clamp(cross, size, across, basis.on(cross)),
+                None => size,
+            };
+            let lead = if rtl && axis == Axis::Row {
+                item.margin.right
+            } else {
+                item.margin.main_start(axis)
+            };
+            let main_at = reflect_main(cursor + lead, item.main);
+            let cross_at =
+                line_at + item.margin.cross_start(axis) + align_offset(align, room, size);
+            let cross_at = reflect_cross(cross_at, size);
+            let child_box = axis_rect(axis, main_at, cross_at, item.main, size);
+            let width = if axis == Axis::Row { item.main } else { size };
+            tree.request_text_reflow(child, width);
+            let child_basis = basis.child(tree.input(root), input);
+            layout_on(tree, child, child_box, child_basis, inner, scratch);
+            cursor += item.outer(axis) + gap;
+        }
+        line_at += thick;
+        first = last;
+    }
     scratch.truncate(start);
 }
 

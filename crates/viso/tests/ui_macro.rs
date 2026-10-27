@@ -602,3 +602,73 @@ fn a_hand_written_component_is_a_fragments_root() {
     let root = build(&mut cx);
     assert_eq!(cx.root(), Some(root.id()));
 }
+
+/// A wrap breaks its children into lines at its width, its gaps between
+/// them and between its lines; a row gap in `sp` follows the text scale.
+#[test]
+fn a_wrap_breaks_its_children_into_lines() {
+    use viso::render::Rect;
+    use viso::ui::LengthEnv;
+
+    let build = viso::ui! {
+        Column {
+            width: 100dp;
+            height: 200dp;
+            Wrap {
+                gap: 10dp;
+                row_gap: 5sp;
+                Text { width: 30dp; height: 10dp; }
+                Text { width: 30dp; height: 20dp; }
+                Text { width: 30dp; height: 10dp; }
+                Text { width: 50dp; height: 10dp; }
+            }
+            Text { width: 10dp; height: 10dp; }
+        }
+    };
+    let mut store = NodeStore::new();
+    let root = {
+        let mut cx = BuildCx::new(&mut store);
+        build(&mut cx).id()
+    };
+    let children = |store: &NodeStore, node| {
+        let mut out = Vec::new();
+        let mut at = store.arena().links(node).unwrap().first_child;
+        while let Some(child) = at {
+            out.push(child);
+            at = store.arena().links(child).unwrap().next_sibling;
+        }
+        out
+    };
+    let (wrap, below) = match children(&store, root)[..] {
+        [wrap, below] => (wrap, below),
+        _ => panic!("a wrap and a text"),
+    };
+    let surface = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 100.0,
+        h: 200.0,
+    };
+    store.layout(root, surface, &mut Vec::new());
+    let at = |store: &NodeStore, node| {
+        let b = store.bounds(node);
+        (b.x, b.y)
+    };
+    let placed: Vec<_> = children(&store, wrap)
+        .iter()
+        .map(|&k| at(&store, k))
+        .collect();
+    assert_eq!(placed, [(0.0, 0.0), (40.0, 0.0), (0.0, 25.0), (40.0, 25.0)]);
+    assert_eq!(
+        at(&store, below),
+        (0.0, 35.0),
+        "the next sibling follows its lines"
+    );
+
+    store.set_length_env(LengthEnv {
+        text_scale: 2.0,
+        ..LengthEnv::default()
+    });
+    store.layout(root, surface, &mut Vec::new());
+    assert_eq!(at(&store, below), (0.0, 40.0), "10sp between the lines");
+}

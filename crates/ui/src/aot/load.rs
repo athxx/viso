@@ -23,7 +23,8 @@ use viso_ende::DecodeError;
 
 use crate::binding::BindingTable;
 use crate::component::{
-    AbsoluteStyle, BuildCx, FlexStyle, Handle, LeafStyle, NodeStore, ScrollStyle, StackStyle,
+    AbsoluteStyle, BuildCx, FlexStyle, FlowStyle, Handle, LeafStyle, NodeStore, ScrollStyle,
+    StackStyle,
 };
 use crate::dirty::DirtyClass;
 use crate::grid::GridStyle;
@@ -221,6 +222,14 @@ pub fn restyle_aot_node(
             let built = absolute_style(node);
             (built.size, None, Some(built.padding))
         }
+        AotNodeKind::Flow => {
+            let built = flow_style(node);
+            store.set_flex_arrangement(live, (built.axis, built.justify, built.align));
+            if lengths.is_none_or(|lengths| lengths.row_gap.is_none()) {
+                store.set_line_gap(live, built.line_gap);
+            }
+            (built.size, Some(built.gap), Some(built.padding))
+        }
         AotNodeKind::Scroll => (scroll_style(node).size, None, None),
         AotNodeKind::Leaf => (leaf_style(node).size, None, None),
     };
@@ -325,6 +334,7 @@ pub fn build_aot_node(
         AotNodeKind::Grid => cx.grid(grid_style(node), children),
         AotNodeKind::Stack => cx.stack(stack_style(node), children),
         AotNodeKind::Absolute => cx.absolute(absolute_style(node), children),
+        AotNodeKind::Flow => cx.flow(flow_style(node), children),
         AotNodeKind::Scroll => cx.scroll(scroll_style(node), children),
         // A leaf hosts no child region; the view guarantees `child_count == 0`
         // for a leaf.
@@ -371,6 +381,29 @@ fn flex_style(node: &AotRecord) -> FlexStyle {
     }
     if let Some(padding) = style.padding {
         out.padding = padding;
+    }
+    if has_size(node) {
+        out.size = size_of(style);
+    }
+    out
+}
+
+/// The flow builder style for a packaged flow: its gaps, placements and
+/// padding and, when the node authored one, its size; what it left out is
+/// the builder default.
+fn flow_style(node: &AotRecord) -> FlowStyle {
+    let style = &node.style;
+    let mut out = FlowStyle {
+        gap: style.gap.unwrap_or_default(),
+        line_gap: style.line_gap.unwrap_or_default(),
+        padding: style.padding.unwrap_or_default(),
+        ..FlowStyle::default()
+    };
+    if let Some(justify) = style.justify {
+        out.justify = justify;
+    }
+    if let Some(align) = style.align {
+        out.align = align;
     }
     if has_size(node) {
         out.size = size_of(style);

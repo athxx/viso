@@ -213,6 +213,45 @@ impl Default for FlexStyle {
     }
 }
 
+/// Parameters for a flow container declared via [`BuildCx::flow`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlowStyle {
+    /// The axis each line runs along.
+    pub axis: Axis,
+    /// Gap between adjacent children of a line.
+    pub gap: f32,
+    /// Gap between adjacent lines.
+    pub line_gap: f32,
+    /// Inner padding on all four edges.
+    pub padding: Inset,
+    /// Where each child sits across its line.
+    pub align: Align,
+    /// Where each line's children sit along it.
+    pub justify: Justify,
+    /// The container's own size request within its parent.
+    pub size: Sizing,
+    /// The container's own background/border.
+    pub style: BoxStyle,
+}
+
+impl Default for FlowStyle {
+    fn default() -> Self {
+        FlowStyle {
+            axis: Axis::Row,
+            gap: 0.0,
+            line_gap: 0.0,
+            padding: Inset::default(),
+            align: Align::Start,
+            justify: Justify::Start,
+            size: Sizing {
+                width: Length::fill(),
+                height: Length::Fit,
+            },
+            style: BoxStyle::NONE,
+        }
+    }
+}
+
 /// Parameters for a stack declared via [`BuildCx::stack`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StackStyle {
@@ -1068,6 +1107,15 @@ pub struct NodeStore {
     /// The grid layouts' working buffers, one set per grid nesting level
     /// seen, reused frame after frame.
     grid_scratch: Vec<crate::layout::GridScratch>,
+    /// The main-axis content extent each flow container was last laid out
+    /// in, by slot, ascending: few nodes are flows, so none of the others
+    /// pays a column for it.
+    flow_extents: Vec<(u32, f32)>,
+    /// Whether a flow was laid out in an extent other than the one it
+    /// measured its lines at, so layout runs again; and how many times it
+    /// has this frame, which bounds a flow whose extent follows its lines.
+    rewrapped: bool,
+    rewraps: u8,
     /// Cold: the marks recorded while an inspector watches the store; `None`
     /// while none does, and then a mark records nothing.
     #[cfg(feature = "inspect")]
@@ -1136,6 +1184,7 @@ impl NodeStore {
     pub fn clear(&mut self) {
         self.arena.clear();
         node_columns!(self.clear());
+        self.flow_extents.clear();
         self.settled.clear();
         self.themed.clear();
         self.theme_refs.clear();
@@ -2651,6 +2700,12 @@ impl NodeStore {
                 justify,
                 align,
                 ..
+            }
+            | LayoutInput::Flow {
+                axis,
+                justify,
+                align,
+                ..
             } => Some((axis, justify, align)),
             _ => None,
         }
@@ -2664,12 +2719,18 @@ impl NodeStore {
         if !self.arena.is_live(id) {
             return;
         }
-        let LayoutInput::Flex {
+        let (LayoutInput::Flex {
             axis,
             justify,
             align,
             ..
-        } = &mut self.layout[self.arena.slot(id)]
+        }
+        | LayoutInput::Flow {
+            axis,
+            justify,
+            align,
+            ..
+        }) = &mut self.layout[self.arena.slot(id)]
         else {
             return;
         };
@@ -2686,7 +2747,7 @@ impl NodeStore {
         self.mark_dirty(id, class);
     }
 
-    /// Rewrite a Flex container's main-axis gap, or both of a Grid's gaps, in
+    /// Rewrite a Flex container's or a flow's main-axis gap, or both of a Grid's gaps, in
     /// place, marking it `MEASURE | LAYOUT | PAINT`. A no-op for a stale handle,
     /// an unchanged gap or a node with no gap.
     pub fn set_gap(&mut self, id: NodeId, value: f32) {
@@ -2694,7 +2755,7 @@ impl NodeStore {
             return;
         }
         match &mut self.layout[self.arena.slot(id)] {
-            LayoutInput::Flex { gap, .. } => {
+            LayoutInput::Flex { gap, .. } | LayoutInput::Flow { gap, .. } => {
                 if *gap == value {
                     return;
                 }
@@ -2713,6 +2774,26 @@ impl NodeStore {
             }
             _ => return,
         }
+        self.mark_dirty(
+            id,
+            DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+        );
+    }
+
+    /// Rewrite the gap between a flow's lines in place, marking it
+    /// `MEASURE | LAYOUT | PAINT`. A no-op for a stale handle, an unchanged
+    /// gap or a node that is not a flow.
+    pub fn set_line_gap(&mut self, id: NodeId, value: f32) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        let LayoutInput::Flow { line_gap, .. } = &mut self.layout[self.arena.slot(id)] else {
+            return;
+        };
+        if *line_gap == value {
+            return;
+        }
+        *line_gap = value;
         self.mark_dirty(
             id,
             DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
@@ -2756,6 +2837,7 @@ impl NodeStore {
         }
         match &mut self.layout[self.arena.slot(id)] {
             LayoutInput::Flex { padding, .. }
+            | LayoutInput::Flow { padding, .. }
             | LayoutInput::Grid { padding, .. }
             | LayoutInput::Stack { padding, .. }
             | LayoutInput::Absolute { padding, .. } => {
@@ -5715,6 +5797,7 @@ impl NodeStore {
     pub fn clear_dirty(&mut self) {
         self.dirty_lists.clear(&mut self.dirty);
         self.clear_paint_logs();
+        self.rewraps = 0;
     }
 
     /// Whether any node currently carries any dirty class. Lets a frame skip
@@ -6074,6 +6157,11 @@ impl NodeStore {
         self.semantic_state.remove(i);
         self.content_payload[i] = None;
         self.check_marks.remove(i);
+        if !self.flow_extents.is_empty()
+            && let Ok(at) = self.flow_extents.binary_search_by_key(&(i as u32), |e| e.0)
+        {
+            self.flow_extents.remove(at);
+        }
         self.text_request[i] = None;
         self.owner[i] = owner;
         id
@@ -6228,10 +6316,20 @@ impl NodeStore {
         self.sync_stickies();
         self.sync_snaps();
         self.fly_heroes();
-        if self.sync_scroll_bars() {
+        if self.sync_scroll_bars() | self.take_rewrap() {
             let mut redo = Vec::new();
             self.relayout_dirty(root, surface, scratch, &mut redo);
         }
+    }
+
+    /// Whether a flow laid out in a new extent wants layout to run again,
+    /// at most a few times a frame.
+    fn take_rewrap(&mut self) -> bool {
+        if !std::mem::take(&mut self.rewrapped) || self.rewraps >= 3 {
+            return false;
+        }
+        self.rewraps += 1;
+        true
     }
 
     /// Re-select the warm `style` of every STYLE-dirty node that carries an
@@ -6438,8 +6536,9 @@ impl NodeStore {
         self.sync_snaps();
         self.fly_heroes();
         // The bars follow their viewports; a thumb whose length changed lays
-        // out again, alone in its track.
-        if self.sync_scroll_bars() {
+        // out again, alone in its track, and a flow given a new extent lays
+        // out its new lines.
+        if self.sync_scroll_bars() | self.take_rewrap() {
             let (m, l) = self.relayout_dirty(root, surface, scratch, redo_roots);
             return (measured + m, laid_out + l);
         }
@@ -7153,6 +7252,27 @@ impl LayoutTree for NodeStore {
         self.grid_scratch.push(scratch);
     }
 
+    fn flow_extent(&self, index: u32) -> f32 {
+        match self.flow_extents.binary_search_by_key(&index, |e| e.0) {
+            Ok(at) => self.flow_extents[at].1,
+            Err(_) => f32::NAN,
+        }
+    }
+
+    fn flow_laid(&mut self, index: u32, extent: f32) {
+        // Its lines are measured at the extent it is laid out in, so any
+        // other extent measures them again.
+        match self.flow_extents.binary_search_by_key(&index, |e| e.0) {
+            Ok(at) if self.flow_extents[at].1 == extent => return,
+            Ok(at) => self.flow_extents[at].1 = extent,
+            Err(at) => self.flow_extents.insert(at, (index, extent)),
+        }
+        if let Some(id) = self.arena.live_id(index) {
+            self.mark_dirty(id, DirtyClass::MEASURE);
+            self.rewrapped = true;
+        }
+    }
+
     fn request_text_reflow(&mut self, index: u32, width: f32) {
         // Eligibility lives entirely here (the trait method is a pure data
         // write). A reflow is enqueued only for a text run that depends on its
@@ -7466,6 +7586,22 @@ impl<'a> BuildCx<'a> {
         children(self);
         self.stack.pop();
         Handle::of(id)
+    }
+
+    /// Declare a flow container and its children: they run along its axis in
+    /// lines, a new line starting where the next would overflow, and the
+    /// lines stack across.
+    pub fn flow(&mut self, style: FlowStyle, children: impl FnOnce(&mut BuildCx<'_>)) -> Handle {
+        let input = LayoutInput::Flow {
+            axis: style.axis,
+            gap: style.gap,
+            line_gap: style.line_gap,
+            padding: style.padding,
+            align: style.align,
+            justify: style.justify,
+            size: style.size,
+        };
+        self.container(input, style.style, children)
     }
 
     /// Declare a stack and its children: each child sits in the stack's
@@ -9266,6 +9402,28 @@ mod tests {
                                         );
                                         nodes.push(boxed.id());
                                     }
+                                    if r % 4 == 2 {
+                                        let flow = cx.flow(
+                                            FlowStyle {
+                                                gap: 2.0,
+                                                line_gap: 1.0,
+                                                align: ALIGNS[(r + seed) as usize % 4],
+                                                justify: [
+                                                    Justify::Start,
+                                                    Justify::Center,
+                                                    Justify::End,
+                                                ]
+                                                    [seed as usize % 3],
+                                                ..FlowStyle::default()
+                                            },
+                                            |cx| {
+                                                for _ in 0..9 {
+                                                    labels.push(cx.leaf(LABEL).id());
+                                                }
+                                            },
+                                        );
+                                        nodes.push(flow.id());
+                                    }
                                 },
                             );
                             rows.push(row.id());
@@ -9376,6 +9534,181 @@ mod tests {
 
     fn at(r: Rect) -> (f32, f32, f32, f32) {
         (r.x, r.y, r.w, r.h)
+    }
+
+    /// A column holding a flow `style` of fixed children `sizes` and, under
+    /// it, a leaf: the root, the flow, its children and the leaf.
+    fn flow_scene(
+        style: FlowStyle,
+        sizes: &[(f32, f32)],
+    ) -> (NodeStore, NodeId, NodeId, Vec<NodeId>, NodeId) {
+        let mut store = NodeStore::new();
+        let mut kids = Vec::new();
+        let (mut flow, mut below) = (None, None);
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(
+                FlexStyle {
+                    axis: Axis::Column,
+                    size: Sizing::fixed(100.0, 200.0),
+                    ..FlexStyle::default()
+                },
+                |cx| {
+                    flow = Some(
+                        cx.flow(style, |cx| {
+                            for &(w, h) in sizes {
+                                kids.push(cx.leaf(leaf(w, h)).id());
+                            }
+                        })
+                        .id(),
+                    );
+                    below = Some(cx.leaf(leaf(10.0, 10.0)).id());
+                },
+            )
+            .id()
+        };
+        (store, root, flow.unwrap(), kids, below.unwrap())
+    }
+
+    const TAGS: [(f32, f32); 4] = [(30.0, 10.0), (30.0, 20.0), (30.0, 10.0), (50.0, 10.0)];
+
+    fn gapped() -> FlowStyle {
+        FlowStyle {
+            gap: 10.0,
+            line_gap: 5.0,
+            ..FlowStyle::default()
+        }
+    }
+
+    #[test]
+    fn a_flow_breaks_its_children_into_lines_and_fits_them() {
+        let (mut store, root, flow, kids, below) = flow_scene(gapped(), &TAGS);
+        store.layout(root, surface(100.0, 200.0), &mut Vec::new());
+        let boxes: Vec<_> = kids.iter().map(|&k| at(store.bounds(k))).collect();
+        assert_eq!(
+            boxes,
+            [
+                (0.0, 0.0, 30.0, 10.0),
+                (40.0, 0.0, 30.0, 20.0),
+                (0.0, 25.0, 30.0, 10.0),
+                (40.0, 25.0, 50.0, 10.0),
+            ]
+        );
+        assert_eq!(
+            at(store.bounds(flow)),
+            (0.0, 0.0, 100.0, 35.0),
+            "it fits its lines"
+        );
+        assert_eq!(store.bounds(below).y, 35.0, "the next sibling follows them");
+
+        // Narrower, every child takes a line of its own; wider, one holds all.
+        for (width, height) in [(45.0, 65.0), (300.0, 20.0)] {
+            store.set_fixed_size(
+                root,
+                Sizing {
+                    width: Length::Fixed(width),
+                    height: Length::Fixed(200.0),
+                },
+            );
+            store.relayout_dirty(
+                root,
+                surface(width, 200.0),
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            assert_eq!(store.bounds(flow).h, height, "at {width}");
+            assert_eq!(store.bounds(below).y, height);
+            store.clear_dirty();
+        }
+    }
+
+    #[test]
+    fn a_flow_runs_its_lines_from_the_right_right_to_left() {
+        let (mut store, root, _, kids, _) = flow_scene(gapped(), &TAGS);
+        store.set_layout_direction(root, Some(crate::adaptive::LayoutDirection::Rtl));
+        store.layout(root, surface(100.0, 200.0), &mut Vec::new());
+        let xs: Vec<_> = kids.iter().map(|&k| store.bounds(k).x).collect();
+        assert_eq!(xs, [70.0, 30.0, 70.0, 10.0]);
+    }
+
+    #[test]
+    fn a_hidden_child_of_a_flow_takes_no_room() {
+        let (mut store, root, flow, kids, _) = flow_scene(gapped(), &TAGS);
+        store.set_hidden(kids[1], true);
+        store.layout(root, surface(100.0, 200.0), &mut Vec::new());
+        let boxes: Vec<_> = kids.iter().map(|&k| at(store.bounds(k))).collect();
+        assert_eq!(
+            boxes,
+            [
+                (0.0, 0.0, 30.0, 10.0),
+                (40.0, 0.0, 0.0, 0.0),
+                (40.0, 0.0, 30.0, 10.0),
+                (0.0, 15.0, 50.0, 10.0),
+            ]
+        );
+        assert_eq!(store.bounds(flow).h, 25.0);
+    }
+
+    #[test]
+    fn a_flow_places_each_line_and_each_child_across_it() {
+        let style = FlowStyle {
+            justify: Justify::Center,
+            align: Align::Center,
+            ..gapped()
+        };
+        let (mut store, root, _, kids, _) = flow_scene(style, &TAGS);
+        store.layout(root, surface(100.0, 200.0), &mut Vec::new());
+        let boxes: Vec<_> = kids.iter().map(|&k| at(store.bounds(k))).collect();
+        assert_eq!(
+            boxes,
+            [
+                (15.0, 5.0, 30.0, 10.0),
+                (55.0, 0.0, 30.0, 20.0),
+                (5.0, 25.0, 30.0, 10.0),
+                (45.0, 25.0, 50.0, 10.0),
+            ]
+        );
+
+        // A child longer than a line has it alone, cut to its length; a
+        // fill takes a whole line.
+        let mut store = NodeStore::new();
+        let mut kids = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flow(
+                FlowStyle {
+                    size: Sizing::fixed(100.0, 100.0),
+                    ..gapped()
+                },
+                |cx| {
+                    kids.push(cx.leaf(leaf(20.0, 10.0)).id());
+                    kids.push(cx.leaf(leaf(150.0, 10.0)).id());
+                    kids.push(
+                        cx.leaf(LeafStyle {
+                            size: Sizing {
+                                width: Length::fill(),
+                                height: Length::Fixed(10.0),
+                            },
+                            ..LeafStyle::default()
+                        })
+                        .id(),
+                    );
+                    kids.push(cx.leaf(leaf(20.0, 10.0)).id());
+                },
+            )
+            .id()
+        };
+        store.layout(root, surface(100.0, 100.0), &mut Vec::new());
+        let boxes: Vec<_> = kids.iter().map(|&k| at(store.bounds(k))).collect();
+        assert_eq!(
+            boxes,
+            [
+                (0.0, 0.0, 20.0, 10.0),
+                (0.0, 15.0, 150.0, 10.0),
+                (0.0, 30.0, 100.0, 10.0),
+                (0.0, 45.0, 20.0, 10.0),
+            ]
+        );
     }
 
     #[test]

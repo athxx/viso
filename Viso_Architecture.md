@@ -2940,7 +2940,7 @@ Row/Column 是单轴 direct flex：一遍累计 fixed/fit 与 fill 权重，一�
 
 内部游标状态、特殊 batch 与约束约定不作为普通用户必须理解的 API。
 
-目标（尚未实现）：换行排列的 Flow 容器（标签、chip 行）——主轴放不下时换到下一行，行的交叉尺寸取该行最大者；当前只能用 Grid 的 `repeat(auto-fill, …)` 做等宽换行。
+`LayoutInput::Flow`（DSL `Wrap`）是换行排列的容器（标签、chip 行）：子节点沿主轴依次排入当前行，下一个放不下时换行，一行至少一个；行的交叉尺寸取该行最大者，行间隔 `line_gap`，`justify` 分配每行剩余、`align` 在行内放置（`stretch` 拉伸 fit 子节点到行厚），`fill` 主轴的子节点独占一行，隐藏子节点不占位也不计间距，RTL 下行从右起排。交叉尺寸依赖主轴宽度：NodeStore 在一个按 slot 排序的小表里记下每个 Flow 上次布局时的主轴内容盒长度（不占每节点的列），measure 按它断行；layout 发现长度变了就记下新长度、给该 Flow 打 MEASURE，并在同一帧内再跑一次 `relayout_dirty`（与滚动条长度变化相同的路径，每帧至多 3 轮）。measure 的断行与 layout 用同一个子项尺寸函数，保证同一长度下两者一致；增量与整树布局的差分测试覆盖含 Flow 的树。
 
 > **公开稳定布局语义，内部算法以 benchmark 选择。**
 

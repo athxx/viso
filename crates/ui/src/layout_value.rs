@@ -235,12 +235,18 @@ impl NodeStore {
     }
 
     fn edit_arrangement(&mut self, id: NodeId, edit: impl FnOnce(&mut (Axis, Justify, Align))) {
-        let LayoutInput::Flex {
+        let (LayoutInput::Flex {
             axis,
             justify,
             align,
             ..
-        } = self.layout_input(id)
+        }
+        | LayoutInput::Flow {
+            axis,
+            justify,
+            align,
+            ..
+        }) = self.layout_input(id)
         else {
             return;
         };

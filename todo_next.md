@@ -784,8 +784,37 @@ Rules (as for `todo_features.md`):
       when a group is merged, a label it absorbs changes, a node in it becomes focusable, and
       it is unmerged.
     - DSL tests: `semantics.merge: true` reaches the node, and a non-constant value is refused.
-- [ ] A wrapping Flow layout (`LayoutInput::Flow`, DSL `Wrap`). Verify with layout unit tests
+- [x] A wrapping Flow layout (`LayoutInput::Flow`, DSL `Wrap`). Verify with layout unit tests
   (gap, RTL, hidden children) and the differential layout.
+  - Built:
+    - `LayoutInput::Flow` with an axis, `gap`, `line_gap`, padding, `align` and `justify`, plus
+      `BuildCx::flow(FlowStyle)`.
+    - Children fill a line until the next would overflow; a line always holds at least one.
+      A fill takes a whole line, and a fit is cut to the line. Lines are as thick as their
+      thickest child and are stacked across.
+    - Hidden children take no room and no gap. Right to left, lines start at the right.
+    - The store keeps each flow's last main-axis extent in a small table sorted by slot, so
+      there is no per-node column. Measure breaks lines at that extent using the same sizing
+      as layout. When a layout lands at a new extent, the flow is marked MEASURE and layout
+      runs again in the same frame, at most three times, the same way scroll bars do.
+    - DSL `Wrap` takes `gap`, `row_gap` (the gap between lines, as in CSS), `justify` and
+      `align`. These fold or bind like a flex's, through the macro path, the AOT package (a
+      new node kind and a `line_gap` style bit) and the reload restyle.
+    - The web export is `flex-wrap: wrap` with `column-gap` and `row-gap`; a fill child gets
+      `width: 100%`.
+  - Verified:
+    - ui unit tests:
+      - Lines with gaps, and the next sibling following them.
+      - Narrower (one child per line) and wider (one line).
+      - Right to left.
+      - A hidden child.
+      - Centred lines and children.
+      - An overlong child and a fill.
+    - The incremental-versus-whole differential layout test now includes flows with nine
+      labels each, under every align and justify; it passes over 24 seeds × 200 frames.
+    - DSL tests: `Wrap` lowers to a flow with its gaps and placements. A `ui!` wrap breaks
+      lines, and a `row_gap` in `sp` follows the text scale. The HTML export wraps. The AOT
+      round trip carries `line_gap`.
 - [ ] Typed `ShapedGlyph` cluster and glyph ids, and per-locale kinsoku for zh-Hans, zh-Hant, ja
   and ko. Verify with Text §29.1's open rows.
 - [ ] Name `ReactiveCycle` (E4202) cells and effect nodes by state name and source span, routed to

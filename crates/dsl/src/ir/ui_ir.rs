@@ -271,6 +271,8 @@ pub enum UiWhen {
 pub enum NodeKind {
     /// A flex container (`Row`/`Column`/`Flex`) → `cx.flex`.
     Flex,
+    /// A flow container (`Wrap`) → `cx.flow`.
+    Flow,
     /// A grid container → `cx.grid`.
     Grid,
     /// A stack → `cx.stack`.
@@ -294,7 +296,7 @@ impl NodeKind {
     pub fn pads(self) -> bool {
         matches!(
             self,
-            NodeKind::Flex | NodeKind::Grid | NodeKind::Stack | NodeKind::Absolute
+            NodeKind::Flex | NodeKind::Flow | NodeKind::Grid | NodeKind::Stack | NodeKind::Absolute
         )
     }
 
@@ -303,6 +305,7 @@ impl NodeKind {
         matches!(
             self,
             NodeKind::Flex
+                | NodeKind::Flow
                 | NodeKind::Grid
                 | NodeKind::Stack
                 | NodeKind::Absolute
@@ -514,6 +517,9 @@ pub struct StyleIr {
     pub height: Option<LengthIr>,
     /// The folded gap between children, when a constant `gap`/`spacing` set one.
     pub gap: Option<f32>,
+    /// The folded gap between a flow's lines, when a constant `row_gap` set
+    /// one.
+    pub line_gap: Option<f32>,
     /// The folded padding of a container, when a constant `padding` of plain
     /// `dp` whose `start` and `end` agree set one.
     pub padding: Option<InsetIr>,

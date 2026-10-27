@@ -425,7 +425,9 @@ fn incoming(nodes: &NodeStore, node: NodeId, axis: Axis) -> Option<f32> {
             LayoutInput::AbsoluteRows { axis: along, .. } if along == axis => {
                 return None;
             }
-            LayoutInput::Flex { padding, .. } | LayoutInput::Grid { padding, .. } => {
+            LayoutInput::Flex { padding, .. }
+            | LayoutInput::Flow { padding, .. }
+            | LayoutInput::Grid { padding, .. } => {
                 inset += padding_on(padding, axis);
             }
             _ => {}

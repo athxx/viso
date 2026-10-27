@@ -603,6 +603,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 });
                 NodeKind::Flex
             }
+            WidgetNode::Wrap => NodeKind::Flow,
             WidgetNode::Grid => NodeKind::Grid,
             WidgetNode::Stack => NodeKind::Stack,
             WidgetNode::Absolute => NodeKind::Absolute,
@@ -1587,10 +1588,11 @@ fn layout_slot(kind: NodeKind, name: &str) -> Option<LayoutSlot> {
         | LayoutSlot::MaxHeight
         | LayoutSlot::Margin => kind != NodeKind::Component,
         LayoutSlot::Padding => kind.pads(),
-        LayoutSlot::Gap => matches!(kind, NodeKind::Flex | NodeKind::Grid),
-        LayoutSlot::Axis | LayoutSlot::Justify | LayoutSlot::Align => kind == NodeKind::Flex,
+        LayoutSlot::Gap => matches!(kind, NodeKind::Flex | NodeKind::Flow | NodeKind::Grid),
+        LayoutSlot::Axis => kind == NodeKind::Flex,
+        LayoutSlot::Justify | LayoutSlot::Align => matches!(kind, NodeKind::Flex | NodeKind::Flow),
+        LayoutSlot::RowGap => matches!(kind, NodeKind::Flow | NodeKind::Grid),
         LayoutSlot::ColumnGap
-        | LayoutSlot::RowGap
         | LayoutSlot::Columns
         | LayoutSlot::Rows
         | LayoutSlot::AutoRows
@@ -1907,7 +1909,7 @@ fn fold_static(
             }
             None => false,
         }),
-        "justify" if kind == NodeKind::Flex => {
+        "justify" if matches!(kind, NodeKind::Flex | NodeKind::Flow) => {
             style.justify = Some(match enum_constant(value, "Justify").as_deref() {
                 Some("start") => Justify::Start,
                 Some("center") => Justify::Center,
@@ -1916,7 +1918,7 @@ fn fold_static(
             });
             Fold::Folded
         }
-        "align" if kind == NodeKind::Flex => {
+        "align" if matches!(kind, NodeKind::Flex | NodeKind::Flow) => {
             style.align = Some(match enum_constant(value, "Align").as_deref() {
                 Some("start") => Align::Start,
                 Some("center") => Align::Center,
@@ -2096,6 +2098,23 @@ fn fold_static(
             }
             None => false,
         }),
+        // A flow's lines keep their gap where a grid's rows do.
+        "row_gap" if kind == NodeKind::Flow => match grid::fold_gap(value, consts) {
+            Some(Ok(gap)) => {
+                let (fixed, env) = match gap {
+                    Lowered::Layout(LengthIr::Fixed(n)) => (Some(n), None),
+                    Lowered::Env(terms) => (None, Some(terms)),
+                    Lowered::Layout(_) => return Fold::Folded,
+                };
+                style.line_gap = fixed;
+                if env.is_some() || style.lengths.is_some() {
+                    style.lengths_mut().row_gap = env;
+                }
+                Fold::Folded
+            }
+            Some(Err(reason)) => Fold::Unsupported(reason),
+            None => Fold::Pending,
+        },
         _ if kind == NodeKind::Grid => fold_grid(name, value, consts, style),
         _ => Fold::Pending,
     }

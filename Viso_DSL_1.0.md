@@ -4527,6 +4527,7 @@ export style SelectedChip for Chip {
 | `Row`      | Flex，主轴为行内方向                           | `fit` / `fit`           |
 | `Column`   | Flex，主轴为块方向                             | `fit` / `fit`           |
 | `Flex`     | 主轴由 `axis` 决定                             | `fit` / `fit`           |
+| `Wrap`     | 沿行内方向排成多行，放不下时换行（标签、chip） | `fill` / `fit`          |
 | `Stack`    | 子节点叠放于同一框内，尺寸取子节点最大值        | `fit` / `fit`           |
 | `Absolute` | 子节点按 Inset 定位，不贡献容器尺寸            | `fill` / `fill`         |
 | `Grid`     | Track 网格（ADR 0009）                         | `fill` / `fill`         |
@@ -4619,6 +4620,24 @@ export record Backdrop {
 - `Axis { row; column; }`；`Justify { start; center; end; }` 为主轴整体分布；`Align { start; center; end; stretch; }` 为交叉轴对齐，`stretch` 只作用于交叉轴 Sizing 为 `fit` 的子节点；
 - `Row` 主轴 `start` 是行内起点，RTL 下首个子节点位于右侧；
 - `justify` 与 `align` 不改变容器自身测量结果，只标记 `LAYOUT`。
+
+### U3.4a 换行容器（`Wrap`）
+
+| Property  | 类型          | 默认             | 失效              |
+| --------- | ------------- | ---------------- | ----------------- |
+| `gap`     | `MixedLength` | `0dp`            | `MEASURE\|LAYOUT` |
+| `row_gap` | `MixedLength` | `0dp`            | `MEASURE\|LAYOUT` |
+| `justify` | `Justify`     | `Justify::start` | `LAYOUT`          |
+| `align`   | `Align`       | `Align::start`   | `LAYOUT`          |
+
+- 子节点沿行内方向依次排入当前行，下一个放不下时另起一行；一行至少放一个子节点，比内容盒还宽的子节点独占一行并截到行宽（`fit` 收缩到行宽，不窄于 `min_content`）；`fill` 宽度的子节点独占整行；
+- `gap` 是同一行相邻子节点的间距，`row_gap` 是相邻两行的间距（与 CSS `flex-wrap` 的 `column-gap`/`row-gap` 相同）；
+- 行高取该行子节点（含外边距）高度的最大者；`align` 把子节点放在所在行内，`stretch` 把交叉轴为 `fit` 的子节点拉到行高；`justify` 分配每行剩余的宽度；
+- 隐藏的子节点不占位置，也不计间距；RTL 下每行从右边起排；
+- 高度由行数决定：容器记住上次布局时的内容盒宽度，按它测量行数；宽度变化时同一帧内重新测量并重新布局（每帧最多 3 轮）；
+- 容器的 `min_content` 宽度为最宽子节点的 `min_content`，`max_content` 为所有子节点排成一行的宽度。
+
+当前实现：`gap`、`row_gap`、`justify`、`align` 与 Flex 容器同样折叠或随值送达；Web 导出为 `display: flex; flex-wrap: wrap`，`fill` 子节点为 `width: 100%`。Rust 侧为 `BuildCx::flow(FlowStyle, ..)`（`LayoutInput::Flow`，亦支持沿块方向换列）。
 
 当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius`、`border` 与 `shadow` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容；`shadow` 改变只重绘节点。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`shadow`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。`border` 与 `shadow` 导出为同一个 `box-shadow` 列表（`border` 为 `inset` 描边），各自为一个自定义属性，Style 的 `when` 只改写其中一个。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 

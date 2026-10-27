@@ -293,6 +293,8 @@ pub enum AotNodeKind {
     Stack = 4,
     /// An absolute container → `cx.absolute`.
     Absolute = 5,
+    /// A flow container → `cx.flow`.
+    Flow = 6,
 }
 
 impl AotNodeKind {
@@ -312,6 +314,7 @@ impl AotNodeKind {
                 | AotNodeKind::Scroll
                 | AotNodeKind::Stack
                 | AotNodeKind::Absolute
+                | AotNodeKind::Flow
         )
     }
 }
@@ -338,6 +341,9 @@ pub struct AotStyle {
     pub height: Option<AotLength>,
     /// The folded gap between children, when a constant property set one.
     pub gap: Option<f32>,
+    /// The folded gap between a flow's lines, when a constant property set
+    /// one.
+    pub line_gap: Option<f32>,
     /// The folded padding of a container, when a constant property set one
     /// that reads neither the environment nor the layout direction.
     pub padding: Option<Inset>,
@@ -551,6 +557,7 @@ const STYLE_HAS_CONTENT_ALIGN: u32 = 1 << 14;
 const STYLE_HAS_DIRECTION: u32 = 1 << 15;
 const STYLE_SCROLLS: u32 = 1 << 16;
 const STYLE_SHEET: u32 = 1 << 17;
+const STYLE_HAS_LINE_GAP: u32 = 1 << 18;
 
 // A grid is a byte naming the parts it sets, then each: a template is a
 // varint count of tracks; a track is a byte naming its sizing, then its
@@ -1433,6 +1440,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
     if style.sheet.is_some() {
         mask |= STYLE_SHEET;
     }
+    if style.line_gap.is_some() {
+        mask |= STYLE_HAS_LINE_GAP;
+    }
     enc.write_varint(u64::from(mask));
     if let Some(axis) = style.axis {
         enc.write_u8(match axis {
@@ -1536,6 +1546,9 @@ fn encode_record(record: &AotRecord<'_>, enc: &mut Encoder) {
             }
         }
     }
+    if let Some(line_gap) = style.line_gap {
+        enc.write_f32(line_gap);
+    }
     enc.write_varint(u64::from(record.child_count));
 }
 
@@ -1560,12 +1573,13 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             AotNodeKind::Leaf,
             AotNodeKind::Stack,
             AotNodeKind::Absolute,
+            AotNodeKind::Flow,
         ],
     )?;
     let offset = dec.position();
     let mask = u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
     if mask & (STYLE_HAS_BASIS | STYLE_HAS_DIRECTION) != 0 && mask & STYLE_IS_SCOPE == 0
-        || mask >= STYLE_SHEET << 1
+        || mask >= STYLE_HAS_LINE_GAP << 1
     {
         return Err(DecodeError::Malformed { offset });
     }
@@ -1712,6 +1726,11 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
     } else {
         None
     };
+    let line_gap = if has(STYLE_HAS_LINE_GAP) {
+        Some(dec.read_f32()?)
+    } else {
+        None
+    };
     let offset = dec.position();
     let child_count =
         u32::try_from(dec.read_varint()?).map_err(|_| DecodeError::Malformed { offset })?;
@@ -1724,6 +1743,7 @@ fn decode_record<'a>(dec: &mut Decoder<'a>) -> Result<AotRecord<'a>, DecodeError
             width,
             height,
             gap,
+            line_gap,
             padding,
             scope,
             avoid,
@@ -2032,6 +2052,7 @@ mod tests {
                             pct: 1.0,
                         }),
                         gap: Some(8.0),
+                        line_gap: Some(3.0),
                         padding: Some(Inset {
                             left: 4.0,
                             top: 2.0,

@@ -123,6 +123,8 @@ const FLEX: &[WidgetProperty] = &[
 
 const FLEX_AXIS: &[WidgetProperty] = &[prop("axis", "Axis")];
 
+const WRAP: &[WidgetProperty] = &[based_look("row_gap", "MixedLength")];
+
 const GRID: &[WidgetProperty] = &[
     based("columns", "List<Track>"),
     based("rows", "List<Track>"),
@@ -629,6 +631,12 @@ pub const STANDARD: &[NativeWidget] = &[
     )
     .slots(CHILDREN),
     layout("BlurView", COLUMN, &[FLEX, LAYOUT, TRANSFORM, FOCUS]).slots(CHILDREN),
+    layout(
+        "Wrap",
+        WidgetNode::Wrap,
+        &[FLEX, WRAP, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .slots(CHILDREN),
     layout("Grid", WidgetNode::Grid, &[GRID, LAYOUT, TRANSFORM, FOCUS])
         .provides(&GRID_CHILD)
         .slots(CHILDREN),

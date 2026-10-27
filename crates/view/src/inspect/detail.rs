@@ -185,6 +185,27 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
             add(&mut layout, "align", align_name(align).into());
             add(&mut layout, "justify", justify_name(justify).into());
         }
+        LayoutInput::Flow {
+            axis,
+            gap,
+            line_gap,
+            padding,
+            align,
+            justify,
+            ..
+        } => {
+            add(&mut layout, "kind", "flow".into());
+            add(&mut layout, "axis", axis_name(axis).into());
+            add(&mut layout, "gap", number(gap));
+            add(&mut layout, "line_gap", number(line_gap));
+            add(
+                &mut layout,
+                "padding",
+                inset([padding.top, padding.right, padding.bottom, padding.left]),
+            );
+            add(&mut layout, "align", align_name(align).into());
+            add(&mut layout, "justify", justify_name(justify).into());
+        }
         LayoutInput::Stack { padding, align, .. } => {
             add(&mut layout, "kind", "stack".into());
             add(

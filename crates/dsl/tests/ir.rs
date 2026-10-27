@@ -94,6 +94,24 @@ fn row_and_containers_resolve_their_kind_and_axis() {
 }
 
 #[test]
+fn a_wrap_lowers_to_a_flow_with_its_gaps_and_placements() {
+    let wrap = only_node(
+        "Wrap { gap: 8dp; row_gap: 4dp; justify: Justify::center; align: Align::end; Text { } }",
+    );
+    assert_eq!(wrap.kind, NodeKind::Flow);
+    assert_eq!(
+        (wrap.style.gap, wrap.style.line_gap),
+        (Some(8.0), Some(4.0))
+    );
+    assert_eq!(
+        wrap.style.justify,
+        Some(viso_dsl::ir::ui_ir::Justify::Center)
+    );
+    assert_eq!(wrap.style.align, Some(viso_dsl::ir::ui_ir::Align::End));
+    assert_eq!(wrap.children.len(), 1);
+}
+
+#[test]
 fn a_fragment_splices_its_children_and_an_unknown_type_is_a_rust_component() {
     let column = only_node("Column { Fragment { Text { } Button { } } Text { } }");
     let types: Vec<_> = column

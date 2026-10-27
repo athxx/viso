@@ -289,6 +289,8 @@ enum Parent {
     /// The view's root, which the window sizes.
     Root,
     Flex(AxisIr),
+    /// A row whose children wrap onto further lines.
+    Flow,
     Grid,
     /// A stack, and where it puts a child that does not align itself.
     Stack(Alignment2D),
@@ -591,7 +593,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             _ => "div",
         };
         el.base = match (node.kind, node.type_name.as_str()) {
-            (NodeKind::Flex, _) => "vx-flex",
+            (NodeKind::Flex | NodeKind::Flow, _) => "vx-flex",
             (NodeKind::Grid, _) => "vx-grid",
             (NodeKind::Stack, _) => "vx-stack",
             (NodeKind::Absolute, _) => "vx-absolute",
@@ -816,6 +818,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let siblings = std::mem::take(&mut out.nodes);
         let child_parent = match node.kind {
             NodeKind::Flex => Some(Parent::Flex(node.style.axis.unwrap_or(AxisIr::Row))),
+            NodeKind::Flow => Some(Parent::Flow),
             NodeKind::Grid => Some(Parent::Grid),
             NodeKind::Stack => Some(Parent::Stack(node.style.content_align.unwrap_or_default())),
             NodeKind::Absolute => Some(Parent::Absolute),
@@ -902,9 +905,17 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         let lengths = style.lengths();
         let device = &mut self.out.device;
         match node.kind {
-            NodeKind::Flex => {
-                if style.axis == Some(AxisIr::Column) {
+            NodeKind::Flex | NodeKind::Flow => {
+                if style.axis == Some(AxisIr::Column) && node.kind == NodeKind::Flex {
                     decls.push(("flex-direction", "column".into()));
+                }
+                if node.kind == NodeKind::Flow {
+                    decls.push(("flex-wrap", "wrap".into()));
+                    if let Some(gap) = lengths.row_gap {
+                        decls.push(("row-gap", css::terms(gap, device)));
+                    } else if let Some(gap) = style.line_gap.filter(|g| *g != 0.0) {
+                        decls.push(("row-gap", css::px(f64::from(gap))));
+                    }
                 }
                 match style.justify {
                     Some(Justify::Center) => decls.push(("justify-content", "center".into())),
@@ -917,10 +928,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     Some(Align::Stretch) => decls.push(("align-items", "stretch".into())),
                     _ => {}
                 }
-                if let Some(gap) = lengths.gap {
-                    decls.push(("gap", css::terms(gap, device)));
-                } else if let Some(gap) = style.gap.filter(|g| *g != 0.0) {
-                    decls.push(("gap", css::px(f64::from(gap))));
+                let gap = if node.kind == NodeKind::Flow {
+                    "column-gap"
+                } else {
+                    "gap"
+                };
+                if let Some(terms) = lengths.gap {
+                    decls.push((gap, css::terms(terms, device)));
+                } else if let Some(px) = style.gap.filter(|g| *g != 0.0) {
+                    decls.push((gap, css::px(f64::from(px))));
                 }
                 padding(node, decls, device);
             }
@@ -1036,6 +1052,23 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
                 if let Extent::Set(value) = cross {
                     decls.push((cross_name, value));
+                }
+            }
+            // A fill takes a whole line; a fit shrinks to its line.
+            Parent::Flow => {
+                match width {
+                    Extent::Set(value) => {
+                        decls.push(("flex", "none".into()));
+                        decls.push(("width", value));
+                    }
+                    Extent::Fit => decls.push(("flex", "0 1 auto".into())),
+                    Extent::Fill(_) => {
+                        decls.push(("flex", "none".into()));
+                        decls.push(("width", "100%".into()));
+                    }
+                }
+                if let Extent::Set(value) = height {
+                    decls.push(("height", value));
                 }
             }
             Parent::Grid => {

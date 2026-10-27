@@ -909,7 +909,8 @@ impl NodeStore {
                 }
             };
             let slot = match self.layout_input_mut(id) {
-                LayoutInput::Flex { gap, .. } if !rows => gap,
+                LayoutInput::Flex { gap, .. } | LayoutInput::Flow { gap, .. } if !rows => gap,
+                LayoutInput::Flow { line_gap, .. } => line_gap,
                 LayoutInput::Grid { column_gap, .. } if !rows => column_gap,
                 LayoutInput::Grid { row_gap, .. } => row_gap,
                 _ => continue,
@@ -933,6 +934,7 @@ impl NodeStore {
             });
             let moved = match self.layout_input_mut(id) {
                 LayoutInput::Flex { padding, .. }
+                | LayoutInput::Flow { padding, .. }
                 | LayoutInput::Grid { padding, .. }
                 | LayoutInput::Stack { padding, .. }
                 | LayoutInput::Absolute { padding, .. } => {

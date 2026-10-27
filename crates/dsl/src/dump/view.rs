@@ -324,6 +324,7 @@ fn node(cx: &FileCx<'_>, tree: &UiTree, node: &UiNode, key: &mut u32) -> Node {
 fn kind_name(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Flex => "flex",
+        NodeKind::Flow => "flow",
         NodeKind::Grid => "grid",
         NodeKind::Stack => "stack",
         NodeKind::Absolute => "absolute",

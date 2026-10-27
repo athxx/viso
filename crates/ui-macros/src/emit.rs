@@ -478,6 +478,10 @@ impl Emit<'_> {
                     },
                 }
             }
+            NodeKind::Flow => {
+                let style = flow_style_tokens(&node.style);
+                quote! { cx.flow(#style, |cx| { #child_block }) }
+            }
             NodeKind::Grid => {
                 let padding = node.style.padding.map(inset_tokens).map(|padding| {
                     quote! { padding: #padding, }
@@ -1014,6 +1018,34 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
         let axis = axis_tokens(axis);
         fields.push(quote! { axis: #axis });
     }
+    arranged_fields(style, &mut fields);
+    quote! {
+        ::viso::__private::viso_ui::FlexStyle {
+            #( #fields, )*
+            ..::core::default::Default::default()
+        }
+    }
+}
+
+/// `::viso::__private::viso_ui::FlowStyle { gap?, line_gap?, size?, .. }`
+/// from a folded [`StyleIr`].
+fn flow_style_tokens(style: &StyleIr) -> TokenStream {
+    let mut fields = Vec::new();
+    arranged_fields(style, &mut fields);
+    if let Some(line_gap) = style.line_gap {
+        fields.push(quote! { line_gap: #line_gap });
+    }
+    quote! {
+        ::viso::__private::viso_ui::FlowStyle {
+            #( #fields, )*
+            ..::core::default::Default::default()
+        }
+    }
+}
+
+/// The fields a flex or a flow container's style shares, those `style`
+/// set: its placements, gap, padding and size.
+fn arranged_fields(style: &StyleIr, fields: &mut Vec<TokenStream>) {
     if let Some(justify) = style.justify {
         let justify = match justify {
             Justify::Start => quote! { Start },
@@ -1041,12 +1073,6 @@ fn flex_style_tokens(style: &StyleIr) -> TokenStream {
     if has_size(style) {
         let size = size_tokens(style);
         fields.push(quote! { size: #size });
-    }
-    quote! {
-        ::viso::__private::viso_ui::FlexStyle {
-            #( #fields, )*
-            ..::core::default::Default::default()
-        }
     }
 }
 

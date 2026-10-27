@@ -26,6 +26,9 @@ pub enum WidgetNode {
     /// A block-axis flex container padded by the part of its box the
     /// software keyboard covers.
     KeyboardAvoiding,
+    /// A row whose children wrap onto further lines when they run out of
+    /// room.
+    Wrap,
     /// A track grid.
     Grid,
     /// A container that layers its children in one box.

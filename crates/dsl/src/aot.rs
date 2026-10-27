@@ -455,6 +455,7 @@ pub(crate) fn aot_node(node: &UiNode) -> AotNode {
 pub(crate) fn aot_kind(kind: NodeKind) -> AotNodeKind {
     match kind {
         NodeKind::Flex => AotNodeKind::Flex,
+        NodeKind::Flow => AotNodeKind::Flow,
         NodeKind::Grid => AotNodeKind::Grid,
         NodeKind::Stack => AotNodeKind::Stack,
         NodeKind::Absolute => AotNodeKind::Absolute,
@@ -474,6 +475,7 @@ pub(crate) fn aot_style(style: &StyleIr) -> AotStyle {
         width: style.width.map(aot_length),
         height: style.height.map(aot_length),
         gap: style.gap,
+        line_gap: style.line_gap,
         padding: style.padding.map(inset_of),
         scope: style.scope.map(|scope| AotScope {
             basis: scope.basis,

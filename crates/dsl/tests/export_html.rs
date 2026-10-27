@@ -2493,3 +2493,33 @@ export component Photo {
     let script = page.script.as_deref().unwrap();
     assert!(script.contains("https://example.org/c.png"), "{script}");
 }
+
+#[test]
+fn a_wrap_is_a_wrapping_flex_box() {
+    let page = export(
+        r#"
+export component Tags {
+    view {
+        Wrap {
+            gap: 8dp;
+            row_gap: 4dp;
+            Text { width: 40dp; height: 20dp; text: "a"; }
+            Text { width: Sizing::fill; height: 20dp; text: "b"; }
+        }
+    }
+}
+"#,
+        true,
+    )
+    .unwrap();
+    let css = &page.styles;
+    assert!(
+        css.contains("flex-wrap: wrap; row-gap: 4px; column-gap: 8px;"),
+        "{css}"
+    );
+    assert!(css.contains("flex: none; width: 40px;"), "{css}");
+    assert!(
+        css.contains("flex: none; width: 100%;"),
+        "a fill takes a line: {css}"
+    );
+}
