@@ -1707,7 +1707,7 @@ enum GlyphImageKind {
 
 这些是 `viso-text` / `viso-render` 内部合同，不是 DSL 关键字，也不要求普通 App 手工选择。普通作者只看到正确、稳定的文字结果；Runtime 根据 retained metadata、transform history、device scale、glyph source capability 与资源预算做选择。
 
-> **状态**：representation 状态机（promotion / settle / hysteresis）、MTSDF 生成、quality window 与 bucket、retained OutlineVector、各 residency pool 都已实现并有测试（§29.1），但运行时尚未驱动 promotion：facade 不把 run 的 transform 采样喂给 `RepresentationState`，绘制只走 `MaskA8` 与 `ColorRgba8`（`GlyphLane::Mtsdf` 不被发出，MTSDF pool 没有真实 page）。缩放或旋转中的文字目前以 A8 coverage 绘制。§13.3–§13.6 描述的是目标行为（尚未实现）。
+> **状态**：运行时驱动 promotion。每帧在 transform 更新之后，facade 只采样 turned 节点下的 text run：线性部分取平均 scale，非轴对齐算作 rotated。对这些 run 驱动各自的 `RepresentationState`。持续 zoom 或旋转会在 worker 上生成 MTSDF，生成期间继续画 last-good coverage；整组 glyph 进入 MTSDF plane（RGBA8 data，按 page 独立预算）后，在帧边界切到 `GlyphLane::Mtsdf`。静止后在 worker 上光栅化该 size 的精确 coverage，就绪后切回；取消 turn 后回到 run 自己的 coverage，并丢弃状态。只平移的 run 不建状态、不求值、不生成 field。尚未实现：OutlineVector lane，超出顶层 bucket 时继续放大顶层 field；以及 `ColorVector` 绘制。
 
 ## 13.1 稳定文字优先精确 A8 Coverage
 
@@ -1784,8 +1784,6 @@ rotation-heavy transformed text
 ## 13.3 Temporal Promotion：动画时 MTSDF，稳定后回到精确 Coverage
 
 这是 Viso 字体渲染与“永久 distance-field-first”方案最重要的区别。
-
-> 目标（尚未实现）：下面的流程在 `viso-text` 中可由测试驱动，但运行时还没有接线，见 §13 开头的状态说明。
 
 ```text
 Stable state
@@ -3136,9 +3134,9 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 [x] Face SLRU recency 不按每 glyph 更新
 [x] Shaping Cache 有独立预算
 [x] 普通 UI / 小字号 / CJK 默认使用 A8 Coverage
-[ ] 连续 zoom/scale/rotation 场景可 lazy promotion 到 MTSDF
-[ ] MTSDF generation 不阻塞当前 frame，pending 时继续 last-good Coverage
-[ ] transform settle 后可异步生成精确 Coverage 并 frame-boundary switch back
+[x] 连续 zoom/scale/rotation 场景可 lazy promotion 到 MTSDF
+[x] MTSDF generation 不阻塞当前 frame，pending 时继续 last-good Coverage
+[x] transform settle 后可异步生成精确 Coverage 并 frame-boundary switch back
 [x] MTSDF 超出 quality window 时使用新的 MTSDF bucket 或 OutlineVector，而不是无限放大
 [x] 极端 zoom/高精度场景拥有 retained OutlineVector path，且稳态不每帧 tessellate
 [x] 不为每个 glyph 默认永久保存 Coverage + MTSDF + Vector 多份表示
@@ -3186,7 +3184,10 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | Face Cache byte-budgeted SLRU | `admit_accounts_bytes_not_count`，`second_reuse_promotes_to_protected`，`scan_of_one_shot_faces_does_not_flush_protected`，`the_face_budget_drops_cold_fallback_faces_and_keeps_pinned_ones` |
 | SLRU recency 不按 glyph | `recency_is_epoch_merged_not_per_glyph`，`repeated_drawing_folds_face_recency_once_per_frame` |
 | Shaping Cache 独立预算 | `span_budget_turnover_and_face_drops_are_independent`，`a_face_budget_turnover_leaves_the_span_cache_alone`，`every_cache_has_its_own_byte_budget_from_a_memory_class` |
-| 默认 A8 Coverage | `a_run_starts_on_coverage_and_switches_only_at_a_resolve`，`cjk_needs_a_longer_sustained_transform`；runtime 只 admit `MaskA8` / `ColorRgba8`，`the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from` 断言 `MaskA8` |
+| 默认 A8 Coverage | `a_run_starts_on_coverage_and_switches_only_at_a_resolve`，`cjk_needs_a_longer_sustained_transform`，`the_inspection_explains_a_reclaimed_glyph_and_what_it_draws_from` 断言 `MaskA8`；只平移的 run 不建状态：`text_that_only_moves_takes_no_look_and_counts_nothing`（求值、promotion、demotion、field 计数恒为 0，不建 MTSDF plane） |
+| lazy promotion 到 MTSDF | `a_run_zoomed_draws_from_fields_then_settles_to_exact_coverage_and_back`（持续 zoom 不早于 100 ms 切到 MTSDF lane，extent 不变，field quad 覆盖 coverage 框），`a_rotation_held_promotes_once_and_unrotating_settles_back`（保持旋转只 promotion 一次、不再求值）；golden：`scaled_and_rotated_text_draws_from_fields_and_matches_its_golden`（3× 加 0.35 rad 经 CpuRaster 画出） |
+| MTSDF generation 不阻塞 frame | field 在 worker 上生成（`ToWorker::Fields`），整组 resident 前 run 继续画 last-good coverage；`a_run_zoomed_draws_from_fields_then_settles_to_exact_coverage_and_back` |
+| settle 后 switch back | `a_run_zoomed_draws_from_fields_then_settles_to_exact_coverage_and_back`（静止在 4× 时切到 64 px 的精确 coverage，放开后回到 16 px 并丢弃状态），`a_turn_held_still_draws_its_size_exactly_without_fields`（静态 2× 直接画 32 px coverage，不生成 field） |
 | quality window | `a_request_past_a_window_takes_the_next_bucket`，`past_the_ladder_the_request_hands_off_to_the_outline`，`the_planned_bucket_is_always_inside_the_field_window`，`mtsdf_buckets_and_quality_windows` |
 | retained OutlineVector | `two_consecutive_frames_at_extreme_zoom_tessellate_once`，`eviction_and_re_request_re_tessellate_exactly_once` |
 | 不永久保存多份表示 | `a_glyph_never_holds_coverage_a_field_and_an_outline_at_once` |
@@ -3212,9 +3213,6 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | typed mapping | `ShapedGlyph.cluster` 是裸 `u32`，`glyph_id` 是裸 `u16` |
 | zh-Hans/zh-Hant/ja/ko 独立 tailoring | ICU provider 只有一个 ja/zh bucket，`locale_selects_cjk_bucket_ja_zh_but_not_ko` 断言三者 break 集相同 |
 | Thai/Lao/Khmer provider | Thai 只经 ICU 内置 auto segmenter，无可插拔 provider，Lao/Khmer 无测试 |
-| MTSDF lazy promotion | 状态机已测试，runtime 不驱动 `RepresentationState`（无 transform 输入） |
-| MTSDF generation 不阻塞 frame | runtime 不生成 MTSDF |
-| settle 后 switch back | 同上，只有状态机层证据 |
 
 ---
 

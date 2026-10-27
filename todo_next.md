@@ -462,11 +462,39 @@ Rules (as for `todo_features.md`):
   - Verified: a focused splice test fails without the fix and passes with it. Two boxes paint
     nothing but a hidden child each; the second's child is shown, then the first's.
   - The ui lib tests, including the splice fuzz tests' spliced/patched/whole ratios, and clippy pass.
-- [ ] Drive glyph representation promotion at runtime: MTSDF for runs under sustained scale or
+- [x] Drive glyph representation promotion at runtime: MTSDF for runs under sustained scale or
   rotation, settling back to A8, with real MTSDF pages. Verify with:
   - a scaled/rotated text golden;
   - counters that stay 0 for pure translation;
   - Text §29.1's MTSDF rows.
+  - Built: each frame, after the transforms update, `TransformTable::turned_text` walks only the
+    turned roots' subtrees and finds the shown text under them, with their linear part. Each such
+    run drives its own `RepresentationState` from the mean scale and whether it is rotated.
+    Fields are generated on the worker (`ToWorker::Fields`, `MtsdfGenerator`) into a real MTSDF
+    plane (RGBA8 data, edge ≤ 1024, its own page budget). The plane is uploaded, reclaimed per
+    page and kept by trim. A run switches at a frame boundary once its whole glyph set is
+    resident, and draws last-good coverage until then. Settling rasterizes exact coverage at the
+    held size, drawn at the laid-out extent. Releasing the turn returns the run to its own
+    coverage and drops its state. Switching only repaints (`set_painted_content`).
+    `Content::Text` gained `lane`, and paint emits it. Counters: representation evaluations,
+    promotions, demotions and fields, reported in the frame stats and `TextStats`. The window
+    wakes at the earliest representation deadline.
+  - Also fixed: the MTSDF shader's distance range ignored the place and the display density,
+    which softened edges under any turn or HiDPI. It now reads texels per pixel off the uv's
+    screen derivatives. The MSL oracle and SPIR-V were re-blessed.
+  - Not done: there is no OutlineVector lane, so past the top bucket the top field is magnified.
+  - Verified: the golden `scaled_and_rotated_text_draws_from_fields_and_matches_its_golden`
+    renders "bd" at 3× and 0.35 rad through CpuRaster on the MTSDF lane. Against GPU-stretched
+    coverage it has 577 fully lit and 290 edge pixels, versus 64 and 1140.
+  - Verified: `text_that_only_moves_takes_no_look_and_counts_nothing` translates for 40 frames.
+    Evaluations, promotions, demotions and fields stay 0, and no plane is created.
+  - Verified: zoom, held-rotation and static-scale tests cover sustained promotion (not before
+    100 ms), field quads covering the coverage boxes, settle-back to 64 px coverage, and return
+    to 16 px with the look dropped. A held rotation is not evaluated again.
+  - Verified: `turned_text` picks only the shown text under turns, each once. Text §29.1 rows
+    are updated. The viso, ui and text lib tests and the shader and mtsdf_lane tests pass.
+    clippy is clean on ui, text, shader, render and viso (host, headless, wasm32, no
+    rasterizer).
 - [ ] Reorder-safe spans in the batch planner, so text over sibling cards rejoins one glyph draw.
   Verify with planner order tests and a draw-count drop in `paint_scale`.
 - [x] `Encoder::clear` and `Encoder::from_vec`; reuse one encoder for game net packets and dev

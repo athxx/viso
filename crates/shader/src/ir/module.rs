@@ -681,12 +681,6 @@ pub fn mtsdf_ir() -> ShaderIr {
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", ""),
         Varying::new("color", IrType::F32X4, "", ""),
-        Varying::new(
-            "span",
-            IrType::F32X2,
-            "",
-            "device pixels per uv unit, for the screen-space distance range",
-        ),
     ];
     ShaderIr {
         kind: PrimitiveKind::Mtsdf,
@@ -2815,7 +2809,6 @@ VOut out;
 out.position = float4(ndc, 0.0, 1.0);
 out.uv = float2(inst.uv_pos) + corner * float2(inst.uv_size);
 out.color = float4(inst.color);
-out.span = size / max(float2(inst.uv_size), float2(1e-6));
 return out;";
 
 const MTSDF_FRAGMENT_BODY: &str = "\
@@ -2828,11 +2821,13 @@ float4 s = tex.sample(samp, in.uv);
 float md = max(min(s.r, s.g), min(max(s.r, s.g), s.b));
 float sd = ((md > 0.5) != (s.a > 0.5)) ? s.a : md;
 
-// Distances are stored in field texels over this span; converting it to device
-// pixels is what keeps the edge one pixel wide at every scale in the window.
+// Distances are stored in field texels. How many of them one device pixel
+// spans, read off the uv's screen derivatives, turns them into pixels, so the
+// edge stays one pixel wide at every scale, rotation and display density.
 float distance_range = 4.0;
-float texels_per_uv = float(tex.get_width());
-float px_range = distance_range * in.span.x / max(texels_per_uv, 1.0);
+float2 texels = float2(float(tex.get_width()), float(tex.get_height()));
+float per_px = 0.5 * (length(dfdx(in.uv) * texels) + length(dfdy(in.uv) * texels));
+float px_range = distance_range / max(per_px, 1e-6);
 float cov = ink_coverage(clamp((sd - 0.5) * px_range + 0.5, 0.0, 1.0), in.color.rgb);
 float a = in.color.a * cov;
 return float4(in.color.rgb * a, a);";

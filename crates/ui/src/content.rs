@@ -29,7 +29,7 @@ use crate::layout::Vec2;
 use crate::text_style::{FontSize, SpanStyle, TextSpan, TextStyle, WidthUse};
 use viso_render::asset::ResourceId;
 use viso_render::{
-    GlyphInstanceData, PathCmd, ProgramSlot, Rect, Rgba, SceneSlot, Stroke, TextureId,
+    GlyphInstanceData, GlyphLane, PathCmd, ProgramSlot, Rect, Rgba, SceneSlot, Stroke, TextureId,
 };
 
 /// A node's drawable content plus its measured intrinsic size.
@@ -51,10 +51,13 @@ pub enum Content {
     /// `None`, and pays nothing for the color path.
     Text {
         /// The positioned outline glyphs, one screen quad each, in node-local
-        /// space. Their A8 texels are sampled as exact coverage from `atlas`.
+        /// space, sampling `atlas` on `lane`.
         glyphs: Vec<GlyphInstanceData>,
-        /// The single-channel A8 coverage pool the outline glyphs sample.
+        /// The pool the outline glyphs sample: A8 coverage, or the MTSDF
+        /// fields of a run drawn scaled or rotated.
         atlas: TextureId,
+        /// How `atlas` decodes: exact coverage, or a distance field.
+        lane: GlyphLane,
         /// The positioned color-bitmap glyphs (emoji), in node-local space,
         /// sampling `color_atlas` as premultiplied RGBA. Empty for pure text.
         color_glyphs: Vec<GlyphInstanceData>,
@@ -449,6 +452,7 @@ mod tests {
             ink: None,
             glyphs: Vec::new(),
             atlas: TextureId::new(1),
+            lane: viso_render::GlyphLane::CoverageA8,
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: Rgba {

@@ -2805,7 +2805,7 @@ opacity animation
 例外（必须显式处理）：
 - **place 无法表达的内容**：offscreen layer（ROI 按绘制时裁剪）、backdrop / material（采样背后内容）、用户 program（自写 uniform）会污染所在 root；scissor 只能跟随平移，转动的 root 内打开的 clip 改经 offscreen layer 合成，含 scissor clip 的 root 开始转动也算无法表达。移动被污染的 root，或帧内存在 backdrop capture 时移动任何 root，`set_transforms` 返回 `NeedsUpload`，该帧按新 place 重新 paint 并上传，结果总是正确；
 - **可见集变化**：paint 发出 root 内的全部节点，滚入视口的节点总有 retained paint；VirtualList 的新行走 LAYOUT 路径（ADR 0008）；
-- **glyph 像素对齐**：只平移的 place 按 device pixel 吸附（scale factor 取 length 环境），A8 glyph raster 不因小数偏移失效；转动的 root 不吸附，其中的 A8 glyph 随 place 缩放、旋转采样。目标（尚未实现）：按 Text 规范的 promotion 规则（§37.3）把持续转动的 glyph run 换成 MTSDF lane，静止后回到 A8。
+- **glyph 像素对齐**：只平移的 place 按 device pixel 吸附（scale factor 取 length 环境），A8 glyph raster 不因小数偏移失效；转动的 root 不吸附。其中的 glyph run 由每帧的 representation pass 决定怎么画：持续转动时换成 MTSDF lane；静止后换成该 size 的精确 A8，画在原 extent 上；取消 turn 后回到自己的 A8（Text 规范 §13）。pass 只遍历 turned root 的子树（`TransformTable::turned_text`），只平移的帧什么都不做。
 
 transform 只跟随 UI 父链，不存在以任意矩阵引用形成的 transform parent。overlay 只改变绘制顺序与裁剪：它在原位布局、画在顶层、不受上方 scroll 裁剪，位置仍随父链的变换；anchored layer 由布局按锚点放置（`viso_ui::anchored`）。
 
@@ -3523,7 +3523,7 @@ Mismatch 在编译 / 热重载时失败（热重载保留 last-good pipeline，`
 - 禁止 FontFace load 时预生成 distance field，禁止为 CJK 整套字体预生成；
 - 各 representation 独立 residency pool 与 accounting；representation 决策挂在 retained run 上，不逐帧逐 glyph 重算。
 
-当前运行时只绘制 `MaskA8` 与 `ColorRgba8`（`COLR` v0/v1 也在软件中画成 RGBA8 bitmap）。目标（尚未实现）：把 promotion 接入运行时——`viso_text::glyph_representation::RepresentationState` 状态机、MTSDF 生成与 `viso_render` 的 MTSDF atlas / `GlyphLane::Mtsdf` 都已存在，但 UI paint 总是发出 `GlyphLane::CoverageA8`，facade 不向状态机提供 transform 输入，MTSDF 与 OutlineVector pool 不持有像素；`ColorVector` 没有绘制路径。
+运行时绘制 `MaskA8`、`ScalableMtsdf` 与 `ColorRgba8`（`COLR` v0/v1 也在软件中画成 RGBA8 bitmap）。`Content::Text` 带 `lane`，paint 照它发出 `GlyphLane`。turned 节点下的 run 各自持有 `RepresentationState`：MTSDF 在 worker 上生成，进入 MTSDF plane（边长不超过 1024 的 RGBA8 data 纹理，独立 page 预算，被回收的 page 让绘制它的 run 退回 coverage）；整组 glyph resident 后才在帧边界切换；切换只重画（PAINT），不重新 layout。MTSDF shader 用 uv 的屏幕导数求每像素的 field texel 数，因此任意 scale、旋转和 dpi 下边缘都保持一像素宽。尚未实现：OutlineVector 没有 lane，超出顶层 bucket 时继续放大顶层 field；`ColorVector` 没有绘制路径。
 
 ### 37.4 Cache 边界
 
@@ -5705,7 +5705,7 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 
 **决定**：稳定 UI、小字号、CJK、编辑器和文档默认使用目标 device-pixel bucket 的 A8 Coverage；持续 zoom/scale/rotation 的 monochrome glyph 按需异步 promotion 为 MTSDF；变换稳定后重新生成精确 Coverage 并切回；极端 zoom/高精度场景使用 retained OutlineVector；Color Glyph 使用独立 RGBA/Vector 路径。MTSDF/Vector 都不是 FontFace load 时的 eager 资源，也不能永久与 Coverage 为所有 glyph 双份常驻。
 
-当前状态：MTSDF 与 OutlineVector 的生成、atlas 与 lane 已实现，但 lane 选择尚未接入绘制，所有文本以 Coverage 或 Color 绘制（`Viso_Text_Font_Runtime.md` §13）。
+当前状态：Coverage ↔ MTSDF 的 promotion 与 settle-back 已在运行时驱动；OutlineVector 已有生成与 cache，但没有绘制 lane（`Viso_Text_Font_Runtime.md` §13）。
 
 **理由**：精确 Coverage 在稳定小字/CJK 上拥有更好的像素质量、更低的 texture bandwidth 与内存；MTSDF 在动画/连续 zoom 中摊平重复 raster/upload，并用 RGB multi-channel distance 保持尖角、Alpha true distance 支持距离效果；极端 zoom 不受有限 distance-field resolution 约束时，retained vector geometry 提供最高精度。Temporal promotion/settle-back 让资源只为当前行为付费，同时避免 120/144/240Hz 动画期间的 raster bucket churn。
 

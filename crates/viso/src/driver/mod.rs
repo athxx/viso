@@ -369,6 +369,16 @@ pub(crate) struct WindowState {
     /// worker finished into, so committing allocates nothing on the steady
     /// path.
     pub(crate) text_updated: Vec<ParagraphSlot>,
+    /// What the text representation pass gathers each frame it runs: the
+    /// text under a turn, as nodes and as runs, and the walk's stack.
+    pub(crate) text_turned: Vec<(NodeId, viso_render::Affine2)>,
+    pub(crate) text_turned_runs: Vec<(ParagraphSlot, f32, bool)>,
+    pub(crate) text_walk: Vec<NodeId>,
+    /// The instant the text representations count time from, set on the
+    /// first frame they run.
+    pub(crate) text_epoch: Option<Instant>,
+    /// When a text representation decides anew with nothing moving.
+    pub(crate) text_due: Option<Instant>,
     /// Retained source request of every shaped run, keyed by node — the one
     /// place the facade keeps a run's declaration after the store's request
     /// column is drained (`take_text_requests` consumes it, and the store treats

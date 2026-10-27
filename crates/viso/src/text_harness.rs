@@ -69,6 +69,13 @@ pub struct TextStats {
     pub atlas_upload_bytes: u64,
     pub evictions: u64,
     pub admission_failures: u64,
+    /// Glyph representation decisions the policy evaluated.
+    pub representation_evaluations: u64,
+    /// Runs switched to distance fields, and back to coverage.
+    pub promotions: u64,
+    pub demotions: u64,
+    /// Distance fields admitted.
+    pub fields: u64,
     pub face_hits: u64,
     pub face_misses: u64,
     pub face_evictions: u64,
@@ -266,6 +273,10 @@ impl TextHarness {
             atlas_upload_bytes: counters.atlas_upload_bytes(),
             evictions: counters.evictions(),
             admission_failures: counters.admission_failures(),
+            representation_evaluations: counters.representation_evaluations(),
+            promotions: counters.promotions(),
+            demotions: counters.demotions(),
+            fields: counters.fields(),
             face_hits: faces.hits(),
             face_misses: faces.misses(),
             face_evictions: faces.evictions(),

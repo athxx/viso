@@ -377,6 +377,13 @@ impl RepresentationState {
         }
     }
 
+    /// The next time a threshold can fire with no new input: a resolve at or
+    /// after it evaluates even if the transform held still. `None` when only
+    /// a new transform or a completion can change the decision.
+    pub fn deadline(&self) -> Option<Duration> {
+        self.deadline
+    }
+
     /// How many resolves evaluated the policy rather than returning the cached
     /// decision.
     pub fn evaluations(&self) -> u64 {

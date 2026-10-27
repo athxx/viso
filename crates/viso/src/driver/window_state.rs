@@ -134,6 +134,11 @@ impl WindowState {
             text_scratch: Vec::new(),
             text_sources: std::collections::HashMap::new(),
             text_updated: Vec::new(),
+            text_turned: Vec::new(),
+            text_turned_runs: Vec::new(),
+            text_walk: Vec::new(),
+            text_epoch: None,
+            text_due: None,
             reflow_scratch: Vec::new(),
             scratch_opens: Vec::new(),
             scratch_closes: Vec::new(),
@@ -768,6 +773,63 @@ impl WindowState {
         if self.root.is_some() && self.store.transforms_pending() {
             let _layout = crate::profile::time(Span::Layout);
             self.store.update_transforms();
+        }
+    }
+
+    /// Resolve how the text under a turn draws: a run scaled or rotated for
+    /// long enough draws from distance fields, and settles back to coverage
+    /// at the size it holds still at. Each run whose representation switched
+    /// draws again at the extent it has. A frame with nothing turned and no
+    /// run settling back does nothing.
+    pub(crate) fn represent_text(&mut self, now: Instant) {
+        let Some(text) = self.text.as_mut() else {
+            return;
+        };
+        self.store.transforms().turned_text(
+            &self.store,
+            &mut self.text_turned,
+            &mut self.text_walk,
+        );
+        self.text_turned_runs.clear();
+        self.text_turned_runs
+            .extend(self.text_turned.iter().map(|&(id, linear)| {
+                (
+                    ParagraphSlot::from(id),
+                    linear.mean_scale(),
+                    !linear.is_scale_translate(),
+                )
+            }));
+        let epoch = *self.text_epoch.get_or_insert(now);
+        text.represent(
+            now.saturating_duration_since(epoch),
+            &self.text_turned_runs,
+            &mut self.text_updated,
+        );
+        self.text_due = text.representation_deadline().map(|due| epoch + due);
+        if self.text_updated.is_empty() {
+            return;
+        }
+        let Some(gpu) = self.gpu.as_mut() else {
+            self.text_updated.clear();
+            return;
+        };
+        let dpi = self.dpi;
+        for slot in self.text_updated.drain(..) {
+            let Some(id) = self
+                .store
+                .arena()
+                .live_id(slot.index())
+                .filter(|&id| ParagraphSlot::from(id) == slot)
+            else {
+                continue;
+            };
+            let Some(request) = self.text_sources.get(&id) else {
+                continue;
+            };
+            let sizing = self.store.text_sizing(id, request);
+            let width = text.box_width(slot);
+            let content = text.shape(&mut gpu.backend, slot, request, sizing, dpi, width);
+            self.store.set_painted_content(id, content);
         }
     }
 

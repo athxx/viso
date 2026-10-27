@@ -608,6 +608,7 @@ mod tests {
                 })),
                 glyphs: Vec::new(),
                 atlas: viso_render::TextureId::new(1),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: viso_ui::Rgba::TRANSPARENT,

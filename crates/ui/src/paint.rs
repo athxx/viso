@@ -34,7 +34,7 @@ use crate::node::NodeId;
 use crate::style::BoxStyle;
 use crate::transform::TransformTable;
 use viso_render::{
-    AnalyticEllipse, AnalyticRRect, AnalyticShadow, Border, Corners, GlyphInstanceData, GlyphLane,
+    AnalyticEllipse, AnalyticRRect, AnalyticShadow, Border, Corners, GlyphInstanceData,
     GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, ProgramTextures, Quad,
     Rect, Rgba, RoundMask, SamplerDesc, ShaderDraw, ShadowShape, TransformSlot,
 };
@@ -731,6 +731,7 @@ pub(crate) fn paint_content(
         Content::Text {
             glyphs,
             atlas,
+            lane,
             color_glyphs,
             color_atlas,
             color,
@@ -764,7 +765,7 @@ pub(crate) fn paint_content(
                     glyphs: shifted(glyphs),
                     atlas: *atlas,
                     color: *color,
-                    lane: GlyphLane::CoverageA8,
+                    lane: *lane,
                 })),
                 Some(ink) => {
                     out.extend(ink.fills.iter().map(mark));
@@ -780,7 +781,7 @@ pub(crate) fn paint_content(
                                 glyphs: shifted(&glyphs[from..to]),
                                 atlas: *atlas,
                                 color: run.color.unwrap_or(*color),
-                                lane: GlyphLane::CoverageA8,
+                                lane: *lane,
                             }));
                         }
                         from = from.max(to);
@@ -1290,6 +1291,7 @@ mod tests {
                     uv: Rect::new(0.0, 0.0, 1.0, 1.0),
                 }],
                 atlas: TextureId::new(7),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
@@ -1387,6 +1389,7 @@ mod tests {
                     },
                 }],
                 atlas: TextureId::new(7),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
@@ -1515,6 +1518,7 @@ mod tests {
                     },
                 }],
                 atlas: TextureId::new(7),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
@@ -1669,6 +1673,7 @@ mod tests {
                     },
                 }],
                 atlas: TextureId::new(3),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: vec![GlyphInstanceData {
                     rect: Rect {
                         x: 12.0,
@@ -1788,6 +1793,7 @@ mod tests {
                     },
                 }],
                 atlas: TextureId::new(3),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,

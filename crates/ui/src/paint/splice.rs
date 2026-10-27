@@ -1362,6 +1362,7 @@ mod tests {
                 })
                 .collect(),
             atlas: TextureId::new(1),
+            lane: viso_render::GlyphLane::CoverageA8,
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: color(1),

@@ -4138,6 +4138,19 @@ impl NodeStore {
         );
     }
 
+    /// Replace a node's content with one that only draws differently: the
+    /// same extent and baseline, as a text run drawn from another glyph
+    /// representation is. Only paint is redone. A stale handle is a no-op.
+    pub fn set_painted_content(&mut self, id: NodeId, mut content: Content) {
+        if !self.arena.is_live(id) {
+            return;
+        }
+        self.arriving(id, &mut content);
+        self.leave_content(id);
+        self.content_payload[self.arena.slot(id)] = Some(Box::new(content));
+        self.mark_dirty(id, DirtyClass::PAINT);
+    }
+
     /// A node's pending unshaped text request, if any. Set by authoring, read
     /// and cleared by the upper tier that shapes text (see
     /// [`Self::take_text_requests`]).
@@ -8712,6 +8725,7 @@ mod tests {
             ink: None,
             glyphs: Vec::new(),
             atlas: TextureId::new(1),
+            lane: viso_render::GlyphLane::CoverageA8,
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: RED,
@@ -9871,6 +9885,7 @@ mod tests {
                     },
                 }],
                 atlas: TextureId::new(1),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: RED,
@@ -11166,6 +11181,7 @@ mod tests {
             ink: None,
             glyphs: Vec::new(),
             atlas: TextureId::new(1),
+            lane: viso_render::GlyphLane::CoverageA8,
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: CLR,

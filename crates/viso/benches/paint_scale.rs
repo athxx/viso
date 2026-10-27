@@ -170,6 +170,7 @@ fn text(n: usize) -> Content {
             })
             .collect(),
         atlas: TextureId::new(1),
+        lane: viso::render::GlyphLane::CoverageA8,
         color_glyphs: Vec::new(),
         color_atlas: None,
         color: Rgba::new(0.9, 0.9, 0.9, 1.0),

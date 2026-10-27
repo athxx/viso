@@ -44,10 +44,14 @@ use viso_ui::{
 };
 
 use crate::system_fonts::{LiveFontRegistry, PlatformColorRaster, PlatformFontProvider};
+
+mod represent;
+
 use crate::text_worker::{
     ClusterKey, ContentWidths, FaceStyle, FromWorker, LayoutDone, LayoutJob, Rastered, RichShape,
     SpanStats, TextWorker, ToWorker, bucket, starts_emoji,
 };
+use represent::{FieldPlacement, RunLook, representation_key};
 
 const ATLAS_SIZE: u32 = 1024;
 /// Page edge length: the atlas plane is cut into `256 × 256` pages, and the page
@@ -66,6 +70,10 @@ const COLOR_BYTES_PER_TEXEL: usize = 4;
 /// reclaims elsewhere, so the retry always makes progress; the bound only keeps a
 /// pathological glyph from walking the whole plane in one frame.
 const PLACEMENT_RETRIES: u32 = 4;
+
+/// The MTSDF plane's edge at most: a field is four bytes a texel, and only
+/// runs drawn turned draw from it.
+const FIELD_PLANE_MAX: u32 = 1024;
 /// Where fallback face ids start: above every id the resolver hands out, so the
 /// two id spaces never collide.
 const FALLBACK_FACE_IDS: u32 = 1 << 30;
@@ -105,6 +113,14 @@ pub(crate) struct TextCounters {
     evictions: Cell<u64>,
     /// Admissions the packer refused this frame, forcing a re-aim.
     admission_failures: Cell<u64>,
+    /// Representation decisions the policy evaluated rather than kept.
+    representation_evaluations: Cell<u64>,
+    /// Runs switched to a scalable representation.
+    promotions: Cell<u64>,
+    /// Runs switched from a scalable representation back to coverage.
+    demotions: Cell<u64>,
+    /// Distance fields admitted to the MTSDF plane.
+    fields: Cell<u64>,
 }
 
 impl TextCounters {
@@ -150,6 +166,39 @@ impl TextCounters {
 
     pub(crate) fn admission_failures(&self) -> u64 {
         self.admission_failures.get()
+    }
+
+    pub(crate) fn representation_evaluations(&self) -> u64 {
+        self.representation_evaluations.get()
+    }
+
+    pub(crate) fn promotions(&self) -> u64 {
+        self.promotions.get()
+    }
+
+    pub(crate) fn demotions(&self) -> u64 {
+        self.demotions.get()
+    }
+
+    pub(crate) fn fields(&self) -> u64 {
+        self.fields.get()
+    }
+
+    fn record_evaluations(&self, evaluations: u64) {
+        self.representation_evaluations
+            .set(self.representation_evaluations.get() + evaluations);
+    }
+
+    fn record_switch(&self, from: viso_text::Representation, to: viso_text::Representation) {
+        match (from.is_scalable(), to.is_scalable()) {
+            (false, true) => self.promotions.set(self.promotions.get() + 1),
+            (true, false) => self.demotions.set(self.demotions.get() + 1),
+            _ => {}
+        }
+    }
+
+    fn record_field(&self) {
+        self.fields.set(self.fields.get() + 1);
     }
 
     fn record_shape(&self, wrapped: bool) {
@@ -205,6 +254,10 @@ impl TextCounters {
         self.atlas_upload_bytes.set(0);
         self.evictions.set(0);
         self.admission_failures.set(0);
+        self.representation_evaluations.set(0);
+        self.promotions.set(0);
+        self.demotions.set(0);
+        self.fields.set(0);
     }
 }
 
@@ -497,6 +550,8 @@ struct TextSlot {
     full: bool,
     /// The worker paragraph's cumulative shape invocations.
     shape_calls: u64,
+    /// How it draws while turned or settling back; `None` drawn as laid out.
+    look: Option<Box<RunLook>>,
 }
 
 impl TextSlot {
@@ -513,6 +568,7 @@ impl TextSlot {
             queued: false,
             full: false,
             shape_calls: 0,
+            look: None,
         }
     }
 }
@@ -611,6 +667,18 @@ pub(crate) struct TextShaper {
     color_uv: HashMap<GlyphKey, Placement>,
     coverage_atlas: Option<GlyphAtlas>,
     color_atlas: Option<ColorAtlas>,
+    /// The distance fields of runs drawn turned, and the plane they sit in,
+    /// `field_size` texels on an edge.
+    field_uv: HashMap<GlyphKey, FieldPlacement>,
+    mtsdf_atlas: Option<viso_render::MtsdfAtlas>,
+    field_size: u32,
+    /// Fields to ask of the worker at the next dispatch.
+    fields_wanted: Vec<GlyphKey>,
+    /// A field page was reclaimed since the last [`Self::represent`].
+    fields_reclaimed: bool,
+    /// The slots with a look, and the count of frames that resolved them.
+    looks: Vec<ParagraphSlot>,
+    look_frame: u64,
     /// Which glyph is resident on which page, and which page is coldest. The
     /// metadata half of the atlas lives in `viso-text`; the atlases above own the
     /// pixels of the pages it names.
@@ -641,7 +709,7 @@ impl TextShaper {
             .color_atlas
             .as_ref()
             .map_or(0, |_| plane * COLOR_BYTES_PER_TEXEL as u64);
-        coverage + color
+        coverage + color + self.field_plane_bytes()
     }
 
     /// A shaper whose face and shaping caches and glyph atlas planes are
@@ -668,6 +736,8 @@ impl TextShaper {
         let per_axis = (size / page.max(1)).max(1) as usize;
         let pages = per_axis * per_axis;
         let page_bytes = (page as usize) * (page as usize);
+        let field_size = size.min(FIELD_PLANE_MAX).max(page);
+        let field_axis = (field_size / page.max(1)).max(1) as usize;
         Self {
             resolver: FontResolver::new(),
             fallback: FontFallback::new(FALLBACK_FACE_IDS),
@@ -703,14 +773,20 @@ impl TextShaper {
             color_uv: HashMap::new(),
             coverage_atlas: None,
             color_atlas: None,
+            field_uv: HashMap::new(),
+            mtsdf_atlas: None,
+            field_size,
+            fields_wanted: Vec::new(),
+            fields_reclaimed: false,
+            looks: Vec::new(),
+            look_frame: 0,
             // Each pool is budgeted from the geometry of the plane that holds it,
             // so "this page is full" means the same thing to the metadata layer
-            // and to the packer. The MTSDF pool keeps its default until its plane
-            // exists; the vector pool holds retained outlines, not texels, and
-            // carries the outline cache's own budget.
+            // and to the packer. The vector pool holds retained outlines, not
+            // texels, and carries the outline cache's own budget.
             residency: GlyphResidency::with_pool_budgets(
                 PoolBudget::new(pages, page_bytes),
-                PoolBudget::default(),
+                PoolBudget::new(field_axis * field_axis, page_bytes * 4),
                 PoolBudget::new(pages, page_bytes * COLOR_BYTES_PER_TEXEL),
                 OUTLINE_POOL,
             ),
@@ -1052,10 +1128,14 @@ impl TextShaper {
             .shed_pool_except(GlyphImageKind::ColorRgba8, |page| {
                 color_pages.contains(&page)
             });
-        // The MTSDF and vector pools own no pixels a layout draws from yet.
-        for kind in [GlyphImageKind::ScalableMtsdf, GlyphImageKind::OutlineVector] {
-            self.residency.shed_pool_to_pressure(kind, 0);
-        }
+        let field_pages = self.drawn_field_pages();
+        self.residency
+            .shed_pool_except(GlyphImageKind::ScalableMtsdf, |page| {
+                field_pages.contains(&page)
+            });
+        // The vector pool owns no pixels a layout draws from yet.
+        self.residency
+            .shed_pool_to_pressure(GlyphImageKind::OutlineVector, 0);
         self.drain_reclaims();
         let plane = (self.atlas_size as usize) * (self.atlas_size as usize);
         let mut bytes = 0;
@@ -1073,6 +1153,15 @@ impl TextShaper {
         {
             retire(atlas.texture());
             bytes += plane * COLOR_BYTES_PER_TEXEL;
+        }
+        if self
+            .residency
+            .pool_resident_glyphs(GlyphImageKind::ScalableMtsdf)
+            == 0
+            && let Some(atlas) = self.mtsdf_atlas.take()
+        {
+            retire(atlas.texture());
+            bytes += (self.field_size as usize).pow(2) * 4;
         }
         self.outbox.push(ToWorker::ShedCold);
         bytes
@@ -1593,6 +1682,13 @@ impl TextShaper {
             paint,
         };
         entry.sizing = Some(sizing);
+        // A run placed at another size or density looks afresh.
+        if entry.drawn.as_ref().is_some_and(|drawn| {
+            drawn.placing.font_size != entry.placing.font_size
+                || drawn.placing.dpi != entry.placing.dpi
+        }) {
+            entry.look = None;
+        }
         for committed in [&mut entry.drawn, &mut entry.staged].into_iter().flatten() {
             if committed.placing != entry.placing {
                 committed.placed = self.place(
@@ -1631,6 +1727,9 @@ impl TextShaper {
         }
         let layout = &drawn.placed;
         let paint = drawn.placing.paint.as_deref();
+        let base = entry.base_bucket();
+        let representation = entry.representation();
+        let fields = representation.kind == GlyphImageKind::ScalableMtsdf;
         let mut glyphs = Vec::with_capacity(layout.glyphs.len());
         let mut color_glyphs = Vec::new();
         let mut inks: Vec<InkRun> = Vec::new();
@@ -1676,27 +1775,53 @@ impl TextShaper {
                 }
             }
 
-            let key = GlyphKey {
-                face: glyph.face,
-                glyph: glyph.glyph,
-                bucket: glyph.bucket,
-                kind: GlyphImageKind::MaskA8,
+            let key = representation_key(&glyph, representation, base);
+            let quad = if fields {
+                // The field spans its texels at the size it was generated
+                // for; the glyph's em, in logical px, scales it to its own.
+                self.field_uv.get(&key).map(|placement| {
+                    let t = f32::from(glyph.bucket) / dpi_factor / placement.px_per_em;
+                    GlyphInstanceData {
+                        rect: Rect {
+                            x: glyph.origin[0] + placement.left * t,
+                            y: glyph.origin[1] - placement.top * t,
+                            w: placement.size[0] as f32 * t,
+                            h: placement.size[1] as f32 * t,
+                        },
+                        uv: placement.uv,
+                    }
+                })
+            } else {
+                let packed = match self.coverage_uv.get(&key) {
+                    Some(&cached) => {
+                        self.residency
+                            .touch_page(GlyphImageKind::MaskA8, cached.page);
+                        Some(cached)
+                    }
+                    None => self.coverage_miss(backend, at, key),
+                };
+                packed.map(
+                    |Placement {
+                         uv, bearing, size, ..
+                     }| {
+                        // Coverage at another bucket than the glyph's own is drawn
+                        // at the size the run is laid out at.
+                        let inv = f32::from(glyph.bucket) / f32::from(key.bucket) / dpi_factor;
+                        GlyphInstanceData {
+                            rect: Rect {
+                                x: glyph.origin[0] + bearing[0] * inv,
+                                y: glyph.origin[1] - bearing[1] * inv,
+                                w: size[0] as f32 * inv,
+                                h: size[1] as f32 * inv,
+                            },
+                            uv,
+                        }
+                    },
+                )
             };
-            let packed = match self.coverage_uv.get(&key) {
-                Some(&cached) => {
-                    self.residency
-                        .touch_page(GlyphImageKind::MaskA8, cached.page);
-                    Some(cached)
-                }
-                None => self.coverage_miss(backend, at, key),
-            };
-            let Some(Placement {
-                uv, bearing, size, ..
-            }) = packed
-            else {
+            let Some(quad) = quad else {
                 continue;
             };
-            let inv = 1.0 / dpi_factor;
             let color = paint
                 .and_then(|spans| spans.get(usize::from(glyph.paint)))
                 .and_then(|span| span.color);
@@ -1709,15 +1834,7 @@ impl TextShaper {
                 }
                 ink = color;
             }
-            glyphs.push(GlyphInstanceData {
-                rect: Rect {
-                    x: glyph.origin[0] + bearing[0] * inv,
-                    y: glyph.origin[1] - bearing[1] * inv,
-                    w: size[0] as f32 * inv,
-                    h: size[1] as f32 * inv,
-                },
-                uv,
-            });
+            glyphs.push(quad);
         }
 
         if ink.is_some() {
@@ -1735,14 +1852,24 @@ impl TextShaper {
                 links: layout.links.clone(),
             })
         });
-        let atlas = self
-            .coverage_atlas
-            .as_ref()
-            .map_or(TextureId::new(0), GlyphAtlas::texture);
+        let (atlas, lane) = if fields {
+            let atlas = self.mtsdf_atlas.as_ref();
+            (
+                atlas.map_or(TextureId::new(0), viso_render::MtsdfAtlas::texture),
+                viso_render::GlyphLane::Mtsdf,
+            )
+        } else {
+            let atlas = self.coverage_atlas.as_ref();
+            (
+                atlas.map_or(TextureId::new(0), GlyphAtlas::texture),
+                viso_render::GlyphLane::CoverageA8,
+            )
+        };
         self.upload_dirty(backend);
         Content::Text {
             glyphs,
             atlas,
+            lane,
             color_glyphs,
             color_atlas: self.color_atlas.as_ref().map(ColorAtlas::texture),
             color: request.color,
@@ -1976,6 +2103,14 @@ impl TextShaper {
             });
             self.in_flight += 1;
         }
+        if !self.fields_wanted.is_empty() {
+            self.next_raster += 1;
+            self.outbox.push(ToWorker::Fields {
+                id: self.next_raster,
+                keys: std::mem::take(&mut self.fields_wanted),
+            });
+            self.in_flight += 1;
+        }
         if !self.outbox.is_empty() {
             self.worker.send(std::mem::take(&mut self.outbox));
         }
@@ -1989,6 +2124,8 @@ impl TextShaper {
             || !self.pending.is_empty()
             || !self.outbox.is_empty()
             || !self.raster_wanted.is_empty()
+            || !self.fields_wanted.is_empty()
+            || self.representation_waiting()
     }
 
     /// Commit the worker's results, oldest first, until `budget` is spent —
@@ -2092,6 +2229,7 @@ impl TextShaper {
                 waiters.append(&mut self.raster_waiters);
                 self.raster_waiters = waiters;
             }
+            FromWorker::Fields(fields) => self.admit_fields(backend, fields),
             FromWorker::Cancelled(_) => {}
             #[cfg(test)]
             FromWorker::Flushed => {}
@@ -2543,11 +2681,17 @@ impl TextShaper {
                     self.color_uv
                         .retain(|_, placement| placement.page != reclaimed.page);
                 }
-                // The MTSDF and vector pools hold no plane yet, so they own no
-                // pixels to reopen.
-                GlyphImageKind::ScalableMtsdf
-                | GlyphImageKind::OutlineVector
-                | GlyphImageKind::ColorVector => {}
+                GlyphImageKind::ScalableMtsdf => {
+                    if let Some(atlas) = self.mtsdf_atlas.as_mut() {
+                        atlas.reset_page(reclaimed.page);
+                    }
+                    self.field_uv
+                        .retain(|_, placement| placement.page != reclaimed.page);
+                    self.fields_reclaimed = true;
+                }
+                // The vector pools hold no plane yet, so they own no pixels to
+                // reopen.
+                GlyphImageKind::OutlineVector | GlyphImageKind::ColorVector => {}
             }
         }
         self.reclaims = reclaims;
@@ -2567,6 +2711,12 @@ impl TextShaper {
             backend.write_texture(atlas.texture(), x, y, width, height, &bytes);
         }
         if let Some(atlas) = self.color_atlas.as_mut()
+            && let Some((x, y, width, height, bytes)) = atlas.take_dirty()
+        {
+            self.counters.record_upload(bytes.len());
+            backend.write_texture(atlas.texture(), x, y, width, height, &bytes);
+        }
+        if let Some(atlas) = self.mtsdf_atlas.as_mut()
             && let Some((x, y, width, height, bytes)) = atlas.take_dirty()
         {
             self.counters.record_upload(bytes.len());
@@ -2653,6 +2803,7 @@ fn empty_content(request: &TextRequest, shaped_at_width: Option<f32>) -> Content
     Content::Text {
         glyphs: Vec::new(),
         atlas: TextureId::new(0),
+        lane: viso_render::GlyphLane::CoverageA8,
         color_glyphs: Vec::new(),
         color_atlas: None,
         color: request.color,
@@ -4865,5 +5016,468 @@ mod tests {
             panic!("two glyphs");
         };
         assert!((b.origin[1] - d.origin[1] - 10.0).abs() < 0.01);
+    }
+
+    /// One frame of a run held at `turn` (none: drawn as laid out), `ms`
+    /// into the run: what the worker finished is committed, the run's
+    /// representation resolved, and its content drawn again when it switched.
+    #[cfg(feature = "rasterizer")]
+    fn turned_frame(
+        shaper: &mut TextShaper,
+        gpu: &mut CpuRaster,
+        request: &TextRequest,
+        content: &mut Content,
+        ms: u64,
+        turn: Option<(f32, bool)>,
+    ) -> bool {
+        let mut updated = Vec::new();
+        shaper.wait_idle();
+        let _ = shaper.pump(gpu, Duration::MAX, Some(Duration::MAX), &mut updated);
+        updated.clear();
+        let turned: Vec<_> = turn
+            .map(|(scale, rotated)| (slot(0), scale, rotated))
+            .into_iter()
+            .collect();
+        shaper.represent(Duration::from_millis(ms), &turned, &mut updated);
+        if updated.is_empty() {
+            return false;
+        }
+        *content = shaper.shape_at(gpu, slot(0), request, 1.0, None);
+        true
+    }
+
+    #[cfg(feature = "rasterizer")]
+    fn lane(content: &Content) -> viso_render::GlyphLane {
+        let Content::Text { lane, .. } = content else {
+            panic!("text content");
+        };
+        *lane
+    }
+
+    #[cfg(feature = "rasterizer")]
+    fn quads(content: &Content) -> Vec<Rect> {
+        let Content::Text { glyphs, .. } = content else {
+            panic!("text content");
+        };
+        glyphs.iter().map(|g| g.rect).collect()
+    }
+
+    #[cfg(feature = "rasterizer")]
+    fn widest(content: &Content) -> f32 {
+        let Content::Text { glyphs, .. } = content else {
+            panic!("text content");
+        };
+        glyphs.iter().fold(0.0f32, |w, g| w.max(g.rect.w))
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_run_zoomed_draws_from_fields_then_settles_to_exact_coverage_and_back() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let request = request(PAIR, 16.0);
+        shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
+        shaper.wait_idle();
+        let _ = shaper.pump(
+            &mut gpu,
+            Duration::MAX,
+            Some(Duration::MAX),
+            &mut Vec::new(),
+        );
+        let mut content = shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
+        assert_eq!(glyph_count(&content), 2);
+        let laid = natural(&content);
+        let plain = content.clone();
+
+        // A zoom from 1x to 4x over half a second: the glyphs draw from
+        // fields once the scale has kept changing, then follow it.
+        let mut ms = 0;
+        let mut promoted_at = None;
+        for step in 0..=30 {
+            ms = step * 16;
+            let scale = 1.0 + 3.0 * step as f32 / 30.0;
+            turned_frame(
+                &mut shaper,
+                &mut gpu,
+                &request,
+                &mut content,
+                ms,
+                Some((scale, false)),
+            );
+            if promoted_at.is_none() && lane(&content) == viso_render::GlyphLane::Mtsdf {
+                promoted_at = Some(ms);
+            }
+        }
+        let promoted_at = promoted_at.expect("a sustained zoom draws from fields");
+        assert!(
+            promoted_at >= 100,
+            "not before the zoom was sustained: {promoted_at} ms"
+        );
+        assert_eq!(lane(&content), viso_render::GlyphLane::Mtsdf);
+        assert_eq!(glyph_count(&content), 2);
+        assert_eq!(natural(&content), laid, "the extent never changes");
+        // Each field, its pad included, covers the glyph's coverage box.
+        for (field, ink) in quads(&content).iter().zip(&quads(&plain)) {
+            assert!(
+                field.x <= ink.x + 0.5
+                    && field.y <= ink.y + 0.5
+                    && field.x + field.w >= ink.x + ink.w - 0.5
+                    && field.y + field.h >= ink.y + ink.h - 0.5,
+                "{field:?} covers {ink:?}"
+            );
+        }
+        assert!(shaper.counters().promotions() >= 1);
+        assert!(shaper.counters().fields() >= 2);
+        assert!(shaper.atlas_bytes() > 0);
+
+        // Held still at 4x: exact coverage at that size, drawn at the
+        // run's own extent.
+        for _ in 0..30 {
+            ms += 16;
+            turned_frame(
+                &mut shaper,
+                &mut gpu,
+                &request,
+                &mut content,
+                ms,
+                Some((4.0, false)),
+            );
+        }
+        assert_eq!(lane(&content), viso_render::GlyphLane::CoverageA8);
+        assert_eq!(
+            shaper.slots[&slot(0)].representation(),
+            viso_text::Representation::coverage(64)
+        );
+        assert!(shaper.counters().demotions() >= 1);
+        let (sharp, own) = (widest(&content), widest(&plain));
+        assert!(
+            (sharp / own - 1.0).abs() < 0.2,
+            "coverage at 4x draws at the laid-out size: {sharp} vs {own}"
+        );
+
+        // Let go of: back to the run's own coverage, and nothing kept.
+        for _ in 0..40 {
+            ms += 16;
+            turned_frame(&mut shaper, &mut gpu, &request, &mut content, ms, None);
+        }
+        assert_eq!(
+            shaper.slots[&slot(0)].representation(),
+            viso_text::Representation::coverage(16)
+        );
+        assert!(shaper.looks.is_empty(), "a run at rest has no look");
+        assert_eq!(shaper.representation_deadline(), None);
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_turn_held_still_draws_its_size_exactly_without_fields() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let request = request(PAIR, 16.0);
+        shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
+        shaper.wait_idle();
+        let _ = shaper.pump(
+            &mut gpu,
+            Duration::MAX,
+            Some(Duration::MAX),
+            &mut Vec::new(),
+        );
+        let mut content = shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
+        // Scaled 2x and never moved: one bucket change, then still.
+        for step in 0..30 {
+            turned_frame(
+                &mut shaper,
+                &mut gpu,
+                &request,
+                &mut content,
+                step * 16,
+                Some((2.0, false)),
+            );
+        }
+        assert_eq!(
+            shaper.slots[&slot(0)].representation(),
+            viso_text::Representation::coverage(32)
+        );
+        assert_eq!(shaper.counters().promotions(), 0);
+        assert_eq!(shaper.counters().fields(), 0);
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn a_rotation_held_promotes_once_and_unrotating_settles_back() {
+        let mut shaper = shaper();
+        let mut gpu = headless();
+        let request = request(PAIR, 16.0);
+        shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
+        shaper.wait_idle();
+        let _ = shaper.pump(
+            &mut gpu,
+            Duration::MAX,
+            Some(Duration::MAX),
+            &mut Vec::new(),
+        );
+        let mut content = shaper.shape_at(&mut gpu, slot(0), &request, 1.0, None);
+        let mut ms = 0;
+        for _ in 0..20 {
+            ms += 16;
+            turned_frame(
+                &mut shaper,
+                &mut gpu,
+                &request,
+                &mut content,
+                ms,
+                Some((1.0, true)),
+            );
+        }
+        assert_eq!(lane(&content), viso_render::GlyphLane::Mtsdf);
+        assert_eq!(shaper.counters().promotions(), 1);
+        let evaluations = shaper.counters().representation_evaluations();
+        for _ in 0..20 {
+            ms += 16;
+            turned_frame(
+                &mut shaper,
+                &mut gpu,
+                &request,
+                &mut content,
+                ms,
+                Some((1.0, true)),
+            );
+        }
+        assert_eq!(
+            shaper.counters().representation_evaluations(),
+            evaluations,
+            "a held rotation is not evaluated again"
+        );
+        for _ in 0..30 {
+            ms += 16;
+            turned_frame(&mut shaper, &mut gpu, &request, &mut content, ms, None);
+        }
+        assert_eq!(lane(&content), viso_render::GlyphLane::CoverageA8);
+        assert!(shaper.looks.is_empty());
+    }
+
+    /// A card holding one run of [`PAIR`] at 16 px, shaped into its leaf, in
+    /// a 128 px square; the card, its leaf and the surface's renderer.
+    #[cfg(feature = "rasterizer")]
+    struct Card {
+        shaper: TextShaper,
+        gpu: CpuRaster,
+        surface: viso_gpu::SurfaceId,
+        renderer: viso_render::Renderer,
+        store: viso_ui::NodeStore,
+        root: NodeId,
+        card: NodeId,
+        leaf: NodeId,
+        request: TextRequest,
+        turned: Vec<(NodeId, viso_render::Affine2)>,
+        stack: Vec<NodeId>,
+        primitives: Vec<viso_render::Primitive>,
+    }
+
+    #[cfg(feature = "rasterizer")]
+    const CARD_EDGE: u32 = 128;
+
+    #[cfg(feature = "rasterizer")]
+    impl Card {
+        fn new() -> Self {
+            use viso_ui::{BuildCx, FlexStyle, LeafStyle, Sizing};
+            let mut gpu = CpuRaster::new();
+            let surface = gpu.create_surface(RawWindowHandle::Headless, CARD_EDGE, CARD_EDGE);
+            let format = gpu.surface_format(surface);
+            let renderer = viso_render::Renderer::new(&mut gpu, format);
+            let mut store = viso_ui::NodeStore::new();
+            let (mut card, mut leaf) = (None, None);
+            let edge = CARD_EDGE as f32;
+            let root = {
+                let mut cx = BuildCx::new(&mut store);
+                cx.flex(
+                    FlexStyle {
+                        size: Sizing::fixed(edge, edge),
+                        align: viso_ui::Align::Center,
+                        justify: viso_ui::Justify::Center,
+                        ..FlexStyle::default()
+                    },
+                    |cx| {
+                        card = Some(
+                            cx.flex(
+                                FlexStyle {
+                                    size: Sizing::fixed(32.0, 24.0),
+                                    align: viso_ui::Align::Center,
+                                    justify: viso_ui::Justify::Center,
+                                    ..FlexStyle::default()
+                                },
+                                |cx| {
+                                    let fit = Sizing {
+                                        width: viso_ui::Length::Fit,
+                                        height: viso_ui::Length::Fit,
+                                    };
+                                    leaf = Some(
+                                        cx.leaf(LeafStyle {
+                                            size: fit,
+                                            ..LeafStyle::default()
+                                        })
+                                        .id(),
+                                    );
+                                },
+                            )
+                            .id(),
+                        );
+                    },
+                )
+                .id()
+            };
+            let mut card = Self {
+                shaper: shaper(),
+                gpu,
+                surface,
+                renderer,
+                store,
+                root,
+                card: card.unwrap(),
+                leaf: leaf.unwrap(),
+                request: request(PAIR, 16.0),
+                turned: Vec::new(),
+                stack: Vec::new(),
+                primitives: Vec::new(),
+            };
+            let at = ParagraphSlot::from(card.leaf);
+            card.shaper
+                .shape_at(&mut card.gpu, at, &card.request, 1.0, None);
+            card.shaper.wait_idle();
+            let _ = card.shaper.pump(
+                &mut card.gpu,
+                Duration::MAX,
+                Some(Duration::MAX),
+                &mut Vec::new(),
+            );
+            let content = card
+                .shaper
+                .shape_at(&mut card.gpu, at, &card.request, 1.0, None);
+            card.store.set_content_payload(card.leaf, content);
+            card.frame(0);
+            card
+        }
+
+        /// One frame `ms` in: layout, the transforms, the representation pass
+        /// over the text the frame finds turned, and paint.
+        fn frame(&mut self, ms: u64) {
+            let edge = CARD_EDGE as f32;
+            self.store
+                .layout(self.root, Rect::new(0.0, 0.0, edge, edge), &mut Vec::new());
+            if self.store.transforms_pending() {
+                self.store.update_transforms();
+            }
+            self.shaper.wait_idle();
+            let mut updated = Vec::new();
+            let _ = self.shaper.pump(
+                &mut self.gpu,
+                Duration::MAX,
+                Some(Duration::MAX),
+                &mut updated,
+            );
+            self.store
+                .transforms()
+                .turned_text(&self.store, &mut self.turned, &mut self.stack);
+            let runs: Vec<_> = self
+                .turned
+                .iter()
+                .map(|&(id, linear)| {
+                    (
+                        ParagraphSlot::from(id),
+                        linear.mean_scale(),
+                        !linear.is_scale_translate(),
+                    )
+                })
+                .collect();
+            updated.clear();
+            self.shaper
+                .represent(Duration::from_millis(ms), &runs, &mut updated);
+            for at in updated {
+                assert_eq!(at, ParagraphSlot::from(self.leaf));
+                let content = self
+                    .shaper
+                    .shape_at(&mut self.gpu, at, &self.request, 1.0, None);
+                self.store.set_painted_content(self.leaf, content);
+            }
+            self.store.repaint(self.root, &mut self.primitives);
+            self.store.clear_dirty();
+        }
+
+        fn lane(&self) -> viso_render::GlyphLane {
+            lane(self.store.content_payload(self.leaf).expect("the run"))
+        }
+
+        fn draw(&mut self) -> Vec<u8> {
+            self.renderer.upload_with_transforms(
+                &mut self.gpu,
+                &self.primitives,
+                self.store.transforms().places(),
+            );
+            let edge = CARD_EDGE as f32;
+            self.renderer.submit(
+                &mut self.gpu,
+                self.surface,
+                [0.0, 0.0, 0.0, 1.0],
+                [edge, edge],
+            );
+            self.gpu.read_pixels_bgra8(self.surface)
+        }
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn scaled_and_rotated_text_draws_from_fields_and_matches_its_golden() {
+        let mut card = Card::new();
+        card.store.set_scale(card.card, 3.0);
+        card.store.set_rotation(card.card, 0.35);
+        for step in 1..=20 {
+            card.frame(step * 16);
+        }
+        assert_eq!(card.lane(), viso_render::GlyphLane::Mtsdf);
+        let frame = card.draw();
+        let lit = frame.chunks(4).filter(|px| px[1] > 128).count();
+        assert!(lit > 40, "the turned glyphs draw: {lit} lit pixels");
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden/text_fields_turned.bgra8");
+        if std::env::var_os("BLESS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &frame).unwrap();
+            return;
+        }
+        let golden = std::fs::read(&path)
+            .unwrap_or_else(|_| panic!("missing {}; run with BLESS=1", path.display()));
+        assert_eq!(golden.len(), frame.len());
+        let worst = frame
+            .iter()
+            .zip(&golden)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            worst <= 2,
+            "the turned text differs from its golden by {worst}"
+        );
+    }
+
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn text_that_only_moves_takes_no_look_and_counts_nothing() {
+        let mut card = Card::new();
+        for step in 1..=40 {
+            let at = step as f32;
+            card.store
+                .set_translate(card.card, viso_ui::Vec2 { x: at, y: at / 2.0 });
+            card.frame(step * 16);
+            assert!(card.turned.is_empty(), "a translate turns nothing");
+        }
+        let counters = card.shaper.counters();
+        assert_eq!(counters.representation_evaluations(), 0);
+        assert_eq!(counters.promotions(), 0);
+        assert_eq!(counters.demotions(), 0);
+        assert_eq!(counters.fields(), 0);
+        assert!(card.shaper.looks.is_empty());
+        assert!(card.shaper.mtsdf_atlas.is_none(), "no field plane exists");
+        assert_eq!(card.lane(), viso_render::GlyphLane::CoverageA8);
     }
 }

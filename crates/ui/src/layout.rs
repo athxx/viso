@@ -3144,6 +3144,7 @@ mod tests {
                 ink: None,
                 glyphs: Vec::new(),
                 atlas: TextureId::new(0),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: Rgba {
@@ -4404,6 +4405,7 @@ mod tests {
                 ink: None,
                 glyphs: Vec::new(),
                 atlas: TextureId::new(0),
+                lane: viso_render::GlyphLane::CoverageA8,
                 color_glyphs: Vec::new(),
                 color_atlas: None,
                 color: Rgba {
@@ -4526,6 +4528,7 @@ mod tests {
                     ink: None,
                     glyphs: Vec::new(),
                     atlas: TextureId::new(0),
+                    lane: viso_render::GlyphLane::CoverageA8,
                     color_glyphs: Vec::new(),
                     color_atlas: None,
                     color: Rgba {

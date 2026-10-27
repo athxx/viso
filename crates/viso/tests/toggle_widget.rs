@@ -148,6 +148,7 @@ fn attach_caption(gpu: &mut CpuRaster, store: &mut NodeStore, caption_id: NodeId
             ink: None,
             glyphs: tg.glyphs.clone(),
             atlas,
+            lane: viso::render::GlyphLane::CoverageA8,
             color_glyphs: Vec::new(),
             color_atlas: None,
             color: WHITE,

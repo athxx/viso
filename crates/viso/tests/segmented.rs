@@ -294,6 +294,7 @@ mod golden {
                         ink: None,
                         glyphs: tg.glyphs.clone(),
                         atlas,
+                        lane: viso::render::GlyphLane::CoverageA8,
                         color_glyphs: Vec::new(),
                         color_atlas: None,
                         color: Rgba::new(1.0, 1.0, 1.0, 1.0),

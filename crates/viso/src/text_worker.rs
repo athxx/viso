@@ -30,8 +30,9 @@ use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan, Sty
 use viso_text::rasterize_coverage_at;
 use viso_text::text_work::{JobKind, Priority, TextJob, TextWork};
 use viso_text::{
-    BakedFace, BaseDirection, Coverage, CoverageBitmap, Direction, FontFaceId, GlyphImageKind,
-    GlyphKey, LineBreakTailoring, LineLimit, Segmenter, ShapedGlyph, ShapedRun, Shaper, TextOffset,
+    BakedFace, BaseDirection, Coverage, CoverageBitmap, Direction, FontFaceId, FontRevision,
+    GlyphImageKind, GlyphKey, LineBreakTailoring, LineLimit, MtsdfGenerator, MtsdfGlyph,
+    MtsdfRequest, Segmenter, ShapedGlyph, ShapedRun, Shaper, TextOffset,
 };
 
 /// Longest source substring the cross-paragraph span cache keeps. Labels,
@@ -175,6 +176,13 @@ pub(crate) enum ToWorker {
         id: u64,
         keys: Vec<GlyphKey>,
     },
+    /// Generate the distance fields of these glyphs, each at its key's
+    /// bucket: work that improves what already draws, so it yields to every
+    /// glyph a frame is missing.
+    Fields {
+        id: u64,
+        keys: Vec<GlyphKey>,
+    },
     /// Reply [`FromWorker::Flushed`] once every job sent before it ran.
     #[cfg(test)]
     Flush,
@@ -189,6 +197,10 @@ pub(crate) struct Need {
 
 /// A rasterized glyph; `None` when the face has no outline the parser reads.
 pub(crate) type Rastered = (GlyphKey, Option<CoverageBitmap>);
+
+/// A glyph's distance field and its RGBA8 texels; `None` when the face has no
+/// outline the generator reads.
+pub(crate) type Field = (GlyphKey, Option<(MtsdfGlyph, Vec<u8>)>);
 
 /// The narrowest width a paragraph lays out in without overflowing, its
 /// widest stretch no line breaks inside, and the width it takes on one line
@@ -234,6 +246,7 @@ pub(crate) struct LayoutDone {
 pub(crate) enum FromWorker {
     Laid(Box<LayoutDone>),
     Rastered(Vec<Rastered>),
+    Fields(Vec<Field>),
     /// Jobs a [`ToWorker::DropSlot`] cancelled before they ran; each would
     /// otherwise have replied.
     Cancelled(u32),
@@ -513,6 +526,8 @@ pub(crate) struct WorkerState {
     work: TextWork,
     layouts: HashMap<u64, Box<LayoutJob>>,
     rasters: HashMap<u64, Vec<GlyphKey>>,
+    fields: HashMap<u64, Vec<GlyphKey>>,
+    generator: MtsdfGenerator,
     /// Graphemes the current layout could not cover, deduplicated.
     needs: Vec<Need>,
     /// The style the current layout's fallback faces are chosen to match.
@@ -542,6 +557,8 @@ impl WorkerState {
             work: TextWork::default(),
             layouts: HashMap::new(),
             rasters: HashMap::new(),
+            fields: HashMap::new(),
+            generator: MtsdfGenerator::default(),
             needs: Vec::new(),
             style: FallbackStyle::default(),
             shaped: 0,
@@ -602,6 +619,13 @@ impl WorkerState {
                     });
                     self.rasters.insert(id, keys);
                 }
+                ToWorker::Fields { id, keys } => {
+                    self.work.submit(TextJob {
+                        priority: Priority::InteractiveEdit,
+                        kind: JobKind::Rasterize { glyph: id },
+                    });
+                    self.fields.insert(id, keys);
+                }
                 #[cfg(test)]
                 ToWorker::Flush => self.flushes += 1,
             }
@@ -623,10 +647,15 @@ impl WorkerState {
                 // Cancelled by its slot's drop.
                 None => return true,
             },
-            JobKind::Rasterize { glyph: id } => {
-                let keys = self.rasters.remove(&id).unwrap_or_default();
-                FromWorker::Rastered(keys.into_iter().map(|key| self.raster(key)).collect())
-            }
+            JobKind::Rasterize { glyph: id } => match self.fields.remove(&id) {
+                Some(keys) => {
+                    FromWorker::Fields(keys.into_iter().map(|key| self.field(key)).collect())
+                }
+                None => {
+                    let keys = self.rasters.remove(&id).unwrap_or_default();
+                    FromWorker::Rastered(keys.into_iter().map(|key| self.raster(key)).collect())
+                }
+            },
             JobKind::PrewarmChar { .. } => return true,
         };
         let _ = out.send(reply);
@@ -745,6 +774,27 @@ impl WorkerState {
             return (key, Some(bitmap));
         }
         (key, self.unbaked(key))
+    }
+
+    /// The distance field of `key`, generated from the outline at its bucket.
+    fn field(&mut self, key: GlyphKey) -> Field {
+        let Some(face) = self.faces.get(&key.face) else {
+            return (key, None);
+        };
+        let mut texels = Vec::new();
+        let glyph = self.generator.generate(
+            MtsdfRequest {
+                sfnt: &face.bytes,
+                index: face.index,
+                variations: face.variations,
+                face: key.face,
+                glyph: key.glyph,
+                revision: FontRevision(0),
+                px_per_em: f32::from(key.bucket),
+            },
+            &mut texels,
+        );
+        (key, glyph.map(|glyph| (glyph, texels)))
     }
 
     #[cfg(feature = "rasterizer")]

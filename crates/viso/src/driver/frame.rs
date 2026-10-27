@@ -897,6 +897,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 .chain(ws.caret_due)
                 .chain(ws.animation_due)
                 .chain(ws.video_step.due)
+                .chain(ws.text_due)
                 .any(|at| at <= now);
             let asset_due =
                 (decoded && !ws.store.assets().is_empty()) || (played && !ws.players.is_empty());
@@ -1727,6 +1728,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 self.take_menu_picks(cx);
                 for ws in &mut self.windows {
                     ws.update_transforms();
+                    ws.represent_text(cx.frame_now());
                     // Push the caption's draggable regions to the platform, but only
                     // when this frame's layout moved them (or first established them).
                     // The world boxes are final now; a caption that held still — the
@@ -1912,6 +1914,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                         "viso: glyph residency evictions={} admission_failures={}",
                                         c.evictions(),
                                         c.admission_failures(),
+                                    );
+                                    eprintln!(
+                                        "viso: glyph representations evaluations={} promotions={} demotions={} fields={}",
+                                        c.representation_evaluations(),
+                                        c.promotions(),
+                                        c.demotions(),
+                                        c.fields(),
                                     );
                                     let f = text.face_cache();
                                     eprintln!(
@@ -2161,6 +2170,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     .chain(w.caret_due)
                     .chain(w.animation_due)
                     .chain(w.video_step.due)
+                    .chain(w.text_due)
                     .chain(w.lost_gpu.map(|l| l.due))
             })
             .chain(self.places.deadline())

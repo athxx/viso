@@ -181,6 +181,56 @@ impl TransformTable {
     }
 }
 
+impl TransformTable {
+    /// Every shown text node that draws scaled or rotated, with the affine
+    /// from its layout space to the screen's linear part: the text under each
+    /// root that turns, down to the next turned node, which is a root of its
+    /// own. `stack` is scratch. A table whose roots only translate visits no
+    /// node.
+    pub fn turned_text(
+        &self,
+        store: &NodeStore,
+        out: &mut Vec<(NodeId, Affine2)>,
+        stack: &mut Vec<NodeId>,
+    ) {
+        out.clear();
+        for (root, raw) in self.roots.iter().zip(&self.raw) {
+            // A scroll or a translate inside a turned node is walked with it.
+            if root.content
+                || !store.arena().is_live(root.node)
+                || !store.turn(root.node).turns()
+                || raw.is_translation()
+            {
+                continue;
+            }
+            let linear = Affine2 {
+                e: 0.0,
+                f: 0.0,
+                ..*raw
+            };
+            stack.clear();
+            stack.push(root.node);
+            while let Some(id) = stack.pop() {
+                if store.hidden(id) {
+                    continue;
+                }
+                if matches!(
+                    store.content_payload(id),
+                    Some(crate::content::Content::Text { .. })
+                ) {
+                    out.push((id, linear));
+                }
+                stack.extend(
+                    store
+                        .arena()
+                        .children(id)
+                        .filter(|&child| !store.turn(child).turns()),
+                );
+            }
+        }
+    }
+}
+
 /// Where content painted displaced by `painted` draws under `raw`: moved by
 /// the difference, snapped to device pixels, while `raw` only translates;
 /// mapped by it, from where it was painted, once it turns.
@@ -299,5 +349,83 @@ mod tests {
         store.set_fixed_size(bar, Sizing::fixed(20.0, 80.0));
         store.layout(root, Rect::new(0.0, 0.0, 100.0, 100.0), &mut Vec::new());
         assert!(store.transforms_pending(), "its pivot moved with its box");
+    }
+
+    fn text() -> crate::content::Content {
+        crate::content::Content::Text {
+            glyphs: Vec::new(),
+            atlas: viso_render::TextureId::new(1),
+            lane: viso_render::GlyphLane::CoverageA8,
+            color_glyphs: Vec::new(),
+            color_atlas: None,
+            color: Rgba::TRANSPARENT,
+            natural: Vec2 { x: 10.0, y: 10.0 },
+            baseline: 8.0,
+            shaped_at_width: None,
+            width_use: crate::text_style::WidthUse::Ignored,
+            min_content: 10.0,
+            max_content: 10.0,
+            ink: None,
+        }
+    }
+
+    #[test]
+    fn turned_text_is_the_text_under_each_turn_with_its_linear_part() {
+        let mut store = NodeStore::new();
+        let (mut card, mut inner, mut texts) = (None, None, Vec::new());
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                card = Some(
+                    cx.flex(FlexStyle::default(), |cx| {
+                        texts.push(cx.leaf(LeafStyle::default()).id());
+                        texts.push(cx.leaf(LeafStyle::default()).id());
+                        inner = Some(
+                            cx.flex(FlexStyle::default(), |cx| {
+                                texts.push(cx.leaf(LeafStyle::default()).id());
+                            })
+                            .id(),
+                        );
+                    })
+                    .id(),
+                );
+                texts.push(cx.leaf(LeafStyle::default()).id());
+            })
+            .id()
+        };
+        let (card, inner) = (card.unwrap(), inner.unwrap());
+        for &id in &texts {
+            store.set_content_payload(id, text());
+        }
+        let surface = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let (mut out, mut stack, mut prims) = (Vec::new(), Vec::new(), Vec::new());
+        let mut frame = |store: &mut NodeStore, out: &mut Vec<(NodeId, Affine2)>| {
+            store.layout(root, surface, &mut Vec::new());
+            store.repaint(root, &mut prims);
+            store.clear_dirty();
+            store.transforms().turned_text(store, out, &mut stack);
+        };
+
+        frame(&mut store, &mut out);
+        assert!(out.is_empty(), "nothing turns");
+
+        store.set_scale(card, 2.0);
+        store.set_rotation(inner, QUARTER);
+        store.set_hidden(texts[1], true);
+        frame(&mut store, &mut out);
+        out.sort_by_key(|(id, _)| id.index());
+        assert_eq!(out.len(), 2, "the shown text under the turns, once each");
+        let (scaled, turned) = (out[0], out[1]);
+        assert_eq!(scaled.0, texts[0]);
+        assert!((scaled.1.a - 2.0).abs() < 1e-5 && scaled.1.is_scale_translate());
+        assert_eq!((scaled.1.e, scaled.1.f), (0.0, 0.0));
+        assert_eq!(turned.0, texts[2]);
+        assert!(!turned.1.is_scale_translate());
+        assert!((turned.1.mean_scale() - 2.0).abs() < 1e-4);
+
+        store.set_turn(card, Turn::NONE);
+        store.set_turn(inner, Turn::NONE);
+        frame(&mut store, &mut out);
+        assert!(out.is_empty(), "untouched again");
     }
 }
