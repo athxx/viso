@@ -701,7 +701,7 @@ Rules (as for `todo_features.md`):
     - The AccessKit bridge maps scroll requests and state; the mirror finds the scrolling
       ancestor; the iOS page-status and direction tests pass.
     - Clippy is clean on host, iOS, Android, Windows and wasm.
-- [ ] Surrounding text and selection to platform IMEs:
+- [x] Surrounding text and selection to platform IMEs:
   - macOS `attributedSubstringForProposedRange`/`selectedRange`;
   - iOS `UITextInput`;
   - Android `getTextBeforeCursor`;
@@ -709,6 +709,40 @@ Rules (as for `todo_features.md`):
   - Wayland `set_surrounding_text`.
 
   Verify with macOS Japanese reconversion and Android autocorrect.
+  - Built:
+    - A focused field that shows its text publishes `SurroundingText` at the frame's end: about
+      1 KiB either side of the selection, the composition included, with its byte offset in the
+      whole text. It is rebuilt only when the revision, selection or composition changes, and
+      its start holds still while the caret moves on nearby, so input-method offsets keep their
+      meaning between edits. Secrets, read-only fields and selections over 16 KiB publish none.
+    - Input methods edit by range through `RawEvent::ImeEdit`: `Replace`, `Recompose` (committed
+      text becomes the composition again) and `Select`. The buffer keeps a composition the edit
+      stays clear of, moving it with the text, and keeps a selection the edit stays clear of.
+    - `ImeText`, a platform-side mirror of the published text, answers queries at once and
+      applies each edit the way the app will until the app publishes again. macOS, iOS, Windows
+      and Wayland share it; Android's input connection mirrors it in its `Editable`.
+    - macOS: `selectedRange`, `markedRange`, `attributedSubstringForProposedRange` and the
+      replacement ranges (reconversion, press-and-hold accents). iOS: `UITextInput` over the
+      text, with autocorrection and spell checking on while the text is shown. Android:
+      `getTextBeforeCursor`, `setComposingRegion`, `deleteSurroundingText`, `setSelection` and
+      the initial surrounding text, with auto-correct asked for. Windows: `IMR_RECONVERTSTRING`,
+      `IMR_CONFIRMRECONVERTSTRING` and `IMR_DOCUMENTFEED`. Wayland: `set_surrounding_text`
+      (within the protocol's 4000 bytes) and `delete_surrounding_text`.
+    - UI tapes record and replay the ranged edits.
+  - Verified:
+    - `crates/viso/tests/ime_surrounding.rs`: a focused field shows its text; an autocorrect
+      replaces the typed word and keeps the caret; a reconversion composes over committed text
+      and commits; a deletion before a composition keeps it composing; the input method moves
+      the selection; a secret shows nothing.
+    - Mirror tests replay a Japanese reconversion (`setMarkedText` over the selection and over
+      the word before the caret), an autocorrect, deletions around a composition, and text
+      shown before the app took a preedit. The Windows `RECONVERTSTRING` layout and the Wayland
+      `done` order and 4000-byte cut pass, the Wayland ones in a Linux container.
+    - The Android Java compiles against API 36. Clippy is clean on host, iOS, Android, Windows,
+      Linux and wasm.
+    - Not yet seen on a device: this Mac has no Japanese input source, and the API 37 emulator
+      image offers no Vulkan, so macOS Japanese reconversion and Gboard autocorrect still need a
+      hands-on check.
 - [ ] IME clause segments and the selected clause, drawn with a thicker underline on the active
   clause. Verify with headless preedit replay and a Japanese IME.
 - [ ] Merge the labels of a node marked as one element (such as a list row) into one semantics
