@@ -643,8 +643,21 @@ Rules (as for `todo_features.md`):
 
 ## N5 — Rendering, text, input and accessibility
 
-- [ ] On the web without WebGPU, draw through CpuRaster into the canvas (`putImageData`) instead of
+- [x] On the web without WebGPU, draw through CpuRaster into the canvas (`putImageData`) instead of
   leaving it blank. Verify in headless Chromium with WebGPU disabled against the headless golden.
+  - Built: wasm's `Backend` is `WebBackend`, `Gpu(WebGpuBackend)` or `Cpu(CpuRaster)`, chosen once
+    the page asked for a device. `GpuBackend::shader_lang()` tells the language at run time; the
+    renderer keeps it and takes built-in, scene and user program code by it, and hot reload
+    compiles for it. A CPU-drawn page window gets a canvas 2D `Scanout`: each frame's damage, BGRA
+    to RGBA, goes in by `putImageData`, the whole frame when the size changed. User brushes run on
+    the interpreter from the `None` program every pack carries. CpuRaster keeps only the workers
+    the platform starts, so a page draws on its own thread. The counter example holds its
+    full-screen headless frame to `golden/counter.png`.
+  - Verified: 01-counter in headless Chrome, once with no `navigator.gpu` and once with an adapter
+    request answering null, draws on the 2D context and matches the headless golden pixel for
+    pixel at 800×600, as the WebGPU run does. After three clicks and after a resize to 640×420,
+    the CPU and WebGPU frames are identical. The custom-shader example's brushes paint on the CPU.
+    Clippy is clean on host, headless and wasm (with and without hot reload).
 - [ ] Controls take their default colors from the env `theme` instead of fixed dark-palette
   constants. Verify with snapshots under the light and dark themes, and that a theme swap marks
   PAINT only.

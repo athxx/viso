@@ -1113,6 +1113,8 @@ pub struct FrameStats {
 
 /// Turns per-frame primitives into GPU draw commands for one surface.
 pub struct Renderer {
+    /// The language the backend reads programs in.
+    lang: viso_gpu::ShaderLang,
     /// The Quad built-in pipeline (registered once).
     quad_pipeline: PipelineId,
     /// The quad pipeline writing its color without blending: the clear of a
@@ -1838,11 +1840,12 @@ impl Renderer {
         // the fixed set is materialized once, so no draw ever triggers a runtime
         // shader compile.
         let manifest = standard_manifest();
+        let lang = backend.shader_lang();
         let desc = |entry: &PipelineEntry, label: &'static str| PipelineDesc {
             label,
             builtin: entry.builtin,
             variant: entry.variant.packed(),
-            code: entry.code(B::SHADER_LANG),
+            code: entry.code(lang),
             vertex_entry: entry.vertex_entry,
             fragment_entry: entry.fragment_entry,
             color_format: target_format,
@@ -2089,6 +2092,7 @@ impl Renderer {
             programs: ProgramTable::new(backend.caps().program_instance_align),
             coverage_paths: backend.caps().coverage_paths,
             program_compiles: 0,
+            lang,
             analytic_shadow_scratch: Vec::with_capacity(256),
             blur_scratch: Vec::with_capacity(8),
             color_transform_scratch: Vec::with_capacity(8),
@@ -2244,9 +2248,9 @@ impl Renderer {
 
     /// Whether the renderer holds a pipeline of `program`'s code in the
     /// backend's language, which installing it draws with.
-    pub fn holds_program<B: GpuBackend>(&self, program: &BrushProgram) -> bool {
+    pub fn holds_program(&self, program: &BrushProgram) -> bool {
         program
-            .code_for(B::SHADER_LANG)
+            .code_for(self.lang)
             .is_some_and(|code| self.programs.cached(code, program.layout.abi()).is_some())
     }
 
@@ -2262,7 +2266,7 @@ impl Renderer {
         compiled: ProgramOf<B>,
     ) {
         let abi = program.layout.abi();
-        if let Some(code) = program.code_for(B::SHADER_LANG)
+        if let Some(code) = program.code_for(backend.shader_lang())
             && self.programs.cached(code, abi).is_none()
         {
             let pipeline = backend.install_program(compiled);
@@ -2288,9 +2292,8 @@ impl Renderer {
         slot: ProgramSlot,
         program: &BrushProgram,
     ) -> Result<(), ProgramError> {
-        let code = program
-            .code_for(B::SHADER_LANG)
-            .ok_or(ProgramError::NoCode(B::SHADER_LANG))?;
+        let lang = backend.shader_lang();
+        let code = program.code_for(lang).ok_or(ProgramError::NoCode(lang))?;
         self.install_program(backend, slot, &program.name, code, program.layout.clone())
     }
 

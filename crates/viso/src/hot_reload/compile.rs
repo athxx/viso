@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use viso_gpu::{Backend, GpuBackend, ProgramCompiler, ProgramOf, TextureFormat};
+use viso_gpu::{Backend, GpuBackend, ProgramCompiler, ProgramOf, ShaderLang, TextureFormat};
 use viso_platform::{LoopWaker, WindowId};
 use viso_render::BrushProgram;
 use viso_view::dev::wire::Revision;
@@ -21,6 +21,8 @@ use viso_view::dev::wire::Revision;
 pub(super) struct Work {
     pub(super) window: WindowId,
     pub(super) compiler: <Backend as GpuBackend>::Compiler,
+    /// The language the window's backend reads.
+    pub(super) lang: ShaderLang,
     /// The format the window's renderer draws into.
     pub(super) format: TextureFormat,
     pub(super) program: Arc<BrushProgram>,
@@ -95,7 +97,7 @@ fn build(work: Work) -> Result<Built, Refused> {
     };
     let desc = work
         .program
-        .desc(Backend::SHADER_LANG, work.format)
+        .desc(work.lang, work.format)
         .map_err(|error| refused(error.to_string()))?;
     let compiled = work.compiler.compile(&desc).map_err(refused)?;
     Ok(Built {

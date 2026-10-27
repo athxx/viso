@@ -79,3 +79,36 @@ fn bar_style() -> LeafStyle {
 fn main() {
     viso::run::<Counter>();
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use viso_image::snapshot::{Image, compare};
+
+    /// The launch frame, headless on a host whose windows fill the screen,
+    /// as `golden/counter.png` holds it: the frame a browser tab of the same
+    /// size shows, drawn by WebGPU or by the CPU.
+    #[test]
+    fn the_launch_frame_matches_its_golden() {
+        let app = viso::__test_support::drive_scripted_full_screen::<super::Counter>(
+            vec![],
+            Duration::from_millis(16),
+        );
+        let (w, h, bgra) = app.pixels().expect("the window has a surface");
+        let image = Image::from_bgra8(w, h, &bgra);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/counter.png");
+        if std::env::var_os("BLESS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, image.to_png()).unwrap();
+            return;
+        }
+        let golden = Image::from_png(&std::fs::read(&path).expect("the golden exists; BLESS=1"))
+            .expect("the golden decodes");
+        let comparison = compare(&golden, &image, 0.0);
+        assert!(
+            comparison.same_size && comparison.differing == 0,
+            "the frame departs from its golden: {comparison:?}"
+        );
+    }
+}

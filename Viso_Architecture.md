@@ -3261,9 +3261,7 @@ ADR 0001 固定的最小 primitive 合同是 `Quad` / `GlyphRun` / `Image` / `Pa
 
 按格式存储（XRGB8888 / RGB565 dither / `f32` HDR / A8 atlas）、analytic AA、path coverage（`Caps::coverage_paths`）、scanout 的实现合同见 Rendering §6.8.1。
 
-目标（尚未实现）：
-- 浏览器没有 WebGPU 时以 CpuRaster 画到 canvas（`putImageData`）；目前这种窗口不建 GPU surface，什么都不画；
-- 从 Shader IR 构建期生成 Rust 片元函数，取代用户 program 热路径上的寄存器码解释。
+浏览器没有 WebGPU 时，wasm 的 `WebBackend` 选 CpuRaster，帧经平台的 canvas 2D `Scanout` 以 `putImageData` 只写 damage（Rendering §6.8.1）。CPU 构建里用户 program 跑构建期生成的 Rust（`NativeKernel`），与解释器逐位相同。
 
 ---
 
@@ -3870,7 +3868,7 @@ Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端
 | Windows | D3D12 | first-class / performance baseline | `D3D12Backend` |
 | Linux | Vulkan | first-class | `VulkanBackend` |
 | Android | Vulkan | first-class；设备能力不足时由兼容策略处理 | `VulkanBackend` |
-| Web | WebGPU | first-class | `WebGpuBackend`（`wasm32-unknown-unknown`） |
+| Web | WebGPU；无 WebGPU 时 CpuRaster 画进 canvas 2D | first-class | `WebBackend`（`wasm32-unknown-unknown`）：`WebGpuBackend` 或 `CpuRaster` |
 | Embedded Linux（GPU） | GLES 3.0+ / Vulkan 1.1 | first-class（`embedded-gpu` profile） | `Gles3Backend` / `VulkanBackend` |
 | Embedded Linux（无 GPU） | CpuRaster | Tier-2（`embedded-cpu` profile） | `CpuRaster` |
 | 其它 target 与 headless | — | 测试 / 回退 | `CpuRaster` |
@@ -6180,7 +6178,7 @@ Box<dyn HitTestNode>
 1. 已决：clip 按代价分级（scissor → analytic rounded rect → coverage mask → retained R8 cache，`viso_render::clip`），由 retained `ClipChain` 承载（Rendering §14.2）；transform root 内打开的 clip 为每帧 intern 的链，随 root 的 place 移动；
 2. 已决（ADR 0025）：shaping cache 以 run 为键，text、font、features、fallback chain 不变即命中，字节预算为 `MemoryBudget::shaping`；
 3. 已决：每个 instance family 一个持久、只增长的 pool，CPU shadow 逐元素 diff，脏区间合并后上传（`viso_render::pool`）；
-4. Web 无 WebGPU 时的兼容路径：§30.4 规定 CpuRaster 经 canvas `putImageData`，尚未实现，`web-gpu` 构建在没有 WebGPU 的浏览器上没有回退；是否另做 WebGL2 backend 视 adoption 数据决定；
+4. 已决：Web 无 WebGPU 时 CpuRaster 经 canvas `putImageData` 画（`WebBackend`，§30.4）；是否另做 WebGL2 backend 视 adoption 数据决定；
 5. 已决：Linux / Android 以 `gles` feature 选 GLES3（静态选择，ADR 0029），默认 Vulkan；
 6. 已决（ADR 0041）：VM 是 `vm` feature，只在 debug build 执行 view 行为，release 一律走生成的 Rust；
 7. platform backend 何时从 module 升格独立 crate；

@@ -204,11 +204,7 @@ impl WindowState {
         // Bring up the GPU for this window when it exposes a real windowing
         // handle: create the device, attach a surface to that handle, and build
         // the renderer for its format.
-        let native_handle = native_handle(cx, window);
-        // A browser without WebGPU keeps the window without a GPU surface.
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        let native_handle = native_handle.filter(|_| viso_gpu::webgpu::is_prepared());
-        if let Some(raw) = native_handle {
+        if let Some(raw) = native_handle(cx, window) {
             ws.attach_gpu(viso_gpu::create_device(), raw, fonts);
         }
 
@@ -1552,9 +1548,30 @@ pub(crate) fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowCon
         },
         position: None,
         maximized: false,
-        cpu_frames: !cfg!(feature = "headless")
+        cpu_frames: cpu_frames(),
+    }
+}
+
+/// Whether a window's frames are drawn on the CPU and shown by the platform:
+/// in a CPU-drawn build, and in a browser that opened no WebGPU device.
+fn cpu_frames() -> bool {
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(any(feature = "headless", feature = "cpu"))
+    ))]
+    {
+        !viso_gpu::webgpu::is_prepared()
+    }
+    #[cfg(not(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(any(feature = "headless", feature = "cpu"))
+    )))]
+    {
+        !cfg!(feature = "headless")
             && <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG
-                == viso_gpu::ShaderLang::None,
+                == viso_gpu::ShaderLang::None
     }
 }
 

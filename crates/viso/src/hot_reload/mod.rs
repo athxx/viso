@@ -1884,7 +1884,7 @@ fn shader_work(
                     continue;
                 };
                 let renderer = &gpu.renderer;
-                if renderer.holds_program::<viso_gpu::Backend>(program)
+                if renderer.holds_program(program)
                     || work
                         .iter()
                         .any(|w| w.window == ws.window && Arc::ptr_eq(&w.program, program))
@@ -1892,7 +1892,8 @@ fn shader_work(
                     continue;
                 }
                 let format = renderer.target_format();
-                if let Err(error) = program.desc(viso_gpu::Backend::SHADER_LANG, format) {
+                let lang = gpu.backend.shader_lang();
+                if let Err(error) = program.desc(lang, format) {
                     let nack = PatchNack {
                         base_revision: staged.base_revision,
                         candidate_revision: staged.next_revision,
@@ -1909,6 +1910,7 @@ fn shader_work(
                 work.push(Work {
                     window: ws.window,
                     compiler: gpu.backend.program_compiler(),
+                    lang,
                     format,
                     program: Arc::clone(program),
                     file: view.file,

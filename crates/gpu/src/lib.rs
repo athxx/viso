@@ -34,6 +34,9 @@ pub mod slots;
     )
 ))]
 pub mod vulkan;
+/// The web's backend: WebGPU, or the CPU raster where the browser has none.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod web;
 /// The WebGPU backend (compiled only for `wasm32-unknown-unknown`).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod webgpu;
@@ -58,6 +61,8 @@ pub use metal::{MetalBackend, MetalCompiler, MetalProgram};
 ))]
 pub use vulkan::{VulkanBackend, VulkanCompiler, VulkanProgram};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use web::{WebBackend, WebCompiler, WebProgram};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 
 /// The concrete GPU backend for this target, selected at compile time.
@@ -68,9 +73,10 @@ pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 /// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
 /// OpenGL ES 3 `Gles3Backend` with the `gles` feature, else the
 /// `VulkanBackend` with `native-vulkan` (on by default); on the web the
-/// [`WebGpuBackend`]; on targets without a native backend, on Linux and
-/// Android with neither, and in a build with the `headless` or `cpu` feature,
-/// it is the software [`CpuRaster`], which always compiles and needs no GPU.
+/// [`WebBackend`], WebGPU or else the CPU raster; on targets without a native
+/// backend, on Linux and Android with neither, and in a build with the
+/// `headless` or `cpu` feature, it is the software [`CpuRaster`], which
+/// always compiles and needs no GPU.
 #[cfg(all(
     target_vendor = "apple",
     not(any(feature = "headless", feature = "cpu"))
@@ -100,7 +106,7 @@ pub type Backend = Gles3Backend;
     target_os = "unknown",
     not(any(feature = "headless", feature = "cpu"))
 ))]
-pub type Backend = WebGpuBackend;
+pub type Backend = WebBackend;
 /// The concrete GPU backend for this target (software raster: the build is
 /// headless or CPU-drawn, or no native backend is selected here).
 #[cfg(any(

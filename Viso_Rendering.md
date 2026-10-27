@@ -497,7 +497,7 @@ Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是
 - 测量：`pixel_bytes()`（目标与 surface 像素）、`scratch_bytes()`（worker 窗口）、`deferred_layers()`；bench `cpu_raster_800x480_{full,damage_5pct}_{xrgb8888,xrgb8888_srgb,xrgb8888_4t,rgb565}`（`crates/render/benches/cpu_raster.rs`）；
 - 呈现到 `RawWindowHandle::Scanout`：KMS dumb buffer 双缓冲，或桌面窗口的 layer（embedded profile 仿真）。
 
-目标（尚未实现）：浏览器没有 WebGPU 时，web-gpu 构建经 CpuRaster 画进 canvas（`putImageData`）；当前 wasm 只有 WebGpuBackend，这种情况下窗口不画任何内容。
+Web 回退：wasm 的 `Backend` 是 `WebBackend`，枚举 `Gpu(WebGpuBackend)` / `Cpu(CpuRaster)`，在页面打开设备（`webgpu::prepare`）之后按结果选定；没有 `navigator.gpu` 或拿不到 adapter 就走 CpuRaster。CPU 页面的窗口由平台建 canvas 2D 的 `Scanout`（`CanvasScanout`），帧经 `present_pixels` 只把 damage 矩形换成 RGBA 后 `putImageData`，尺寸变化时整帧写入。`GpuBackend::shader_lang()` 给出运行时的语言（`SHADER_LANG` 是常量，`WebBackend` 的是 WGSL），renderer 建立时记下它，内建 pipeline、3D lane 与用户 program 都按它取代码；每个 brush 包本就带 `ShaderLang::None` 程序，回退时由解释器执行（wasm 不嵌 `NativeKernel`）；线程起不来时 CpuRaster 只用调用线程。验证：01-counter 在 headless Chromium 中关掉 WebGPU（没有 `navigator.gpu`、adapter 为 null 两种）与 WebGPU 路径、headless golden（`examples/01-counter/golden/counter.png`）逐像素相同，点击与改尺寸后 CPU 与 WebGPU 帧仍相同。
 
 ### 6.8.2 Gles3Backend
 

@@ -43,16 +43,17 @@ pub(super) struct Pool {
 }
 
 impl Pool {
-    /// A pool of `threads` workers beside the caller.
+    /// A pool of up to `threads` workers beside the caller: as many as the
+    /// platform starts, none where it starts no thread (a browser page).
     pub(super) fn new(threads: usize) -> Pool {
         let shared = Arc::new(Shared::default());
         let threads = (1..=threads)
-            .map(|index| {
+            .map_while(|index| {
                 let shared = Arc::clone(&shared);
                 std::thread::Builder::new()
                     .name(format!("viso-raster-{index}"))
                     .spawn(move || work(&shared, index))
-                    .expect("spawns a raster worker")
+                    .ok()
             })
             .collect();
         Pool { shared, threads }

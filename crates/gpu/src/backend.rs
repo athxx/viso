@@ -283,6 +283,12 @@ pub trait GpuBackend {
     /// Whether [`time_frames`](Self::time_frames) measures anything.
     const TIMES_FRAMES: bool = false;
 
+    /// The shading language this backend reads: [`SHADER_LANG`](Self::SHADER_LANG),
+    /// unless it chose how to draw only once running.
+    fn shader_lang(&self) -> crate::ShaderLang {
+        Self::SHADER_LANG
+    }
+
     /// Spreads the drawing a backend does on the CPU over `threads` threads
     /// besides the caller (`0`: the caller alone); the pixels are the same
     /// either way. A backend that draws on a GPU ignores it.

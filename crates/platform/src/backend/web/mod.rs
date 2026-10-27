@@ -47,6 +47,7 @@ use crate::event::{
 use crate::handler::AppHandler;
 use crate::menu::Menu;
 use crate::{Instant, PlatformApp, RawWindowHandle, Window};
+use viso_handle::{GbmTarget, Scanout, ScanoutFormat};
 
 /// The only window's id.
 const WINDOW: WindowId = WindowId(1);
@@ -1032,7 +1033,12 @@ impl PlatformApp for WebApp {
         report_safe_area(&page);
         report_keyboard(&page);
 
-        self.window = Some(WebWindow { page });
+        let pixels = if config.cpu_frames {
+            Some(Rc::new(CanvasScanout::new(page.clone()).map_err(failed)?))
+        } else {
+            None
+        };
+        self.window = Some(WebWindow { page, pixels });
         Ok(WINDOW)
     }
 
@@ -1278,6 +1284,109 @@ impl Drop for WebApp {
 
 pub struct WebWindow {
     page: Rc<Page>,
+    /// Where a CPU-drawn page's frames go.
+    pixels: Option<Rc<CanvasScanout>>,
+}
+
+/// A CPU-drawn page's scanout: each frame's damage copied into the canvas
+/// through its 2D context.
+struct CanvasScanout {
+    page: Rc<Page>,
+    context: CanvasRenderingContext2d,
+    /// A damaged rect's pixels, R, G, B, A, kept for the next frame's.
+    rgba: RefCell<Vec<u8>>,
+}
+
+impl CanvasScanout {
+    fn new(page: Rc<Page>) -> Result<CanvasScanout, JsValue> {
+        // An opaque context: the browser composites the canvas without
+        // blending it.
+        let options = js_sys::Object::new();
+        Reflect::set(&options, &"alpha".into(), &false.into())?;
+        let context = page
+            .canvas
+            .get_context_with_context_options("2d", &options)?
+            .ok_or_else(|| JsValue::from_str("the canvas has no 2D context"))?
+            .dyn_into::<CanvasRenderingContext2d>()?;
+        Ok(CanvasScanout {
+            page,
+            context,
+            rgba: RefCell::new(Vec::new()),
+        })
+    }
+}
+
+impl Scanout for CanvasScanout {
+    fn size(&self) -> (u32, u32) {
+        let (w, h) = self.page.size.get();
+        (w.max(1), h.max(1))
+    }
+
+    fn format(&self) -> ScanoutFormat {
+        ScanoutFormat::Xrgb8888
+    }
+
+    fn gbm(&self) -> Option<GbmTarget> {
+        None
+    }
+
+    fn turns(&self) -> u8 {
+        0
+    }
+
+    fn present_pixels(&self, pixels: &[u8], stride: usize, damage: &[(u32, u32, u32, u32)]) {
+        let width = (stride / 4) as u32;
+        let height = pixels.len().checked_div(stride).unwrap_or(0) as u32;
+        if width == 0 || height == 0 {
+            return;
+        }
+        // Sizing the canvas clears it, so a frame of another size goes in
+        // whole.
+        let canvas = &self.page.canvas;
+        let resized = canvas.width() != width || canvas.height() != height;
+        if resized {
+            canvas.set_width(width);
+            canvas.set_height(height);
+        }
+        let whole = [(0, 0, width, height)];
+        let rects = if resized || damage.is_empty() {
+            &whole[..]
+        } else {
+            damage
+        };
+        let mut rgba = self.rgba.borrow_mut();
+        for &(x, y, w, h) in rects {
+            let (w, h) = (
+                w.min(width.saturating_sub(x)),
+                h.min(height.saturating_sub(y)),
+            );
+            if w == 0 || h == 0 {
+                continue;
+            }
+            rgba.clear();
+            rgba.reserve(w as usize * h as usize * 4);
+            for row in y..y + h {
+                let start = row as usize * stride + x as usize * 4;
+                let line = &pixels[start..start + w as usize * 4];
+                rgba.extend(
+                    line.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .flat_map(|&[b, g, r, _]| [r, g, b, 255]),
+                );
+            }
+            let Ok(image) =
+                ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&rgba), w, h)
+            else {
+                continue;
+            };
+            let _ = self
+                .context
+                .put_image_data(&image, f64::from(x), f64::from(y));
+        }
+    }
+
+    fn presented(&self, _damage: &[(u32, u32, u32, u32)]) {}
 }
 
 impl Window for WebWindow {
@@ -1304,6 +1413,13 @@ impl Window for WebWindow {
     }
 
     fn raw_handle(&self) -> RawWindowHandle {
+        // The scanout lives as long as this window, which the GPU surface
+        // does not outlive.
+        if let Some(pixels) = &self.pixels {
+            return RawWindowHandle::Scanout {
+                scanout: Rc::as_ptr(pixels) as *const dyn Scanout,
+            };
+        }
         RawWindowHandle::WebCanvas {
             canvas_id: CANVAS_ID,
         }

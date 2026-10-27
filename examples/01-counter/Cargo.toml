@@ -12,5 +12,10 @@ publish = false
 [dependencies]
 viso = { workspace = true }
 
+# The headless frame the page's CPU fallback is held to.
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }
+viso-image = { workspace = true }
+
 [lints]
 workspace = true

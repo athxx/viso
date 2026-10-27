@@ -84,7 +84,7 @@ impl OutputEncode {
                     label: "output-encode",
                     builtin: entry.builtin,
                     variant: entry.variant.packed(),
-                    code: entry.code(B::SHADER_LANG),
+                    code: entry.code(backend.shader_lang()),
                     vertex_entry: entry.vertex_entry,
                     fragment_entry: entry.fragment_entry,
                     color_format: surface,

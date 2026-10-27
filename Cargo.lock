@@ -3137,6 +3137,7 @@ name = "viso-example-01-counter"
 version = "0.0.0"
 dependencies = [
  "viso",
+ "viso-image",
 ]
 
 [[package]]

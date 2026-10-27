@@ -352,7 +352,9 @@ impl CpuRaster {
     }
 
     fn start_workers(&mut self, workers: usize) {
-        self.pool = (workers > 0).then(|| Pool::new(workers));
+        self.pool = (workers > 0)
+            .then(|| Pool::new(workers))
+            .filter(|pool| pool.width() > 1);
         let width = self.pool.as_ref().map_or(1, Pool::width);
         self.workers = (0..width).map(|_| Mutex::default()).collect();
     }
