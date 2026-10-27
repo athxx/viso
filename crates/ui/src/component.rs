@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use crate::animation::{
     AnimationEnd, AnimationEndHandler, AnimationId, EndedAnimation, Keyframes, LookTransition,
-    LookValue, NodeAnimation, Parts, ReducedMotion, Run, Timing, TrackRun, TranslateAnim,
+    LookValue, NodeAnimation, Parts, ReducedMotion, Run, Timing, TrackRun,
 };
 use crate::asset::{
     Asset, AssetDraw, AssetFit, AssetOrigin, AssetPayload, AssetSource, AssetTable,
@@ -39,11 +39,10 @@ use crate::reactive::{ComputeCx, EffectStore, SemanticProjector};
 use crate::semantics::{Role, SemanticState, Semantics, SemanticsNode, SemanticsTree};
 use crate::shader::ShaderSlots;
 use crate::state::{StateId, StateKey, StateStore, StateValue};
-use crate::style::{BoxStyle, InteractionStyle, StyleId};
+use crate::style::{BoxStyle, InteractionStyle};
 use crate::task::{Continuation, TaskFuture, TaskId, TaskOps};
 use crate::text_style::WidthUse;
 use crate::timer::TimerRequest;
-use crate::token::Theme;
 use crate::window::{ChromeContext, WindowOpenRequest};
 use viso_render::asset::{ResourceId, ResourceRevision};
 use viso_render::scene3d::SceneModel;
@@ -424,7 +423,6 @@ macro_rules! node_columns {
         $store.focusable.$op($($arg),*);
         $store.disabled.$op($($arg),*);
         $store.key_handlers.$op($($arg),*);
-        $store.styled.$op($($arg),*);
         $store.interaction.$op($($arg),*);
         $store.semantics.$op($($arg),*);
         $store.semantic_state.$op($($arg),*);
@@ -689,12 +687,6 @@ pub struct NodeStore {
     /// Parallel to `handlers` but a distinct column: read only when a key/IME
     /// event routes through the focused node's dispatch chain.
     key_handlers: Vec<Option<KeyHandler>>,
-    /// Cold: per-node style-token binding, index-aligned but mostly `None`. A
-    /// node with a binding derives its warm `style` from theme tokens; a `None`
-    /// entry means the node's `style` is a literal that no theme swap touches.
-    /// Read only by the STYLE-resolve pass over style-dirty nodes, never in the
-    /// hot per-node traversal — so it sits off the warm `style` column.
-    styled: Vec<Option<StyleId>>,
     /// Warm: per-node interaction-state box selection, index-aligned but mostly
     /// `None`. An interactive node (a button, a toggle) keeps its resting /
     /// hover / pressed boxes plus the cells driving them here; a `None` entry
@@ -702,9 +694,7 @@ pub struct NodeStore {
     /// the STYLE-resolve pass over style-dirty nodes (via
     /// [`resolve_interaction_styles`](Self::resolve_interaction_styles)), which
     /// selects the winning box into the warm `style` column — never in the hot
-    /// per-node traversal, so it sits off the `style` column like `styled`.
-    /// Distinct from `styled`: token folding derives field values from theme
-    /// tokens, this picks one whole box from a fixed set by interaction state.
+    /// per-node traversal, so it sits off the `style` column.
     interaction: Vec<Option<InteractionStyle>>,
     /// Cold: per-node authored accessibility semantics (role + label),
     /// index-aligned but mostly `None`. Holds the only heap data in the store
@@ -757,16 +747,6 @@ pub struct NodeStore {
     /// Boxed off the hot columns like `semantics`; a cold `String` in sparse
     /// side storage, never touched by the hot per-node traversal.
     text_request: Vec<Option<Box<TextRequest>>>,
-    /// Cold, transient handoff buffer (not index-aligned): transform animations
-    /// a handler requested this frame, sitting here between the router (which
-    /// drains them off the [`EventCx`](crate::context::EventCx) after a dispatch
-    /// and enqueues them via [`queue_animation`](Self::queue_animation)) and the
-    /// driver (which drains this via [`take_animation_requests`](Self::take_animation_requests)
-    /// into its live registry, before ticking). Empty and allocation-free in the
-    /// overwhelmingly common frame that starts no animation; the router holds the
-    /// store, not the driver's registry, so the animation cannot be applied in
-    /// place — the same deferral the text-request queue uses.
-    animation_requests: Vec<TranslateAnim>,
     /// Cold, not index-aligned: the look properties moving toward a new value,
     /// at most one per node and property. Empty while nothing moves, so a
     /// settled frame never walks it.
@@ -1051,7 +1031,6 @@ impl NodeStore {
         self.asset_fallbacks.clear();
         self.still_assets.clear();
         self.videos.clear();
-        self.animation_requests.clear();
         self.leaving.clear();
         self.transitions.clear();
         self.animations.clear();
@@ -3045,31 +3024,6 @@ impl NodeStore {
         self.style[id.index() as usize]
     }
 
-    /// A node's style-token binding, if it has one. `None` means the node's
-    /// `style` is a literal untouched by theme swaps.
-    #[inline]
-    pub fn style_id(&self, id: NodeId) -> Option<StyleId> {
-        self.styled[id.index() as usize]
-    }
-
-    /// Bind a node's `style` to theme tokens, replacing any prior binding. A
-    /// live-guarded write, so a stale handle is a no-op.
-    ///
-    /// This records the binding and marks the node STYLE + PAINT so the next
-    /// frame's [`resolve_styles`](Self::resolve_styles) pass folds the tokens'
-    /// current values onto the node's `style` and the paint walk re-emits it.
-    /// The caller separately binds each of the [`StyleId`]'s tokens' backing
-    /// state cells (via the theme) to this node in the [`BindingTable`], so a
-    /// later theme swap re-marks the node through the ordinary flush — this
-    /// method only establishes the binding and the first resolve.
-    pub fn set_style_token(&mut self, id: NodeId, style: StyleId) {
-        if !self.arena.is_live(id) {
-            return;
-        }
-        self.styled[id.index() as usize] = Some(style);
-        self.mark_dirty(id, DirtyClass::STYLE | DirtyClass::PAINT);
-    }
-
     /// A node's interaction-state box selection, if it has one. `None` means the
     /// node paints its literal `style` unconditionally.
     #[inline]
@@ -4171,7 +4125,7 @@ impl NodeStore {
     /// clearing the buffer. The facade calls this after a layout pass, reshapes
     /// each run at its assigned width, and writes the wrapped run back with
     /// [`Self::set_reflowed_content`]. `out` is cleared first. Like
-    /// [`take_animation_requests`](Self::take_animation_requests) the queue is
+    /// [`take_timer_requests`](Self::take_timer_requests) the queue is
     /// not index-aligned (each entry names its own node), so this is a flat move
     /// with no per-node scan — empty and allocation-free in the common frame
     /// with no width-changed wrap-eligible text. The recorder already
@@ -4247,29 +4201,6 @@ impl NodeStore {
     pub fn take_text_seeds(&mut self, out: &mut Vec<(NodeId, crate::text_edit::FieldSeed)>) {
         out.clear();
         out.append(&mut self.text_seeds);
-    }
-
-    /// Enqueue a transform animation the router drained off an
-    /// [`EventCx`](crate::context::EventCx) this frame. It sits in the store's
-    /// transient handoff buffer until the driver drains it with
-    /// [`take_animation_requests`](Self::take_animation_requests) into its live
-    /// registry (the store holds no registry of its own — the driver owns that).
-    /// A cold path: it runs only when a handler starts a slide, not per frame.
-    #[inline]
-    pub fn queue_animation(&mut self, anim: TranslateAnim) {
-        self.animation_requests.push(anim);
-    }
-
-    /// Move every queued animation out into `out`, clearing the buffer. The
-    /// driver calls this each frame and hands the drained slides to its
-    /// [`AnimationRegistry`](crate::animation::AnimationRegistry) before ticking.
-    /// `out` is cleared first. Unlike [`take_text_requests`](Self::take_text_requests)
-    /// the queue is not index-aligned (an animation names its own node), so this
-    /// is a flat move with no per-node scan — empty and allocation-free in the
-    /// common frame that queued nothing.
-    pub fn take_animation_requests(&mut self, out: &mut Vec<TranslateAnim>) {
-        out.clear();
-        out.append(&mut self.animation_requests);
     }
 
     /// Enqueue a one-shot timer arm the router drained off an
@@ -5821,7 +5752,6 @@ impl NodeStore {
             self.disabled_count -= 1;
         }
         self.key_handlers[i] = None;
-        self.styled[i] = None;
         self.interaction[i] = None;
         self.semantics[i] = None;
         self.semantic_state[i] = None;
@@ -5873,7 +5803,6 @@ impl NodeStore {
             self.focusable.push(false);
             self.disabled.push(false);
             self.key_handlers.push(None);
-            self.styled.push(None);
             self.interaction.push(None);
             self.semantics.push(None);
             self.semantic_state.push(None);
@@ -5997,50 +5926,18 @@ impl NodeStore {
         }
     }
 
-    /// Re-resolve the warm `style` of every STYLE-dirty node that carries a
-    /// style-token binding, folding the tokens' current theme values onto the
-    /// node's style, and report how many nodes were re-resolved (0 when no
-    /// bound node is style-dirty).
-    ///
-    /// This is the incremental STYLE layer: it runs after the state flush has
-    /// marked STYLE on nodes bound to a swapped theme token (and the setter
-    /// marks STYLE on a freshly bound node), before the paint rebuild. A node
-    /// whose STYLE is dirty but has no binding is skipped — its `style` is a
-    /// literal. Only tokenized fields (`fill`, `radius`) are overwritten from
-    /// the token; untokenized fields stay as the node's existing style, so the
-    /// fold is idempotent across frames and needs no separate base column.
-    /// Allocation-free; touches only the dirty bound nodes.
-    pub fn resolve_styles(&mut self, theme: &Theme, states: &StateStore) -> u32 {
-        let mut resolved = 0;
-        for &index in self.dirty_lists.of(DirtyClass::STYLE) {
-            let index = index as usize;
-            if !self.dirty[index].intersects(DirtyClass::STYLE) {
-                continue;
-            }
-            let Some(style_id) = self.styled[index] else {
-                continue;
-            };
-            self.style[index] = style_id.resolve(self.style[index], theme, states);
-            resolved += 1;
-        }
-        resolved
-    }
-
     /// Re-select the warm `style` of every STYLE-dirty node that carries an
     /// interaction-state box selection, from that selection's variants and the
     /// current cell values, and report how many nodes were re-selected (0 when
     /// no interactive node is style-dirty).
     ///
-    /// This is the interaction-state STYLE layer, a sibling of
-    /// [`resolve_styles`](Self::resolve_styles): it runs after the state flush
-    /// has marked STYLE on nodes whose pressed/hover cell flipped (and the
-    /// setter marks STYLE on a freshly bound node), before the paint rebuild. A
-    /// node whose STYLE is dirty but carries no selection is skipped — its
-    /// `style` is a literal (or a token fold). Theme-free: the selection reads
-    /// only the reactive cells, so it needs no [`Theme`], which is why it can run
-    /// in the live frame loop where `resolve_styles` (theme-dependent) does not
-    /// yet. The chosen box is one of the stored variants, so the selection is
-    /// idempotent across frames and needs no separate base column.
+    /// This is the STYLE layer: it runs after the state flush has marked STYLE
+    /// on nodes whose pressed/hover cell flipped (and the setter marks STYLE on
+    /// a freshly bound node), before the paint rebuild. A node whose STYLE is
+    /// dirty but carries no selection is skipped — its `style` is a literal.
+    /// The selection reads only the reactive cells. The chosen box is one of
+    /// the stored variants, so the selection is idempotent across frames and
+    /// needs no separate base column.
     /// Allocation-free; touches only the dirty selecting nodes.
     pub fn resolve_interaction_styles(&mut self, states: &StateStore) -> u32 {
         self.resolve_interaction_styles_since(states, 0).0
@@ -10043,153 +9940,6 @@ mod tests {
         store.restore_key_handler(leaf, handler);
         assert!(store.has_key_handler(leaf), "key handler restored");
         assert_eq!(states.get(fired), Some(StateValue::Int(1)));
-    }
-
-    #[test]
-    fn set_style_token_records_binding_and_marks_style_paint() {
-        use crate::state::{StateStore, StateValue};
-        use crate::style::StyleId;
-        use crate::token::{Theme, TokenInterner, TokenNamespace};
-
-        let mut store = NodeStore::new();
-        let mut states = StateStore::new();
-        let mut interner = TokenInterner::new();
-        let mut theme = Theme::new();
-        let bg = interner.intern(TokenNamespace::Color, "bg");
-        let cell = states.alloc(StateValue::Color(0.2, 0.4, 0.6, 1.0));
-        theme.define(bg, cell);
-
-        let leaf = {
-            let mut cx = BuildCx::new(&mut store);
-            cx.leaf(LeafStyle::default()).id()
-        };
-        assert_eq!(store.style_id(leaf), None, "no binding until set");
-        store.clear_dirty();
-
-        store.set_style_token(leaf, StyleId::fill(bg));
-        assert_eq!(store.style_id(leaf), Some(StyleId::fill(bg)));
-        assert!(
-            store
-                .dirty(leaf)
-                .intersects(DirtyClass::STYLE | DirtyClass::PAINT),
-            "binding a token marks the node style + paint"
-        );
-
-        // The resolve pass folds the token's value onto the node's style.
-        let count = store.resolve_styles(&theme, &states);
-        assert_eq!(count, 1, "one bound style-dirty node re-resolved");
-        assert_eq!(
-            store.style(leaf).fill,
-            Rgba {
-                r: 0.2,
-                g: 0.4,
-                b: 0.6,
-                a: 1.0
-            }
-        );
-    }
-
-    #[test]
-    fn resolve_styles_skips_unbound_and_clean_nodes() {
-        use crate::state::{StateStore, StateValue};
-        use crate::style::StyleId;
-        use crate::token::{Theme, TokenInterner, TokenNamespace};
-
-        let mut store = NodeStore::new();
-        let mut states = StateStore::new();
-        let mut interner = TokenInterner::new();
-        let mut theme = Theme::new();
-        let bg = interner.intern(TokenNamespace::Color, "bg");
-        let cell = states.alloc(StateValue::Color(0.1, 0.1, 0.1, 1.0));
-        theme.define(bg, cell);
-
-        let (bound, literal) = {
-            let mut cx = BuildCx::new(&mut store);
-            let a = cx
-                .leaf(LeafStyle {
-                    size: Sizing::fixed(1.0, 1.0),
-                    style: BoxStyle::solid(RED),
-                })
-                .id();
-            let b = cx
-                .leaf(LeafStyle {
-                    size: Sizing::fixed(1.0, 1.0),
-                    style: BoxStyle::solid(GREEN),
-                })
-                .id();
-            (a, b)
-        };
-        store.set_style_token(bound, StyleId::fill(bg));
-        // A literal-styled node is style-dirty but carries no binding: skipped.
-        store.mark_dirty(literal, DirtyClass::STYLE);
-
-        let count = store.resolve_styles(&theme, &states);
-        assert_eq!(count, 1, "only the bound node re-resolves");
-        assert_eq!(
-            store.style(bound).fill,
-            Rgba {
-                r: 0.1,
-                g: 0.1,
-                b: 0.1,
-                a: 1.0
-            }
-        );
-        assert_eq!(store.style(literal).fill, GREEN, "literal style untouched");
-
-        // A clean frame (no STYLE dirt) resolves nothing.
-        store.clear_dirty();
-        assert_eq!(store.resolve_styles(&theme, &states), 0);
-    }
-
-    #[test]
-    fn a_theme_swap_reresolves_the_bound_node() {
-        use crate::binding::BindingTable;
-        use crate::state::{StateStore, StateValue};
-        use crate::style::StyleId;
-        use crate::token::{Theme, TokenInterner, TokenNamespace};
-
-        let mut store = NodeStore::new();
-        let mut states = StateStore::new();
-        let mut interner = TokenInterner::new();
-        let mut theme = Theme::new();
-        let bg = interner.intern(TokenNamespace::Color, "bg");
-        let cell = states.alloc(StateValue::Color(0.0, 0.0, 0.0, 1.0));
-        theme.define(bg, cell);
-
-        let leaf = {
-            let mut cx = BuildCx::new(&mut store);
-            cx.leaf(LeafStyle::default()).id()
-        };
-        store.set_style_token(leaf, StyleId::fill(bg));
-
-        // Bind the token's backing cell to the node so a swap re-marks it, then
-        // do the initial resolve and clear the frame's dirt.
-        let mut bindings = BindingTable::new();
-        bindings.bind(cell, leaf, DirtyClass::STYLE | DirtyClass::PAINT);
-        store.resolve_styles(&theme, &states);
-        store.clear_dirty();
-
-        // A theme swap is a state write on the token's cell.
-        states.set(cell, StateValue::Color(1.0, 1.0, 1.0, 1.0));
-        let mut pending = Vec::new();
-        states.take_pending(&mut pending);
-        store.flush_state_transactions(&pending, &bindings);
-        assert!(
-            store.dirty(leaf).intersects(DirtyClass::STYLE),
-            "the swap re-marked the bound node style"
-        );
-
-        let count = store.resolve_styles(&theme, &states);
-        assert_eq!(count, 1);
-        assert_eq!(
-            store.style(leaf).fill,
-            Rgba {
-                r: 1.0,
-                g: 1.0,
-                b: 1.0,
-                a: 1.0
-            }
-        );
     }
 
     #[test]

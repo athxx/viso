@@ -100,7 +100,6 @@ pub mod text_edit;
 pub mod text_entry;
 pub mod text_style;
 pub mod timer;
-pub mod token;
 pub mod transform;
 pub mod typed_state;
 pub mod video;
@@ -113,9 +112,9 @@ pub mod window;
 pub mod work;
 
 pub use animation::{
-    AnimationEnd, AnimationEndHandler, AnimationId, AnimationRegistry, CubicBezier, Curve, Easing,
-    Keyframe, Keyframes, LookTransition, LookValue, Pace, PlayDirection, ReducedMotion, Repeat,
-    Spring, Timing, TranslateAnim,
+    AnimationEnd, AnimationEndHandler, AnimationId, CubicBezier, Curve, Easing, Keyframe,
+    Keyframes, LookTransition, LookValue, Pace, PlayDirection, ReducedMotion, Repeat, Spring,
+    Timing,
 };
 // The frame clock's time point (wasm-safe), named by timers and deadlines.
 pub use anchored::{AnchorAlign, AnchorPlacement, Anchoring, Side};
@@ -235,7 +234,7 @@ pub use snap::{ScrollSnap, SnapAlign};
 pub use spinner::{Spinner, SpinnerLook};
 pub use state::{StateId, StateStore, StateValue};
 pub use structure::{StructureCx, StructureHookId, run_structure_hooks};
-pub use style::{BoxStyle, InteractionStyle, StyleId};
+pub use style::{BoxStyle, InteractionStyle};
 pub use task::{Continuation, TaskFuture, TaskId, TaskOps};
 pub use text_edit::{
     Buffer, CARET_WIDTH, EditGeometry, EditIntent, EditLayout, FieldLook, FieldSeed, MarkState,
@@ -243,7 +242,6 @@ pub use text_edit::{
 };
 pub use text_entry::TextEntryRequest;
 pub use timer::{TimerId, TimerRegistry, TimerRequest};
-pub use token::{Theme, TokenId, TokenInterner, TokenNamespace};
 pub use typed_state::{State, StateKind, StateRead};
 pub use viewer::{ViewerLimits, ViewerMove};
 pub use virtual_grid::{Columns, ListGrid};

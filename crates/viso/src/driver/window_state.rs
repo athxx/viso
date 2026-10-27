@@ -9,9 +9,9 @@ use viso_platform::{LogicalInsets, LogicalRect, RawWindowHandle, TextEntry, Wind
 use viso_render::Rect;
 use viso_runtime::{Instant, RuntimeCx};
 use viso_ui::{
-    AnimationRegistry, Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass,
-    EffectStore, FlexStyle, FrameRecompute, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore,
-    SemanticProjector, Sizing, StateStore, TextEdits, TimerRegistry, VirtualLists, text_edit,
+    Axis, BindingTable, BuildCx, ChromeContext, ComputedStore, DirtyClass, EffectStore, FlexStyle,
+    FrameRecompute, KeyEvent, KeyRouter, Modifiers, NodeId, NodeStore, SemanticProjector, Sizing,
+    StateStore, TextEdits, TimerRegistry, VirtualLists, text_edit,
 };
 use viso_view::profile::Span;
 use viso_widgets::caption_bar;
@@ -80,8 +80,6 @@ impl WindowState {
             projectors: SemanticProjector::new(),
             virtual_lists: VirtualLists::new(),
             text_edits: TextEdits::new(),
-            animations: AnimationRegistry::new(),
-            anim_requests: Vec::new(),
             timers: TimerRegistry::new(),
             timer_requests: Vec::new(),
             changed: Vec::new(),
@@ -456,8 +454,7 @@ impl WindowState {
 
     /// Whether a node of the window is mid-slide or a look property mid-move.
     pub(crate) fn is_animating(&self) -> bool {
-        !self.animations.is_empty()
-            || self.store.is_transitioning()
+        self.store.is_transitioning()
             || self.store.is_scroll_moving()
             || self.store.is_spinning()
             || self.store.is_shimmering()
@@ -599,9 +596,7 @@ impl WindowState {
     /// STYLE class is pending. A press/hover flip marks its node STYLE (and
     /// PAINT) through the flush; this folds the winning variant (pressed >
     /// hover > resting) into the warm `style` the measure and paint passes
-    /// read. Theme-free (it reads only the reactive cells), so it runs in the
-    /// live loop where the theme-token `resolve_styles` pass does not yet. The
-    /// STYLE worklist is empty on a frame with no interaction change, which
+    /// read. The STYLE worklist is empty on a frame with no interaction change, which
     /// then pays one length check.
     ///
     /// It resolves only what gained STYLE since it last ran this frame, so the

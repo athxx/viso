@@ -230,7 +230,7 @@ Rules (as for `todo_features.md`):
   lib tests pass except a stale byte count (fixed separately). The facade integration tests pass
   except `game_sheet` (golden drift, fails at HEAD too) and `game_audio_device` (no device output
   here).
-- [ ] Remove dead surface:
+- [x] Remove dead surface:
   - the marker contexts `LayoutCx`/`PaintCx`/`RenderCx`/`TaskCx`;
   - `viso_ui::token` (`TokenId`/`TokenInterner`/its `Theme`) with `StyleId`/`resolve_styles`/
     `set_style_token`;
@@ -240,6 +240,15 @@ Rules (as for `todo_features.md`):
   - the `mobile` feature.
 
   Verify with `cargo check --workspace --all-targets`.
+  — Built: all of it is gone, together with the router's and the store's animation hand-off
+  queues and the driver's registry, the `style_resolve` bench, the `style_token` test and the
+  inspector's `style` row. A handler now animates through `EventCx::animate(node, to, timing)`,
+  a store request applied after it returns like the others. The `animation_tick` bench times
+  `tick_transitions` over translate animations. `animation_loop` checks that the end notice
+  reports finished at the target and that the loop halts, and, three frames in, that world moved
+  with nothing relaid. Verified: `cargo check --workspace --all-targets` and clippy `-D warnings`
+  (workspace, and `viso`/`viso-ui` with `headless,hot-reload`) are clean; the viso-ui lib (761),
+  `animation_loop` (3) and viso-ende tests pass; viso-ext and the examples use none of it.
 - [ ] Produce or remove `RedrawReason::TimerDue`/`HotReload` and
   `FrameDecision::BackgroundMaintenance`. Verify with scheduler unit tests.
 - [ ] `viso::version()`. Verify that it matches `CARGO_PKG_VERSION`.

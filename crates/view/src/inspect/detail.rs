@@ -357,9 +357,6 @@ fn groups(store: &NodeStore, id: NodeId) -> Vec<PropertyGroup> {
         add(&mut style, "overlay", "true".into());
     }
     add(&mut style, "hit_test", store.hittable(id).to_string());
-    if let Some(style_id) = store.style_id(id) {
-        add(&mut style, "style", format!("{style_id:?}"));
-    }
     if store.interaction_style(id).is_some() {
         add(&mut style, "interaction", "styled".into());
     }

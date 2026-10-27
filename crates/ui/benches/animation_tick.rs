@@ -1,23 +1,20 @@
 //! The `animation` benchmark category: the per-frame cost of
-//! [`AnimationRegistry::tick`], the transform-only animation hot path a sheet
-//! drawer (and every future translate animation) rides on.
+//! [`NodeStore::tick_transitions`] advancing translate animations
+//! ([`NodeStore::animate`]), the hot path a sliding sheet (and every animation
+//! a handler starts) rides on.
 //!
-//! Animation ticks are a hot path that must carry no hidden allocation, and the
-//! contract is fixed: a tick advances each live
-//! animation by writing an interpolated world-space offset through
-//! `NodeStore::set_translate` — a `TRANSFORM`-only write that never
-//! re-measures or re-lays out. This bench measures that steady per-frame cost at
-//! one and at many concurrent animations, so a regression (an allocation, a map
-//! insert, a per-node lookup) is measurable rather than assumed.
+//! Animation ticks are a hot path that must carry no hidden allocation: a tick
+//! advances each live animation by writing the value its node presents — a
+//! `TRANSFORM`-only write for a translate that never re-measures or re-lays
+//! out. This bench measures that steady per-frame cost at one and at many
+//! concurrent animations, so a regression (an allocation, a map insert, a
+//! per-node lookup) is measurable rather than assumed.
 //!
 //! Each bench pre-builds a laid-out store of N leaves and starts one animation
-//! per leaf, then times a single `tick`. Criterion runs the closure hundreds of
+//! per leaf, then times a single tick. Criterion runs the closure hundreds of
 //! millions of times, so the tick advances by a zero delta (see [`DELTA`]): that
 //! keeps every animation permanently live — the timed loop never drains to an
-//! empty registry — while exercising the identical steady per-tick path (reverse
-//! walk, liveness check, eased interpolation, `set_translate` write). The
-//! registry is a flat `Vec` walked once per tick; these numbers are the floor a
-//! still-animating frame pays.
+//! empty list — while exercising the identical steady per-tick path.
 //!
 //! Run release (`CARGO_TARGET_DIR=/tmp/rust_tmp cargo bench -p viso-ui`);
 //! criterion defaults to a release profile. Debug timing is not a perf result.
@@ -27,8 +24,7 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use viso_ui::{
-    AnimationRegistry, BuildCx, Easing, LeafStyle, NodeId, NodeStore, Rect, Sizing, TranslateAnim,
-    Vec2,
+    BuildCx, Easing, LeafStyle, LookValue, NodeId, NodeStore, Rect, Sizing, Timing, Vec2,
 };
 
 /// The surface the leaves lay out against — large enough to place a column of
@@ -42,24 +38,23 @@ const SURFACE: Rect = Rect {
 
 /// The per-tick delta. Criterion runs each closure hundreds of millions of
 /// times, so any positive delta would eventually retire every animation and
-/// leave the timed loop measuring an empty registry — understating the real
-/// cost. A zero delta keeps every animation permanently live while exercising the
+/// leave the timed loop measuring an empty list — understating the real cost.
+/// A zero delta keeps every animation permanently live while exercising the
 /// identical steady path: the reverse walk, the liveness check, the eased
-/// `current()` interpolation, and the `set_translate` write (dirty marks + store
-/// write). Only the never-taken "finished" branch differs, and that one-shot
-/// completion is deliberately outside this steady-cost category.
+/// interpolation and the translate write. Only the never-taken "arrived"
+/// branch differs, and that one-shot completion is outside this steady-cost
+/// category.
 const DELTA: Duration = Duration::ZERO;
 
 /// The animation duration. Any positive value works since [`DELTA`] never
-/// advances `elapsed` past it; a long value documents the intent (a real slide).
+/// advances past it; a long value documents the intent (a real slide).
 const LONG: Duration = Duration::from_secs(3600);
 
-/// Build a store of `n` stacked leaves laid out over the surface, and return it
-/// with every leaf id. Each leaf is a fixed 40x40 box in a column, so every node
-/// has a real laid-out `bounds` for `set_translate` to shift.
-fn build_leaves(n: usize) -> (NodeStore, Vec<NodeId>) {
+/// Build a store of `n` stacked leaves laid out over the surface, each sliding
+/// up by 1000 dp over [`LONG`].
+fn sliding_leaves(n: usize) -> NodeStore {
     let mut store = NodeStore::new();
-    let mut ids = Vec::with_capacity(n);
+    let mut ids: Vec<NodeId> = Vec::with_capacity(n);
     let root = {
         let mut cx = BuildCx::new(&mut store);
         for _ in 0..n {
@@ -73,50 +68,24 @@ fn build_leaves(n: usize) -> (NodeStore, Vec<NodeId>) {
     };
     let mut scratch = Vec::new();
     store.layout(root, SURFACE, &mut scratch);
-    (store, ids)
-}
-
-/// A registry with one slide started per id. Paired with a zero per-tick
-/// [`DELTA`], every animation stays live across the whole timed loop.
-fn registry_for(ids: &[NodeId]) -> AnimationRegistry {
-    let mut reg = AnimationRegistry::new();
-    for &id in ids {
-        reg.start(TranslateAnim::new(
-            id,
-            Vec2::ZERO,
-            Vec2 { x: 0.0, y: -1000.0 },
-            LONG,
-            Easing::EASE_OUT,
-        ));
+    let slide = Timing::eased(LONG, Easing::EASE_OUT);
+    for id in ids {
+        let to = LookValue::Translate(Vec2 { x: 0.0, y: -1000.0 });
+        store.animate(id, to, slide, None).expect("a live leaf");
     }
-    reg
+    store
 }
 
 fn bench_tick(c: &mut Criterion) {
-    // Single animation: the cost of one node's per-frame advance + world-space
-    // write — the floor a lone sliding sheet pays each frame.
-    {
-        let (mut store, ids) = build_leaves(1);
-        let mut reg = registry_for(&ids);
-        assert_eq!(reg.len(), 1);
-        c.bench_function("animation_tick/1", |b| {
-            b.iter(|| {
-                reg.tick(&mut store, DELTA);
-                black_box(&store);
-            });
-        });
-    }
-
-    // Many concurrent animations: the flat-`Vec` pass cost at scale — the ceiling
-    // a screenful of simultaneously animating nodes pays. A regression to a
-    // per-node map or a per-tick allocation shows here.
-    for &n in &[64usize, 1024] {
-        let (mut store, ids) = build_leaves(n);
-        let mut reg = registry_for(&ids);
-        assert_eq!(reg.len(), n);
+    // One animation: the floor a lone sliding sheet pays each frame. Many: the
+    // flat pass at scale — the ceiling a screenful of simultaneously animating
+    // nodes pays; a per-node map or a per-tick allocation shows here.
+    for &n in &[1usize, 64, 1024] {
+        let mut store = sliding_leaves(n);
+        assert!(store.is_transitioning());
         c.bench_function(&format!("animation_tick/{n}"), |b| {
             b.iter(|| {
-                reg.tick(&mut store, DELTA);
+                store.tick_transitions(DELTA);
                 black_box(&store);
             });
         });

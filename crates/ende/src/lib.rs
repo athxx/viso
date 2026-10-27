@@ -47,4 +47,4 @@ pub use encode::{Encode, Encoder};
 pub use json::JsonWriter;
 pub use json_value::{JsonError, JsonValue};
 pub use section::{Section, SectionWriter, Sections};
-pub use wire::{IdKind, ProtocolTag, WIRE_VERSION, WireId, content_hash};
+pub use wire::{ProtocolTag, WIRE_VERSION, content_hash};

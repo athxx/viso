@@ -1,16 +1,5 @@
-//! The canonical wire representation of core typed IDs, plus the protocol tag.
-//!
-//! Viso's typed identifiers (the `NameId` / `SymbolId` family) are defined in
-//! the crates that own their identity semantics, not here. This module owns only
-//! the **format** those IDs travel in: a stable one-byte kind tag followed by a
-//! fixed-width payload. Defining the format rather than the type keeps `ende` a
-//! leaf — it never needs an edge back into the identity-owning crates, and those
-//! crates encode through this format instead of inventing their own.
-//!
-//! A [`WireId`] is that tagged pair. It round-trips through the binary
-//! [`encode`](crate::encode) / [`decode`](crate::decode) codec like any other
-//! value, so a producer and consumer that disagree on the kind tag fail loudly
-//! at decode time rather than silently reinterpreting bytes.
+//! The protocol tag every Viso wire payload starts with, and the stable
+//! content hash payloads are told apart by.
 
 use crate::decode::{Decode, DecodeError, Decoder};
 use crate::encode::{Encode, Encoder};
@@ -90,81 +79,6 @@ impl Decode for ProtocolTag {
     }
 }
 
-/// The kind of identifier a [`WireId`] carries.
-///
-/// The tag is the discriminant written on the wire; the identity crates map
-/// their concrete ID types onto these kinds. `Custom` leaves room for a caller
-/// to carry its own kind space without a format change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum IdKind {
-    /// An interned name identifier.
-    Name = 0,
-    /// A resolved symbol identifier.
-    Symbol = 1,
-    /// A caller-defined kind, distinguished by the `Custom(u8)` payload.
-    Custom(u8) = 255,
-}
-
-impl IdKind {
-    /// The one-byte tag written on the wire for this kind.
-    #[inline]
-    fn tag(self) -> u8 {
-        match self {
-            IdKind::Name => 0,
-            IdKind::Symbol => 1,
-            IdKind::Custom(_) => 255,
-        }
-    }
-}
-
-/// A typed identifier in wire form: a [`IdKind`] tag and a `u64` value.
-///
-/// This is the format carried across encode/decode; the identity crates convert
-/// their own ID types to and from it at the wire boundary. Keeping the value a
-/// plain `u64` (not a `usize`) fixes the width regardless of target pointer size.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WireId {
-    /// Which identifier space `value` belongs to.
-    pub kind: IdKind,
-    /// The raw identifier value.
-    pub value: u64,
-}
-
-impl WireId {
-    /// A wire ID of the given kind and value.
-    #[inline]
-    pub fn new(kind: IdKind, value: u64) -> Self {
-        Self { kind, value }
-    }
-}
-
-impl Encode for WireId {
-    #[inline]
-    fn encode(&self, enc: &mut Encoder) {
-        enc.write_u8(self.kind.tag());
-        // A custom kind carries its sub-tag before the value so the reader can
-        // reconstruct the exact `IdKind::Custom(n)` it was given.
-        if let IdKind::Custom(sub) = self.kind {
-            enc.write_u8(sub);
-        }
-        enc.write_varint(self.value);
-    }
-}
-
-impl Decode for WireId {
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let tag = dec.read_u8()?;
-        let kind = match tag {
-            0 => IdKind::Name,
-            1 => IdKind::Symbol,
-            _ => IdKind::Custom(dec.read_u8()?),
-        };
-        let value = dec.read_varint()?;
-        Ok(Self { kind, value })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,20 +101,5 @@ mod tests {
     fn bad_magic_is_rejected() {
         let bytes = [b'X', b'Y', 1, 0];
         assert!(ProtocolTag::decode_from_slice(&bytes).is_err());
-    }
-
-    #[test]
-    fn wire_id_round_trips_each_kind() {
-        for id in [
-            WireId::new(IdKind::Name, 0),
-            WireId::new(IdKind::Symbol, 42),
-            WireId::new(IdKind::Name, u64::MAX),
-            WireId::new(IdKind::Custom(7), 1234),
-            WireId::new(IdKind::Custom(255), 9),
-        ] {
-            let bytes = id.encode_to_vec();
-            let decoded = WireId::decode_from_slice(&bytes).unwrap();
-            assert_eq!(decoded, id);
-        }
     }
 }

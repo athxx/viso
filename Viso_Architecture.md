@@ -99,7 +99,7 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 6. **Reactive dynamic fallback 必须显式、可计数、可 benchmark。** 编译器能够静态解析的绑定不得静默掉入动态路径（`ReactiveCounters::dynamic_fallback_nodes`，`viso-ui` 的 `reactive_binding` bench 断言静态路径为零）。
 7. **Backend 采用 Device Class × tier × capability 模型。** 每个 Device Class（Desktop / Mobile / Web / Embedded-GPU / Embedded-CPU，§50A）有自己的 Tier-1 后端，并针对现代主后端优化；兼容后端可以追加，但不得反向把 renderer 设计压成最低公分母。
 8. **Viso DSL 使用 `ui!` / `view!` / `component!` 三个语义化 Rust 入口。** `ui!` 解析 View Fragment，`component!` 解析 Component，`view!("...vs")` 编译外部 `.vs`；三者共享同一 schema/HIR/IR/runtime 语义。`.vs` 是唯一 canonical 外部 DSL 文件扩展名。
-9. **Identity 分层。** 源码名字使用 compiler-local `NameId`；跨编译稳定身份使用 128-bit `SymbolId`（artifact 与 wire 中为 `StableId`、`StateKey`）；运行时热路径使用 typed dense ID：实例为 generational `NodeId`（内部链接为无 generation 的 `NodeIndex`），state 为 `StateId`，另有 `StyleId`、`TokenId`、`ComputedId`、`EffectId` 等，behavior 入口以 chunk 索引寻址。property 不设运行时 ID：构建期 lower 为具体 builder 调用、`AotStyle` 字段与 `DirtyClass` 边；event 由 schema 的稠密枚举 `EventRoute` 分派；用户组件在编译期内联（ADR 0039），没有运行时组件类型 ID。禁止一个万能 ID 贯穿所有 subsystem（§10.4）。
+9. **Identity 分层。** 源码名字使用 compiler-local `NameId`；跨编译稳定身份使用 128-bit `SymbolId`（artifact 与 wire 中为 `StableId`、`StateKey`）；运行时热路径使用 typed dense ID：实例为 generational `NodeId`（内部链接为无 generation 的 `NodeIndex`），state 为 `StateId`，另有 `ComputedId`、`EffectId` 等，behavior 入口以 chunk 索引寻址。property 不设运行时 ID：构建期 lower 为具体 builder 调用、`AotStyle` 字段与 `DirtyClass` 边；event 由 schema 的稠密枚举 `EventRoute` 分派；用户组件在编译期内联（ADR 0039），没有运行时组件类型 ID。禁止一个万能 ID 贯穿所有 subsystem（§10.4）。
 10. **Viso 自研 Ende。** `viso-ende` 负责内部 Binary/JSON Encode/Decode、wire schema、协议版本、cache/snapshot/tool transport；RON 不属于 Viso；Serde 只作为生态 integration。
 11. **Hot Reload 是 Dev-only build capability。** Dev Runtime、patch transport、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact（facade feature `viso/hot-reload`）；Release/Shipping 完全不编入这些路径（facade 的 build script 拒绝带 `hot-reload` 的 release/shipping build，`cargo xtask check-release-absence` 扫描产物），不能靠运行时配置重新开启，release frame hot path 不承担热更税（`cargo xtask check-frame-tax`）。
 12. **`viso run` 的 desktop host 是隐式且唯一的。** macOS/Windows/Linux 开发统一使用无参数 `viso run`；`viso run ios/android` 只面向 Simulator/Emulator；`viso run web-gpu|web-dom|web-hybrid` 面向浏览器；Android/iOS 开发环境分别由 `viso android` / `viso ios` 管理，不把手机 physical-device debugging 作为 Viso 1.0 开发闭环的一部分。Embedded class 的开发闭环是：经 SSH 的板卡 Dev session（`viso run <target>`，target 写 `deploy`），以及在 macOS 上仿真 `embedded-cpu` 板卡（`viso run <target> --emulate`）（`Viso_CLI.md` §13.11，§50A.7）。
@@ -732,7 +732,6 @@ Viso-owned Encode/Decode infrastructure（叶子，`no_std`）：
 - protocol/schema metadata（`ProtocolTag`、`WIRE_VERSION`、`content_hash`）；
 - execute-in-place：`Aligned` 对齐 `static`、`SectionWriter` / `Sections` section table（§50A.6 第 5 条）；
 - cache/snapshot encoding；
-- core typed ID 的 canonical wire representation（`WireId` / `IdKind`：格式而非身份类型本身）。
 
 框架消息的 framing 在 `viso-dev-protocol`，不在本 crate。不支持 RON；不承担 image/audio/video media codec；不作为 frame 内部数据模型。Serde 互操作不在本仓库，由 viso-ext 插件按需提供（如 `viso-net` 的 `serde` feature）。
 
@@ -1144,8 +1143,6 @@ Viso 1.0 的标准身份类型如下：
 | `NameId` | 当前编译会话中的 interned identifier（按 NFC 归一） | `u32` | 否 | `viso_dsl::resolve`，compiler |
 | `SymbolId` | 稳定源码/Schema/声明身份 | 128 bit `{hi, lo}` | 是 | `viso_dsl::resolve`，compile/link/hot reload/structured edit |
 | `StableId` / `StateKey` | `SymbolId` 跨编译边界的纯数据形式（同一 `{hi, lo}` 布局） | 128 bit | 是 | `viso-schema`：behavior module、retype、persist、state store 的 cold side map |
-| `TokenId` | theme token：namespace + 稠密索引 | enum + `u32` | 否 | `viso_ui`，hot/warm |
-| `StyleId` | node 的 token 绑定（`fill` / `radius` 各一个 `Option<TokenId>`） | 值 | 否 | `viso_ui`，warm |
 | handler index / `Route` | handler table 下标 + 事件 tag + capture 位 | `u32` + enum | artifact 内 | `viso_schema::view`，hot（dispatch） |
 | `ProgramSlot` | renderer 中 user program 的槽 | `u32` | 否 | `viso_render`，hot/warm |
 | `BufferId` / `TextureId` / `PipelineId` / `SamplerId` / `BindGroupId` / `SurfaceId` | GPU resource handle | `u32 index + u32 generation` | 否 | `viso-gpu-abi`，hot |
@@ -1168,7 +1165,7 @@ pub struct VisoId(u128);
 类型系统必须能阻止：
 
 ```text
-TokenId 被传入 Shader lookup
+ComputedId 被当作 EffectId
 StateId 被当作 NodeId
 FileId 被当作 ResourceId
 SymbolId 被直接当作 Runtime array index
@@ -1389,7 +1386,6 @@ Property、Event 与 component type 在编译期消解，不留 runtime ID：
 
 ```rust
 pub struct NodeIndex(u32);       // #[repr(transparent)]
-pub struct TokenId { namespace: TokenNamespace, index: u32 }
 pub struct ProgramSlot(pub u32);
 pub struct TextureId { pub index: u32, pub generation: u32 }
 ```
@@ -1667,7 +1663,7 @@ Serde 只用于生态互操作（§10.5.14）；Ende 是 Viso internal architect
 `viso-ende`（`crates/ende`，ADR 0012）是 `no_std + alloc`、零第三方依赖的 DAG 叶子（xtask allowlist 中它的依赖列表为空）。模块：
 
 - `encode.rs` / `decode.rs`：binary `Encoder` / `Decoder` 与 `Encode` / `Decode` trait；
-- `wire.rs`：`ProtocolTag`（`b"VE"` magic + `WIRE_VERSION`）、`WireId`、`content_hash`（跨 toolchain 稳定的 64-bit FNV-1a）；
+- `wire.rs`：`ProtocolTag`（`b"VE"` magic + `WIRE_VERSION`）、`content_hash`（跨 toolchain 稳定的 64-bit FNV-1a）；
 - `section.rs` / `aligned.rs`：XIP section table（`SectionWriter` / `Sections`）与 8 字节对齐的 static blob 包装 `Aligned<B>`（`SECTION_ALIGN`）；
 - `json.rs`：只写 `JsonWriter`；`json_value.rs`：有界 JSON reader `JsonValue::parse`。
 
@@ -2083,8 +2079,6 @@ NodeRef（dev patch）             tag + varint：Static(pre-order index) | Regi
 ResourceId                      fixed u64 LE
 ```
 
-`wire.rs` 另有通用的 `WireId`（1 字节 `IdKind` tag `Name`/`Symbol`/`Custom(u8)` + varint `u64`），目前没有协议使用它。
-
 注意：某 subsystem 内部即使把某个 slot 压缩为 `u16`，跨 artifact/wire 的 ID 表示也必须由协议明确，不允许直接 memcpy 内部 struct。
 
 Development protocol 可以附带：
@@ -2449,7 +2443,7 @@ PaintIndex（按 slot 的 paint record）   paint range
 **Warm**（脏时访问）：
 
 - layout style（`LayoutInput`、intern 的 `BoxRules` / `Placement`）；
-- computed style（`BoxStyle`、`StyleId`、`InteractionStyle`）；
+- computed style（`BoxStyle`、`InteractionStyle`）；
 - semantics；
 - animation descriptors；
 - binding metadata。
@@ -3144,7 +3138,7 @@ animation dirty 按属性限定：
 - opacity / fill / 圆角 / 文字颜色 / 勾选进度只标 `PAINT`；opacity 跨过 0 或 1 时 stream 形状改变，整树 paint；
 - 只有 width / height（`Fixed` 值之间）标 `MEASURE | LAYOUT | PAINT`。
 
-`AdvanceAnimations` 阶段的 `NodeStore::tick_transitions` 单遍走平坦列表，直接写 NodeStore 的对应列（`translate`、`turn`、`opacity`、`style`），不分配；列表为空时帧循环可以停下（`is_transitioning`）。命令式动画（`animate` / `play`）只接受 translate、scale、rotation 与 opacity：它们移动呈现值，结束后显示 Model 值，因此永不触发布局。
+`AdvanceAnimations` 阶段的 `NodeStore::tick_transitions` 单遍走平坦列表，直接写 NodeStore 的对应列（`translate`、`turn`、`opacity`、`style`），不分配；列表为空时帧循环可以停下（`is_transitioning`）。命令式动画（`animate` / `play`）只接受 translate、scale、rotation 与 opacity：它们移动呈现值，结束后显示 Model 值，因此永不触发布局。handler 经 `EventCx::animate(node, to, timing)` 发起，与其他 Store 请求一样在 handler 返回后应用。
 
 **缓动**（`viso_math::Easing`，`viso_ui` 在原路径 re-export）：`Linear`、Penner 十族曲线（`Curve::{Quad, Cubic, Quart, Quint, Sine, Expo, Circ, Back, Elastic, Bounce}`）各取 `In`/`Out`/`InOut`，与 CSS `CubicBezier`（Newton 求解、二分兜底）；`EASE_IN`/`EASE_OUT`/`EASE_IN_OUT` 为三次族。曲线是无分配的纯函数，放在叶子 `viso-math`，运行时与编译器（Web 导出）共用同一实现；`Easing::named` 给出 DSL `Easing` 声明变体的顺序。会越界的曲线（`Back`、`Elastic`、越界的贝塞尔）让平移、缩放、旋转越过目标，颜色与不透明度在插值处夹回取值范围，尺寸与圆角不小于 0。Web 导出见 DSL U6.1。
 
@@ -4598,7 +4592,7 @@ Dev artifact 与 headless 构建中，任何直接标记的 dirty 都可查询�
 | 帧循环 | `frame_loop/view`（`viso`，`check-frame-tax` 用它）、`blank_frame_loop`（`viso-runtime`）、`window` / `window/fan_out`（多窗口） |
 | reactive | `flush_static` / `flush_dynamic` / `flush_mixed`（`reactive_binding`，启动时断言静态路径零 dynamic fallback） |
 | node arena 与 identity | `node_arena_{create,remove,traverse}_100k`（含 `_fixed`、`_checked`）、`identity_node_generation_check_1m` |
-| layout、style、动画、hover | `grid_relayout_*`、`length_*_refold*`、`resolve_styles_theme_swap_full_scan`、`animation_tick`、`hover_move_*`、`timer/arm` |
+| layout、style、动画、hover | `grid_relayout_*`、`length_*_refold*`、`animation_tick`、`hover_move_*`、`timer/arm` |
 | 语义 | `derive_full_single_label_change`、`derive_with_state`、`project_wake` |
 | text | `text_runtime_{steady,edit}_frame`（`viso`）、`text_steady_frame_layout_cache_hit`、`text_edit_step_zero_main_shaping`、`text_incremental_single_token_edit_8000_words` |
 | renderer | `renderer_steady_state`（上传稳态、blur、blend、glass、gradient、SVG path 等）；`cpu_raster`（800×480 全帧与 5% damage，XRGB8888 / sRGB / RGB565，1 与 4 线程） |
@@ -4804,7 +4798,7 @@ NameId                    编译器内 interned 名字（viso-dsl）
 SymbolId (128-bit)        跨编译稳定身份（viso-dsl；artifact 中为 viso_schema::StableId）
   ↓ link / lower
 闭合 enum 判别值与 dense slot
-  ControlKind / ControlInput / EventRoute（u8 tag）、StateId、StyleId、ProgramSlot
+  ControlKind / ControlInput / EventRoute（u8 tag）、StateId、ProgramSlot
   ↓ instantiate
 NodeId(index, generation) / NodeIndex
 ```
@@ -5634,7 +5628,7 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 
 ### AD-16：Identity 使用 Stable Symbol + Typed Dense Runtime ID
 
-**决定**：compiler-local 名字使用 `NameId`，跨编译稳定身份使用 128-bit `SymbolId`（artifact 中为 `StableId`），运行时热路径 lower 为闭合 enum 判别值（`ControlKind`、`ControlInput`、`EventRoute`）与 dense slot（`StateId`、`StyleId`、`ProgramSlot`）；具体 UI 实例使用 generational `NodeId`（§63.1）。
+**决定**：compiler-local 名字使用 `NameId`，跨编译稳定身份使用 128-bit `SymbolId`（artifact 中为 `StableId`），运行时热路径 lower 为闭合 enum 判别值（`ControlKind`、`ControlInput`、`EventRoute`）与 dense slot（`StateId`、`ProgramSlot`）；具体 UI 实例使用 generational `NodeId`（§63.1）。
 
 **理由**：稳定身份与执行身份具有不同优化目标；前者服务 hot reload/schema/cache/source mapping，后者服务 direct-index hot path。
 
@@ -6111,7 +6105,7 @@ Heap allocations/frame                   0
 - 几何：`viso_math` 的 `Point`、`Rect`、`Vec2`；
 - 宏：`ui!`、`component!`、`view!`。
 
-`asset!` 在 crate 根导出，不在 prelude；`Theme` 经 `viso::ui` 引用。不提供 `#[component]` 属性宏：`component!`、`view!` 与 `Component` trait 已覆盖 Rust 侧组件，第四个入口违背三入口合同（§0.2）。
+`asset!` 在 crate 根导出，不在 prelude。不提供 `#[component]` 属性宏：`component!`、`view!` 与 `Component` trait 已覆盖 Rust 侧组件，第四个入口违背三入口合同（§0.2）。
 
 ---
 

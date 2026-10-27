@@ -66,10 +66,6 @@ name = "semantic_projection"
 harness = false
 
 [[bench]]
-name = "style_resolve"
-harness = false
-
-[[bench]]
 name = "hover_diff"
 harness = false
 

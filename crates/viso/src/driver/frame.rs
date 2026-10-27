@@ -1356,26 +1356,13 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
             FramePhase::AdvanceAnimations => {
                 for ws in &mut self.windows {
-                    // Start any animations a handler requested this frame — a
-                    // `TranslateAnim` queued through `EventCx`, which the router
-                    // handed to the store's queue; drain it into the registry
-                    // now. Then advance every live animation by this frame's
-                    // delta, writing each node's interpolated translate through
-                    // `set_translate` (a TRANSFORM write, plus one PAINT when it
-                    // first makes the node a transform root). This runs before
-                    // the state flush and the Layout phase, so the moved translate is
-                    // resolved into `world` and painted this same frame. Both
-                    // steps are no-ops when nothing is animating (the steady
-                    // case) — the queue is empty and the registry has nothing to
-                    // tick.
+                    // Advance every moving look property and animation by this
+                    // frame's delta, writing the value each node shows (a
+                    // TRANSFORM write for a translate). This runs before the
+                    // state flush and the Layout phase, so a moved translate is
+                    // resolved into `world` and painted this same frame. A
+                    // no-op when nothing moves (the steady case).
                     ws.store.set_dirty_cause(DirtyCause::Animation);
-                    ws.store.take_animation_requests(&mut ws.anim_requests);
-                    for anim in ws.anim_requests.drain(..) {
-                        ws.animations.start(anim);
-                    }
-                    if !ws.animations.is_empty() {
-                        ws.animations.tick(&mut ws.store, cx.frame_delta());
-                    }
                     if ws.store.is_transitioning() {
                         ws.store.tick_transitions(cx.frame_delta());
                     }

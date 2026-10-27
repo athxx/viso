@@ -9,9 +9,9 @@ use viso_platform::{LogicalInsets, LogicalRect, TextEntry, WindowId};
 use viso_render::{Primitive, Rect, Renderer};
 use viso_runtime::{Instant, RuntimeCx};
 use viso_ui::{
-    AnimationRegistry, BindingTable, ComputedStore, Continuation, EffectStore, FrameRecompute,
-    KeyRouter, NodeId, NodeStore, SemanticProjector, StateId, StateStore, TextEdits, TextRequest,
-    TimerRegistry, TimerRequest, TranslateAnim, VirtualLists, WindowOpenRequest,
+    BindingTable, ComputedStore, Continuation, EffectStore, FrameRecompute, KeyRouter, NodeId,
+    NodeStore, SemanticProjector, StateId, StateStore, TextEdits, TextRequest, TimerRegistry,
+    TimerRequest, VirtualLists, WindowOpenRequest,
 };
 
 use crate::text_content::{ParagraphSlot, TextShaper};
@@ -236,19 +236,7 @@ pub(crate) struct WindowState {
     /// text shaping each layout phase) applies them and re-declares the node's
     /// `TextRequest` when the text changed. Driver-owned, mirroring `virtual_lists`.
     pub(crate) text_edits: TextEdits,
-    /// Live transform-only animations (a sheet sliding in, a scroll settling).
-    /// Ticked once per frame at the head of the flush phase with the frame delta,
-    /// writing each animating node's interpolated world-space translate before
-    /// layout/transform/paint consume it that same frame. Empty in steady state,
-    /// which is what `wants_animation` reads to let the frame loop halt.
-    /// Driver-owned so a build cx can register no animations directly — they are
-    /// requested through `EventCx` and handed off via the store's queue.
-    pub(crate) animations: AnimationRegistry,
-    /// Reusable buffer the flush drains the store's queued animation requests
-    /// into before starting each on `animations`, so handing a frame's slide-in
-    /// requests to the registry allocates nothing on the steady path.
-    pub(crate) anim_requests: Vec<TranslateAnim>,
-    /// Live one-shot UI timers (a toast's auto-dismiss). Unlike `animations`, a
+    /// Live one-shot UI timers (a toast's auto-dismiss). Unlike a moving look, a
     /// live timer costs *no* frame while it waits: the driver surfaces its
     /// earliest deadline through `next_timer_deadline`, which the scheduler turns
     /// into a `ControlFlow::WaitUntil` so the loop blocks until the deadline

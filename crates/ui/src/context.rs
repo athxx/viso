@@ -1,19 +1,15 @@
 //! Phase-specific contexts.
 //!
-//! Instead of one omnipotent context, each frame phase gets a purpose-specific
-//! one. This is both an architectural constraint and a performance / reasoning
-//! tool: a `LayoutCx` cannot launch a network request, create a window, or
-//! submit arbitrary GPU work.
-//!
-//! The phase contexts without live state are marker types, so signatures like
-//! `fn layout(&mut self, cx: &mut LayoutCx<'_>, ..)` are written against a
-//! stable contract.
+//! Instead of one omnipotent context, each place code runs in gets a
+//! purpose-specific one: [`AppCx`] opens windows and registers services,
+//! [`EventCx`] is what a handler may ask of the tree, [`UpdateCx`] what an
+//! update writes. What a context does not carry, code holding it cannot do.
 
 use core::marker::PhantomData;
 use std::any::Any;
 use std::future::Future;
 
-use crate::animation::TranslateAnim;
+use crate::animation::{LookValue, Timing};
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::input::{DispatchPhase, ImeEvent, KeyEvent, PointerEvent, PointerId};
@@ -25,21 +21,6 @@ use crate::text_edit::EditIntent;
 use crate::timer::TimerRequest;
 use crate::window::{WindowConfig, WindowIdSlot, WindowOpenRequest};
 use viso_render::Rect;
-
-macro_rules! phase_cx {
-    ($(#[$m:meta])* $name:ident) => {
-        $(#[$m])*
-        pub struct $name<'a> {
-            _life: PhantomData<&'a mut ()>,
-        }
-        impl<'a> $name<'a> {
-            #[doc(hidden)]
-            pub fn __new() -> Self {
-                Self { _life: PhantomData }
-            }
-        }
-    };
-}
 
 /// Application-scope context: create windows, register services, and load the
 /// fonts the app wants to render with.
@@ -190,15 +171,6 @@ impl<'a> AppCx<'a> {
         core::mem::take(&mut self.dev_states)
     }
 }
-
-phase_cx!(/// Layout context. No network, no window creation, no GPU submit.
-    LayoutCx);
-phase_cx!(/// Paint-data production context.
-    PaintCx);
-phase_cx!(/// Render/submit context (internal).
-    RenderCx);
-phase_cx!(/// Async task context.
-    TaskCx);
 
 /// What writes state cells: an event handler's context, an update's, an
 /// effect's, or the store itself. A handle that owns a cell — a document a
@@ -456,18 +428,9 @@ pub struct EventCx<'a> {
     /// records `(panel, hidden)` pairs to swap which panel shows. Empty (and
     /// allocation-free) for the overwhelmingly common dispatch that shows nothing.
     hidden_requests: Vec<(NodeId, bool)>,
-    /// Transform animations a handler asked to start this dispatch, applied by
-    /// the router to the node store's animation queue after the handler returns
-    /// — the same deferred shape as [`hidden_requests`](Self::hidden_requests),
-    /// since the cx holds neither the store's queue nor the driver's registry.
-    /// A sheet's open/close records one slide here; the router hands it to the
-    /// store queue, and the driver drains that into its live registry the next
-    /// frame, before ticking. Empty (and allocation-free) for the overwhelmingly
-    /// common dispatch that starts no animation.
-    animation_requests: Vec<TranslateAnim>,
     /// One-shot timer arms a handler asked to start this dispatch, applied by the
     /// router to the node store's timer queue after the handler returns — the
-    /// same deferred shape as [`animation_requests`](Self::animation_requests),
+    /// same deferred shape as [`hidden_requests`](Self::hidden_requests),
     /// since the cx holds neither the store's queue nor the driver's registry. A
     /// toast's show records one auto-dismiss arm here; the router hands it to the
     /// store queue, and the driver arms it on its live registry the next frame
@@ -595,6 +558,8 @@ pub enum StoreRequest {
     Fullscreen(NodeId, bool),
     /// Lock the mouse's pointer to a node, or let it go.
     PointerLock(NodeId, bool),
+    /// Run an animation on a node.
+    Animate(NodeId, LookValue, Timing),
 }
 
 impl StoreRequest {
@@ -638,6 +603,9 @@ impl StoreRequest {
             StoreRequest::Seek(id, time) => store.seek_video(id, time),
             StoreRequest::Fullscreen(id, on) => store.set_fullscreen(id, on),
             StoreRequest::PointerLock(id, lock) => store.lock_pointer(id, lock),
+            StoreRequest::Animate(id, to, timing) => {
+                store.animate(id, to, timing, None);
+            }
         }
     }
 }
@@ -675,7 +643,6 @@ impl<'a> EventCx<'a> {
             prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
-            animation_requests: Vec::new(),
             timer_requests: Vec::new(),
             window_opens: Vec::new(),
             window_closes: Vec::new(),
@@ -725,7 +692,6 @@ impl<'a> EventCx<'a> {
             prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
-            animation_requests: Vec::new(),
             timer_requests: Vec::new(),
             window_opens: Vec::new(),
             window_closes: Vec::new(),
@@ -774,7 +740,6 @@ impl<'a> EventCx<'a> {
             prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
-            animation_requests: Vec::new(),
             timer_requests: Vec::new(),
             window_opens: Vec::new(),
             window_closes: Vec::new(),
@@ -823,7 +788,6 @@ impl<'a> EventCx<'a> {
             prevented: false,
             edits: Vec::new(),
             hidden_requests: Vec::new(),
-            animation_requests: Vec::new(),
             timer_requests: Vec::new(),
             window_opens: Vec::new(),
             window_closes: Vec::new(),
@@ -1783,27 +1747,21 @@ impl<'a> EventCx<'a> {
         std::mem::take(&mut self.hidden_requests)
     }
 
-    /// Request that a transform animation start after this handler returns.
-    /// Deferred exactly like [`set_hidden`](Self::set_hidden): the cx holds
-    /// neither the store's animation queue nor the driver's live registry, so
-    /// the router hands the recorded slides to the store queue after the handler
-    /// returns, and the driver drains that queue into its registry the next
-    /// frame (before ticking). A sheet's open/close records one slide here.
+    /// Runs an animation on node `id` once this handler returns: the value
+    /// it presents of the property `to` names moves there over `timing`, then
+    /// the property's model value shows again, as
+    /// [`NodeStore::animate`] runs it. The node's
+    /// [`NoticeKinds::ANIMATION_END`](crate::NoticeKinds::ANIMATION_END)
+    /// watcher hears how it ended.
     #[inline]
-    pub fn request_animation(&mut self, anim: TranslateAnim) {
-        self.animation_requests.push(anim);
-    }
-
-    /// Take the animations requested this dispatch for the router to enqueue on
-    /// the node store. Empty when the handler requested none.
-    #[doc(hidden)]
-    pub fn __take_animation_requests(&mut self) -> Vec<TranslateAnim> {
-        std::mem::take(&mut self.animation_requests)
+    pub fn animate(&mut self, id: NodeId, to: LookValue, timing: Timing) {
+        self.store_requests
+            .push(StoreRequest::Animate(id, to, timing));
     }
 
     /// Arm a one-shot timer on `node` that fires `on_fire` once, `delay` after
     /// the frame that arms it. Deferred exactly like
-    /// [`request_animation`](Self::request_animation): the cx holds neither the
+    /// [`set_hidden`](Self::set_hidden): the cx holds neither the
     /// store's timer queue nor the driver's live registry, so the router hands
     /// the recorded arm to the store queue after the handler returns, and the
     /// driver arms it on its registry the next frame — against that frame's `now`,

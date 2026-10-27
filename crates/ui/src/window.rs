@@ -167,8 +167,7 @@ type BuildFn = Box<dyn FnOnce(&mut BuildCx) -> Option<NodeId>>;
 
 /// A deferred request to open a top-level window, produced by a handler through
 /// [`EventCx::request_open_window`](crate::context::EventCx::request_open_window)
-/// and carried — like a [`TranslateAnim`](crate::animation::TranslateAnim)
-/// request — through the store's handoff queue to the facade, which opens the OS
+/// and carried through the store's handoff queue to the facade, which opens the OS
 /// window and builds its tree the next frame.
 ///
 /// It holds the UI-tier [`WindowConfig`] rather than a resolved platform config:

@@ -1222,7 +1222,7 @@ fn pointer_dispatch(
     let Some(mut handler) = store.take_handler(node) else {
         return Dispatched::default();
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, edits, stop, tasks, asks) = {
+    let (capture, focus, scope, hidden, timers, opens, closes, edits, stop, tasks, asks) = {
         let mut ev = match event {
             Some(event) => EventCx::__new_pointer(states, bindings, event),
             None => EventCx::__new(states, bindings),
@@ -1237,7 +1237,6 @@ fn pointer_dispatch(
             ev.__take_focus_request(),
             ev.__take_focus_scope_request(),
             ev.__take_hidden_requests(),
-            ev.__take_animation_requests(),
             ev.__take_timer_requests(),
             ev.__take_window_opens(),
             ev.__take_window_closes(),
@@ -1255,7 +1254,7 @@ fn pointer_dispatch(
         store.queue_edit(node, intent);
     }
     let loser = apply_pointer_side_effects(
-        store, pointer, capture, focus, scope, asks, hidden, anims, timers, opens, closes,
+        store, pointer, capture, focus, scope, asks, hidden, timers, opens, closes,
     );
     // A handler took the pointer from another node (an ancestor claiming a
     // drag its descendant was tracking): the previous captor loses the contact,
@@ -1309,7 +1308,7 @@ fn hover_dispatch(
         buttons: PointerButtons::NONE,
         modifiers: sample.modifiers,
     };
-    let (capture, focus, scope, hidden, anims, timers, opens, closes, _stop, tasks, asks) = {
+    let (capture, focus, scope, hidden, timers, opens, closes, _stop, tasks, asks) = {
         let mut ev = EventCx::__new_pointer(states, bindings, &event);
         ev.__set_pointer_id(pointer);
         ev.__set_focused(store.focused());
@@ -1321,7 +1320,6 @@ fn hover_dispatch(
             ev.__take_focus_request(),
             ev.__take_focus_scope_request(),
             ev.__take_hidden_requests(),
-            ev.__take_animation_requests(),
             ev.__take_timer_requests(),
             ev.__take_window_opens(),
             ev.__take_window_closes(),
@@ -1335,7 +1333,7 @@ fn hover_dispatch(
     // A hover handler that grabs the pointer from another node is not an
     // arbitration the router honors: hover never steals a live contact.
     let _ = apply_pointer_side_effects(
-        store, pointer, capture, focus, scope, asks, hidden, anims, timers, opens, closes,
+        store, pointer, capture, focus, scope, asks, hidden, timers, opens, closes,
     );
 }
 
@@ -1456,7 +1454,6 @@ fn apply_pointer_side_effects(
     scope: Option<Option<NodeId>>,
     asks: Vec<StoreRequest>,
     hidden: Vec<(NodeId, bool)>,
-    anims: Vec<crate::animation::TranslateAnim>,
     timers: Vec<crate::timer::TimerRequest>,
     opens: Vec<crate::window::WindowOpenRequest>,
     closes: Vec<u32>,
@@ -1489,12 +1486,6 @@ fn apply_pointer_side_effects(
     // same deferred way, each marking the node LAYOUT | PAINT dirty.
     for (id, h) in hidden {
         store.set_hidden(id, h);
-    }
-    // Transform animations a handler started (a sheet's slide): queued on the
-    // store, drained by the driver into its registry next frame. Applied the
-    // same deferred way — the router holds no animation registry.
-    for anim in anims {
-        store.queue_animation(anim);
     }
     // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
     // deferred way, drained by the driver into its timer registry next frame and
@@ -2313,20 +2304,7 @@ fn key_dispatch(
     let Some(mut handler) = store.take_key_handler(node) else {
         return Dispatched::default();
     };
-    let (
-        request,
-        stop,
-        prevented,
-        recorded,
-        hidden,
-        scope,
-        anims,
-        timers,
-        opens,
-        closes,
-        tasks,
-        asks,
-    ) = {
+    let (request, stop, prevented, recorded, hidden, scope, timers, opens, closes, tasks, asks) = {
         let mut cx = EventCx::__new_key(states, bindings, ev);
         cx.__set_focused(store.focused());
         cx.__set_services(store.__services());
@@ -2339,7 +2317,6 @@ fn key_dispatch(
             cx.__take_edits(),
             cx.__take_hidden_requests(),
             cx.__take_focus_scope_request(),
-            cx.__take_animation_requests(),
             cx.__take_timer_requests(),
             cx.__take_window_opens(),
             cx.__take_window_closes(),
@@ -2361,9 +2338,6 @@ fn key_dispatch(
     }
     for (id, h) in hidden {
         store.set_hidden(id, h);
-    }
-    for anim in anims {
-        store.queue_animation(anim);
     }
     // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
     // deferred way, drained by the driver into its timer registry next frame and
@@ -2447,7 +2421,6 @@ struct Asked {
     edits: Vec<crate::text_edit::EditIntent>,
     hidden: Vec<(NodeId, bool)>,
     scope: Option<Option<NodeId>>,
-    animations: Vec<crate::animation::TranslateAnim>,
     timers: Vec<crate::timer::TimerRequest>,
     opens: Vec<crate::window::WindowOpenRequest>,
     closes: Vec<u32>,
@@ -2497,7 +2470,6 @@ fn call_at(
         edits: cx.__take_edits(),
         hidden: cx.__take_hidden_requests(),
         scope: cx.__take_focus_scope_request(),
-        animations: cx.__take_animation_requests(),
         timers: cx.__take_timer_requests(),
         opens: cx.__take_window_opens(),
         closes: cx.__take_window_closes(),
@@ -2526,9 +2498,6 @@ fn apply_asked(
     }
     for (id, h) in asked.hidden {
         store.set_hidden(id, h);
-    }
-    for anim in asked.animations {
-        store.queue_animation(anim);
     }
     // One-shot timers a handler armed (a toast's auto-dismiss): queued the same
     // deferred way, drained by the driver into its timer registry next frame and

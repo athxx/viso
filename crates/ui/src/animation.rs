@@ -1,28 +1,13 @@
-//! Animation: a small retained registry that advances per-node world-space
-//! translates over time, and the look transitions a node store runs.
-//!
-//! An animation here is a [`TranslateAnim`]: a node sliding from one
-//! world-space offset to another over a fixed duration, shaped by an
-//! [`Easing`] curve. Each frame the driver calls [`AnimationRegistry::tick`]
-//! with the elapsed delta; the registry advances every live animation by
-//! writing the interpolated offset through [`NodeStore::set_translate`] — a
-//! `TRANSFORM` write (with one `PAINT` the first time it makes the node a
-//! transform root) that never re-measures or re-lays out the node.
-//!
-//! Steady-state cost: the registry is a single `Vec` (no per-node map), `tick`
-//! is a flat pass with no heap allocation, and it
-//! empties itself as animations finish so the frame loop can halt (the
-//! zero-CPU-when-idle contract — a driver's `wants_animation` reads
-//! [`is_empty`](AnimationRegistry::is_empty)).
+//! Animation: the look transitions and animations a node store runs.
 //!
 //! A look transition moves a node's fill, opacity, corner radius, text color,
 //! translate, fixed size or check mark to a new value over a [`Timing`]: the store keeps
 //! the moving ones in a flat list beside its columns and the driver ticks it
 //! each frame, writing each value with the invalidation its property takes
-//! ([`NodeStore::transition`]): PAINT for a look, TRANSFORM for a translate,
+//! ([`NodeStore::transition`](crate::NodeStore::transition)): PAINT for a look, TRANSFORM for a translate,
 //! MEASURE and LAYOUT for a size.
 //!
-//! An animation a node runs by request ([`NodeStore::animate`]) moves the
+//! An animation a node runs by request ([`NodeStore::animate`](crate::NodeStore::animate)) moves the
 //! value a node presents of its translate, scale, rotation or opacity toward
 //! a target and then shows the property's model value again: what the node
 //! is told to show meanwhile lands in the model and shows once it ends. How
@@ -31,166 +16,11 @@
 
 use core::time::Duration;
 
-use crate::component::NodeStore;
 use crate::layout::Vec2;
 use crate::node::NodeId;
 use viso_render::Rgba;
 
 pub use viso_math::{CubicBezier, Curve, Easing, Spring};
-
-/// A completion callback, run once with the live store when an animation
-/// finishes. Boxed because each callback captures a distinct environment (a
-/// sheet's content node, its dismiss handler); it is invoked at most once per
-/// animation, off the per-frame hot path.
-type OnDone = Box<dyn FnOnce(&mut NodeStore)>;
-
-/// A single node's translate animation: slide `node`'s world-space offset from
-/// `from` to `to` over `duration`, shaped by `easing`.
-///
-/// `on_done` fires once, from within the [`tick`](AnimationRegistry::tick) that
-/// completes the animation, with a mutable borrow of the [`NodeStore`] — so a
-/// sheet's slide-out can hide its content and restore focus exactly when the
-/// motion finishes, not before.
-pub struct TranslateAnim {
-    /// The node whose translate this animation drives.
-    pub node: NodeId,
-    /// World-space offset at `t == 0`.
-    pub from: Vec2,
-    /// World-space offset at `t == 1`.
-    pub to: Vec2,
-    /// Time elapsed so far; advanced by the per-frame delta.
-    pub elapsed: Duration,
-    /// Total run time. A zero duration completes on the first tick.
-    pub duration: Duration,
-    /// The curve shaping progress.
-    pub easing: Easing,
-    /// Fired once when the animation completes, with the live store.
-    pub on_done: Option<OnDone>,
-}
-
-impl TranslateAnim {
-    /// A slide from `from` to `to` over `duration` with `easing`, no completion
-    /// callback. Add one with [`on_done`](Self::on_done).
-    pub fn new(node: NodeId, from: Vec2, to: Vec2, duration: Duration, easing: Easing) -> Self {
-        Self {
-            node,
-            from,
-            to,
-            elapsed: Duration::ZERO,
-            duration,
-            easing,
-            on_done: None,
-        }
-    }
-
-    /// Attach a completion callback, fired once when the slide finishes.
-    pub fn on_done(mut self, f: impl FnOnce(&mut NodeStore) + 'static) -> Self {
-        self.on_done = Some(Box::new(f));
-        self
-    }
-
-    /// Eased progress `[0, 1]` at the current elapsed time. `1.0` once the run
-    /// time is met or exceeded (or the duration is zero).
-    #[inline]
-    fn progress(&self) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let raw = self.elapsed.as_secs_f32() / self.duration.as_secs_f32();
-        self.easing.apply(raw)
-    }
-
-    /// Whether the run time has been met (linear time, pre-easing).
-    #[inline]
-    fn is_finished(&self) -> bool {
-        self.elapsed >= self.duration
-    }
-
-    /// The current interpolated world-space offset.
-    #[inline]
-    fn current(&self) -> Vec2 {
-        self.from.lerp(self.to, self.progress())
-    }
-}
-
-/// The set of live transform animations. A flat `Vec` (no per-node map on a
-/// path touched every animating frame); animations swap-remove
-/// themselves as they finish, so a settled UI leaves it empty and the frame
-/// loop halts.
-#[derive(Default)]
-pub struct AnimationRegistry {
-    anims: Vec<TranslateAnim>,
-}
-
-impl AnimationRegistry {
-    /// An empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Whether any animation is live. A driver's `wants_animation` reads this:
-    /// empty means the frame loop can stop requesting beats.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.anims.is_empty()
-    }
-
-    /// The number of live animations (for tests and counters).
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.anims.len()
-    }
-
-    /// Start `anim`. If the same node already has an animation, it is
-    /// *replaced* — a slide reversed mid-flight takes over immediately from the
-    /// current position rather than stacking a second animation on the node.
-    /// The replaced animation's `on_done` does **not** fire (it never finished).
-    pub fn start(&mut self, anim: TranslateAnim) {
-        if let Some(slot) = self.anims.iter_mut().find(|a| a.node == anim.node) {
-            *slot = anim;
-        } else {
-            self.anims.push(anim);
-        }
-    }
-
-    /// Advance every live animation by `delta`, writing each node's interpolated
-    /// offset through [`NodeStore::set_translate`]. An animation that reaches or
-    /// passes its duration is written to its final offset, removed, and its
-    /// `on_done` fired. An animation whose node is no longer live is dropped
-    /// without firing `on_done` (the node it targeted is gone). While the
-    /// store's motion is reduced, each lands at its end on the tick.
-    ///
-    /// A flat pass with no heap allocation: it walks the `Vec` in reverse so a
-    /// `swap_remove` of a finished animation does not skip its neighbour.
-    pub fn tick(&mut self, store: &mut NodeStore, delta: Duration) {
-        let mut i = self.anims.len();
-        while i > 0 {
-            i -= 1;
-            // A node destroyed while animating: drop the animation. The
-            // set_translate write below would no-op on the stale handle anyway,
-            // but this also stops us from spinning on a dead node forever.
-            if !store.arena().is_live(self.anims[i].node) {
-                self.anims.swap_remove(i);
-                continue;
-            }
-            // Reduced motion lands a slide where it ends.
-            self.anims[i].elapsed = if store.reduced_motion() {
-                self.anims[i].duration
-            } else {
-                self.anims[i].elapsed.saturating_add(delta)
-            };
-            let node = self.anims[i].node;
-            let offset = self.anims[i].current();
-            store.set_translate(node, offset);
-            if self.anims[i].is_finished() {
-                let done = self.anims.swap_remove(i);
-                if let Some(cb) = done.on_done {
-                    cb(store);
-                }
-            }
-        }
-    }
-}
 
 /// How a move covers its way.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -204,7 +34,7 @@ pub enum Pace {
 }
 
 /// What becomes of a move while motion is reduced
-/// ([`NodeStore::set_reduced_motion`]).
+/// ([`NodeStore::set_reduced_motion`](crate::NodeStore::set_reduced_motion)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReducedMotion {
     /// It ends the moment it starts.
@@ -384,7 +214,7 @@ impl LookValue {
     }
 }
 
-/// Names an animation a node runs by request ([`NodeStore::animate`]).
+/// Names an animation a node runs by request ([`NodeStore::animate`](crate::NodeStore::animate)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AnimationId(pub(crate) u64);
 
@@ -693,8 +523,8 @@ pub(crate) type EndedAnimation = (NodeId, AnimationEnd, Option<AnimationEndHandl
 
 /// A node's look property moving from the value it showed toward its target.
 /// A rebuild lifts one off the node it leaves
-/// ([`NodeStore::lift_transitions`]) and resumes it on the node that replaces
-/// it ([`NodeStore::resume_transition`]).
+/// ([`NodeStore::lift_transitions`](crate::NodeStore::lift_transitions)) and resumes it on the node that replaces
+/// it ([`NodeStore::resume_transition`](crate::NodeStore::resume_transition)).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LookTransition {
     pub(crate) node: NodeId,
@@ -897,160 +727,6 @@ mod tests {
         assert_eq!(Easing::Linear.apply(-1.0), 0.0);
         assert_eq!(Easing::Linear.apply(2.0), 1.0);
         assert_eq!(Easing::EASE_OUT.apply(5.0), 1.0);
-    }
-
-    #[test]
-    fn tick_advances_the_world_toward_the_target() {
-        let (mut store, node) = one_leaf();
-        let base = store.bounds(node);
-
-        let mut reg = AnimationRegistry::new();
-        reg.start(TranslateAnim::new(
-            node,
-            Vec2::ZERO,
-            Vec2 { x: 0.0, y: -100.0 },
-            Duration::from_millis(100),
-            Easing::Linear,
-        ));
-        assert!(!reg.is_empty(), "a started animation is live");
-
-        // Half the duration under a linear curve → exactly half the translate.
-        reg.tick(&mut store, Duration::from_millis(50));
-        assert_eq!(
-            store.world(node).y,
-            base.y - 50.0,
-            "half the linear duration applies half the translate"
-        );
-        assert!(
-            !reg.is_empty(),
-            "still mid-flight before the duration is met"
-        );
-    }
-
-    #[test]
-    fn reaching_the_duration_lands_on_the_target_and_empties() {
-        let (mut store, node) = one_leaf();
-        let base = store.bounds(node);
-
-        let mut reg = AnimationRegistry::new();
-        reg.start(TranslateAnim::new(
-            node,
-            Vec2::ZERO,
-            Vec2 { x: 0.0, y: -100.0 },
-            Duration::from_millis(100),
-            Easing::Linear,
-        ));
-        // A single tick that meets the duration finishes the run.
-        reg.tick(&mut store, Duration::from_millis(100));
-        assert_eq!(store.world(node).y, base.y - 100.0, "lands on the target");
-        assert!(reg.is_empty(), "a finished animation removes itself");
-    }
-
-    #[test]
-    fn overshooting_the_duration_still_lands_exactly_on_the_target() {
-        let (mut store, node) = one_leaf();
-        let base = store.bounds(node);
-
-        let mut reg = AnimationRegistry::new();
-        reg.start(TranslateAnim::new(
-            node,
-            Vec2::ZERO,
-            Vec2 { x: 40.0, y: 0.0 },
-            Duration::from_millis(100),
-            Easing::EASE_OUT,
-        ));
-        // A delta far larger than the duration clamps progress to 1.0.
-        reg.tick(&mut store, Duration::from_secs(10));
-        assert_eq!(
-            store.world(node).x,
-            base.x + 40.0,
-            "a huge delta clamps to the final offset, never past it"
-        );
-        assert!(reg.is_empty());
-    }
-
-    #[test]
-    fn starting_the_same_node_replaces_without_stacking() {
-        let (_store, node) = one_leaf();
-
-        let fired = Rc::new(Cell::new(false));
-        let flag = Rc::clone(&fired);
-        let mut reg = AnimationRegistry::new();
-        reg.start(
-            TranslateAnim::new(
-                node,
-                Vec2::ZERO,
-                Vec2 { x: 100.0, y: 0.0 },
-                Duration::from_millis(100),
-                Easing::Linear,
-            )
-            .on_done(move |_| flag.set(true)),
-        );
-        assert_eq!(reg.len(), 1);
-
-        // A second start for the same node takes over — one animation, and the
-        // replaced one's on_done never fires (it did not finish).
-        reg.start(TranslateAnim::new(
-            node,
-            Vec2::ZERO,
-            Vec2 { x: -100.0, y: 0.0 },
-            Duration::from_millis(100),
-            Easing::Linear,
-        ));
-        assert_eq!(reg.len(), 1, "same node replaces rather than stacks");
-        assert!(
-            !fired.get(),
-            "the replaced animation's on_done does not fire"
-        );
-    }
-
-    #[test]
-    fn on_done_fires_once_on_completion() {
-        let (mut store, node) = one_leaf();
-
-        let count = Rc::new(Cell::new(0u32));
-        let tally = Rc::clone(&count);
-        let mut reg = AnimationRegistry::new();
-        reg.start(
-            TranslateAnim::new(
-                node,
-                Vec2::ZERO,
-                Vec2 { x: 0.0, y: 20.0 },
-                Duration::from_millis(100),
-                Easing::Linear,
-            )
-            .on_done(move |_| tally.set(tally.get() + 1)),
-        );
-
-        reg.tick(&mut store, Duration::from_millis(50));
-        assert_eq!(count.get(), 0, "not yet done at the halfway point");
-        reg.tick(&mut store, Duration::from_millis(50));
-        assert_eq!(count.get(), 1, "fires exactly once on completion");
-    }
-
-    #[test]
-    fn a_dead_node_animation_is_dropped_without_firing_on_done() {
-        let (mut store, node) = one_leaf();
-
-        let fired = Rc::new(Cell::new(false));
-        let flag = Rc::clone(&fired);
-        let mut reg = AnimationRegistry::new();
-        reg.start(
-            TranslateAnim::new(
-                node,
-                Vec2::ZERO,
-                Vec2 { x: 0.0, y: 50.0 },
-                Duration::from_millis(100),
-                Easing::Linear,
-            )
-            .on_done(move |_| flag.set(true)),
-        );
-
-        // Free the node, invalidating the handle. The next tick drops the anim.
-        store.clear();
-        reg.tick(&mut store, Duration::from_millis(16));
-        assert!(reg.is_empty(), "an animation on a dead node is dropped");
-        assert!(!fired.get(), "dropping a dead-node anim never runs on_done");
     }
 
     fn linear(ms: u64) -> Timing {
@@ -1577,17 +1253,5 @@ mod tests {
         store.tick_transitions(ms(50));
         assert!(store.is_animating(kept));
         assert_eq!(store.turn(id).rotation, 3.0);
-        // A slide lands on its next tick.
-        let mut reg = AnimationRegistry::new();
-        reg.start(TranslateAnim::new(
-            id,
-            Vec2::ZERO,
-            Vec2 { x: 0.0, y: 40.0 },
-            ms(300),
-            Easing::EASE_OUT,
-        ));
-        reg.tick(&mut store, ms(16));
-        assert!(reg.is_empty());
-        assert_eq!(store.translate(id).y, 40.0);
     }
 }

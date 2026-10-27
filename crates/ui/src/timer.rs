@@ -6,7 +6,7 @@
 //! toast rides in on — an overlay that shows, then auto-dismisses after a fixed
 //! delay.
 //!
-//! Unlike [`AnimationRegistry`](crate::animation::AnimationRegistry), a timer
+//! Unlike a moving look, a timer
 //! does **not** cost a frame while it waits. The registry surfaces the
 //! [`earliest`](TimerRegistry::earliest) deadline; the scheduler turns that into
 //! a `ControlFlow::WaitUntil(deadline)` so the OS blocks the loop until the
@@ -42,8 +42,7 @@ type OnFire = Box<dyn FnOnce(&mut NodeStore)>;
 
 /// A deferred request to arm a timer, produced by a handler through
 /// [`EventCx::request_timer`](crate::context::EventCx::request_timer) and carried
-/// — like a [`TranslateAnim`](crate::animation::TranslateAnim) request — through
-/// the store's handoff queue to the driver, which arms it on its live
+/// through the store's handoff queue to the driver, which arms it on its live
 /// [`TimerRegistry`] the next frame (against that frame's `now`).
 ///
 /// It holds the `delay` rather than a resolved `deadline`: the handler that
@@ -145,8 +144,7 @@ impl TimerRegistry {
     /// `now`. Returns a [`TimerId`] for [`cancel`](Self::cancel). A zero delay
     /// fires at the next [`fire_due`](Self::fire_due).
     ///
-    /// Unlike [`AnimationRegistry::start`](crate::animation::AnimationRegistry::start),
-    /// arming does not replace an existing timer on the same node: a node may
+    /// Arming does not replace an existing timer on the same node: a node may
     /// hold several independent timers, and re-showing a toast resets its timer
     /// by cancelling the old id explicitly, not implicitly here.
     pub fn arm(

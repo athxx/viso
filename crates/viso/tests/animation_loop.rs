@@ -5,21 +5,19 @@
 //! headless pump with a self-stepping deterministic clock, so it exercises the
 //! same path `viso::run` takes:
 //!
-//! - **a translate animation reaches its target through the loop** — a scripted
-//!   pointer press asks a handler to start a slide; after the pump drains, the
-//!   node's world rect has moved by the full translate (sign rule
-//!   `world = bounds + translate`), proving the animation ticked to completion;
+//! - **a translate animation runs its course through the loop** — a scripted
+//!   pointer press asks a handler to animate a node's translate; after the
+//!   pump drains, the node's watcher has heard the animation end finished at
+//!   its target, and the node shows its model translate again;
 //! - **the loop halts when the slide settles** — `wants_animation` is false once
-//!   the registry empties, so the driver stops self-rescheduling beats (the
+//!   the animation ends, so the driver stops self-rescheduling beats (the
 //!   zero-CPU-when-idle contract; a stuck-open animation would burn 100% CPU);
-//! - **a pure TRANSFORM frame moves world through the facade loop** — the
-//!   section-C gap regression: an animation frame marks only TRANSFORM (never
-//!   MEASURE/LAYOUT), yet the settled world moved. World is derived only by
-//!   `resolve_transforms`, and the only loop path that runs it on a
-//!   layout-clean frame is the TRANSFORM-gated call in `relayout_and_paint`, so
-//!   a moved world with no relayout is the proof that call fired. The last
-//!   animation frame's `recompute` also confirms `laid_out == 0` while world
-//!   still moved.
+//! - **a pure TRANSFORM frame moves world through the facade loop** — an
+//!   animation frame marks only TRANSFORM (never MEASURE/LAYOUT), yet world
+//!   moves mid-slide. World is derived only by `resolve_transforms`, and the
+//!   only loop path that runs it on a layout-clean frame is the
+//!   TRANSFORM-gated call in `relayout_and_paint`, so a moved world with no
+//!   relayout (`laid_out == 0`) is the proof that call fired.
 //!
 //! - **a view's look transition plays through the loop** — a click on a
 //!   `component!` node whose `opacity` has a `transition.opacity` moves the
@@ -30,17 +28,18 @@
 //! cannot advance a manual cursor between beats — a fixed step per frame drives
 //! the slide to completion at a known rate.
 
+use std::cell::Cell;
 use std::time::Duration;
 
-use viso::__test_support::drive_scripted;
+use viso::__test_support::{drive_scripted, drive_scripted_frames};
 use viso::platform::{
     Modifiers, PointerButtons as RawButtons, PointerPhase as RawPhase, RawEvent, RawPointer,
     WindowId,
 };
 use viso::prelude::*;
 use viso::ui::{
-    BuildCx, Easing, LeafStyle, PointerButtons, PointerPhase, Sizing, TranslateAnim, Vec2,
-    WindowConfig,
+    BuildCx, Easing, LeafStyle, LookValue, Notice, NoticeKinds, PointerButtons, PointerPhase,
+    Sizing, Timing, Vec2, WindowConfig,
 };
 
 /// The surface a launch window opens at (`WindowConfig::default` logical size,
@@ -56,9 +55,15 @@ const SLIDE: f32 = 100.0;
 const STEP: Duration = Duration::from_millis(16);
 const SLIDE_MS: u64 = 80;
 
+thread_local! {
+    /// How the slide ended, as the node's watcher heard it: its target's
+    /// `y` and whether it ran its course.
+    static ENDED: Cell<Option<(f32, bool)>> = const { Cell::new(None) };
+}
+
 /// An app whose root is a surface-filling leaf. A primary pointer-down on it
-/// requests a translate slide from rest to `(0, -SLIDE)` — the same
-/// `EventCx::request_animation` seam the Sheet control will use. Nothing else
+/// animates its translate from rest to `(0, -SLIDE)` through
+/// `EventCx::animate`. Nothing else
 /// moves, so the whole tree is layout-clean once built and every animation
 /// frame is a pure TRANSFORM frame.
 struct SlideApp;
@@ -86,16 +91,27 @@ impl Application for SlideApp {
         });
         cx.focusable(root, true);
         let node = root.id();
+        cx.watch(
+            root,
+            NoticeKinds::ANIMATION_END,
+            Box::new(|notice, _| {
+                if let Notice::AnimationEnd {
+                    target: LookValue::Translate(to),
+                    finished,
+                } = notice
+                {
+                    ENDED.set(Some((to.y, *finished)));
+                }
+            }),
+        );
         cx.on_pointer(root, move |ev| {
             let Some(p) = ev.pointer() else { return };
             if p.phase == PointerPhase::Down && p.buttons.contains(PointerButtons::PRIMARY) {
-                ev.request_animation(TranslateAnim::new(
+                ev.animate(
                     node,
-                    Vec2::ZERO,
-                    Vec2 { x: 0.0, y: -SLIDE },
-                    Duration::from_millis(SLIDE_MS),
-                    Easing::EASE_OUT,
-                ));
+                    LookValue::Translate(Vec2 { x: 0.0, y: -SLIDE }),
+                    Timing::eased(Duration::from_millis(SLIDE_MS), Easing::EASE_OUT),
+                );
             }
         });
     }
@@ -106,7 +122,7 @@ impl Application for SlideApp {
 /// initial measure/layout runs on the first frame), then a primary pointer-down
 /// at the center of the surface, then a beat to run the frame that starts the
 /// slide. Once the handler starts the slide the driver `wants_animation` and
-/// self-reschedules its own beats until the registry empties, so these priming
+/// self-reschedules its own beats until the slide ends, so these priming
 /// beats are enough — the loop drives the rest of the slide itself.
 fn slide_script() -> Vec<RawEvent> {
     vec![
@@ -128,32 +144,25 @@ fn slide_script() -> Vec<RawEvent> {
 }
 
 #[test]
-fn slide_reaches_target_through_the_facade_loop() {
+fn a_slide_runs_its_course_through_the_facade_loop() {
+    ENDED.set(None);
     let app = drive_scripted::<SlideApp>(slide_script(), STEP);
     let root = app.root().expect("SlideApp declares a root");
     let store = app.store();
 
-    // The root fills the surface, so its resting bounds start at the origin.
-    let bounds = store.bounds(root);
-    assert!(
-        bounds.y.abs() < 0.5,
-        "the fill root rests at the surface origin (y ~= 0), got {}",
-        bounds.y
+    assert_eq!(
+        ENDED.get(),
+        Some((-SLIDE, true)),
+        "the watcher heard the slide end finished at its target"
     );
-
-    // The slide translated the node up by SLIDE (`to.y = -SLIDE`): world.y =
-    // bounds.y − SLIDE. Reaching it proves the animation ticked to t=1 through
-    // the loop.
-    let world = store.world(root);
+    // Once it ends the node shows its model translate (none) again.
+    let (bounds, world) = (store.bounds(root), store.world(root));
     assert!(
-        (world.y - (bounds.y - SLIDE)).abs() < 0.5,
-        "the settled world moved by the full slide: expected world.y ~= {}, got {}",
-        bounds.y - SLIDE,
+        bounds.y.abs() < 0.5 && (world.y - bounds.y).abs() < 0.5,
+        "the fill root rests at the surface origin again: bounds.y {}, world.y {}",
+        bounds.y,
         world.y
     );
-
-    // The registry emptied when the slide finished, so the driver no longer
-    // wants animation frames — the loop is free to idle (frame halt).
     assert!(
         !app.wants_animation(),
         "the loop halts once the slide settles (zero-CPU-when-idle)"
@@ -161,33 +170,26 @@ fn slide_reaches_target_through_the_facade_loop() {
 }
 
 #[test]
-fn animation_frame_moves_world_without_relayout() {
-    // Section-C gap regression. The tree is layout-clean after build (a fill
-    // leaf), and the slide marks only TRANSFORM|HIT_TEST|PAINT — never
-    // MEASURE/LAYOUT. World is produced solely by `resolve_transforms`, and on a
-    // layout-clean frame the only loop path that runs it is the TRANSFORM-gated
-    // call in `relayout_and_paint`. So if world moved, that call fired.
-    let app = drive_scripted::<SlideApp>(slide_script(), STEP);
+fn an_animation_frame_moves_world_without_relayout() {
+    // The tree is layout-clean after build (a fill leaf), and the slide marks
+    // only TRANSFORM|HIT_TEST|PAINT — never MEASURE/LAYOUT. World is produced
+    // solely by `resolve_transforms`, and on a layout-clean frame the only loop
+    // path that runs it is the TRANSFORM-gated call in `relayout_and_paint`. So
+    // if world moved mid-slide with nothing relaid, that call fired.
+    // Three frames: the priming layout, the press, and the slide's first tick.
+    let app = drive_scripted_frames::<SlideApp>(slide_script(), STEP, 3);
     let root = app.root().expect("SlideApp declares a root");
     let store = app.store();
-
-    // World moved (proved in the sibling test) — here we additionally assert the
-    // final frame relaid *nothing*: the animation advanced world with zero layout
-    // work, which is exactly the transform/layout split.
-    let recompute = app.recompute();
+    assert!(app.wants_animation(), "stopped mid-slide");
     assert_eq!(
-        recompute.laid_out, 0,
-        "the last animation frame relaid no node (pure TRANSFORM frame)"
+        app.recompute().laid_out,
+        0,
+        "the animation frame relaid no node (pure TRANSFORM frame)"
     );
-
-    // And world did move off its bounds, so the transform-only frame was not a
-    // no-op: paint/hit-test read world, and world advanced without a relayout.
-    let bounds = store.bounds(root);
-    let world = store.world(root);
+    let moved = store.bounds(root).y - store.world(root).y;
     assert!(
-        (world.y - bounds.y).abs() > 1.0,
-        "world advanced away from bounds on a layout-clean frame (moved by ~{})",
-        world.y - bounds.y
+        moved > 1.0 && moved < SLIDE,
+        "world is part way up the slide on a layout-clean frame (moved {moved})"
     );
 }
 
