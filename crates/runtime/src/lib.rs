@@ -43,5 +43,5 @@ pub use viso_platform::{
     Appearance, ColorScheme, CursorError, CursorIcon, CursorImage, CustomCursor, DisplayFeature,
     DisplayFeatureKind, EditLabels, EditMenu, EditMenuAction, GamepadButton, GamepadEvent,
     GamepadId, GamepadInfo, GamepadState, InputKind, Instant, LogicalInsets, LoopWaker, Loupe,
-    Rumble,
+    RawWindowHandle, Rumble,
 };

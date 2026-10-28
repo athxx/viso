@@ -3024,6 +3024,8 @@ Bubble（target 上方 → root）
 
 布局后的状态报告不是输入事件：`Notice`（`viso_ui::notice`：`Scroll`、`VisibleRange`、`AnimationEnd`、`Asset`、`Video`、`Fullscreen`、`Size`）由 `BuildCx::watch` 订阅，布局后按变化每帧至多投递一次，处理器的写入进入下一帧的 transaction。`Size` 在节点首次布局与尺寸变化时报告（ADR 0053）。
 
+**Native views**（ADR 0060，`viso_ui::native`）：插件以 `BuildCx::native_view` 给节点挂一个 `NativeView`（浏览器、原生地图等平台视图）；facade 在 `UpdateTransforms` 中、world box 定稿后调 `NodeStore::place_native_views`，首次与变化时以 `NativePlace`（窗口的 `RawWindowHandle`、逻辑点的节点框、与窗口及各裁剪祖先求交后的可见部分、缩放、是否显示）告诉它位置；节点释放时视图随之 drop。平台视图盖在窗口所画内容之上并自行接收其框内输入。回报经 `BuildCx::native_events` 的 `NativeSender<T>`：任意线程发送，节点的处理器在下一帧边界以 `&mut StateStore` 收到；它是节点拥有的 UI task，节点释放后发送返回 `false`。
+
 ### 25.2 Pointer capture
 
 内建（`viso_ui::input`）：
@@ -3838,7 +3840,7 @@ DSL `ComboBox` 与 `SearchField` 同样如此：逻辑在 `viso_ui::combo_box::C
 | Map | `extras/map`（`viso-map`）；瓦片读取、离线下载、搜索与导航不是 UI，在 viso-ext（`viso-tiles`、`viso-map-nav`、`viso-map-build`） |
 | Code editor | `extras/code-editor`（`viso-code-editor`，语言服务经其 `lsp` feature） |
 | PDF | 核心提供分页捕获（`viso::paged`）；PDF 写出与导出在 viso-ext（`viso-pdf`），打印在 viso-ext（`viso-print`）；读取与查看器 `pdf_view` 也在 `viso-pdf` |
-| Browser / WebView | viso-ext 的 `viso-webview`（尚未实现） |
+| Browser / WebView | viso-ext 的 `viso-webview`，基于核心的 native views（ADR 0060） |
 | Video editor、XR | 尚无 |
 
 `extras/*` 在 monorepo 中，依赖受 `check-deps` allowlist 约束。Markdown/HTML 文档（`viso_widgets::document`，依赖 pulldown-cmark）留在基础 crate：富文本是常见 UI，DSL 不引用它，app 不用时不进二进制。
@@ -5513,6 +5515,7 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 | 0057 | Tools share their services in `viso-tooling`（`Reporter`） | Accepted |
 | 0058 | `web-dom` 页面的行为在 app wasm 的 VM 上执行（`viso-dom`） | Accepted |
 | 0059 | `web-hybrid` 岛：DOM 页面中由 renderer 绘制的一个 Component | Accepted |
+| 0060 | Native views：叠在节点上的平台视图 | Accepted |
 
 ## 文内架构取舍摘要（AD-01 … AD-24）
 

@@ -989,6 +989,8 @@ pub struct NodeStore {
     structure_hooks: crate::structure::StructureHooks,
     /// Cold: the nodes reporting their scroll or visible rows after layout.
     notices: crate::notice::Notices,
+    /// Cold: the platform views shown over nodes, told where after layout.
+    pub(crate) native_views: crate::native::NativeViews,
     /// The nodes that take drags and the drags under way.
     pub(crate) drags: crate::drag::Drags,
     /// The nodes that take long presses and the holds under way.
@@ -4330,6 +4332,7 @@ impl NodeStore {
         // control it rooted goes stale now.
         self.handlers.remove(index);
         self.key_handlers.remove(index);
+        self.native_views.free(node);
         if !self.control_parts.is_empty() {
             self.control_parts
                 .retain(|(slot, _)| *slot as usize != index);
@@ -8773,6 +8776,29 @@ impl<'a> BuildCx<'a> {
         handler: crate::notice::NoticeHandler,
     ) {
         self.store.watch(handle.id, kinds, handler);
+    }
+
+    /// Show the platform view `view` over the box of the node `handle` names,
+    /// in place of any it had: after each frame's layout it hears where the
+    /// node is, and it is dropped with the node (see [`crate::native`]).
+    pub fn native_view(&mut self, handle: Handle, view: impl crate::native::NativeView) {
+        if self.store.arena.is_live(handle.id) {
+            self.store.native_views.set(handle.id, Box::new(view));
+        }
+    }
+
+    /// A sender a platform view reports through, from any thread: `on`
+    /// hears each report at the next frame boundary while the node `handle`
+    /// names lives (see [`crate::native`]).
+    pub fn native_events<T: 'static>(
+        &mut self,
+        handle: Handle,
+        on: impl FnMut(T, &mut StateStore) + 'static,
+    ) -> crate::native::NativeSender<T> {
+        let (sender, task) =
+            crate::native::channel(handle.id, Rc::new(std::cell::RefCell::new(on)));
+        self.store.spawn_task(handle.id, task);
+        sender
     }
 
     /// The node the next declared child attaches under, `None` before the

@@ -1798,6 +1798,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ws.store.drag_out_started(started);
                     }
                     ws.push_cursor(cx);
+                    // Platform views over nodes follow them, now that the world
+                    // boxes are final.
+                    if ws.store.has_native_views()
+                        && let Some(window) = cx.raw_handle(ws.window)
+                    {
+                        let (w, h) = ws.logical_surface();
+                        let viewport = viso_ui::Rect::new(0.0, 0.0, w, h);
+                        ws.store
+                            .place_native_views(window, viewport, ws.dpi.max(1.0));
+                    }
                     // The edit menu follows what a touch made of the focused
                     // field's selection, where the platform has one.
                     let caps = cx.capabilities();

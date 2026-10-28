@@ -321,6 +321,11 @@ impl<'a> UpdateCx<'a> {
         self.nodes.set_refreshing(id, on);
     }
 
+    /// The state and node stores, both at once.
+    pub(crate) fn stores(&mut self) -> (&mut StateStore, &mut NodeStore) {
+        (self.states, self.nodes)
+    }
+
     /// The binding table backing this frame — the flush reads it to turn
     /// changed states into node dirtying.
     #[inline]
