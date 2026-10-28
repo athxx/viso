@@ -46,7 +46,8 @@ packages and natives as every other target.
   lands in `web-dom` pages.
 - A page always loads wasm, even when its view has no behavior. A release counter's wasm is
   912 KiB.
-- The page lowering still evaluates at export time with the standard natives only, so a view
-  that calls a package's native does not lower yet.
+- The export knows a package's natives by their schema only. A value that calls one is not
+  prerendered, and the page's VM computes it as the page opens. A component whose initial
+  state calls one does not lower yet.
 - `web-hybrid` (a DOM shell with GPU islands) builds on this runtime and the GPU path, with its
   boundary explicit in the UI IR.

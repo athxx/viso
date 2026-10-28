@@ -116,3 +116,53 @@ fn a_node_a_page_s_dom_cannot_draw_is_found_where_it_is_written() {
         "{findings:#?}"
     );
 }
+
+static SHOUT: viso_behavior::native::NativeLibrary = viso_behavior::native::NativeLibrary {
+    path: "app::shout",
+    version: 1,
+    functions: &[
+        viso_behavior::native!(fn "loud" |_cx, s: String| -> String {
+            Ok(s.to_uppercase())
+        }),
+    ],
+    types: &[],
+    traits: &[],
+    derives: &[],
+    widgets: &[],
+};
+
+#[test]
+fn a_native_of_the_app_s_packages_is_left_to_the_vm_in_the_page() {
+    // The CLI knows a package's natives by their schema alone.
+    let schema = viso_behavior::native::schema::write(&[&SHOUT]).unwrap();
+    let stubs = viso_behavior::native::schema::read(&schema).unwrap();
+    let mut libraries: Vec<_> = viso_behavior::native::STANDARD.to_vec();
+    libraries.extend(stubs);
+    let natives = Natives::shared(&libraries).unwrap();
+    let source = r#"
+import app::shout;
+export component App {
+    view {
+        Column {
+            Text { text: "plain"; }
+            Text { text: shout::loud("hi"); }
+        }
+    }
+}
+"#;
+    let compiled = compile_file_for(source, &origin(), natives, TargetProfile::default());
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let options = DomOptions {
+        title: "Demo".into(),
+        lang: "en".into(),
+    };
+    let page = dom(&compiled, &options).unwrap_or_else(|f| panic!("{f:#?}"));
+    // The constant is in the page; the native's value the VM computes.
+    let index = page.index("s.css", "p.js", "");
+    assert!(
+        index.contains(">plain<") && !index.contains("HI"),
+        "{index}"
+    );
+    assert!(page.script.contains("V.e("), "{}", page.script);
+}

@@ -956,7 +956,7 @@ Rules (as for `todo_features.md`):
       (`export_dom` test); release wasm 912 KiB.
   - [x] `web-dom` dev session (`viso run`/`serve web-dom`): `.vs` edits rewrite the page and
     reload it without a Rust build. Verified on a `viso new` app in headless Chrome.
-  - [ ] Package natives in the page lowering.
+  - [x] Package natives in the page lowering: values calling them are computed by the page's VM.
   - [ ] `web-hybrid`.
 - [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
   dev-protocol message and asserting identical bytes.

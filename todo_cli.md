@@ -704,8 +704,10 @@ alternative.
     - Verified: `viso run web-dom --browser none` on a `viso new` app: an added `Text`
       showed after reload with no Rust build, a broken edit kept the page and reported
       its error, a `main.rs` edit rebuilt and restarted; `write_dom_page` test.
-  - [ ] Package natives in the page lowering (the export links only the standard
-        natives).
+  - [x] Package natives in the page lowering: the export links the natives the view
+        compiled against (a package's are schema stubs); a value calling one is left to the
+        page's VM rather than prerendered. Verified: `export_dom` test with a schema-read
+        library. (An initial state calling one still does not lower.)
 - [ ] `web-hybrid` (§32): DOM shell with GPU islands; the bundle carries both runtimes
       and the capability split.
 

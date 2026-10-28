@@ -212,7 +212,8 @@ pub fn dom(compiled: &Compiled, options: &DomOptions) -> Result<DomPage, Vec<Fin
         prepared.eval.as_mut(),
         &compiled.assets,
         false,
-    );
+    )
+    .on_vm();
     lower.view(&compiled.tree);
     lower.all_assets();
     let html::Lower {
@@ -397,6 +398,7 @@ fn prepare<'a>(compiled: &'a Compiled, lang: &str) -> Result<Prepared<'a>, Vec<F
                 Rc::clone(&vb.module),
                 &compiled.behavior,
                 layout,
+                &compiled.natives,
                 lang,
                 origin,
             ) {

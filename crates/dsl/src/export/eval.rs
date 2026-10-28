@@ -50,12 +50,15 @@ pub(super) struct Eval<'a> {
 
 impl<'a> Eval<'a> {
     /// The interpreter of `module`'s component `name`, laid out as `layout`,
-    /// instantiated with the default theme and the locale `lang` in its `env`
-    /// slots.
+    /// linked to `natives`, the libraries the view compiled against, and
+    /// instantiated with the default theme and the locale `lang` in its
+    /// `env` slots. A native of the app's packages is known by its schema
+    /// alone here, and faults when it is called.
     pub(super) fn new(
         module: Rc<Module>,
         program: &'a Program,
         layout: &'a ComponentLayout,
+        natives: &Natives,
         lang: &str,
         at: TextRange,
     ) -> Result<Self, Finding> {
@@ -74,13 +77,12 @@ impl<'a> Eval<'a> {
         let mut vm = Vm::new(module, Budget::default());
         // Every capability is withheld: a native that needs one is a call an
         // export cannot make, and faults.
-        vm.link(&Natives::standard(), &[])
-            .map_err(|conflict| Finding {
-                need: Need::Unsupported,
-                at,
-                message: format!("the component's natives do not link: {conflict:?}"),
-                notes: Vec::new(),
-            })?;
+        vm.link(natives, &[]).map_err(|conflict| Finding {
+            need: Need::Unsupported,
+            at,
+            message: format!("the component's natives do not link: {conflict:?}"),
+            notes: Vec::new(),
+        })?;
         let mut instance = vm.instantiate(index, []).map_err(fault)?;
         let slots = |field: EnvField| -> Vec<u32> {
             layout

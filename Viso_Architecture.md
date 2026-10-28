@@ -5507,6 +5507,11 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 | 0051 | Native packages（扩展 crate 携带 `.vs` Native Library） | Accepted |
 | 0052 | Gamepads polled per frame into the game input | Accepted |
 | 0053 | Extruded mesh vertices、retained drawings 与共享 worker 池 | Accepted |
+| 0054 | Copy control handles over a generational control table | Proposed |
+| 0055 | Typed routes in `.vs`（native enum、generic native type、root input） | Proposed |
+| 0056 | GPU device loss：backend 报告，窗口在新 device 上重建 | Proposed |
+| 0057 | Tools share their services in `viso-tooling`（`Reporter`） | Accepted |
+| 0058 | `web-dom` 页面的行为在 app wasm 的 VM 上执行（`viso-dom`） | Accepted |
 
 ## 文内架构取舍摘要（AD-01 … AD-24）
 

@@ -2592,7 +2592,7 @@ Viso source
 - `dist/web` 写出 `index.html`、`styles.<hash>.css`、`page.<hash>.js`、wasm 与 glue；dev 另写 `view.<hash>.vsb`，页面在解释器上运行这份模块，`.vs` 修改无需重编 Rust；release 页面用 app 内嵌的模块（release 下为编译代码），二者 build hash 不同时页面不打开并给出原因；
 - `viso check web-dom` 计算页面：没有 `.vs` view 为 `WEB_DOM_NO_VIEW`，`ShaderView`/`Viewport3D` 为 `WEB_GPU_ONLY_NODE`，页面无法表达的构造（Rust component/widget、router、game）为 `WEB_DOM_UNSUPPORTED`；`viso build web-dom` 在这些错误下以 `BUILD_FAILED` 失败；
 - `viso run`/`serve web-dom`：`.vs` 修改重写页面并 reload，不重编 Rust（§13）；
-- view 调用 native package 的 native 时页面 lowering 尚不能求值（export 只链接标准 native）。
+- view 调用 native package 的 native：export 时只有其 schema，lowering 不求值它，由页面里的 VM 在打开时计算（不预渲染）；初始 state 调用它的 component 尚不能 lower。
 
 ### `viso export html`
 

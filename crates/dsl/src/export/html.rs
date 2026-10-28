@@ -304,6 +304,9 @@ pub(super) struct Lower<'v, 'e, 'a> {
     eval: Option<&'e mut Eval<'a>>,
     uses: &'v [AssetUse],
     static_only: bool,
+    /// Whether the page's script calls the VM, which computes in the page
+    /// what the export cannot: a native of the app's packages.
+    on_vm: bool,
     pub(super) findings: Vec<Finding>,
     pub(super) out: Lowered,
     /// The next node key, counting every node in pre-order as the behavior
@@ -345,6 +348,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             eval,
             uses,
             static_only,
+            on_vm: false,
             findings: Vec::new(),
             out: Lowered::default(),
             key: 0,
@@ -357,6 +361,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             away: false,
             tree: None,
         }
+    }
+
+    /// Lowers for a page whose script calls the VM.
+    pub(super) fn on_vm(mut self) -> Self {
+        self.on_vm = true;
+        self
     }
 
     /// `at`, a span of instance `instance`'s view, as the page's source has
@@ -458,6 +468,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
             return match eval.value(entry, &[]) {
                 Ok(value) => Fixed::Value(value),
+                // The VM computes it in the page as it opens.
+                Err(_) if self.on_vm => Fixed::Changes,
                 Err(fault) => {
                     self.need(
                         Need::Unsupported,
