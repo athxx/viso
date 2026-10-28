@@ -149,6 +149,7 @@ const run = (el, property, target, id, start) => {
     a.onfinish = a.oncancel = null;
     if (finished && a.playState !== "finished") a.cancel();
     animations.delete(id);
+    if ($.ended) $.ended(id);
     if (running[property] === a) delete running[property];
     el.dispatchEvent(new CustomEvent("viso-animationend", { detail: { target, finished } }));
   };

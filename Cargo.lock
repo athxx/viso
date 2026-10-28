@@ -3004,6 +3004,7 @@ dependencies = [
  "ttf-parser",
  "viso-behavior",
  "viso-dev-protocol",
+ "viso-dom",
  "viso-dsl",
  "viso-ende",
  "viso-gpu",
@@ -3102,6 +3103,17 @@ dependencies = [
 [[package]]
 name = "viso-diag"
 version = "0.0.0"
+
+[[package]]
+name = "viso-dom"
+version = "0.0.0"
+dependencies = [
+ "js-sys",
+ "viso-behavior",
+ "viso-dsl",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
 
 [[package]]
 name = "viso-dsl"

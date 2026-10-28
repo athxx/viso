@@ -185,7 +185,7 @@ fn what_stops_a_build_before_cargo_runs() {
     );
 
     // A target this build cannot produce.
-    let out = viso(&root, &["build", "web-dom"]);
+    let out = viso(&root, &["build", "web-hybrid"]);
     assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
 }
 

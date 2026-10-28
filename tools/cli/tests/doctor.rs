@@ -37,7 +37,7 @@ fn check<'a>(stdout: &'a str, name: &str) -> Option<&'a str> {
 #[test]
 fn a_target_unavailable_here_fails_the_doctor() {
     let dir = scratch("unavailable");
-    let out = doctor(&dir, &["web-dom", "--json"], &[]);
+    let out = doctor(&dir, &["web-hybrid", "--json"], &[]);
     let stdout = text(&out.stdout);
     assert_eq!(out.status.code(), Some(3), "{stdout}");
     let target = check(&stdout, "target").unwrap_or_else(|| panic!("{stdout}"));

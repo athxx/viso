@@ -431,6 +431,19 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         Some(value.as_int().is_some_and(|v| v != 0))
     }
 
+    /// The text a changing entry `entry` shows as the page opens, written
+    /// into the page for a reader, or a crawler, whose script has not run;
+    /// `None` for an entry that takes a region's binding, reads the locale
+    /// the reader's browser decides, or faults.
+    fn first_text(&mut self, entry: u32) -> Option<String> {
+        let eval = self.eval.as_deref_mut()?;
+        if eval.program.function(eval.func(entry)).params != 0 || eval.reads_locale(entry) {
+            return None;
+        }
+        let value = eval.value(entry, &[]).ok()?;
+        Some(text_of(&value))
+    }
+
     fn fixed(&mut self, entry: u32, what: &str, fallback: TextRange) -> Fixed {
         let at = self.site(entry).unwrap_or(fallback);
         let Some(eval) = self.eval.as_deref_mut() else {
@@ -1963,13 +1976,10 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     }
                     // Pieces the script keeps current replace the text.
                     None if control.text.spans.is_some() => {}
-                    _ => {
-                        if let Some(fixed) =
-                            self.bind(wires, control.value, Prop::Text, "the text", at)
-                        {
-                            el.text = Some(fixed.text());
-                        }
-                    }
+                    _ => match self.bind(wires, control.value, Prop::Text, "the text", at) {
+                        Some(fixed) => el.text = Some(fixed.text()),
+                        None => el.text = control.value.and_then(|e| self.first_text(e)),
+                    },
                 }
                 if let Some(fixed) =
                     self.bind(wires, control.url, Prop::Href, "where the link leads", at)

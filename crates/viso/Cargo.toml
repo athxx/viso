@@ -16,6 +16,9 @@ viso-ui = { workspace = true }
 viso-ui-macros = { workspace = true }
 # The handler host the DSL macros' expansions dispatch into (`::viso_view::…`).
 viso-view = { workspace = true }
+# A `web-dom` page's runtime: the view's behavior on the VM, the DOM the
+# browser's.
+viso-dom = { workspace = true, optional = true }
 # A game's audio systems on the device (`viso::audio`).
 viso-behavior = { workspace = true, features = ["std"] }
 # The aligned `static` the macros embed a module's and a view's bytes in.
@@ -83,7 +86,7 @@ pdf = ["dep:viso-pdf", "dep:ttf-parser"]
 # `viso build` and `viso run` turn on for a dev build only. Off, every view
 # runs the Rust its behavior compiles to and no interpreter links: a release
 # artifact carries it only when the app asks for it, to load views as bytes.
-vm = ["viso-view/vm"]
+vm = ["viso-view/vm", "viso-dom?/vm"]
 # The development session: every `view!` mount is recorded and reported to
 # `viso run`, and each edit the host accepts commits as one hot reload
 # transaction.
@@ -95,6 +98,10 @@ hot-reload = [
     "dep:js-sys",
     "dep:web-sys",
 ]
+# The `web-dom` build `viso build web-dom` makes: the app's root view is its
+# page's DOM, laid out by the browser, and its behavior runs on the VM in the
+# page. `view!` builds no node: it offers the page its view.
+web-dom = ["dep:viso-dom"]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]

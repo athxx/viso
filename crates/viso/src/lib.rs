@@ -108,6 +108,8 @@ pub use viso_ui_macros::{asset, component, ui, view};
 /// builds with. Not an API: its paths change with the macros.
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(feature = "web-dom")]
+    pub use crate::dom::__offer_view;
     pub use viso_behavior;
     pub use viso_ende;
     pub use viso_platform;
@@ -117,6 +119,8 @@ pub mod __private {
 }
 
 mod behavior;
+#[cfg(feature = "web-dom")]
+mod dom;
 mod stdio;
 
 /// Prints to the standard error, as [`std::eprint!`] does; on the web, to the

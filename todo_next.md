@@ -949,6 +949,14 @@ Rules (as for `todo_features.md`):
 - [ ] `web-dom` and `web-hybrid` runtime backends and the per-target capability table (the C4.3
   and C4.4 lines of `todo_cli.md`). Verify that `viso build web-dom` no longer reports `C0011` and
   `viso check web-dom` flags a GPU-only node.
+  - [x] `web-dom` build and check: `viso-dom` runs the view's behavior on the VM in the app's
+    wasm; the page is the html export's lowering with its calls going to the VM.
+    - Verified: `viso build web-dom` builds a `viso new` app and its page counts clicks in
+      headless Chrome; `viso check web-dom` reports `WEB_GPU_ONLY_NODE` for a `ShaderView`
+      (`export_dom` test); release wasm 912 KiB.
+  - [ ] `web-dom` dev session (`viso run`/`serve web-dom`).
+  - [ ] Package natives in the page lowering.
+  - [ ] `web-hybrid`.
 - [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
   dev-protocol message and asserting identical bytes.
 - [ ] Extend the VM-vs-native differential test to every DSL doc-example fixture. Verify that it
@@ -961,6 +969,13 @@ Rules (as for `todo_features.md`):
 - [ ] `adaptive_split` (list-detail that collapses to a stack) and `adaptive_navigation` (bottom
   bar, rail or sidebar by size class). Verify with headless tests that resize across size classes
   and check the tree and the focus.
+- [ ] Move PDF out of the core into `viso-ext`. The core keeps a public paged capture API: a
+  view laid out at a page's width, cut into pages with `page_break`/`keep_together` and its
+  header and footer, giving each page's primitives with glyph outlines and a raster callback for
+  what has no vector form. `viso-pdf` (the writer) and `pdf::export` move to `viso-ext/viso-pdf`
+  over that API, beside `viso-print`, and the facade's `pdf` feature goes. Verify that the
+  moved export writes the same bytes for the existing PDF tests, and that `check-deps` and the
+  facade build without it.
 - [ ] A PDF viewer widget over `viso-pdf`'s reader side. Verify that a multi-page document renders
   and selects text in a golden test.
 - [ ] A browser widget in `viso-ext/viso-webview`, which is still the cargo template. Verify that a

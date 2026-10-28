@@ -48,10 +48,14 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         Report::Inline(&source, TextSize::ZERO).check(&compiled)?;
         let report = Report::Inline(&source, compiled.base);
         let Mounted {
-            allocations, root, ..
+            allocations,
+            root,
+            module,
+            ..
         } = mount(&compiled, &report, None, None, &[], &[])?;
         Ok(quote! {
             |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
+                #module
                 #allocations
                 (#root).0
             }
@@ -78,6 +82,8 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             allocations,
             root,
             named,
+            module,
+            ..
         } = mount(
             &compiled,
             &report,
@@ -123,6 +129,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 pub fn build(
                     cx: &mut ::viso::__private::viso_ui::BuildCx<'_>,
                 ) -> (Self, ::viso::__private::viso_ui::MountedView<#nodes_name>) {
+                    #module
                     #allocations
                     let (__viso_root, __viso_named) = #root;
                     let __viso_view = ::viso::__private::viso_ui::MountedView {
@@ -211,6 +218,8 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             allocations,
             root,
             named,
+            module,
+            offer,
             ..
         } = mount(
             &compiled,
@@ -221,6 +230,7 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             &inputs,
         )?;
         let (node_fields, node_values) = named_nodes(&named, &report)?;
+        let named_count = named.len();
         // The modules the file imports are compile dependencies too: editing
         // one rebuilds every view that reads it.
         let imported = compiled
@@ -239,11 +249,24 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     #(#node_fields,)*
                 }
                 move |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::MountedView<__VisoNodes> {
-                    #allocations
-                    let (__viso_root, __viso_named) = #root;
-                    ::viso::__private::viso_ui::MountedView {
-                        root: __viso_root,
-                        nodes: __VisoNodes { #(#node_values,)* },
+                    #module
+                    ::viso::__view_mount! {
+                        page: {
+                            let __viso_root = #offer;
+                            let __viso_named = [::core::option::Option::Some(__viso_root.id()); #named_count];
+                            ::viso::__private::viso_ui::MountedView {
+                                root: __viso_root,
+                                nodes: __VisoNodes { #(#node_values,)* },
+                            }
+                        }
+                        nodes: {
+                            #allocations
+                            let (__viso_root, __viso_named) = #root;
+                            ::viso::__private::viso_ui::MountedView {
+                                root: __viso_root,
+                                nodes: __VisoNodes { #(#node_values,)* },
+                            }
+                        }
                     }
                 }
             }
@@ -411,6 +434,12 @@ struct Mounted<'a> {
     /// Evaluates to the root's `Handle` and the id of each of `named`.
     root: TokenStream,
     named: Vec<Named>,
+    /// Binds the form of the view's behavior the build keeps, which
+    /// `allocations` and `offer` read; empty for a view without behavior.
+    module: TokenStream,
+    /// Offers the page the view in a `web-dom` build, evaluating to the
+    /// `Handle` of the node standing for it.
+    offer: TokenStream,
 }
 
 /// `record` is the `.vs` file a `view!` mounts and the module identity it
@@ -437,6 +466,10 @@ fn mount<'a>(
     let mut tracked = BTreeSet::new();
     let mut states = Vec::new();
     let mut allocations = TokenStream::new();
+    let mut module = TokenStream::new();
+    let mut offer = quote! {
+        cx.leaf(::viso::__private::viso_ui::LeafStyle::default())
+    };
     for source in &compiled.sources {
         let SourceKind::State { initial, .. } = &source.kind else {
             continue;
@@ -574,6 +607,17 @@ fn mount<'a>(
             .map_err(|message| report.at(component.schema.view, message))?;
         let widgets = package_widgets(behavior, packages)
             .map_err(|message| report.at(component.schema.view, message))?;
+        module = module_tokens(behavior);
+        let name = &behavior.component;
+        offer = if inputs.is_empty() {
+            quote! {
+                ::viso::__private::__offer_view(cx, __viso_module, #name, __viso_native, #libraries)
+            }
+        } else {
+            quote! {
+                ::core::compile_error!("a `web-dom` page mounts its root view with its inputs' defaults: give the inputs no value here")
+            }
+        };
         allocations.extend(host_tokens(
             behavior, &idents, &tracked, embedded, libraries, widgets, &given,
         ));
@@ -604,6 +648,8 @@ fn mount<'a>(
         allocations,
         root,
         named,
+        module,
+        offer,
     })
 }
 
@@ -641,37 +687,13 @@ fn named_nodes(
     Ok((fields, values))
 }
 
-/// The `__viso_host` a view with behavior dispatches into: the component's
-/// module, embedded as an aligned `static` and decoded once per thread,
-/// borrowing it, mirrored into the states the expansion allocated, and
-/// tracking the `tracked` ones through their revision cells. `viso::__behavior!`
-/// keeps one form of the module: its bytecode, or — where it runs the module
+/// Binds `__viso_module` and `__viso_native` to the form of the view's
+/// module the build keeps, embedded as an aligned `static`:
+/// `viso::__behavior!` keeps its bytecode, or — where it runs the module
 /// compiled to Rust — that code and the module without bytecode.
-fn host_tokens(
-    behavior: &ViewBehavior,
-    idents: &HashMap<SymbolId, Ident>,
-    tracked: &BTreeSet<SymbolId>,
-    assets: TokenStream,
-    libraries: TokenStream,
-    widgets: TokenStream,
-    inputs: &[GivenInput],
-) -> TokenStream {
-    let given = inputs.iter().map(|input| {
-        let (name, value) = (&input.name, &input.value);
-        quote! { (#name, #value) }
-    });
+fn module_tokens(behavior: &ViewBehavior) -> TokenStream {
     let bytecode = aligned_bytes(&behavior.bytes);
     let compiled = aligned_bytes(&behavior.compiled_bytes());
-    let component = &behavior.component;
-    let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
-        let local = idents.get(symbol)?;
-        let slot = *slot as usize;
-        Some(if tracked.contains(symbol) {
-            quote! { __viso_view.track(#slot, #local); }
-        } else {
-            quote! { __viso_view.mirror(#slot, #local); }
-        })
-    });
     let native: TokenStream = behavior
         .native_code("::viso::__private::viso_behavior")
         .parse()
@@ -685,6 +707,37 @@ fn host_tokens(
                 &__viso_native::NATIVE
             },
         };
+    }
+}
+
+/// The `__viso_host` a view with behavior dispatches into: the component's
+/// module `__viso_module` binds, decoded once per thread, borrowing it,
+/// mirrored into the states the expansion allocated, and tracking the
+/// `tracked` ones through their revision cells.
+fn host_tokens(
+    behavior: &ViewBehavior,
+    idents: &HashMap<SymbolId, Ident>,
+    tracked: &BTreeSet<SymbolId>,
+    assets: TokenStream,
+    libraries: TokenStream,
+    widgets: TokenStream,
+    inputs: &[GivenInput],
+) -> TokenStream {
+    let given = inputs.iter().map(|input| {
+        let (name, value) = (&input.name, &input.value);
+        quote! { (#name, #value) }
+    });
+    let component = &behavior.component;
+    let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
+        let local = idents.get(symbol)?;
+        let slot = *slot as usize;
+        Some(if tracked.contains(symbol) {
+            quote! { __viso_view.track(#slot, #local); }
+        } else {
+            quote! { __viso_view.mirror(#slot, #local); }
+        })
+    });
+    quote! {
         let __viso_host = ::viso::__private::viso_view::__embedded(
             __viso_module,
             #component,

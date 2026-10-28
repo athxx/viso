@@ -1361,7 +1361,7 @@ fn a_page_ships_every_locale_and_speaks_its_readers() {
         ("[\"fr-FR\"]", "Inbox", "1 unread"),
     ] {
         let program = format!(
-            "{}\n{messages}\nglobalThis.navigator = {{ languages: {languages} }};\nsettle(T);\n\
+            "{}\n{messages}\nObject.defineProperty(globalThis, \"navigator\", {{ value: {{ languages: {languages} }}, configurable: true }});\nsettle(T);\n\
              console.log(T.L + \"|\" + translate(T, \"inbox.title\", []) + \"|\" + translate(T, \"inbox.unread\", [1n]));\n",
             include_str!("../src/export/values.js")
         );
@@ -1423,7 +1423,7 @@ fn a_page_writes_dates_and_times_as_its_reader_does() {
         ),
     ] {
         let program = format!(
-            "{}\n{messages}\nglobalThis.navigator = {{ languages: {languages} }};\nsettle(T);\n\
+            "{}\n{messages}\nObject.defineProperty(globalThis, \"navigator\", {{ value: {{ languages: {languages} }}, configurable: true }});\nsettle(T);\n\
              const d = {{ t: 0, f: [2026n, 10n, 26n] }};\n\
              console.log(translate(T, \"when\", [{{ t: 0, f: [d, {{ t: 0, f: [16n, 5n, 0n] }}] }}, d, 2.5]));\n",
             include_str!("../src/export/values.js")

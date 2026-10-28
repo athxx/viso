@@ -106,8 +106,13 @@ fn target_plan(
             ..RustPlan::default()
         },
         Target::Android => android_plan(Abi::host(), profile, sdk),
-        Target::WebGpu | Target::WebDom | Target::WebHybrid => RustPlan {
+        Target::WebGpu | Target::WebHybrid => RustPlan {
             target: Some(bundle::TRIPLE.to_owned()),
+            ..RustPlan::default()
+        },
+        Target::WebDom => RustPlan {
+            target: Some(bundle::TRIPLE.to_owned()),
+            features: vec![cargo::WEB_DOM],
             ..RustPlan::default()
         },
     }
@@ -265,6 +270,8 @@ pub struct Job {
     /// The package `viso package` makes of it, in place of the build's own
     /// output.
     pub delivery: Option<Plan>,
+    /// A `web-dom` build's page.
+    pub page: Option<web::WebPage>,
 }
 
 /// A build compiled and packaged, not yet published.
@@ -297,6 +304,8 @@ const STAGED_KINDS: &[&str] = &[
     "wasm",
     "js",
     "html",
+    "css",
+    "view",
     "brotli",
     "gzip",
 ];
@@ -329,6 +338,27 @@ fn staging_key(job: &Job, exe: &Path) -> String {
         job.declared,
         job.android
     );
+    if let Some(page) = &job.page {
+        let dom = &page.page;
+        let mut sum = Sha256::new();
+        for part in [
+            dom.index("", "", "").as_bytes(),
+            dom.styles.as_bytes(),
+            dom.script.as_bytes(),
+            &dom.module,
+            dom.component.as_bytes(),
+        ] {
+            sum.update((part.len() as u64).to_le_bytes());
+            sum.update(part);
+        }
+        let _ = writeln!(
+            key,
+            "page {:x} {:?} {:?}",
+            sum.finalize(),
+            dom.build,
+            page.assets
+        );
+    }
     if let Some((_, shell)) = &job.android {
         let _ = writeln!(key, "{:?}", shell.stamp());
     }
@@ -466,6 +496,7 @@ pub fn produce(
                 web: &job.web,
                 android: job.android.as_ref(),
                 fragments: &job.declared.fragments,
+                page: job.page.as_ref(),
             };
             let artifacts = delivery::package::make(plan, &built, &out, cancelled, sink)?;
             stages.push(("package", started.elapsed()));
@@ -535,6 +566,7 @@ pub fn produce(
                     job.profile,
                     &job.web,
                     worker.as_deref(),
+                    job.page.as_ref(),
                     cancelled,
                     sink,
                 )?;

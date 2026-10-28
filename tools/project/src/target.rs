@@ -111,8 +111,8 @@ impl Target {
     /// Whether this build can produce the target.
     ///
     /// The host, headless, the iOS Simulator, the Android Emulator, the
-    /// WebGPU browser target and every device target are; the DOM targets are
-    /// not yet. This is a
+    /// WebGPU and DOM browser targets and every device target are; the
+    /// hybrid one is not yet. This is a
     /// property of the *build*, not of the machine: it is what separates "you
     /// asked for something that does not exist yet" from "you asked for
     /// something your machine cannot do".
@@ -124,6 +124,7 @@ impl Target {
                 | Target::Ios
                 | Target::Android
                 | Target::WebGpu
+                | Target::WebDom
                 | Target::Device(_)
         )
     }
@@ -723,7 +724,7 @@ mod tests {
         for target in Target::ALL {
             let parsed = Target::parse(target.as_str()).expect("declared targets parse");
             match parsed.require_available() {
-                Ok(t) => assert!(!matches!(t, Target::WebDom | Target::WebHybrid)),
+                Ok(t) => assert!(!matches!(t, Target::WebHybrid)),
                 Err(d) => {
                     assert_eq!(d.code, ConfigCode::TargetUnavailable);
                     assert_eq!(d.code.exit_code(), 3);

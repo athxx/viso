@@ -1,0 +1,31 @@
+[package]
+name = "viso-dom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The `web-dom` runtime: a view's behavior on the behavior VM in the page the
+# browser lays out, which the page script keeps current. It knows no UI
+# node, no layout and no GPU: the DOM is the browser's.
+[dependencies]
+viso-behavior = { workspace = true, features = ["std"] }
+
+[features]
+# The behavior interpreter, which runs a page's module whose compiled code
+# the app does not carry: a dev build's, whose `.vs` edits reload the page
+# without building the app again.
+vm = ["viso-behavior/interpreter"]
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+
+[dev-dependencies]
+# The tests compile the views they open.
+viso-dsl = { workspace = true }
+
+[lints]
+workspace = true

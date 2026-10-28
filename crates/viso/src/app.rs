@@ -130,8 +130,17 @@ pub fn run<A: Application>() {
         crate::headless::run::<A>();
         return;
     }
+    // A page's DOM is the browser's: no window opens and no frame runs.
+    #[cfg(feature = "web-dom")]
+    {
+        crate::dom::run::<A>();
+        return;
+    }
     // A headless fallback has no OS behind its services.
-    #[cfg_attr(feature = "headless", allow(unreachable_code))]
+    #[cfg_attr(
+        any(feature = "headless", feature = "web-dom"),
+        allow(unreachable_code)
+    )]
     let (platform_app, services) = match viso_platform::create_app() {
         Ok(app) => (app, None),
         Err(_) => (

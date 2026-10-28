@@ -372,6 +372,24 @@ codes! {
         fix: "Read the message; it names the file and the system's error.",
         commands: [],
     }
+    WEB_GPU_ONLY_NODE = DIAGNOSTICS {
+        summary: "A node only the Viso renderer can draw is in a `web-dom` page.",
+        explanation: "A `web-dom` page is HTML the browser lays out and draws; a `ShaderView` paints with a shader and a `Viewport3D` draws a scene on the GPU, which no element of the page runs, and dropping the node would change what the page shows.",
+        fix: "Build for the browser with the Viso renderer, `viso build web-gpu`, or with DOM and GPU islands, `viso build web-hybrid`; or rewrite the node with widgets the DOM has.",
+        commands: ["viso build web-gpu", "viso build web-hybrid"],
+    }
+    WEB_DOM_UNSUPPORTED = DIAGNOSTICS {
+        summary: "Part of the view has no form in a `web-dom` page.",
+        explanation: "A `web-dom` page lowers the view to HTML and CSS whose behavior runs on the VM in the page; this construct (a Rust component or widget, a router's pages, a game's systems, a value the page cannot switch) only the Viso runtime mounts, and it is never dropped silently.",
+        fix: "Build for the browser with the Viso renderer, `viso build web-gpu`, or move the construct out of the view the page mounts.",
+        commands: ["viso build web-gpu"],
+    }
+    WEB_DOM_NO_VIEW = DIAGNOSTICS {
+        summary: "The project has no view for its `web-dom` page.",
+        explanation: "A `web-dom` page mounts the component `src/app.vs` exports, the root view `Application::build` mounts with `view!`; the project has no such file.",
+        fix: "Add `src/app.vs` exporting the app's root component, as `viso new` starts a project, and mount it with `view!(\"app.vs\")`.",
+        commands: ["viso new"],
+    }
     RUN_APP_FAILED = RUNTIME {
         summary: "The app could not be launched, crashed, or exited with a failure.",
         explanation: "The app started by `viso run` did not start, crashed, or exited with a nonzero status; its own output precedes this diagnostic.",

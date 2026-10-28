@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use viso_dev_protocol::inspect::SourceTable;
 use viso_dsl::aot::ShaderLang;
+use viso_dsl::export::{DomOptions, DomPage, Need};
 use viso_dsl::frontend::Origin;
 use viso_dsl::frontend::compile_file_for;
 use viso_dsl::hir::{CapabilitySet, CollisionDelivery, Determinism, InputDevices, TargetProfile};
@@ -43,7 +44,8 @@ use crate::dev::cargo::RustScope;
 use crate::dev::watch::{WatchScope, Watcher};
 use crate::error::{
     BUILD_FAILED, DIAGNOSTICS, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST,
-    ENV_SOURCE_UNREADABLE, ENVIRONMENT, INTERRUPTED, SUCCESS,
+    ENV_SOURCE_UNREADABLE, ENVIRONMENT, INTERRUPTED, SUCCESS, WEB_DOM_NO_VIEW, WEB_DOM_UNSUPPORTED,
+    WEB_GPU_ONLY_NODE,
 };
 use crate::interrupt;
 use crate::output::{Output, Source};
@@ -326,6 +328,8 @@ pub(super) struct Checked {
     pub package: LoadedPackage,
     /// The build the package was checked for.
     pub profile: TargetProfile,
+    /// The page of a check for `web-dom`, when the root view has one.
+    pub page: Option<DomPage>,
 }
 
 /// The manifest of the app's crate, beside `Viso.toml` at `root`, when it has
@@ -548,12 +552,16 @@ pub(super) fn package_for(
             &[],
         );
     }
-    let checked = Checked {
+    let mut checked = Checked {
         project,
         name,
         package,
         profile,
+        page: None,
     };
+    if options.target == Some(Target::WebDom) {
+        checked.page = checked.dom_page(out);
+    }
     if fixed_langs(&checked.project, options.target).is_some() {
         for file in &checked.package.files {
             let source = Source::new(&file.path, &checked.project.root, &file.source)
@@ -567,6 +575,76 @@ pub(super) fn package_for(
 }
 
 impl Checked {
+    /// The `web-dom` page of the component `src/app.vs` exports, reporting
+    /// each place it needs what a page's DOM cannot have at its source;
+    /// `None` when it has no page.
+    fn dom_page(&self, out: &mut Output) -> Option<DomPage> {
+        let Some(file) = self
+            .package
+            .files
+            .iter()
+            .find(|file| file.module.len() == 1 && file.module[0] == "app")
+        else {
+            out.failure(
+                WEB_DOM_NO_VIEW,
+                "the project has no `src/app.vs`, whose component a `web-dom` page mounts",
+                &[
+                    "add it, as `viso new` starts a project, and mount it with `view!(\"app.vs\")`"
+                        .to_owned(),
+                ],
+            );
+            return None;
+        };
+        // A file that does not compile said so already.
+        if file
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == viso_dsl::Severity::Error)
+        {
+            return None;
+        }
+        let origin = Origin {
+            package: self.name.clone(),
+            module: file.module.clone(),
+            language: self.language(),
+            siblings: self.package.siblings(),
+        };
+        let compiled = compile_file_for(&file.source, &origin, self.natives(), self.view_profile());
+        let manifest = &self.project.manifest;
+        let options = DomOptions {
+            title: manifest
+                .package
+                .display_name
+                .as_ref()
+                .map_or(self.name.clone(), |name| name.value.clone()),
+            lang: manifest
+                .i18n
+                .source
+                .as_ref()
+                .map_or(viso_dsl::i18n::DEFAULT_SOURCE.to_owned(), |s| {
+                    s.value.clone()
+                }),
+        };
+        match viso_dsl::export::dom(&compiled, &options) {
+            Ok(page) => Some(page),
+            Err(findings) => {
+                let source = Source::new(&file.path, &self.project.root, &file.source)
+                    .of_module(file.module.join("::"));
+                for finding in &findings {
+                    let code = match finding.need {
+                        Need::GpuOnly => WEB_GPU_ONLY_NODE,
+                        Need::Dynamic | Need::Unsupported => WEB_DOM_UNSUPPORTED,
+                    };
+                    let mut diagnostic =
+                        Diagnostic::error(code.name, finding.at, finding.message.clone());
+                    diagnostic.notes = finding.notes.clone();
+                    out.source(Some(&source), &[], &diagnostic);
+                }
+                None
+            }
+        }
+    }
+
     /// Why a view of `file` cannot ship in a package of the languages the
     /// build's profile fixes: a shader it paints with that does not build in
     /// one of them. Nothing for a file that does not compile, which says so

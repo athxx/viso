@@ -123,7 +123,17 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
     let script = match (&prepared.eval, scripted) {
         (Some(eval), true) => {
             let catalog = prepared.vb.as_ref().and_then(|vb| vb.module.catalog());
-            Some(script::script(&page, eval, catalog, GENERATED, prepared.origin).map_err(sorted)?)
+            Some(
+                script::script(
+                    &page,
+                    eval,
+                    catalog,
+                    GENERATED,
+                    prepared.origin,
+                    script::Engine::Script,
+                )
+                .map_err(sorted)?,
+            )
         }
         _ => None,
     };
@@ -131,6 +141,126 @@ pub fn html(compiled: &Compiled, options: &HtmlOptions) -> Result<HtmlExport, Ve
         index: index(&page, options, script.is_some()),
         styles: styles(&page),
         script,
+        assets: page.assets.values().cloned().collect(),
+    })
+}
+
+/// How a `web-dom` page is made.
+#[derive(Debug, Clone)]
+pub struct DomOptions {
+    /// The page's title.
+    pub title: String,
+    /// The language of its text, as a BCP 47 tag.
+    pub lang: String,
+}
+
+/// A `web-dom` page: the view as HTML its reader's browser lays out, styled
+/// by its stylesheet, its behavior run by the Viso VM in the app the page
+/// loads, which the page script calls into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomPage {
+    head: String,
+    body: String,
+    /// `styles.css`.
+    pub styles: String,
+    /// `app.js`: the DOM runtime and the page's mounts, started by
+    /// `visoPage(V)` with the VM.
+    pub script: String,
+    /// The view's behavior module, for a page whose app runs it in place of
+    /// the one it was built with.
+    pub module: Vec<u8>,
+    /// The build hash of the module, which the app checks its own against.
+    pub build: u64,
+    /// The component the view mounts.
+    pub component: String,
+    /// The path under the project's `assets/` of each asset the page shows,
+    /// written to the same path under the page's `assets/`.
+    pub assets: Vec<String>,
+}
+
+impl DomPage {
+    /// `index.html`, styled by the stylesheet at `styles`, its page script
+    /// at `script`, then `boot`: what loads the app and hands `visoPage`
+    /// its VM.
+    pub fn index(&self, styles: &str, script: &str, boot: &str) -> String {
+        let mut out = String::with_capacity(self.head.len() + self.body.len() + boot.len() + 128);
+        out.push_str(&self.head);
+        out.push_str("<link rel=\"stylesheet\" href=\"");
+        html::escape_attr(styles, &mut out);
+        out.push_str("\">\n</head>\n<body>\n");
+        out.push_str(&self.body);
+        out.push_str("\n<script src=\"");
+        html::escape_attr(script, &mut out);
+        out.push_str("\" defer></script>\n");
+        out.push_str(boot);
+        out.push_str("</body>\n</html>\n");
+        out
+    }
+}
+
+/// The view `compiled` mounts as a `web-dom` page.
+///
+/// # Errors
+///
+/// Every place the view needs what a page's DOM cannot have, in source
+/// order.
+pub fn dom(compiled: &Compiled, options: &DomOptions) -> Result<DomPage, Vec<Finding>> {
+    let mut prepared = prepare(compiled, &options.lang)?;
+    prepared.pick_locale();
+    let mut lower = html::Lower::new(
+        prepared.vb.as_ref(),
+        prepared.eval.as_mut(),
+        &compiled.assets,
+        false,
+    );
+    lower.view(&compiled.tree);
+    lower.all_assets();
+    let html::Lower {
+        findings,
+        out: page,
+        ..
+    } = lower;
+    if !findings.is_empty() {
+        return Err(sorted(findings));
+    }
+    let (Some(vb), Some(eval)) = (&prepared.vb, &prepared.eval) else {
+        return Err(vec![Finding {
+            need: Need::Unsupported,
+            at: prepared.origin,
+            message: "the view has no component to run".to_owned(),
+            notes: vec!["a `web-dom` page mounts the component `src/app.vs` exports".to_owned()],
+        }]);
+    };
+    let catalog = vb.module.catalog();
+    let script = script::script(
+        &page,
+        eval,
+        catalog,
+        GENERATED,
+        prepared.origin,
+        script::Engine::Vm,
+    )
+    .map_err(sorted)?;
+    let mut head = String::new();
+    head.push_str("<!DOCTYPE html>\n");
+    let _ = writeln!(head, "<!-- {GENERATED} -->");
+    head.push_str("<html lang=\"");
+    html::escape_attr(&options.lang, &mut head);
+    head.push_str("\">\n<head>\n<meta charset=\"utf-8\">\n");
+    head.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n");
+    head.push_str("<title>");
+    html::escape_text(&options.title, &mut head);
+    head.push_str("</title>\n");
+    let mut body = String::new();
+    html::write_html(&page.root.nodes, &page.regions, &mut body);
+    Ok(DomPage {
+        head,
+        body,
+        styles: styles(&page),
+        script,
+        module: vb.bytes.clone(),
+        build: viso_behavior::aot::build_hash(&vb.module),
+        component: vb.component.clone(),
         assets: page.assets.values().cloned().collect(),
     })
 }

@@ -1035,6 +1035,7 @@ fn effects_literal(
                 eval,
                 effect,
                 &|entry| format!("() => {}", call(entry, None)),
+                &|entry| format!("() => {}", call(entry, None)),
                 &|entry| format!("(v: Value) => {}", call(entry, Some("v"))),
             )
         })

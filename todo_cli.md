@@ -286,7 +286,8 @@ gap, and CI can run all of it headless.
 - [x] `check <target>`: target capability checks (a GPU-only node on `web-dom`, a
       platform-gated API on a target that lacks it) on top of the fast default (§17.1).
       (The target's configuration and availability, and the input its devices have;
-      `web-dom`/`web-hybrid` are unavailable, so their DOM rules are C4.4's.)
+      `web-dom` computes its page and reports the C4.4 findings; `web-hybrid` is still
+      unavailable.)
 - [x] `--watch`: reuses the dev session watcher; re-checks on change, prints a
       per-batch summary, emits one `summary` per batch under `--json`, Ctrl-C exits
       130. (Per §17.3: `progress{phase:"idle"}` ends each round; one `summary`, at
@@ -654,7 +655,8 @@ alternative.
         memory (`viso_package::web::shares_memory`).
   - [x] One human line and one `server` event (`target` added; `url` with the lane's
         path) per lane; the LAN warning once; `--open` opens every lane's page.
-  - [ ] End to end with `web-dom`/`web-hybrid` lanes: waits on C4.3 (both still C0011).
+  - [ ] End to end with `web-dom`/`web-hybrid` lanes: waits on the `web-dom` dev session
+        and on `web-hybrid` (C4.3).
 
 ### C4.2 — web-gpu remaining
 
@@ -684,9 +686,20 @@ alternative.
 
 ### C4.3 — web-dom and web-hybrid
 
-- [ ] Depends on the DOM runtime backend (`Viso_Architecture.md`/`Viso_Rendering.md`);
-      the CLI side lands when that backend exists: build target, bundle, `run`,
-      `serve`, `check web-dom` capability rules. Until then the targets stay C0011.
+- [ ] `web-dom`: the page runtime is `viso-dom` (the view's behavior on the VM in the
+      app's wasm, called by the export's DOM runtime); `build`, `package` and
+      `check web-dom` are done.
+  - [x] Build target and bundle: `viso/web-dom` feature, `view!` offers its module,
+        `viso_dsl::export::dom` lowers the page, `dist/web` gets the page, styles,
+        script, wasm and, in dev, the view's module.
+    - Built: `Page` (`crates/dom`), `visoDom`/`V` on wasm, `Engine::Vm` in the export
+      script, `__view_mount!`, `WebPage` staging; initial texts prerendered.
+    - Verified: `viso new` app → `viso check web-dom` clean, `viso build web-dom` dev
+      page clicked in headless Chrome (0 → 1 → 3 clicks); release wasm 912 KiB.
+  - [ ] `run`/`serve web-dom`: a dev session lane (page rebuilt on `.vs` edits, reload).
+        Until then `viso run web-dom` exits with `TargetUnavailable`.
+  - [ ] Package natives in the page lowering (the export links only the standard
+        natives).
 - [ ] `web-hybrid` (§32): DOM shell with GPU islands; the bundle carries both runtimes
       and the capability split.
 
@@ -695,10 +708,11 @@ alternative.
 - [ ] Capability table per target (GPU-only nodes, custom shaders, threads, file
       system, native libraries) in the compiler, consumed by `check <web-target>` and
       `build`; each diagnostic names the node, the target and the alternative
-      (`WEB_*` codes registered in C2.3). Blocked: on `web-gpu` every node, shader
-      and native the compiler knows is available, so the table has rows only for
-      `web-dom`/`web-hybrid` (GPU-only primitives, custom shaders) and for
-      platform-gated natives (the item above); it lands with the DOM backend. The
+      (`WEB_*` codes registered in C2.3). `web-dom`'s rows are done:
+      `WEB_GPU_ONLY_NODE`, `WEB_DOM_UNSUPPORTED`, `WEB_DOM_NO_VIEW`, from the page
+      lowering's findings, in `check web-dom` and `build web-dom`. On `web-gpu` every
+      node, shader and native the compiler knows is available, so the rest of the table
+      is `web-hybrid`'s and the platform-gated natives' (the item above). The
       §33 classification already runs where a target lacks something today — the
       export lowering's findings (`viso export html|solid`), each at its span with
       the node, the capability and the alternative.
@@ -1065,8 +1079,8 @@ and traced from the CLI and from Studio over the same services.
       their environments alone; no signing, provisioning or physical device in the dev
       loop; no `sdkmanager`/`avdmanager`/`simctl` in ordinary workflows.
 - [ ] Web: `web-gpu`, `web-dom`, `web-hybrid`, `serve`, capability diagnostics.
-      (`web-gpu` and `serve` done; `web-dom`, `web-hybrid` and the capability table
-      wait for the DOM backend, C4.3/C4.4.)
+      (`web-gpu` and `serve` done; `web-dom` builds and checks, its dev session and
+      `web-hybrid` remain, C4.3.)
 - [x] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
 - [ ] Test/Debug: `test`, `snapshot`, `inspect`, `profile`, `studio`.
       (All but `studio`, which waits for Studio itself.)

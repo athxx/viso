@@ -251,6 +251,7 @@ crates/
     dev-protocol/
     behavior/    VM
     view/        compiled-view runtime
+    dom/         web-dom page runtime (the VM the page script calls)
     dsl/
     lsp/
     services/

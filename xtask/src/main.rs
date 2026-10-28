@@ -62,6 +62,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-ui-macros",
                     "viso-widgets",
                     "viso-view",
+                    "viso-dom",
                     "viso-behavior",
                     "viso-services",
                     "viso-render",
@@ -276,6 +277,16 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-ende",
                 ],
                 dev: &[],
+            },
+        ),
+        // The `web-dom` runtime: a view's behavior on the behavior VM in a page
+        // the browser lays out. It knows no UI node, layout or GPU.
+        (
+            "viso-dom",
+            Allowed {
+                dir: "crates/dom",
+                deps: &["viso-behavior"],
+                dev: &["viso-dsl"],
             },
         ),
         // The behavior bytecode and interpreter the DSL compiler lowers `fn`/`action`
@@ -552,6 +563,11 @@ const NEVER: &[(&str, &str)] = &[
     ("viso-cli", "viso-text"),
     ("viso-schema", "viso-ui"),
     ("viso-dev-protocol", "viso-ui"),
+    // A `web-dom` page's DOM is the browser's.
+    ("viso-dom", "viso-ui"),
+    ("viso-dom", "viso-render"),
+    ("viso-dom", "viso-gpu"),
+    ("viso-dom", "viso-text"),
 ];
 
 /// Crates on the compiler and tooling side whose dependency

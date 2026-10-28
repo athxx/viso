@@ -713,7 +713,7 @@ viso doctor --json
 ### 9.5 当前实现
 
 - `viso doctor` 的 check（`name`）：`rust`（`rustc -vV`，早于框架的 `rust-version` 为 `ENV_RUST_TOOLCHAIN` error）、`cargo`、`rustup`、`project`（`Viso.toml`、language 版本、配置解析、根目录的 `Cargo.toml`；不在 project 中为 warn，建议 `viso new <name>`）、`framework`（project 的 `Cargo.lock` 中 `viso` 的版本与 CLI 相同）、`linker`（`cc`，Windows 为 Visual Studio Build Tools）、`gpu`（macOS Metal、Windows Direct3D 12、Linux Vulkan loader 与 ICD；没有为 `ENV_GPU` error）、`wasm32`、`wasm-bindgen`（与 `Cargo.lock` 锁定的版本一致）、`wasm-opt`、`filesystem`（project 的 `target/` 与 `~/.viso` 可写）、`git`、`lsp`（`viso-lsp --version` 与 CLI 版本相同；缺失或不同为 warn，建议 `cargo install viso-lsp --version <cli>`）、`android-sdk`、`ios-runtime`；host doctor 中 target 工具的缺口只是 warn。
-- `viso doctor <target>` 为 `rust`、`cargo`、`project` 加上该 target 的 check，缺口为 `missing`：`ios` — `xcode`、`xcode-license`、`ios-runtime`、`ios-disk`、`ios-rust`、`ios-profiles`、`gpu`（见 §12.7）；`android` — `android-sdk`（`ENV_ANDROID_SDK`，message 给出 SDK 的来源）、`android-components`（默认 API level 的固定组件是否都装好）、`android-tools`、`android-accel`（`emulator -accel-check`：HVF/KVM/WHPX）、`java`（`javac -version`：APK 的 Java shell 由它编译，缺失为 `ENV_TOOL`）、`android-rust`、`android-profiles`；`web-gpu` — `wasm32`、`wasm-bindgen`、`wasm-opt`；`headless` — `linker`、`filesystem`；`web-dom`/`web-hybrid` — `target`（`C0011`）。不适用的 check（没有 project 时的 `framework`）不输出。
+- `viso doctor <target>` 为 `rust`、`cargo`、`project` 加上该 target 的 check，缺口为 `missing`：`ios` — `xcode`、`xcode-license`、`ios-runtime`、`ios-disk`、`ios-rust`、`ios-profiles`、`gpu`（见 §12.7）；`android` — `android-sdk`（`ENV_ANDROID_SDK`，message 给出 SDK 的来源）、`android-components`（默认 API level 的固定组件是否都装好）、`android-tools`、`android-accel`（`emulator -accel-check`：HVF/KVM/WHPX）、`java`（`javac -version`：APK 的 Java shell 由它编译，缺失为 `ENV_TOOL`）、`android-rust`、`android-profiles`；`web-gpu` — `wasm32`、`wasm-bindgen`、`wasm-opt`；`headless` — `linker`、`filesystem`；`web-dom` — 同 `web-gpu`；`web-hybrid` — `target`（`C0011`）。不适用的 check（没有 project 时的 `framework`）不输出。
 - 各 check 同时运行，单个工具最多 15 s、单个 check 最多 20 s，超时为 error 并说明超时，不会挂住 doctor。
 - `--fix` 只做本地可逆的修复：缺少的 Rust target 以 `rustup target add <triple>` 加上，运行前先说出命令（human 为 stderr 一行，JSON 为 `progress{phase:"fix"}`），之后重新检查；不安装 SDK、runtime 或工具。
 - 人类输出：`Viso Doctor`、每个 check 一行 `[status] <title>: <message>`、`Suggested actions:` 列出未通过 check 的建议命令。
@@ -1282,7 +1282,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
   - iOS 构建 simulator triple 并打包为未签名 `.app`；Android 构建 emulator ABI 的 `cdylib` 并打包为 dev APK，需要 Android SDK（`ANDROID_HOME`/`ANDROID_SDK_ROOT` 或默认位置）、NDK 与 build-tools，缺失时 `ENV_DEVICE`；web-gpu 构建 `wasm32-unknown-unknown` 并经 `wasm-bindgen` 生成 bundle，打开浏览器（`--browser chrome|safari|firefox|none`，省略为系统默认），输出 `server{target,url,host,port,lan:false}`；
   - launch 变量在 iOS 上经 `SIMCTL_CHILD_*`、Android 上经 intent extras、web 上经页面的 `visoLaunch`，app 一律用 `viso_platform::launch_var` 读取；`--` 之后的参数只交给 desktop 与 iOS，其它 target 给出 warning；
   - Rust 改动的 warm restart 在新 artifact 打包完成后才停止旧 app；
-  - `web-dom`/`web-hybrid` 以 `TargetUnavailable` 退出；
+  - `web-dom` 尚无 dev session、`web-hybrid` 不可用，二者以 `TargetUnavailable` 退出；
 - `viso ios simulator` / `viso android emulator` 的 `list|create|start|stop|delete`（§11.4、§12.4）：profile 存于 `~/.viso/ios/simulators/<id>.toml` / `~/.viso/android/emulators/<id>.toml`（`preset`、`system`、`device`，`$VISO_HOME` 可改 root）；iOS 以最新已安装 runtime 与对应 iPhone/iPad 机型创建 Simulator，Android 不依赖 `avdmanager`，直接按最新（或 `--api` 指定）已安装 system image 写出 AVD `viso_<id>`；`start --no-window` 无窗口启动 emulator；`list` 列出 `NAME PROFILE STATUS SYSTEM`；
 - Dev artifact 与 `viso build` 共用 Build Service（§14.5）：以 dev profile 的 `--profile dev` 与 `[profile.dev]` 设置构建；每次 build 前取 `build-<target>.lock`，被 `viso build` 占用时等待（输出一条 `log`）而不失败；`--json` 下 launch build 之后输出一条 `artifact`（host `binary`、iOS `app-bundle`、Android `apk`、web `wasm`，`path` 相对 project root），Rust 编译诊断为带 span 的 `diagnostic`；
 - `viso serve` 不提供 HTTPS：loopback 页面本身就是 secure context，WebGPU 可用；另一台设备的浏览器经端口转发以 loopback 打开页面（Android `adb reverse`），不为此引入 TLS 依赖。
@@ -1493,7 +1493,7 @@ WebGPU/threaded WASM 所需 COOP/COEP 等 header 由 target/profile policy 决�
 - 每条 web lane 输出一条 human 行（多 lane 时为 ``[viso] serving `web-dom` at http://127.0.0.1:8000/web-dom/``）与一条 `server` event（`target`、`url` 含 lane 路径、`host`、`port`、`lan`）；LAN 警告只出现一次；
 - `--open` 打开每条 lane 的页面。
 
-当前 `web-dom`/`web-hybrid` 尚未可用（`require_available` 拒绝），多 lane 的端到端运行要等它们落地；路由、per-lane header 与 reload 由单元测试覆盖。
+当前 `web-dom` 没有 dev session、`web-hybrid` 尚未可用，多 lane 的端到端运行要等它们落地；路由、per-lane header 与 reload 由单元测试覆盖。
 
 ---
 
@@ -1935,7 +1935,7 @@ viso game replay movement --seconds 3                # 在 reload 后的代码�
 - `--filter <pattern>` 按名字包含（`--exact` 时相等）筛选每个域的用例；`--fail-fast` 在第一个失败用例后停止（进行中的 ui 用例被终止、不报告）；
 - `--update-snapshots` 只用于 `ui`（及省略测试域时的 `ui`），见 §22.2；`--device` 只用于 `--target ios|android`（否则 usage error），省略时按 `viso run` 的规则选 profile（本地默认、唯一 profile、TTY 询问）；
 - `ui --target ios|android`：每个用例在设备上全新启动一次 app——以本可执行文件运行 `viso run <ios|android> --device <id> --json` 并读它的事件；app 连上 dev 通道且报告完 mounts 后，Scenario 经该 session 的 control endpoint（`ControlAsk::Scenario`）交给 app，由 dev runtime 在第一个窗口上逐步执行（输入以平台事件 post 进 scheduler，与用户输入同一路由；期望读 semantics；inspector selector 用 session 给的 source table），每步结果以 `RuntimeMessage::Scenario` 报告行（与 headless 报告同形，多一种 `skip`）回传，结束后以 Ctrl-C 结束该 session。snapshot 步骤只在 headless 拍摄，设备上记为 skip 并输出一行说明；component 用例（单独挂载组件）只在 headless 运行，记为 skip。session 在 app 连上之前结束（构建、设备或 SDK 失败）时，该用例以 session 最后的诊断失败，域以 session 的 exit code 结束，不再继续后面的用例；app 在 Scenario 结束前退出为 `RUN_TEST_CRASHED`（exit 5）；Ctrl-C 结束当前 session，exit 130；
-- `ui --target web-gpu`：同一流程，session 为 `viso run web-gpu --browser none --json`；收到 `server` event 后以 headless 模式（`--headless=new --enable-unsafe-webgpu`，每个用例一个临时 profile）打开该页面，用例结束时关闭浏览器。浏览器取 `VISO_CHROME` 指定的 Chromium 系浏览器，否则依次查找 Chrome、Chromium、Edge 的默认安装位置与 `PATH`；找不到时每个用例记为 skip 并说明原因，域不失败；`web-dom`/`web-hybrid` 仍为 `ENV_TEST_TARGET`；
+- `ui --target web-gpu`：同一流程，session 为 `viso run web-gpu --browser none --json`；收到 `server` event 后以 headless 模式（`--headless=new --enable-unsafe-webgpu`，每个用例一个临时 profile）打开该页面，用例结束时关闭浏览器。浏览器取 `VISO_CHROME` 指定的 Chromium 系浏览器，否则依次查找 Chrome、Chromium、Edge 的默认安装位置与 `PATH`；找不到时每个用例记为 skip 并说明原因，域不失败；`web-dom`/`web-hybrid` 仍为 `ENV_TEST_TARGET`（`web-dom` 等它的 dev session）；
 - 人类输出每个用例一行 `test <domain> <name> ... ok|FAILED|skipped`（被跳过的整个域为 `test <domain> ... skipped (<原因>)`），末行 `test result: ok|FAILED. <n> passed; <n> failed; <n> skipped`。
 
 ### 22.5 JSON / exit codes
@@ -2584,6 +2584,14 @@ Viso source
 ```
 
 支持完整 Viso Web DOM runtime contract，包括 Viso resource system、typed runtime metadata，以及 dev profile 下的 Hot Reload。
+
+当前实现：
+- 页面的根是 `.vs` view：app 照常 `viso::run`，`build` 中的 `view!` 在 `web-dom` build（facade feature `viso/web-dom`）里只把它的模块、编译代码与 native library 交给页面运行时（`viso-dom`），不建节点、不开窗口；`build` 在 Rust 中另建的节点页面不显示，app 启动时打印一条 warning；
+- view 由 `viso_dsl::export::dom` lower：HTML/CSS 与 `viso export html` 同一 lowering，页面脚本的 DOM runtime 也相同，但每个值、handler、region entry、effect 与 task 都调用 wasm 里的 VM（`visoDom` 返回的 `V`），不 lower 成 JS；
+- 不随 state 变化、不带 region 参数且不读 locale 的文本预渲染进 HTML；
+- `dist/web` 写出 `index.html`、`styles.<hash>.css`、`page.<hash>.js`、wasm 与 glue；dev 另写 `view.<hash>.vsb`，页面在解释器上运行这份模块，`.vs` 修改无需重编 Rust；release 页面用 app 内嵌的模块（release 下为编译代码），二者 build hash 不同时页面不打开并给出原因；
+- `viso check web-dom` 计算页面：没有 `.vs` view 为 `WEB_DOM_NO_VIEW`，`ShaderView`/`Viewport3D` 为 `WEB_GPU_ONLY_NODE`，页面无法表达的构造（Rust component/widget、router、game）为 `WEB_DOM_UNSUPPORTED`；`viso build web-dom` 在这些错误下以 `BUILD_FAILED` 失败；
+- view 调用 native package 的 native 时页面 lowering 尚不能求值（export 只链接标准 native）；`viso run`/`serve web-dom` 的 dev session 未接。
 
 ### `viso export html`
 

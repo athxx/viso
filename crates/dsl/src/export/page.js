@@ -1,15 +1,7 @@
 let root = null;
 let top = null;
-let pending = [];
-let starts = [];
-let nodes = [];
 // The element whose handler runs, which its node requests start from.
 let origin = null;
-$.emit = (event, args) => pending.push([event, args]);
-$.node = (action, key, args) => request(nodes, action, key, args);
-$.start = (task, args, done, cancelled, instance, slot, policy) =>
-  starts.push({ task, args, done, cancelled, instance, slot, policy });
-$.tr = (m, a) => translate(T, m, a);
 
 // A mount of content: its wired values `u` and regions `r`, the region
 // bindings `sc` its functions take, the mount `p` around it, the instances
@@ -25,7 +17,7 @@ const mount = (sc, p, o = null, l = null) => {
       if (init) {
         try { x = init(); } catch (e) { console.error(e); }
       }
-      S[slot] = x;
+      put(slot, x);
       s.push(slot);
       v.push(x);
     }
@@ -39,13 +31,13 @@ const mount = (sc, p, o = null, l = null) => {
 const focus = (m) => {
   if (m.p) focus(m.p);
   const l = m.l;
-  if (l) for (let i = 0; i < l.s.length; i++) S[l.s[i]] = l.v[i];
+  if (l) for (let i = 0; i < l.s.length; i++) put(l.s[i], l.v[i]);
 };
 // Keeps what a transaction left in the states of `m` and the mounts around it.
 const keep = (m) => {
   for (let x = m; x; x = x.p) {
     const l = x.l;
-    if (l) for (let i = 0; i < l.s.length; i++) l.v[i] = S[l.s[i]];
+    if (l) for (let i = 0; i < l.s.length; i++) l.v[i] = held(l.s[i]);
   }
 };
 
@@ -66,59 +58,7 @@ const deliver = (events) => {
     root.dispatchEvent(new CustomEvent(E[event], { detail: args, bubbles: true }));
   }
 };
-// The page's transactions, over the states `S`: a handler writes a working
-// copy `W`, which only success commits.
-const work = new Work({
-  transact(f, m) {
-    if (m.f) focus(m);
-    const before = S;
-    W = S.slice();
-    pending = [];
-    starts = [];
-    nodes = [];
-    let value;
-    try {
-      value = f();
-    } catch (e) {
-      W = S;
-      pending = [];
-      starts = [];
-      nodes = [];
-      console.error(e);
-      return null;
-    }
-    S = W;
-    if (m.f) keep(m);
-    const changed = new Set();
-    for (let i = 0; i < S.length; i++) if (!Object.is(S[i], before[i])) changed.add(i);
-    const t = { value, changed, events: pending, starts, nodes, from: origin };
-    pending = [];
-    starts = [];
-    nodes = [];
-    return t;
-  },
-  land(t) {
-    if (t.changed.size) refresh(top, t.changed);
-    deliver(t.events);
-    reach(t.nodes, t.from);
-  },
-  read(f, m) {
-    if (m.f) focus(m);
-    return f();
-  },
-  drop(f, m) {
-    if (m.f) focus(m);
-    W = S.slice();
-    pending = [];
-    try { f(); } catch (e) { console.error(e); }
-    W = S;
-    const events = pending;
-    pending = [];
-    starts = [];
-    nodes = [];
-    deliver(events);
-  },
-}, null);
+const work = new Work(host, null);
 const fx = (m, list) => work.effects(m, list);
 
 // Ends mount `m` and the content it mounts.

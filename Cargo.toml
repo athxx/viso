@@ -24,6 +24,7 @@ members = [
     "crates/widgets",
     "crates/behavior",
     "crates/view",
+    "crates/dom",
     "crates/dsl",
     "crates/lexer",
     "crates/diag",
@@ -105,6 +106,7 @@ viso-map = { path = "extras/map", version = "0.0.0" }
 viso-code-editor = { path = "extras/code-editor", version = "0.0.0" }
 viso-behavior = { path = "crates/behavior", version = "0.0.0", default-features = false }
 viso-view = { path = "crates/view", version = "0.0.0", default-features = false }
+viso-dom = { path = "crates/dom", version = "0.0.0" }
 viso-dsl = { path = "crates/dsl", version = "0.0.0" }
 viso-lexer = { path = "crates/lexer", version = "0.0.0" }
 viso-diag = { path = "crates/diag", version = "0.0.0" }

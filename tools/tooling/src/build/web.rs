@@ -19,6 +19,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use viso_dsl::export::DomPage;
 use viso_package::web as bundle;
 use viso_project::{Profile, WebOptimize, WebSettings};
 
@@ -49,14 +50,25 @@ fn kind(path: &Path) -> Option<&'static str> {
         "wasm" => Some("wasm"),
         "js" => Some("js"),
         "html" => Some("html"),
+        "css" => Some("css"),
+        "vsb" => Some("view"),
         "br" => Some("brotli"),
         "gz" => Some("gzip"),
         _ => None,
     }
 }
 
+/// A `web-dom` build's page, and the project's `assets/` its assets are
+/// read from.
+#[derive(Debug, Clone)]
+pub struct WebPage {
+    pub page: DomPage,
+    pub assets: PathBuf,
+}
+
 /// Writes the bundle of the module `wasm`, the app `bin`, into `dir`, which
-/// is empty, with the service worker `worker` when it has one; each file it
+/// is empty, with the service worker `worker` when it has one, and the page
+/// `page` of a `web-dom` build in place of the canvas page; each file it
 /// wrote with its kind, by name.
 #[allow(clippy::too_many_arguments)]
 pub fn bundle(
@@ -66,6 +78,7 @@ pub fn bundle(
     profile: Profile,
     web: &WebSettings,
     worker: Option<&str>,
+    page: Option<&WebPage>,
     cancelled: &mpsc::Receiver<()>,
     sink: &Sink,
 ) -> Result<Vec<(&'static str, PathBuf)>, BuildFailure> {
@@ -112,7 +125,7 @@ pub fn bundle(
         }
     }
 
-    fingerprint(dir, bin, worker)?;
+    fingerprint(dir, bin, worker, page, profile)?;
 
     let mut files = listed(dir)?;
     let compress: Vec<(&str, bool)> = vec![("br", web.brotli.value), ("gz", web.gzip.value)];
@@ -130,9 +143,17 @@ pub fn bundle(
 const FINGERPRINT: usize = 16;
 
 /// Renames the module and the glue in `dir` by their content and writes the
-/// page loading them under those names, and the service worker `worker`,
-/// which keeps its name, as a browser updates a worker at its URL.
-fn fingerprint(dir: &Path, bin: &str, worker: Option<&str>) -> Result<(), BuildFailure> {
+/// page loading them under those names — the canvas page, or the DOM page
+/// `page` with its stylesheet, its script, its assets and, in a dev build,
+/// its module, each named by its content too — and the service worker
+/// `worker`, which keeps its name, as a browser updates a worker at its URL.
+fn fingerprint(
+    dir: &Path,
+    bin: &str,
+    worker: Option<&str>,
+    page: Option<&WebPage>,
+    profile: Profile,
+) -> Result<(), BuildFailure> {
     let rename = |stem: &str, extension: &str| -> Result<String, BuildFailure> {
         let from = dir.join(format!("{stem}.{extension}"));
         let (_, sum) = super::file_hash(&from).map_err(|error| {
@@ -147,8 +168,71 @@ fn fingerprint(dir: &Path, bin: &str, worker: Option<&str>) -> Result<(), BuildF
     };
     let module = rename(&format!("{bin}_bg"), "wasm")?;
     let glue = rename(bin, "js")?;
-    bundle::write_page(dir, bin, &glue, Some(&module), worker).map_err(BuildFailure::Package)?;
-    Ok(())
+    match page {
+        Some(page) => write_dom_page(dir, &glue, &module, worker, page, profile),
+        None => bundle::write_page(dir, bin, &glue, Some(&module), worker)
+            .map(drop)
+            .map_err(BuildFailure::Package),
+    }
+}
+
+/// Writes the DOM page of `page` in `dir`, its app the glue `glue` loading
+/// the module `module`. A dev page carries the view's module, which the app
+/// runs in place of its own: a `.vs` edit then needs no new app.
+fn write_dom_page(
+    dir: &Path,
+    glue: &str,
+    module: &str,
+    worker: Option<&str>,
+    page: &WebPage,
+    profile: Profile,
+) -> Result<(), BuildFailure> {
+    let failed = |path: &Path, error: std::io::Error| {
+        BuildFailure::Package(format!("cannot write `{}`: {error}", path.display()))
+    };
+    let named = |stem: &str, extension: &str, bytes: &[u8]| -> Result<String, BuildFailure> {
+        use sha2::Digest as _;
+        let digest: String = sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let name = format!("{stem}.{}.{extension}", &digest[..FINGERPRINT]);
+        let path = dir.join(&name);
+        std::fs::write(&path, bytes).map_err(|e| failed(&path, e))?;
+        Ok(name)
+    };
+    let dom = &page.page;
+    let styles = named("styles", "css", dom.styles.as_bytes())?;
+    let script = named("page", "js", dom.script.as_bytes())?;
+    let view = match profile {
+        Profile::Dev => format!(
+            "new Uint8Array(await (await fetch(\"./{}\")).arrayBuffer())",
+            named("view", "vsb", &dom.module)?
+        ),
+        Profile::Release | Profile::Shipping => "undefined".to_owned(),
+    };
+    for asset in &dom.assets {
+        let (from, to) = (page.assets.join(asset), dir.join("assets").join(asset));
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| failed(parent, e))?;
+        }
+        std::fs::copy(&from, &to).map_err(|e| failed(&to, e))?;
+    }
+    let mut boot = String::new();
+    if let Some(worker) = worker {
+        let path = dir.join(bundle::WORKER);
+        std::fs::write(&path, worker).map_err(|e| failed(&path, e))?;
+        boot.push_str(&format!(
+            "<script>navigator.serviceWorker?.register(\"./{}\").catch((e) => console.warn(\"the service worker did not register:\", e));</script>\n",
+            bundle::WORKER
+        ));
+    }
+    boot.push_str(&format!(
+        "<script type=\"module\">import init, {{ visoDom }} from \"./{glue}\"; await init({{ module_or_path: \"./{module}\" }}); visoPage(visoDom(\"{}\", {view}, {}n));</script>\n",
+        dom.component, dom.build
+    ));
+    let index = dir.join("index.html");
+    std::fs::write(&index, dom.index(&styles, &script, &boot)).map_err(|e| failed(&index, e))
 }
 
 /// The bundle files in `dir`, each with its kind, by name.
@@ -318,7 +402,7 @@ mod tests {
         let write = |wasm: &str| {
             std::fs::write(dir.join("app_bg.wasm"), wasm).unwrap();
             std::fs::write(dir.join("app.js"), "export default function init() {}").unwrap();
-            fingerprint(&dir, "app", None).unwrap();
+            fingerprint(&dir, "app", None, None, Profile::Release).unwrap();
             let mut names: Vec<String> = std::fs::read_dir(&dir)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

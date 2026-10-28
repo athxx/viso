@@ -852,7 +852,7 @@ opt_level = 2
         let (_s, project) = project(MINIMAL);
         let diags = resolve(
             &project,
-            Target::WebDom,
+            Target::WebHybrid,
             ArtifactKind::Build,
             &Overrides::default(),
             &Env::empty(),

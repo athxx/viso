@@ -634,6 +634,7 @@ viso/
 │   ├── media/         viso-media（经 OS 播放器播放媒体，叶子，ADR 0049）
 │   ├── ui/  widgets/
 │   ├── behavior/  view/   viso-behavior（VM）/ viso-view（compiled view 运行时）
+│   ├── dom/           viso-dom（`web-dom` 页面的运行时：页面脚本调用的 VM）
 │   ├── dsl/  lsp/
 │   └── services/
 ├── extras/
@@ -968,6 +969,12 @@ Release lowering（ADR 0041）：
 - 富类型 state（字符串、列表、记录）没有 UI cell，实例保留自己的 state 向量；镜像到 UI cell 的标量 state 按 `StateStore::epoch` 门控：cell 与实例 revision 都未变时 sync 不拷贝任何 cell，dispatch 对镜像数是 O(1)；
 - Dev 下解释执行与 Release 生成代码共享同一 handler table 布局（entry → chunk 索引），热更新只替换 table 条目。
 
+### `viso-dom`（ADR 0058）
+
+`web-dom` 页面的运行时。页面是 view 经 `viso_dsl::export::dom` lower 出的 HTML/CSS 与页面脚本，由浏览器排版绘制；view 的行为（每个显示的值、handler、region entry、effect、task）不 lower 成 JS，而在页面加载的 app（wasm）里的 VM 上执行：同一模块、同一组 native，release 下同一份编译代码。页面脚本以 handler-table entry 与参数调用它（`V.e` 求值、`V.t` 事务），再取回这些调用改写的 state slot、发出的 event、启动的 task 与对 named node 的请求（`Batch`），DOM 的更新、动画与 task 调度仍由 export 共用的 JS runtime 完成。
+
+facade 的 `web-dom` feature 下 `viso::run` 照常调用 `Application::new` 与 `build`，但 `view!` 不建节点，只把它嵌入的模块、编译代码与 native library 交给 `viso_dom::offer`；没有窗口、没有帧，renderer、layout 与 text runtime 不可达，release wasm 不含它们。dev 页面带自己的模块（`view.<hash>.vsb`），在解释器上运行，`.vs` 修改无需重编 app；release 页面用 app 内嵌的模块，并以 build hash 校验二者出自同一源码。只依赖 `viso-behavior`；wasm 上另依赖 `wasm-bindgen`/`js-sys`。
+
 ### `viso-schema`（ADR 0042）
 
 DSL compiler 与 runtime 之间交换的**纯数据合同**：widget / property / event / slot 描述与标准 widget 表、`DirtyClass`、state 身份与值（`StateKey`、`StateValue`）、role / interaction / layout / env 词汇、length 项、resource 身份与 asset 格式（`ResourceId`、`ResourceRevision`）、`StableId`、值类型 schema 与 `Retyping`、AOT package 与 view package（control / route / region 表）格式。`no_std + alloc`，只依赖 `viso-ende`。`viso-ui` / `viso-view` / `viso-behavior` 在原路径 re-export，`viso-dsl` 消费它。它不是 `core/common`：只放跨编译边界的数据类型及其 codec 与定义其含义的小纯函数，不放运行时逻辑。
@@ -1012,7 +1019,7 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 
 | crate | allowlist（normal） | 另允许的 dev-dependency | 备注 |
 |---|---|---|---|
-| `viso`（facade） | runtime, ui, ui-macros, widgets, view, behavior, services, render, image, media, gpu, platform, text, shader, macros, ende, math, pdf | dsl, dev-protocol | DSL 测试自己编译 `.vs` 并用 dev link 的 patch 重载，app 不链接二者；`pdf` 是可选依赖（`pdf` feature，默认开启）；`behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
+| `viso`（facade） | runtime, ui, ui-macros, widgets, view, behavior, services, render, image, media, gpu, platform, text, shader, macros, ende, math, pdf, dom | dsl, dev-protocol | DSL 测试自己编译 `.vs` 并用 dev link 的 patch 重载，app 不链接二者；`pdf` 是可选依赖（`pdf` feature，默认开启）；`dom` 只在 `web-dom` feature 下；`behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
 | `viso-widgets` | ui, math | — | |
 | `viso-charts`（extras） | ui, widgets, math | viso | |
 | `viso-map`（extras） | ui, widgets, render, text, math, services, ende | viso | bench 用 criterion |
@@ -1023,6 +1030,7 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 | `viso-dsl` | diag, lexer, schema, dev-protocol, ende, behavior, shader, math | ui, view | |
 | `viso-view` | ui, schema, dev-protocol, behavior, ende | — | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
 | `viso-behavior` | ende, math, schema | — | |
+| `viso-dom` | behavior | dsl | 不得依赖 ui、render、gpu、text（`NEVER`） |
 | `viso-services` | platform | — | manifest 只在 Android 上依赖 platform |
 | `viso-ui` | render, runtime, ende, text, math, schema | — | |
 | `viso-render` | math, ende, schema, text, image, svg, shader, gpu | — | ende 用于 glTF JSON |
@@ -4861,7 +4869,7 @@ Viso 在这条路径上的差异：GLES3（GBM/EGL）与 CpuRaster（dumb buffer
 
 # Part XXV — Viso 1.0 实施路线图
 
-> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 未开始，`web-dom` / `web-hybrid` 未实现；Phase 10（§73A）除板卡实测与 KMS overlay plane 外已完成。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
+> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-vscode`），`web-dom` 可构建（dev session 未接），`web-hybrid` 未实现；Phase 10（§73A）除板卡实测与 KMS overlay plane 外已完成。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
 
 ## 64. Phase 0 — 固定 Architecture Contract
 
@@ -5210,7 +5218,7 @@ Tier 6: Markdown, PDF, Browser, Charts, Map, Video
 
 ## 73. Phase 9 — CLI / Studio / Inspector / Web Delivery
 
-**状态**：CLI 已覆盖 new、doctor、android、ios、run（多 target lane，ADR 0046）、build、serve、package、export html|solid、fmt、check、schema、explain、dump、test、snapshot、inspect、profile、game、config、lsp、clean、completion；`--json` 为 Ende JSON event stream。`viso inspect` / `viso profile` 与 UI Scenario 共用 `viso_view::inspect` / `viso_view::profile`。未实现：Studio 与 `viso studio`；`web-dom` / `web-hybrid`（报 `C0011`，等待 DOM runtime backend）及按 target 的 capability 表（当前只有 export lowering 的 capability 诊断）。
+**状态**：CLI 已覆盖 new、doctor、android、ios、run（多 target lane，ADR 0046）、build、serve、package、export html|solid、fmt、check、schema、explain、dump、test、snapshot、inspect、profile、game、config、lsp、clean、completion；`--json` 为 Ende JSON event stream。`viso inspect` / `viso profile` 与 UI Scenario 共用 `viso_view::inspect` / `viso_view::profile`。`web-dom` 由 `viso build`/`check`/`package` 覆盖（`viso-dom`，capability 诊断为 `WEB_*`），`viso run`/`serve web-dom` 的 dev session 未接。未实现：`web-hybrid`（报 `C0011`）。
 
 ### 原则
 
@@ -5920,7 +5928,7 @@ fn main() {
 ### 尚未满足
 
 - Engineering：CI 中唯一的性能 gate 是 `check-frame-tax`（dev 层的帧开销），没有通用 benchmark 回归 gate；Studio 不存在；
-- Tooling：Studio 未建立；`web-dom` / `web-hybrid` 不可构建；
+- Tooling：`web-hybrid` 不可构建，`web-dom` 没有 dev session；
 - Footprint：`cargo xtask footprint` 的基线手动记录，不在 CI 中；没有板卡实测。
 
 ---

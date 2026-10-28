@@ -59,15 +59,22 @@ pub const HEADLESS: &str = "viso/headless";
 /// runs.
 pub const VM: &str = "viso/vm";
 
+/// The facade's feature that makes the build a `web-dom` page's app.
+pub const WEB_DOM: &str = "viso/web-dom";
+
 /// The facade's feature that shows an embedded profile's panel in a desktop
 /// window.
 pub const EMULATE: &str = "viso/emulate";
 
 /// Whether a dev build of `target` carries [`HOT_RELOAD`]: not a headless
 /// build, which is for tests and tooling that reload nothing, nor a device
-/// target's, deployed to a board no dev session reaches.
+/// target's, deployed to a board no dev session reaches, nor a `web-dom`
+/// page's, which opens no window to reload.
 pub fn reloads(target: Target) -> bool {
-    !matches!(target, Target::Headless | Target::Device(_))
+    !matches!(
+        target,
+        Target::Headless | Target::Device(_) | Target::WebDom
+    )
 }
 
 /// How the app is built.

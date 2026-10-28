@@ -42,8 +42,8 @@ use viso_dev_protocol::wire::{
 };
 use viso_package::android::Sdk;
 use viso_project::{
-    DeployAddress, DeviceProfile, DeviceTarget, Footprint, LockKind, Platform, Profile,
-    ProjectFingerprint, Target,
+    ConfigCode, ConfigDiagnostic, DeployAddress, DeviceProfile, DeviceTarget, Footprint, LockKind,
+    Platform, Profile, ProjectFingerprint, Target,
 };
 
 use super::inspect;
@@ -417,6 +417,15 @@ pub(super) fn session(
     }
     for (target, platform) in &targets {
         if let Err(diagnostic) = target.require_available() {
+            out.config(None, &diagnostic);
+            return diagnostic.code.exit_code();
+        }
+        if *target == Target::WebDom {
+            let diagnostic = ConfigDiagnostic::error(
+                ConfigCode::TargetUnavailable,
+                "`viso run` has no `web-dom` session yet",
+            )
+            .note("`viso build web-dom` builds its page into `dist/web`");
             out.config(None, &diagnostic);
             return diagnostic.code.exit_code();
         }

@@ -489,9 +489,21 @@ fn a_target_is_checked_for_the_input_its_devices_have() {
     let phone = viso(&s.0, &["check", "ios", "--json"]);
     assert_eq!(codes(&phone), ["E9107", "E9107"], "gamepads and touch");
 
+    // A page mounts the project's `.vs` view, which a game has not.
     let dom = viso(&s.0, &["check", "web-dom"]);
-    assert_eq!(code(&dom), 3);
-    assert!(stderr(&dom).contains("error[C0011]"), "{}", stderr(&dom));
+    assert_ne!(code(&dom), 0);
+    assert!(
+        stderr(&dom).contains("error[WEB_DOM_NO_VIEW]"),
+        "{}",
+        stderr(&dom)
+    );
+    let hybrid = viso(&s.0, &["check", "web-hybrid"]);
+    assert_eq!(code(&hybrid), 3);
+    assert!(
+        stderr(&hybrid).contains("error[C0011]"),
+        "{}",
+        stderr(&hybrid)
+    );
     let flag = viso(&s.0, &["check", "--target", "ios"]);
     assert_eq!(code(&flag), 2);
     assert!(

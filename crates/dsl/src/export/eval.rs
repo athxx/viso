@@ -144,6 +144,13 @@ impl<'a> Eval<'a> {
         (deps, env)
     }
 
+    /// Whether `entry` reads the locale, which the page takes from its
+    /// reader's browser.
+    pub(super) fn reads_locale(&self, entry: u32) -> bool {
+        let reads = self.vm.reads(self.func(entry).0);
+        reads.opaque || reads.states.iter().any(|s| self.locales.contains(s))
+    }
+
     /// Whether function `f` reads a state of a component a region mounts,
     /// which each mount of the content keeps for itself.
     pub(super) fn reads_regional(&self, f: FuncId) -> bool {
@@ -165,6 +172,11 @@ impl<'a> Eval<'a> {
     /// The `env` slots holding the locale.
     pub(super) fn locale_slots(&self) -> &[u32] {
         &self.locales
+    }
+
+    /// The `env` slots holding the theme.
+    pub(super) fn theme_slots(&self) -> &[u32] {
+        &self.themes
     }
 
     /// The `env` slots the browser fills, `(slot, field tag, instance)` each:

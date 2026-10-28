@@ -39,6 +39,8 @@ pub struct Built<'a> {
     pub android: Option<&'a (Sdk, Shell)>,
     /// What the packages the app links declare for the platform.
     pub fragments: &'a Fragments,
+    /// A `web-dom` build's page.
+    pub page: Option<&'a crate::build::web::WebPage>,
 }
 
 /// Makes `plan`'s package of `built` in `out`, returning each artifact's
@@ -297,6 +299,7 @@ pub fn make(
                 built.profile,
                 built.web,
                 worker.as_deref(),
+                built.page,
                 cancelled,
                 sink,
             )?;
@@ -508,6 +511,7 @@ mod tests {
             web: &web,
             android: None,
             fragments: &Fragments::default(),
+            page: None,
         };
         let out = dir.join("dist");
         std::fs::create_dir_all(&out).unwrap();

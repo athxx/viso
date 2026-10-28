@@ -27,24 +27,81 @@ use crate::syntax::TextRange;
 /// The runtime every page script carries: the interpreter's value semantics,
 /// what DOM elements show and the payloads of their events, the tasks,
 /// effects and resources, the browser's environment, then the page's
-/// transactions and regions.
+/// transactions over the states its functions read and its regions.
 const RUNTIME: &str = concat!(
     include_str!("values.js"),
     include_str!("easing.js"),
     include_str!("dom.js"),
     include_str!("work.js"),
     include_str!("env.js"),
+    include_str!("state.js"),
     include_str!("page.js")
 );
 
-/// The page script of `page`, or why one of its functions has no JavaScript
-/// form.
+/// The runtime of a page whose behavior runs on the Viso VM: the same, its
+/// transactions the VM's.
+const VM_RUNTIME: &str = concat!(
+    include_str!("values.js"),
+    include_str!("easing.js"),
+    include_str!("dom.js"),
+    include_str!("work.js"),
+    include_str!("env.js"),
+    include_str!("vm.js"),
+    include_str!("page.js")
+);
+
+/// What runs a page's behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Engine {
+    /// The script itself, each Behavior IR function translated to
+    /// JavaScript.
+    Script,
+    /// The Viso VM `V` the app runs in the page, called by handler-table
+    /// entry: the script carries no function, and the page starts once the
+    /// app hands it the VM.
+    Vm,
+}
+
+impl Engine {
+    /// The value of entry `entry` with the region bindings `sc`, then
+    /// `extra` when given.
+    fn call(self, eval: &Eval<'_>, entry: u32, extra: Option<&str>) -> String {
+        match (self, extra) {
+            (Engine::Script, None) => format!("f{}(...sc)", eval.func(entry).0),
+            (Engine::Script, Some(extra)) => format!("f{}(...sc, {extra})", eval.func(entry).0),
+            (Engine::Vm, None) => format!("V.e({entry}, sc)"),
+            (Engine::Vm, Some(extra)) => format!("V.e({entry}, [...sc, {extra}])"),
+        }
+    }
+
+    /// The function running handler `entry` with its payload, a
+    /// transaction.
+    fn handler(self, eval: &Eval<'_>, entry: u32) -> String {
+        match self {
+            Engine::Script => format!("(p) => f{}(p, ...sc)", eval.func(entry).0),
+            Engine::Vm => format!("(p) => V.t({entry}, [p, ...sc])"),
+        }
+    }
+
+    /// The function running effect body `entry`, a transaction returning
+    /// its cleanup.
+    fn body(self, eval: &Eval<'_>, entry: u32) -> String {
+        match self {
+            Engine::Script => format!("() => f{}(...sc)", eval.func(entry).0),
+            Engine::Vm => format!("() => fn(V.t({entry}, sc))"),
+        }
+    }
+}
+
+/// The page script of `page` with its behavior run by `engine`, or why one
+/// of its functions has no JavaScript form.
 pub(super) fn script(
     page: &Lowered,
     eval: &Eval<'_>,
     catalog: Option<&Catalog>,
     header: &str,
     origin: TextRange,
+    engine: Engine,
 ) -> Result<String, Vec<Finding>> {
     let program = eval.program;
     let mut contents: Vec<&Content> = vec![&page.root];
@@ -55,29 +112,37 @@ pub(super) fn script(
         arms.push(first..contents.len());
     }
 
-    let roots = roots(page, eval);
-    let entry = |e: u32| eval.func(e);
-    let functions = reachable(program, roots);
+    let vm = engine == Engine::Vm;
+    let functions = if vm {
+        BTreeSet::new()
+    } else {
+        reachable(program, roots(page, eval))
+    };
 
     let mut out = String::new();
     let _ = writeln!(out, "// {header}");
-    out.push_str("\"use strict\";\n(() => {\n");
-    let inputs: Result<Vec<String>, String> = eval.inputs().iter().map(literal).collect();
-    let states: Result<Vec<String>, String> = eval.states().iter().map(literal).collect();
-    let (inputs, states) = match (inputs, states) {
-        (Ok(inputs), Ok(states)) => (inputs, states),
-        (Err(why), _) | (_, Err(why)) => {
-            return Err(vec![Finding {
-                need: Need::Unsupported,
-                at: origin,
-                message: format!("the component starts with {why}, which a page cannot hold"),
-                notes: Vec::new(),
-            }]);
-        }
-    };
-    let _ = writeln!(out, "const I = [{}];", inputs.join(", "));
-    let _ = writeln!(out, "let S = [{}];", states.join(", "));
-    out.push_str("let W = S;\n");
+    if vm {
+        // The page starts once the app hands it the VM.
+        out.push_str("\"use strict\";\nglobalThis.visoPage = (V) => {\n");
+    } else {
+        out.push_str("\"use strict\";\n(() => {\n");
+        let inputs: Result<Vec<String>, String> = eval.inputs().iter().map(literal).collect();
+        let states: Result<Vec<String>, String> = eval.states().iter().map(literal).collect();
+        let (inputs, states) = match (inputs, states) {
+            (Ok(inputs), Ok(states)) => (inputs, states),
+            (Err(why), _) | (_, Err(why)) => {
+                return Err(vec![Finding {
+                    need: Need::Unsupported,
+                    at: origin,
+                    message: format!("the component starts with {why}, which a page cannot hold"),
+                    notes: Vec::new(),
+                }]);
+            }
+        };
+        let _ = writeln!(out, "const I = [{}];", inputs.join(", "));
+        let _ = writeln!(out, "let S = [{}];", states.join(", "));
+        out.push_str("let W = S;\n");
+    }
     out.push_str("const A = new Map([");
     for (at, (id, path)) in page.assets.iter().enumerate() {
         if at > 0 {
@@ -99,7 +164,14 @@ pub(super) fn script(
                 .any(|i| matches!(i, Inst::Translate { .. }))
         })
     });
-    let messages = messages(catalog.filter(|_| translates)).map_err(|why| {
+    // The VM translates with its own catalog: the page keeps the locales'
+    // tags alone, to pick the reader's among them.
+    let messages = if vm {
+        Ok(locales(catalog))
+    } else {
+        messages(catalog.filter(|_| translates))
+    };
+    let messages = messages.map_err(|why| {
         vec![Finding {
             need: Need::Unsupported,
             at: origin,
@@ -108,7 +180,7 @@ pub(super) fn script(
         }]
     })?;
     let _ = writeln!(out, "const T = {messages};");
-    out.push_str(RUNTIME);
+    out.push_str(if vm { VM_RUNTIME } else { RUNTIME });
     // The locale is the reader's, nearest among the catalog's, from the
     // start.
     out.push_str("settle(T);\n");
@@ -116,7 +188,15 @@ pub(super) fn script(
         out.push_str("if (T.L) document.documentElement.lang = T.L;\n");
     }
     for slot in eval.locale_slots() {
-        let _ = writeln!(out, "S[{slot}] = {{ t: S[{slot}].t, f: [T.R] }};");
+        if vm {
+            let _ = writeln!(out, "V.put({slot}, {{ t: 0, f: [T.R] }});");
+        } else {
+            let _ = writeln!(out, "S[{slot}] = {{ t: S[{slot}].t, f: [T.R] }};");
+        }
+    }
+    if vm && !eval.theme_slots().is_empty() {
+        let slots: Vec<String> = eval.theme_slots().iter().map(u32::to_string).collect();
+        let _ = writeln!(out, "V.theme([{}]);", slots.join(", "));
     }
     // The rest of the environment is the browser's: the window-wide fields
     // as they are, an anchored field the window's until its reader is laid
@@ -134,21 +214,28 @@ pub(super) fn script(
         }
     }
     if eval.browser_env().next().is_some() {
+        let (write, read) = if vm {
+            ("V.w(changes)", "V.get(s)")
+        } else {
+            ("{ for (const [s, v] of changes) W[s] = v; }", "W[s]")
+        };
         let _ = writeln!(
             out,
-            "const env = new Env([{}], (changes, m) => work.run(() => {{ for (const [s, v] of changes) W[s] = v; }}, m || top), (s, m) => work.h.read(() => W[s], m || top));",
+            "const env = new Env([{}], (changes, m) => work.run(() => {write}, m || top), (s, m) => work.h.read(() => {read}, m || top));",
             wide.join(", ")
         );
-        out.push_str("for (const [s, v] of env.initial()) S[s] = v;\n");
+        out.push_str("for (const [s, v] of env.initial()) put(s, v);\n");
         if !anchored.is_empty() {
             let _ = writeln!(
                 out,
-                "for (const [s, t] of [{}]) S[s] = envField(t);",
+                "for (const [s, t] of [{}]) put(s, envField(t));",
                 anchored.join(", ")
             );
         }
     }
-    out.push_str("W = S;\n");
+    if !vm {
+        out.push_str("W = S;\n");
+    }
 
     let suspends = suspending(program, &functions);
     let mut findings = Vec::new();
@@ -179,11 +266,10 @@ pub(super) fn script(
             .map(|k| if *k { "true" } else { "false" })
             .collect();
         let call = |e: u32, extra: bool| {
-            let f = entry(e).0;
             if extra {
-                format!("(sc, v) => f{f}(...sc, v)")
+                format!("(sc, v) => {}", engine.call(eval, e, Some("v")))
             } else {
-                format!("(sc) => f{f}(...sc)")
+                format!("(sc) => {}", engine.call(eval, e, None))
             }
         };
         let kind = match region.kind {
@@ -210,9 +296,13 @@ pub(super) fn script(
     out.push_str("];\n");
 
     for (index, content) in contents.iter().enumerate() {
-        mount(&mut out, index, content, eval, index == 0);
+        mount(&mut out, index, content, eval, index == 0, engine);
     }
-    out.push_str("start(m0);\n})();\n");
+    out.push_str(if vm {
+        "start(m0);\n};\n"
+    } else {
+        "start(m0);\n})();\n"
+    });
     Ok(out)
 }
 
@@ -251,9 +341,16 @@ fn deps_literal(deps: &Deps) -> String {
 /// its marked elements wired in document order, then the effects it runs,
 /// with `sc` its region bindings and `p` the mount around it. The root runs
 /// the effects of every instance no region mounts.
-fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, root: bool) {
+fn mount(
+    out: &mut String,
+    index: usize,
+    content: &Content,
+    eval: &Eval<'_>,
+    root: bool,
+    engine: Engine,
+) {
     let _ = writeln!(out, "function m{index}(e, sc, p) {{");
-    let call = |entry: u32| format!("f{}(...sc)", eval.func(entry).0);
+    let call = |entry: u32| engine.call(eval, entry, None);
     let thunk = |entry: u32| format!("() => {}", call(entry));
     let mut locals = Vec::new();
     for regional in eval
@@ -382,11 +479,12 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
                     capture,
                     kind,
                 } => {
-                    let f = eval.func(*handler).0;
                     let _ = writeln!(
                         out,
-                        "  on({el}, {}, {capture}, {}, (p) => f{f}(p, ...sc), m);",
-                        *route as u8, *kind as u8
+                        "  on({el}, {}, {capture}, {}, {}, m);",
+                        *route as u8,
+                        *kind as u8,
+                        engine.handler(eval, *handler)
                     );
                 }
                 Wire::Sync { kind, entry } => {
@@ -433,9 +531,13 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
     }
     let effects: Vec<String> = effects_of(eval, content, root)
         .map(|effect| {
-            effect_literal(eval, effect, &thunk, &|entry| {
-                format!("(v) => f{}(v, ...sc)", eval.func(entry).0)
-            })
+            effect_literal(
+                eval,
+                effect,
+                &thunk,
+                &|entry| engine.body(eval, entry),
+                &|entry| engine.handler(eval, entry),
+            )
         })
         .collect();
     if !effects.is_empty() {
@@ -446,12 +548,13 @@ fn mount(out: &mut String, index: usize, content: &Content, eval: &Eval<'_>, roo
 
 /// Effect `effect` as the runtime takes it: `[dep, deps, body, run, res]`,
 /// its dependency list and the slots that list reads, its body, its run
-/// policy, and how a resource loads. `thunk` calls an entry, `write` the
-/// handler writing a resource's state.
+/// policy, and how a resource loads. `thunk` calls an entry, `body` an
+/// effect's body, `write` the handler writing a resource's state.
 pub(super) fn effect_literal(
     eval: &Eval<'_>,
     effect: &EffectEntry,
     thunk: &dyn Fn(u32) -> String,
+    body: &dyn Fn(u32) -> String,
     write: &dyn Fn(u32) -> String,
 ) -> String {
     let dep = effect.deps.map_or("null".to_owned(), thunk);
@@ -476,7 +579,7 @@ pub(super) fn effect_literal(
             load.keep_latest
         )
     });
-    format!("[{dep}, {deps}, {}, {run}, {load}]", thunk(effect.body))
+    format!("[{dep}, {deps}, {}, {run}, {load}]", body(effect.body))
 }
 
 /// Whether the `env` field of tag `tag` depends on where its reader sits.
@@ -684,6 +787,20 @@ pub(super) fn messages(catalog: Option<&Catalog>) -> Result<String, String> {
     }
     out.push_str("]) }");
     Ok(out)
+}
+
+/// The tags of the catalog's locales, the source's first, as the object
+/// `settle` picks the reader's among; one empty locale without a catalog.
+fn locales(catalog: Option<&Catalog>) -> String {
+    let tags: Vec<String> = match catalog {
+        Some(catalog) => catalog.locales().map(string).collect(),
+        None => vec!["\"\"".to_owned()],
+    };
+    format!(
+        "{{ Ls: [{}], Ms: [], L: {}, M: [], MK: new Map() }}",
+        tags.join(", "),
+        tags[0]
+    )
 }
 
 fn slice(table: &Table, start: u32, len: u32) -> &str {
@@ -1369,6 +1486,7 @@ mod tests {
     #[test]
     fn the_runtime_declares_each_name_once() {
         assert_eq!(super::super::redeclared(RUNTIME), Vec::<&str>::new());
+        assert_eq!(super::super::redeclared(VM_RUNTIME), Vec::<&str>::new());
     }
 
     #[test]
