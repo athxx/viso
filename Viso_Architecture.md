@@ -652,7 +652,7 @@ viso/
 └── xtask/             cargo xtask check-deps 等（§10.2）
 ```
 
-生态 adapter（tokio/tracing/serde 等）不设 `integrations/` 目录，归同级 `viso-ext` 仓库（§74）。目标（尚未建立）：`extras/` 的其余部分（markdown、pdf viewer、browser、xr）、`tools/studio`、`tools/migrate`（§38）、`vendor/`。新增目录或 crate 时必须同步 §8、§9、§10 与 xtask allowlist（`check-deps` 对未登记的 workspace member 直接失败）。
+生态 adapter（tokio/tracing/serde 等）不设 `integrations/` 目录，归同级 `viso-ext` 仓库（§74）。目标（尚未建立）：`extras/` 的其余部分（markdown、pdf viewer、browser、xr）、`tools/migrate`（§38）、`vendor/`。新增目录或 crate 时必须同步 §8、§9、§10 与 xtask allowlist（`check-deps` 对未登记的 workspace member 直接失败）。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -3670,7 +3670,7 @@ IR/runtime 使用 `NodeId`、`NodeKey`、`StateId`、`SymbolId` / `StableId`、`
 
 ## 44. Capability-based dynamic scripting
 
-静态 capability 检查不能替代运行时授权：每个 VM 在 link 时得到 grant（默认是 module 所属 package 的 capability；`ViewHost::with_capabilities` 给出指定的 grant），Native Call 时验证，未授予时 handler 以 Runtime Fault `CapabilityDenied`（`E6103`）失败并回滚，不 panic，host 继续运行。AI 生成代码的预览默认只授予 `viso_behavior::native::PREVIEW_CAPABILITIES`（`ui.basic`、`gpu.draw.sandboxed`、`asset.read.package`），网络、文件、进程与剪贴板需显式授予（DSL 规范 §95）。VM 的 instruction / memory / depth / native-call 预算（`viso_behavior::Budget`）同样生效，但不替代 capability security。运行 AI 预览、第三方插件与用户脚本的 sandbox 宿主（Studio）尚未实现。
+静态 capability 检查不能替代运行时授权：每个 VM 在 link 时得到 grant（默认是 module 所属 package 的 capability；`ViewHost::with_capabilities` 给出指定的 grant），Native Call 时验证，未授予时 handler 以 Runtime Fault `CapabilityDenied`（`E6103`）失败并回滚，不 panic，host 继续运行。AI 生成代码的预览默认只授予 `viso_behavior::native::PREVIEW_CAPABILITIES`（`ui.basic`、`gpu.draw.sandboxed`、`asset.read.package`），网络、文件、进程与剪贴板需显式授予（DSL 规范 §95）。VM 的 instruction / memory / depth / native-call 预算（`viso_behavior::Budget`）同样生效，但不替代 capability security。运行 AI 预览、第三方插件与用户脚本的 sandbox 宿主尚未实现。
 
 ---
 
@@ -4438,7 +4438,7 @@ summary
 
 ### 54.4 CLI 不复制业务实现
 
-CLI、IDE/LSP、CI 与将来的 Studio 共享同一组领域实现：compiler 与 schema 在 `viso-dsl`，LSP 在 `viso-lsp`，项目发现、配置与 build identity 在 `viso-project`，打包在 `viso-package`，dev channel 的消息在 `viso-dev-protocol`，Inspector 的采集在 `viso-view`。CLI command handler 只负责参数解析、project/config resolution、调用 domain service、人类/JSON 输出与 exit code；不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager 或 Inspector runtime。build 编排、dev session 与其 control endpoint、inspector 客户端（`inspect`：经 session 的 control endpoint 询问 census、节点、帧与事件日志，跟随窗口的日志）、Simulator/Emulator 控制、平台 toolchain、delivery 与 deploy，以及运行外部程序、原子写文件、中断与 secret 的工具和错误码表，在共享的 tooling crate `viso-tooling`（`tools/tooling`）中。它们经前端实现的 `viso_tooling::Reporter` 报告诊断、失败、日志、设备、dev 与 profile 事件，自己不解析参数也不渲染；CLI 的 `Output` 实现它，渲染为人类文本或 JSON event stream，Studio 以自己的方式实现。`viso-cli` 是薄的使用者：`cargo xtask check-deps` 的 allowlist 只允许它依赖 `viso-tooling`、`viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-ende` 与比较 golden 的 `viso-image`，`NEVER` 表禁止它依赖 `viso-svg`、`viso-text`（解码变更的资源是 tooling 的事）。
+CLI、IDE/LSP（含编辑器扩展）与 CI 共享同一组领域实现：compiler 与 schema 在 `viso-dsl`，LSP 在 `viso-lsp`，项目发现、配置与 build identity 在 `viso-project`，打包在 `viso-package`，dev channel 的消息在 `viso-dev-protocol`，Inspector 的采集在 `viso-view`。CLI command handler 只负责参数解析、project/config resolution、调用 domain service、人类/JSON 输出与 exit code；不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager 或 Inspector runtime。build 编排、dev session 与其 control endpoint、inspector 客户端（`inspect`：经 session 的 control endpoint 询问 census、节点、帧与事件日志，跟随窗口的日志）、Simulator/Emulator 控制、平台 toolchain、delivery 与 deploy，以及运行外部程序、原子写文件、中断与 secret 的工具和错误码表，在共享的 tooling crate `viso-tooling`（`tools/tooling`）中。它们经前端实现的 `viso_tooling::Reporter` 报告诊断、失败、日志、设备、dev 与 profile 事件，自己不解析参数也不渲染；CLI 的 `Output` 实现它，渲染为人类文本或 JSON event stream，其他前端以自己的方式实现。`viso-cli` 是薄的使用者：`cargo xtask check-deps` 的 allowlist 只允许它依赖 `viso-tooling`、`viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-ende` 与比较 golden 的 `viso-image`，`NEVER` 表禁止它依赖 `viso-svg`、`viso-text`（解码变更的资源是 tooling 的事）。
 
 ### 54.5 CLI 非目标
 
@@ -4459,7 +4459,7 @@ Inspector 由 runtime 侧的采集（`viso-view` 与 `viso-ui` 的 `inspect` fea
 | 帧计数、draw batch、GPU resource、cache 与 `budget` 组 | `viso inspect frame` |
 | 输入事件经过的节点（focus/input path）、焦点移动、每次 dirty 及原因（§56） | `viso inspect events` |
 
-GUI 形式的 Inspector（Studio，`viso studio`）尚未实现。
+不做独立的 Studio：GUI 形式的 Inspector 是编辑器扩展（独立仓库 `viso-vscode`，VSCode 与 Zed），只读这些命令的 JSON 输出（`Viso_CLI.md` §26）。
 
 ### 55.1 Frame profile
 
@@ -4849,7 +4849,7 @@ Makepad 的实时编辑、紧凑 UI authoring、固定步长 game update、host-
 
 ### 63.7 Studio / CLI
 
-Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方向上的经验可作为 Viso 工具链的产品参考。Viso 的实现统一收敛到 `viso` CLI、Studio 与共享 tooling services；命令语法、协议和项目模型全部由 Viso 自己定义。
+Makepad 在跨平台构建、Studio、远程 UI 操作、截图、profile 等方向上的经验可作为 Viso 工具链的产品参考。Viso 的实现统一收敛到 `viso` CLI、共享 tooling services（`viso-tooling`）与基于 `viso-lsp` 的编辑器扩展，不做独立的 Studio；命令语法、协议和项目模型全部由 Viso 自己定义。
 
 ### 63.8 Embedded
 

@@ -946,8 +946,6 @@ Rules (as for `todo_features.md`):
     - The tooling suite passes: 157 tests, the dev session's against a counting `Reporter`.
     - The CLI's unit tests and its check, inspect, json and run suites pass.
     - Clippy passes on host, Windows and Linux.
-- [ ] Studio on the shared inspect and profile services, launched by `viso studio [--target]`.
-  Verify that it builds without depending on anything the CLI does not.
 - [ ] `web-dom` and `web-hybrid` runtime backends and the per-target capability table (the C4.3
   and C4.4 lines of `todo_cli.md`). Verify that `viso build web-dom` no longer reports `C0011` and
   `viso check web-dom` flags a GPU-only node.
@@ -997,3 +995,24 @@ Rules (as for `todo_features.md`):
 - [ ] Sweep the older todo files (`todo_cli.md`, `todo_dsl.md`, `todo_hotreload.md`,
   `todo_rendering.md`) for lines done since, such as the `GameViewport`/3D lane lines finished in
   W1 and W14. Tick them or move what is left here.
+
+## N10 — Editor extensions (last)
+
+There is no Studio: the CLI's hot reload, `viso inspect` and `viso profile` are the tools, and the
+editor extensions are their interface. They live in their own repository, `viso-vscode`. One
+repository builds two thin shells, VSCode and Zed, over the shared `viso-lsp`. They start after
+everything above is done.
+
+- [ ] `.vs` language support for VSCode and Zed. Both register the language, give its comment and
+  bracket rules and launch `viso-lsp`. VSCode highlights with a TextMate grammar and Zed with a
+  Tree-sitter grammar and queries. Verify that each opens a fixture, highlights it and shows a
+  diagnostic, hover, go-to-definition and formatting from the server.
+- [ ] Semantic tokens and completion in `viso-lsp` (components, properties, events, states,
+  natives, from the widget schema and the native registry). Verify with LSP tests, and that both
+  editors use them.
+- [ ] The DSL inside `.rs`: injected highlighting for `ui! { … }` and `component! { … }`, and
+  `view!("x.vs")` as a link to its file, where each editor allows it. Verify on a fixture crate.
+- [ ] Optional: an inspect/profile panel over the CLI's JSON event stream in VSCode, and the
+  language features inside a `ui!` body through a virtual document. Verify against a running
+  `viso run`.
+

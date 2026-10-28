@@ -2185,37 +2185,16 @@ Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版�
 
 ---
 
-## 26. `viso studio`
+## 26. 编辑器扩展（不设 `viso studio`）
 
-> **状态**：目标（尚未实现）。CLI 没有 `studio` 子命令（`tools/cli/src/args.rs`），仓库中也没有 Studio；Inspector 能力现由 `viso inspect` 与 `viso_view::inspect` 提供。本节是 Studio 落地时的合同。
+Viso 不做独立的 Studio，也没有 `viso studio` 子命令。热重载由 `viso run` 提供，观察由 `viso inspect` / `viso profile` 提供；它们的图形界面是编辑器扩展，在独立仓库 `viso-vscode` 中，一个仓库分别构建 VSCode 与 Zed 两个外壳：
 
-启动 Viso Studio。
+- 智能功能全部在 `viso-lsp`（诊断、hover、跳转、引用、重命名、格式化、codeAction，以及计划中的 semantic tokens 与补全），两个编辑器共用；
+- 高亮各用编辑器自己的机制：VSCode 用 TextMate 语法，Zed 用 Tree-sitter 语法与 query；
+- `.rs` 中 `ui! { … }` / `component! { … }` 的注入高亮与 `view!("x.vs")` 的文件链接，在编辑器允许处提供；
+- inspect / profile 面板只读 CLI 的 JSON event stream（§36），不链接任何 Viso crate。
 
-```bash
-viso studio
-```
-
-可指定：
-
-```bash
-viso studio --target android
-viso studio --project path/to/app
-```
-
-`studio` 是 GUI 进程，不接受 `--json`（usage error）；启动失败按 §7 返回 3/7。
-
-Studio 必须调用与 CLI 相同的：
-
-```text
-project resolver
-compiler service
-build service
-Android Emulator / iOS Simulator service
-inspection service
-package service
-```
-
-不得重新实现一套 build pipeline。
+扩展只经 `viso-lsp` 与 CLI 的 JSON 接入，不得重新实现 compiler、build 或 inspection service。
 
 ---
 

@@ -8,8 +8,9 @@
 The `viso` command held every tooling service in its own crate: build orchestration, the dev
 session and its control endpoint, the inspector client, simulator and emulator control, the
 platform toolchains, delivery and deployment. They reported straight into the command's
-`Output`, which renders human text or the JSON event stream. Studio needs the same services,
-and it cannot depend on a binary crate or render through the command's output.
+`Output`, which renders human text or the JSON event stream. Another front end — a test
+harness, a long-lived helper for the editor extensions — needs the same services, and it cannot
+depend on a binary crate or render through the command's output.
 
 ## Decision
 
@@ -26,7 +27,7 @@ and it cannot depend on a binary crate or render through the command's output.
    - dev, rebuild, runtime and profile events.
 
    It is object-safe, so a service takes `&mut dyn Reporter`. The CLI's `Output` implements
-   it, and Studio implements it its own way. `Source` and `DevIds` move with it.
+   it, and another front end implements it its own way. `Source` and `DevIds` move with it.
 3. **The inspector client is data.** `inspect` asks a session's control endpoint for the
    census, node and frame detail and the event journal, and decodes what comes back. It
    finds a project's session by its lock and follows a window's journal. It returns typed
@@ -43,7 +44,7 @@ and it cannot depend on a binary crate or render through the command's output.
 
 ## Consequences
 
-- Studio links the same services the command runs, and a fix to one lands in both.
+- Another front end links the same services the command runs, and a fix to one lands in both.
 - The `Reporter` grows when a service reports something new. A front end then decides how
   to show it.
 - The command's rendering stays in `viso-cli`. Its unit tests shrink to argument parsing,

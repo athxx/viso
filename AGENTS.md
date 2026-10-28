@@ -256,7 +256,7 @@ crates/
     services/
 
 extras/          charts/, code-editor/, map/ (optional, outside default widgets)
-tools/           project (project model), package (platform packaging), cli (`viso`); future studio/migrate
+tools/           project (project model), package (platform packaging), tooling (shared services), cli (`viso`); future migrate
 libs/            woff2
 examples/
 benches/         footprint/
@@ -273,7 +273,7 @@ Rules:
 - Third-party forks belong in `vendor/`.
 - Optional large functionality belongs in `extras/` (or a `viso-ext` plugin when it is not UI), not default widgets.
 - Apps/examples must not be imported by framework crates.
-- `tools/studio` must not gain privileged hidden runtime dependencies.
+- Editor extensions (VSCode, Zed) live in the separate `viso-vscode` repository and reach Viso only through `viso-lsp` and the CLI's JSON; there is no Studio.
 
 ---
 
