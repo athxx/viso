@@ -25,19 +25,22 @@ bitflags = "2"
 viso-macros = { workspace = true }
 
 # OpenGL ES 3 through EGL (and `libwayland-egl`), loaded at run time; no
-# link-time dependency. External crate, not a viso-* edge.
+# link-time dependency. External crate, not a viso-* edge. On with Vulkan
+# too: an Android build falls back to GLES (`build.rs`).
 libloading = { version = "0.8", optional = true }
 
 
 [features]
 default = ["native-vulkan"]
 # Vulkan as the native backend on Linux and Android; elsewhere its bindings
-# compile and nothing links them, and the web has none. A CPU-drawn or GLES
+# compile and nothing links them, and the web has none. On Android GLES comes
+# beside it, chosen at run time where Vulkan does not open, unless the build's
+# `VISO_GPU` pins one (`[target.android] gpu`). A CPU-drawn or GLES
 # build leaves it off and has no Vulkan code.
-native-vulkan = ["dep:ash"]
+native-vulkan = ["dep:ash", "dep:libloading"]
 # The Vulkan backend on every target: beside the native one where another is
 # native (MoltenVK on macOS, the Vulkan runtime on Windows).
-vulkan = ["dep:ash"]
+vulkan = ["dep:ash", "dep:libloading"]
 # The OpenGL ES 3 backend as this build's backend on Linux and Android, for
 # the GPUs whose drivers are GL only (the embedded-gpu profile, ADR 0044).
 gles = ["dep:libloading"]

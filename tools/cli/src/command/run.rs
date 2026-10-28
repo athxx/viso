@@ -848,6 +848,7 @@ pub(super) fn session(
             }
         }
         crate::delivery::metadata::add_schemes(&mut plan.rust, &project);
+        build::add_android_gpu(&mut plan.rust, target, &project);
         super::build::warn_kept_defaults(plan.rust.no_default_features, &manifest, ctx, out);
         let mut features = plan.rust.features;
         features.push(cargo::HOT_RELOAD);

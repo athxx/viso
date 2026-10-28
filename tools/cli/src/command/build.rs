@@ -301,6 +301,7 @@ pub(super) fn stage_loaded(
     }
     crate::delivery::metadata::add_schemes(&mut plan, &project);
     let image_target = delivery.as_ref().map_or(target, |delivery| delivery.target);
+    build::add_android_gpu(&mut plan, image_target, &project);
     match build::images::add_converted_images(
         &mut plan,
         image_target,

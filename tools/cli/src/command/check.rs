@@ -154,6 +154,7 @@ fn rust(ctx: &Context<'_>, project: &Project, config: &ResolvedConfig, out: &mut
         return out.failure(ENV_BUILD_WRITE, &why, &[]);
     }
     crate::delivery::metadata::add_schemes(&mut plan, project);
+    build::add_android_gpu(&mut plan, target, project);
     super::build::warn_kept_defaults(plan.no_default_features, &manifest, ctx, out);
     let mut features = plan.features;
     if config.dev_runtime() == DevRuntime::Present && cargo::reloads(target) {

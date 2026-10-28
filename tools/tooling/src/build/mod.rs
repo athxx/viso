@@ -178,6 +178,19 @@ fn device_plan(device: &DeviceTarget) -> RustPlan {
     }
 }
 
+/// Pins the GPU API `project` names for an Android build of `target`
+/// (`[target.android] gpu`); the default, Vulkan or else GLES as the device
+/// allows, needs nothing.
+pub fn add_android_gpu(plan: &mut RustPlan, target: Target, project: &viso_project::Project) {
+    if target == Target::Android {
+        let env = project.manifest.targets.android.build_env();
+        plan.env.extend(
+            env.into_iter()
+                .map(|(name, value)| (name.to_owned(), value.into())),
+        );
+    }
+}
+
 /// How the app is compiled as the shell's library for `abi`, linked with
 /// the NDK of `sdk`.
 fn android_plan(abi: Abi, profile: Profile, sdk: Option<&Sdk>) -> RustPlan {
@@ -484,7 +497,8 @@ pub fn produce(
                 let rust = android_plan(abi, job.profile, job.android.as_ref().map(|(sdk, _)| sdk));
                 let mut cargo = job.cargo.clone();
                 cargo.target = rust.target;
-                cargo.env = rust.env;
+                // Its NDK's variables beside what every ABI compiles with.
+                cargo.env.extend(rust.env);
                 more.push((abi, cargo::build(&cargo, cancelled, sink)?));
                 if is_cancelled(cancelled) {
                     return Err(BuildFailure::Cancelled);

@@ -193,7 +193,7 @@ fn launch_identity(schema: SchemaFingerprint, capabilities: Domains) -> Option<R
         schema_fingerprint: schema,
         capabilities,
         target: RUNTIME_TARGET,
-        shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
+        shader_lang: viso_gpu::shader_lang(),
         inspector: super::INSPECTOR,
     })
 }
@@ -585,7 +585,7 @@ pub(crate) mod fake {
             schema_fingerprint: SchemaFingerprint(0),
             capabilities: super::super::APPLIES,
             target: RUNTIME_TARGET,
-            shader_lang: <viso_gpu::Backend as viso_gpu::GpuBackend>::SHADER_LANG,
+            shader_lang: viso_gpu::shader_lang(),
             inspector: super::super::INSPECTOR,
         }
     }

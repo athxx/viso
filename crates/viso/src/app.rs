@@ -125,6 +125,9 @@ pub fn run<A: Application>() {
     if viso_platform::launch_var(viso_view::dev::wire::DEV_PREWARM_ENV).is_some() {
         return;
     }
+    if let Some(api) = viso_platform::launch_var(viso_gpu::API_VAR) {
+        viso_gpu::ask_api(&api);
+    }
     #[cfg(feature = "headless")]
     {
         crate::headless::run::<A>();

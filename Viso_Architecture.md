@@ -3389,7 +3389,7 @@ Epoch / Fence / RetireQueue backend 内部的 deferred destruction
 macOS/iOS → Metal
 Windows   → D3D12（没有 feature level 11.0 的硬件 adapter 时用 WARP）
 Linux     → Vulkan
-Android   → Vulkan
+Android   → Vulkan，打不开时 GLES 3（`[target.android] gpu = "auto"`，ADR 0062）
 Web       → WebGPU
 Embedded Linux（GPU）   → GLES 3.0+（Vulkan 1.1 驱动成熟的 SoC 可选 Vulkan）
 Embedded Linux（无 GPU）→ CpuRaster
@@ -3400,7 +3400,9 @@ Desktop Linux 与 Embedded Linux 的 target triple 相同（例如 `aarch64-unkn
 
 GLES 3.0 是 Embedded-GPU 的 Tier-1：嵌入式 SoC（Mali、Vivante、PowerVR、VideoCore 等）的 GLES 驱动普遍比 Vulkan 驱动成熟。它在 Embedded-GPU 上是 Tier-1，在桌面 Linux 上只是 Tier-2 兼容路径。这不违反「不做最低公分母」：GLES3 backend 声明自己的 capability profile（无 compute、bind group 由 backend 模拟），renderer 按 capability 选择 lane，Tier-1 RHI 的语义不因此降级。
 
-`Gles3Backend`（`viso_gpu::gles`，`gles` feature，Linux / Android 上替代 Vulkan 成为 `Backend`）：EGL 1.5 与 GLES 3.0 运行时加载、不链接；surface 为 Wayland、XCB、Android、KMS 的 GBM surface 或 pbuffer；built-in 与用户 program 都是 `viso-shader` 打印的 GLSL ES 3.00（一份源码，顶点半部在 `VISO_VERTEX` 下）；bind group、inline uniform 与用户 program 的 instance 由 backend 模拟（texture unit + sampler object、uniform ring、16 KB uniform block）；8-bit 窗口取 sRGB colorspace（`EGL_KHR_gl_colorspace`），没有时由最后的 output encode pass 编码（ADR 0048）；`EGL_EXT_buffer_age` / `EGL_KHR_partial_update` / swap with damage 给出局部刷新；面板旋转而 plane 不能旋转时在顶点阶段旋转。实现合同见 Rendering §6.8.2。
+`Gles3Backend`（`viso_gpu::gles`，`gles` feature，Linux / Android 上替代 Vulkan 成为 `Backend`）：EGL 1.5 与 GLES 3.0 运行时加载、不链接；surface 为 Wayland、XCB、Android、KMS 的 GBM surface 或 pbuffer；built-in 与用户 program 都是 `viso-shader` 打印的 GLSL ES 3.00（一份源码，顶点半部在 `VISO_VERTEX` 下）；bind group、inline uniform 与用户 program 的 instance 由 backend 模拟（texture unit + sampler object、uniform ring、16 KB uniform block）；8-bit 窗口取 sRGB colorspace（`EGL_KHR_gl_colorspace`），没有时由最后的 output encode pass 编码（ADR 0048）；`EGL_EXT_buffer_age` / `EGL_KHR_partial_update` / swap with damage 给出局部刷新；面板旋转而 plane 不能旋转时在顶点阶段旋转；外部画面原地导入（Android hardware buffer 经 `samplerExternalOES`、NV12 dma-buf 经 `R8`/`GR88` EGL image）与手头 NV12 平面都以一个三角形画进自建 sRGB texture。实现合同见 Rendering §6.8.2。
+
+Android 默认 `auto`（ADR 0062）：`Backend` 是 `AndroidBackend`，枚举 `VulkanBackend` / `Gles3Backend`，每个进程选一次——像 Vulkan backend 那样打开设备，打不开即用 GLES 并说明一次原因；启动变量 `VISO_GPU=vulkan|gles` 可改选；分派是每个 RHI 调用一个 `match`，不到 primitive。`gpu = "vulkan"` / `"gles"` 只编译那一个。
 
 选择由 `viso_gpu::Backend` 类型别名按 `cfg` 在编译期完成，facade 按值持有，帧路径无 `dyn` 分派；详见 [ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
@@ -3895,7 +3897,7 @@ Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端
 | macOS / iOS | Metal | first-class / performance baseline | `MetalBackend`（`target_vendor = "apple"`） |
 | Windows | D3D12 | first-class / performance baseline | `D3D12Backend` |
 | Linux | Vulkan | first-class | `VulkanBackend` |
-| Android | Vulkan | first-class；设备能力不足时由兼容策略处理 | `VulkanBackend` |
+| Android | Vulkan；打不开时 GLES 3 | first-class | `AndroidBackend`（`auto`，ADR 0062）：`VulkanBackend` 或 `Gles3Backend`；`gpu` 钉住时只编译其一 |
 | Web | WebGPU；无 WebGPU 时 CpuRaster 画进 canvas 2D | first-class | `WebBackend`（`wasm32-unknown-unknown`）：`WebGpuBackend` 或 `CpuRaster` |
 | Embedded Linux（GPU） | GLES 3.0+ / Vulkan 1.1 | first-class（`embedded-gpu` profile） | `Gles3Backend` / `VulkanBackend` |
 | Embedded Linux（无 GPU） | CpuRaster | Tier-2（`embedded-cpu` profile） | `CpuRaster` |
@@ -3903,7 +3905,7 @@ Viso 不把“跨平台”理解成所有设备都走同一个最低能力后端
 
 编译期静态选择规则见 [ADR 0029](docs/adr/0029-gpu-backend-static-selection.md)。
 
-Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES（已有：`gles` feature 的 `Gles3Backend`，编译期选择）或 Web compatibility renderer，但遵循三条规则：
+Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES（已有：`Gles3Backend`，Android 上是 `auto` 的回退，ADR 0062）或 Web compatibility renderer，但遵循三条规则：
 
 1. 不得降低 Tier-1 renderer/RHI 的能力模型；
 2. 允许声明 reduced capability profile，并由 tooling 给出清晰诊断；
@@ -6214,7 +6216,7 @@ Box<dyn HitTestNode>
 2. 已决（ADR 0025）：shaping cache 以 run 为键，text、font、features、fallback chain 不变即命中，字节预算为 `MemoryBudget::shaping`；
 3. 已决：每个 instance family 一个持久、只增长的 pool，CPU shadow 逐元素 diff，脏区间合并后上传（`viso_render::pool`）；
 4. 已决：Web 无 WebGPU 时 CpuRaster 经 canvas `putImageData` 画（`WebBackend`，§30.4）；是否另做 WebGL2 backend 视 adoption 数据决定；
-5. 已决：Linux / Android 以 `gles` feature 选 GLES3（静态选择，ADR 0029），默认 Vulkan；
+5. 已决：Linux 以 `gles` feature 选 GLES3（静态选择，ADR 0029），默认 Vulkan；Android 默认运行时在 Vulkan 与 GLES3 间选一次，`gpu` 可钉住其一（ADR 0062）；
 6. 已决（ADR 0041）：VM 是 `vm` feature，只在 debug build 执行 view 行为，release 一律走生成的 Rust；
 7. platform backend 何时从 module 升格独立 crate；
 8. a11y：Viso 自有的 `SemanticsDelta` 是 platform seam，AccessKit 只在 macOS/Windows/Linux/Android adapter 内转换，iOS 与 Web adapter 直接消费 `SemanticsDelta`（ADR 0030）；剩余能力缺口（Web 焦点跟随、文本编辑语义）待定；

@@ -48,11 +48,11 @@ pub use discovery::{MANIFEST_NAME, Project, find_root};
 pub use fingerprint::{BuildId, FINGERPRINT_VERSION, Hash128, ProjectFingerprint, Toolchain};
 pub use format::format_manifest;
 pub use manifest::{
-    ANDROID_ABIS, AndroidPackage, BudgetKey, CollisionDelivery, DeployAddress, DeviceDisplay,
-    DeviceTarget, GameDeterminism, GpuApi, ImageQuality, Images, IosPackage, Links, MAX_BUILD,
-    MacosPackage, Manifest, Orientation, ParseOutcome, Permission, PixelFormat, RASTERIZER_FEATURE,
-    Rotation, Spanned, SurfaceScale, SvgImages, TestSurface, WebProfileConfig, WindowsPackage,
-    byte_size, charset_entry, device_target_name, locale_tag, nearest,
+    ANDROID_ABIS, AndroidGpu, AndroidPackage, BudgetKey, CollisionDelivery, DeployAddress,
+    DeviceDisplay, DeviceTarget, GameDeterminism, GpuApi, ImageQuality, Images, IosPackage, Links,
+    MAX_BUILD, MacosPackage, Manifest, Orientation, ParseOutcome, Permission, PixelFormat,
+    RASTERIZER_FEATURE, Rotation, Spanned, SurfaceScale, SvgImages, TestSurface, WebProfileConfig,
+    WindowsPackage, byte_size, charset_entry, device_target_name, locale_tag, nearest,
 };
 pub use settings::{Entry, KEYS, Value, setting, settings};
 pub use target::{

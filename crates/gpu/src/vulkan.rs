@@ -428,6 +428,12 @@ impl VulkanBackend {
         Self::open(validation).ok()
     }
 
+    /// Create the backend as [`try_new`](Self::try_new) does, or say which
+    /// step failed.
+    pub fn try_open() -> Result<Self, String> {
+        Self::open(std::env::var_os("VISO_VULKAN_VALIDATION").is_some())
+    }
+
     /// Create the backend, or say which step failed.
     fn open(validation: bool) -> Result<Self, String> {
         // SAFETY: loading the system Vulkan loader runs its initialisers, which

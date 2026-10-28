@@ -11,7 +11,7 @@ use std::fmt;
 
 use crate::config::{Env, Origin, ProfileSettings, ResolvedConfig};
 use crate::discovery::Project;
-use crate::manifest::{Spanned, SurfaceScale, TestSurface};
+use crate::manifest::{AndroidGpu, Spanned, SurfaceScale, TestSurface};
 use crate::target::Profile;
 
 /// The framework's defaults for keys whose consumers live outside this crate.
@@ -144,6 +144,7 @@ pub const KEYS: &[&str] = &[
     "web.serve.port",
     "web.serve.open",
     "target.android.min_sdk",
+    "target.android.gpu",
     "target.ios.minimum_os",
     "export.html.out_dir",
     "export.solid.out_dir",
@@ -367,6 +368,15 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
             .min_sdk
             .map(|l| l.map(|l| Value::Integer(l.into()))),
         Value::Integer(defaults::ANDROID_MIN_SDK.into()),
+    );
+    push_value(
+        &mut push,
+        "target.android.gpu",
+        m.targets
+            .android
+            .gpu
+            .map(|g| g.map(|g| Value::Text(g.as_str().to_owned()))),
+        Value::Text(AndroidGpu::Auto.as_str().to_owned()),
     );
     push_text(
         &mut push,

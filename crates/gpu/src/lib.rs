@@ -11,13 +11,20 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+/// Android's choice of Vulkan or GLES as it runs (`VISO_GPU=auto`).
+#[cfg(viso_gpu = "auto")]
+pub mod android;
 pub mod backend;
 pub mod cpu;
 /// The native Direct3D 12 backend (compiled only on Windows).
 #[cfg(target_os = "windows")]
 pub mod d3d12;
 /// The OpenGL ES 3 backend (Linux/Android, with the `gles` feature).
-#[cfg(all(feature = "gles", any(target_os = "linux", target_os = "android")))]
+#[cfg(any(
+    all(feature = "gles", any(target_os = "linux", target_os = "android")),
+    viso_gpu = "gles",
+    viso_gpu = "auto"
+))]
 pub mod gles;
 /// The native Metal backend (compiled only on Apple targets; selected by cfg).
 #[cfg(target_vendor = "apple")]
@@ -41,6 +48,8 @@ pub mod web;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod webgpu;
 
+#[cfg(viso_gpu = "auto")]
+pub use android::{AndroidBackend, AndroidCompiler, AndroidProgram};
 pub use backend::{
     DepthAttachment, DrawCommand, DrawList, Frame, Geometry, GpuBackend, IndexFormat,
     InlineUniforms, LoadOp, ProgramOf, RenderPass, RenderTarget,
@@ -48,7 +57,11 @@ pub use backend::{
 pub use cpu::{CpuCompiler, CpuRaster, CpuRasterProgram};
 #[cfg(target_os = "windows")]
 pub use d3d12::{D3D12Backend, D3D12Compiler, D3D12Program};
-#[cfg(all(feature = "gles", any(target_os = "linux", target_os = "android")))]
+#[cfg(any(
+    all(feature = "gles", any(target_os = "linux", target_os = "android")),
+    viso_gpu = "gles",
+    viso_gpu = "auto"
+))]
 pub use gles::{Gles3Backend, Gles3Compiler, Gles3Program};
 #[cfg(target_vendor = "apple")]
 pub use metal::{MetalBackend, MetalCompiler, MetalProgram};
@@ -70,9 +83,11 @@ pub use webgpu::{WebGpuBackend, WebGpuCompiler, WebGpuProgram};
 /// There is one [`GpuBackend`] trait for source-level unification, but
 /// the facade holds *this concrete type* monomorphized so the frame hot path has
 /// no `dyn GpuBackend` dispatch. On macOS and iOS it is the native
-/// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux and Android the
-/// OpenGL ES 3 `Gles3Backend` with the `gles` feature, else the
-/// `VulkanBackend` with `native-vulkan` (on by default); on the web the
+/// [`MetalBackend`]; on Windows the [`D3D12Backend`]; on Linux the OpenGL ES 3
+/// `Gles3Backend` with the `gles` feature, else the `VulkanBackend` with
+/// `native-vulkan` (on by default); on Android the `AndroidBackend`, Vulkan
+/// or else GLES as the device allows, unless the build pins one
+/// (`VISO_GPU`, `build.rs`); on the web the
 /// [`WebBackend`], WebGPU or else the CPU raster; on targets without a native
 /// backend, on Linux and Android with neither, and in a build with the
 /// `headless` or `cpu` feature, it is the software [`CpuRaster`], which
@@ -90,6 +105,8 @@ pub type Backend = D3D12Backend;
     any(target_os = "linux", target_os = "android"),
     not(any(feature = "headless", feature = "cpu")),
     not(feature = "gles"),
+    not(viso_gpu = "gles"),
+    not(viso_gpu = "auto"),
     any(feature = "native-vulkan", feature = "vulkan")
 ))]
 pub type Backend = VulkanBackend;
@@ -97,9 +114,12 @@ pub type Backend = VulkanBackend;
 #[cfg(all(
     any(target_os = "linux", target_os = "android"),
     not(any(feature = "headless", feature = "cpu")),
-    feature = "gles"
+    any(feature = "gles", viso_gpu = "gles")
 ))]
 pub type Backend = Gles3Backend;
+/// The concrete GPU backend for this target.
+#[cfg(viso_gpu = "auto")]
+pub type Backend = AndroidBackend;
 /// The concrete GPU backend for this target.
 #[cfg(all(
     target_arch = "wasm32",
@@ -170,7 +190,7 @@ macro_rules! __per_backend {
 
 /// Linux and Android's expression: GLSL with the `gles` feature, else SPIR-V
 /// with Vulkan, else the software raster's.
-#[cfg(feature = "gles")]
+#[cfg(any(feature = "gles", viso_gpu = "gles"))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __linux_backend {
@@ -183,6 +203,8 @@ macro_rules! __linux_backend {
 /// with Vulkan, else the software raster's.
 #[cfg(all(
     not(feature = "gles"),
+    not(viso_gpu = "gles"),
+    not(viso_gpu = "auto"),
     any(feature = "native-vulkan", feature = "vulkan")
 ))]
 #[doc(hidden)]
@@ -190,6 +212,21 @@ macro_rules! __linux_backend {
 macro_rules! __linux_backend {
     ($spirv:expr, $glsl:expr, $none:expr) => {
         $spirv
+    };
+}
+
+/// Android's expression where the device chooses: SPIR-V on Vulkan, GLSL on
+/// GLES, as this process draws.
+#[cfg(viso_gpu = "auto")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __linux_backend {
+    ($spirv:expr, $glsl:expr, $none:expr) => {
+        if $crate::android::chosen() == $crate::android::Api::Gles {
+            $glsl
+        } else {
+            $spirv
+        }
     };
 }
 
@@ -202,6 +239,33 @@ macro_rules! __linux_backend {
     ($spirv:expr, $glsl:expr, $none:expr) => {
         $none
     };
+}
+
+/// The language this build's programs are in: its backend's
+/// [`SHADER_LANG`](GpuBackend::SHADER_LANG), or on an Android device that
+/// chooses its API, the API's, choosing it now if no backend did.
+pub fn shader_lang() -> ShaderLang {
+    #[cfg(viso_gpu = "auto")]
+    {
+        android::chosen().shader_lang()
+    }
+    #[cfg(not(viso_gpu = "auto"))]
+    {
+        <Backend as GpuBackend>::SHADER_LANG
+    }
+}
+
+/// The launch variable naming the API a build that chooses one as it runs
+/// draws with: `vulkan` or `gles`.
+pub const API_VAR: &str = "VISO_GPU";
+
+/// Asks for the API `name` names (`vulkan` or `gles`) where the build
+/// chooses one as it runs (Android's `auto`): the launcher's choice, made
+/// before the first backend. Elsewhere, or for another name, nothing.
+pub fn ask_api(name: &str) {
+    #[cfg(viso_gpu = "auto")]
+    android::ask(name);
+    let _ = name;
 }
 
 /// Create the GPU device/backend for this target (selected statically by cfg).

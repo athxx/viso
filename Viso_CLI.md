@@ -2989,9 +2989,15 @@ Profile 名只能是 `dev|release|shipping`；其他 `[profile.<name>]` 报 C000
 ```toml
 [target.android]
 min_sdk = 26
+gpu = "auto"   # auto | vulkan | gles
 ```
 
-GPU backend 不是项目配置项：每个 target 的 backend 由 cfg 静态决定（Android 为 Vulkan，ADR-0029）。
+`gpu` 决定 Android 包所用的 GPU API(ADR 0062):
+
+- `auto` 是默认值。Vulkan 和 OpenGL ES 3 两个 backend 都编入包内。进程启动时先尝试打开 Vulkan 设备，打不开就改用 GLES,并说明一次原因。启动变量 `VISO_GPU=vulkan|gles` 可以强制其中一个，例如 `viso run android --env VISO_GPU=gles`。
+- `vulkan` 或 `gles` 只编入对应的那一个 backend。
+
+CLI 以构建变量 `VISO_GPU` 把选择交给 `viso-gpu` 的 build script。其他 target 的 backend 仍由 cfg 静态决定(ADR 0029)。
 
 ### 38.4 iOS
 

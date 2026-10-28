@@ -1095,6 +1095,21 @@ Rules (as for `todo_features.md`):
 - [ ] Run `01-counter` on one Embedded-GPU and one Embedded-CPU board, record the results into the
   footprint baseline, and compare CpuRaster output bit-exact with desktop emulation. Verify the
   §50A.5 budgets or record recalibrated ones.
+- [x] Android chooses its GPU API at run time: `[target.android] gpu = "auto"` (the default)
+  draws with Vulkan where the device opens it and with GLES 3 otherwise; `vulkan` / `gles` pin
+  one (ADR 0062). GLES imports video without copying. Built: `AndroidBackend` (an enum, one
+  `match` per RHI call) chosen once per process, with the launch variable `VISO_GPU` overriding.
+  A build script turns the manifest key into `cfg(viso_gpu)`. `gles::external`: hardware
+  buffers through `samplerExternalOES`, NV12 dma-bufs as `R8`/`GR88` EGL images, and NV12 at hand
+  uploaded. Each holds its buffer until a fence signals. Also `Gles3Backend::read_texture`. Verified:
+  - On the SwiftShader emulator the default build falls back to GLES and prints the reason. The
+    video example's hardware buffers import (one import, then adopted every frame) and play with
+    exact colors. The launch variable `VISO_GPU=vulkan` makes it panic with the reason instead
+    of falling back. `gpu = "gles"` runs GLES and ignores that variable.
+  - The GLES tests (`tests/gles_external.rs`, NV12 at hand and in a dma-buf) pass on Mesa.
+  - Clippy is clean for auto, gles and vulkan on aarch64-linux-android.
+  - Sizes on the reference app: auto 9.93 MB / 4.70 MB gzip, Vulkan alone 9.61 / 4.55, GLES
+    alone 9.72 / 4.61.
 - [ ] The 3D scene lane on real Vulkan, D3D12, GLES and WebGPU devices: today only the CPU raster
   and Metal are drawn and compared. Verify with the scene lane goldens on each.
 - [ ] Windows: WASAPI audio playback and capture, `signtool` signing of the executable and the

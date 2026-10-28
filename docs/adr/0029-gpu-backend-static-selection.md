@@ -1,6 +1,6 @@
 # ADR 0029 — GPU backend static selection per target
 
-- Status: Accepted
+- Status: Accepted; amended for Android by [ADR 0062](0062-android-gpu-auto.md)
 - Date: 2026-09-26
 
 ## Context
@@ -43,7 +43,9 @@ held on the frame path.
 - No backend-choice branch or virtual call on the frame path; each backend can take
   native fast paths behind `Caps` without a lowest-common-denominator RHI.
 - One binary targets one backend: switching backend at runtime (e.g. Vulkan → GL on a
-  weak Android device) needs a separate build or a future Tier-2 decision.
+  weak Android device) needs a separate build or a future Tier-2 decision. Android made
+  that decision in [ADR 0062](0062-android-gpu-auto.md): by default it picks Vulkan or
+  GLES once per process.
 - Every backend implements the whole trait, so maintenance cost scales with the number
   of backends; CI must build each target to keep them honest.
 - Code cites this record as "ADR 0029"; the Architecture summary entry "ADR-007" is its

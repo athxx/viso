@@ -2047,7 +2047,7 @@ Tier-1 target paths are:
 macOS/iOS -> Metal
 Windows   -> D3D12
 Linux     -> Vulkan
-Android   -> Vulkan
+Android   -> Vulkan (GLES 3 where Vulkan does not open, ADR 0062)
 Web       -> WebGPU
 Embedded Linux (GPU)    -> GLES 3.0+ on KMS/GBM/EGL (embedded-gpu profile)
 Embedded Linux (no GPU) -> CpuRaster                (embedded-cpu profile, Tier-2)

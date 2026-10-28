@@ -178,6 +178,27 @@ pub const GL_ALREADY_SIGNALED: GLenum = 0x911A;
 pub const GL_CONDITION_SATISFIED: GLenum = 0x911C;
 pub const GL_TIMEOUT_EXPIRED: GLenum = 0x911B;
 pub const GL_WAIT_FAILED: GLenum = 0x911D;
+pub const GL_RG: GLenum = 0x8227;
+pub const GL_RG8: GLenum = 0x822B;
+pub const GL_UNPACK_ROW_LENGTH: GLenum = 0x0CF2;
+pub const GL_TEXTURE_EXTERNAL_OES: GLenum = 0x8D65;
+
+pub type EGLImage = *mut c_void;
+pub type EGLClientBuffer = *mut c_void;
+pub const NO_IMAGE: EGLImage = std::ptr::null_mut();
+pub const EGL_IMAGE_PRESERVED_KHR: EGLint = 0x30D2;
+pub const EGL_NATIVE_BUFFER_ANDROID: EGLenum = 0x3140;
+pub const EGL_LINUX_DMA_BUF_EXT: EGLenum = 0x3270;
+pub const EGL_LINUX_DRM_FOURCC_EXT: EGLint = 0x3271;
+pub const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
+pub const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
+pub const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
+pub const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: EGLint = 0x3443;
+pub const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: EGLint = 0x3444;
+/// `DRM_FORMAT_R8`: one byte a texel.
+pub const DRM_FORMAT_R8: EGLint = 0x2020_3852;
+/// `DRM_FORMAT_GR88`: two bytes a texel, red first in memory.
+pub const DRM_FORMAT_GR88: EGLint = 0x3838_5247;
 
 macro_rules! table {
     ($(#[$doc:meta])* $name:ident { $($f:ident: fn($($p:ty),*) $(-> $r:ty)?;)* }) => {
@@ -332,6 +353,21 @@ pub type SwapWithDamage =
 pub type SetDamageRegion =
     unsafe extern "C" fn(EGLDisplay, EGLSurface, *const EGLint, EGLint) -> EGLBoolean;
 
+/// The EGL image entry points (`EGL_KHR_image_base`, `GL_OES_EGL_image`),
+/// and Android's for a hardware buffer's client buffer.
+pub struct Images {
+    pub create: unsafe extern "C" fn(
+        EGLDisplay,
+        EGLContext,
+        EGLenum,
+        EGLClientBuffer,
+        *const EGLint,
+    ) -> EGLImage,
+    pub destroy: unsafe extern "C" fn(EGLDisplay, EGLImage) -> EGLBoolean,
+    pub target_texture: unsafe extern "C" fn(GLenum, EGLImage),
+    pub native_client_buffer: Option<unsafe extern "C" fn(*const c_void) -> EGLClientBuffer>,
+}
+
 /// `wl_egl_window_*`, the Wayland side of an EGL window.
 pub struct WaylandEgl {
     pub create: unsafe extern "C" fn(*mut c_void, i32, i32) -> *mut c_void,
@@ -346,6 +382,8 @@ pub struct Libs {
     pub gl: Gl,
     pub swap_with_damage: Option<SwapWithDamage>,
     pub set_damage_region: Option<SetDamageRegion>,
+    /// `None` where EGL has no images.
+    pub images: Option<Images>,
     _egl: Library,
     _gles: Library,
 }
@@ -412,11 +450,55 @@ impl Libs {
             // SAFETY: `EGL_KHR_partial_update` defines this signature.
             unsafe { std::mem::transmute::<*const c_void, SetDamageRegion>(region) }
         });
+        let find = |name: &CStr| {
+            // SAFETY: a lookup by name; null when the extension is absent.
+            let p = unsafe { proc_address(name.as_ptr()) };
+            (!p.is_null()).then_some(p)
+        };
+        let images = (|| {
+            let (create, destroy, target_texture) = (
+                find(c"eglCreateImageKHR")?,
+                find(c"eglDestroyImageKHR")?,
+                find(c"glEGLImageTargetTexture2DOES")?,
+            );
+            // SAFETY: the extensions define these signatures; one that is
+            // listed but not supported is never called (the display's and
+            // context's extension strings say which are).
+            unsafe {
+                Some(Images {
+                    create: std::mem::transmute::<
+                        *const c_void,
+                        unsafe extern "C" fn(
+                            EGLDisplay,
+                            EGLContext,
+                            EGLenum,
+                            EGLClientBuffer,
+                            *const EGLint,
+                        ) -> EGLImage,
+                    >(create),
+                    destroy: std::mem::transmute::<
+                        *const c_void,
+                        unsafe extern "C" fn(EGLDisplay, EGLImage) -> EGLBoolean,
+                    >(destroy),
+                    target_texture: std::mem::transmute::<
+                        *const c_void,
+                        unsafe extern "C" fn(GLenum, EGLImage),
+                    >(target_texture),
+                    native_client_buffer: find(c"eglGetNativeClientBufferANDROID").map(|p| {
+                        std::mem::transmute::<
+                            *const c_void,
+                            unsafe extern "C" fn(*const c_void) -> EGLClientBuffer,
+                        >(p)
+                    }),
+                })
+            }
+        })();
         Ok(Libs {
             egl,
             gl,
             swap_with_damage,
             set_damage_region,
+            images,
             _egl: egl_lib,
             _gles: gles_lib,
         })

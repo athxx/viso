@@ -44,12 +44,13 @@
 //! scissors — with `EGL_KHR_partial_update` before the first draw, so a tiler
 //! loads only those tiles, and presents with `eglSwapBuffersWithDamage`.
 
+mod external;
 mod sys;
 
 use std::ffi::{CStr, CString, c_void};
 use std::sync::{Arc, Mutex};
 
-use viso_handle::{RawWindowHandle, Scanout, ScanoutFormat};
+use viso_handle::{ExternalHolds, ExternalImage, Nv12, RawWindowHandle, Scanout, ScanoutFormat};
 
 use self::sys::*;
 use crate::backend::{
@@ -95,6 +96,9 @@ struct GlTexture {
     /// The framebuffer of passes with a depth attachment, and the depth
     /// texture it was made with.
     depth_fbo: Option<(TextureId, GLuint)>,
+    /// Made to take external pictures; the luma and chroma textures NV12
+    /// planes at hand are uploaded to, once they are.
+    converted: Option<[GLuint; 2]>,
 }
 
 /// One vertex attribute of a built-in pipeline.
@@ -212,6 +216,8 @@ pub struct Gles3Backend {
     swizzle: Vec<u8>,
     current: Option<EGLSurface>,
     epoch: u64,
+    imports: external::Imports,
+    converter: external::Converter,
 }
 
 impl Gles3Backend {
@@ -264,6 +270,8 @@ impl Gles3Backend {
             swizzle: Vec::new(),
             current: None,
             epoch: 0,
+            imports: external::Imports::default(),
+            converter: external::Converter::default(),
         })
     }
 
@@ -300,6 +308,14 @@ impl Gles3Backend {
         let extensions = unsafe { cstr((egl.eglQueryString)(display, EGL_EXTENSIONS)) };
         let has = |name: &str| extensions.split(' ').any(|e| e == name);
         let surfaceless = has("EGL_KHR_surfaceless_context");
+        let images = has("EGL_KHR_image_base") && self.libs.images.is_some();
+        let imports = external::Imports {
+            hardware_buffers: images
+                && has("EGL_ANDROID_image_native_buffer")
+                && has("EGL_ANDROID_get_native_client_buffer"),
+            dma_bufs: images && has("EGL_EXT_image_dma_buf_import"),
+            linear_modifier: has("EGL_EXT_image_dma_buf_import_modifiers"),
+        };
         let attribs = [
             EGL_CONTEXT_MAJOR_VERSION,
             3,
@@ -331,6 +347,7 @@ impl Gles3Backend {
         };
         let pbuffer = idle_surface();
         let compile_pbuffer = idle_surface();
+        self.imports = imports;
         self.display = Some(Display {
             display,
             config,
@@ -368,7 +385,11 @@ impl Gles3Backend {
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
         }
         self.caps.max_texture_size = max_texture.max(2048) as u32;
-        self.caps.sampled = sampled_formats(gl);
+        let extensions = gl_extensions(gl);
+        let has = |name: &str| extensions.iter().any(|n| n == name);
+        self.imports.hardware_buffers &= has("GL_OES_EGL_image_external_essl3");
+        self.imports.dma_bufs &= has("GL_OES_EGL_image");
+        self.caps.sampled = sampled_formats(&has);
         self.uniform_align = (align.max(16) as usize).next_power_of_two();
         self.caps.program_instance_align = 4;
         self.uniform_ring = new_buffer(gl, 0);
@@ -400,6 +421,94 @@ impl Gles3Backend {
             let pbuffer = self.display.as_ref().expect("opened").pbuffer;
             self.make_current(pbuffer);
         }
+    }
+
+    /// The texels of texture `id`, a color target of four-byte texels: top
+    /// row first, in the format's channel order. A verification path, never
+    /// a frame path: it waits for the GPU.
+    pub fn read_texture(&mut self, id: TextureId) -> Vec<u8> {
+        self.ctx();
+        let format = self
+            .textures
+            .get(id.into())
+            .expect("texture handle does not resolve")
+            .format;
+        let (fbo, w, h) = self.texture_fbo(id, None);
+        let mut px = vec![0u8; w as usize * h as usize * 4];
+        let gl = &self.libs.gl;
+        // SAFETY: the context is current; `fbo` is the texture's complete
+        // framebuffer, whose rows go into `px`, as long as they are.
+        unsafe {
+            (gl.glBindFramebuffer)(GL_FRAMEBUFFER, fbo);
+            (gl.glReadPixels)(
+                0,
+                0,
+                w as GLsizei,
+                h as GLsizei,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                px.as_mut_ptr().cast(),
+            );
+            (gl.glBindFramebuffer)(GL_FRAMEBUFFER, 0);
+            (gl.glFinish)();
+        }
+        if format.linear() == TextureFormat::Bgra8Unorm {
+            for t in px.as_chunks_mut::<4>().0 {
+                t.swap(0, 2);
+            }
+        }
+        self.converter.release(gl);
+        px
+    }
+
+    /// A texture of `width` × `height` external pictures are drawn into.
+    fn converted_texture(&mut self, width: u32, height: u32) -> TextureId {
+        let id = self.create_texture(&TextureDesc {
+            width,
+            height,
+            format: TextureFormat::Rgba8UnormSrgb,
+            render_target: true,
+            label: "external picture",
+        });
+        if let Some(t) = self.textures.get_mut(id.into()) {
+            t.converted = Some([0, 0]);
+        }
+        id
+    }
+
+    /// How to read `image`, and the holds to take while it is read; `None`
+    /// where it does not import here.
+    fn external_read(
+        &mut self,
+        image: &ExternalImage,
+    ) -> Option<(external::Read, Arc<ExternalHolds>)> {
+        // What the display imports is known once it is open.
+        self.ctx();
+        let (imported, sampled) = match image {
+            ExternalImage::AndroidHardwareBuffer { .. } => (self.imports.hardware_buffers, true),
+            ExternalImage::DmaBuf { .. } => (self.imports.dma_bufs, false),
+            _ => (false, false),
+        };
+        if !imported || !self.converter.ready(&self.libs.gl, sampled) {
+            return None;
+        }
+        let display = self.display.as_ref()?.display;
+        self.converter
+            .read(&self.libs, display, self.imports, image)
+    }
+
+    /// Draws what `read` reads into texture `id`, a converted one, holding
+    /// `holds` until the GPU has.
+    fn convert(
+        &mut self,
+        id: TextureId,
+        read: &external::Read,
+        holds: Option<&Arc<ExternalHolds>>,
+    ) {
+        let (fbo, w, h) = self.texture_fbo(id, None);
+        let gl = &self.libs.gl;
+        self.converter.release(gl);
+        self.converter.draw(gl, fbo, (w, h), read, holds);
     }
 
     fn buffer(&self, id: BufferId) -> &GlBuffer {
@@ -1002,12 +1111,18 @@ fn choose_config(egl: &Egl, display: EGLDisplay, visual: Option<EGLint>) -> EGLC
         });
         return found.unwrap_or_else(|| panic!("EGL has no ES 3 config of visual {visual:#x}"));
     }
-    for (r, g, b, a) in [(8, 8, 8, 8), (8, 8, 8, 0), (5, 6, 5, 0)] {
+    // Windows and pbuffers where the display has them, else pbuffers (a
+    // display of no windows), else whatever (one of no surfaces at all).
+    let kinds = [EGL_WINDOW_BIT | EGL_PBUFFER_BIT, EGL_PBUFFER_BIT, 0];
+    let wanted = kinds
+        .into_iter()
+        .flat_map(|kind| [(8, 8, 8, 8), (8, 8, 8, 0), (5, 6, 5, 0)].map(|bits| (kind, bits)));
+    for (kind, (r, g, b, a)) in wanted {
         let attribs = [
             EGL_RENDERABLE_TYPE,
             EGL_OPENGL_ES3_BIT,
             EGL_SURFACE_TYPE,
-            EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
+            kind,
             EGL_RED_SIZE,
             r,
             EGL_GREEN_SIZE,
@@ -1231,24 +1346,7 @@ fn texture_format(format: TextureFormat) -> (GLenum, GLenum, GLenum) {
 /// in OpenGL ES 3.0; ASTC and BC come with their extensions (BC needs S3TC
 /// and its sRGB variants for BC1/BC3 and BPTC for BC7). None of the packed
 /// 16-bit ones: they have no sRGB variant to decode a sample.
-fn sampled_formats(gl: &Gl) -> SampledFormats {
-    let mut count = 0;
-    // SAFETY: the context is current; the query writes one integer.
-    unsafe { (gl.glGetIntegerv)(GL_NUM_EXTENSIONS, &mut count) };
-    let names: Vec<String> = (0..count.max(0) as GLuint)
-        .filter_map(|i| {
-            // SAFETY: the context is current and `i` is below the extension
-            // count; GL returns a NUL-terminated string it owns, or null.
-            let name = unsafe { (gl.glGetStringi)(GL_EXTENSIONS, i) };
-            (!name.is_null()).then(|| {
-                // SAFETY: non-null, NUL-terminated, alive for the context.
-                unsafe { CStr::from_ptr(name.cast()) }
-                    .to_string_lossy()
-                    .into_owned()
-            })
-        })
-        .collect();
-    let has = |name: &str| names.iter().any(|n| n == name);
+fn sampled_formats(has: &dyn Fn(&str) -> bool) -> SampledFormats {
     let mut sampled = SampledFormats::ETC2;
     if has("GL_KHR_texture_compression_astc_ldr") || has("GL_OES_texture_compression_astc") {
         sampled |= SampledFormats::ASTC;
@@ -1260,6 +1358,26 @@ fn sampled_formats(gl: &Gl) -> SampledFormats {
         sampled |= SampledFormats::BC;
     }
     sampled
+}
+
+/// The current context's extensions.
+fn gl_extensions(gl: &Gl) -> Vec<String> {
+    let mut count = 0;
+    // SAFETY: the context is current; the query writes one integer.
+    unsafe { (gl.glGetIntegerv)(GL_NUM_EXTENSIONS, &mut count) };
+    (0..count.max(0) as GLuint)
+        .filter_map(|i| {
+            // SAFETY: the context is current and `i` is below the extension
+            // count; GL returns a NUL-terminated string it owns, or null.
+            let name = unsafe { (gl.glGetStringi)(GL_EXTENSIONS, i) };
+            (!name.is_null()).then(|| {
+                // SAFETY: non-null, NUL-terminated, alive for the context.
+                unsafe { CStr::from_ptr(name.cast()) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        })
+        .collect()
 }
 
 /// An attribute's lane count, GL type and whether it is integer.
@@ -1358,6 +1476,7 @@ impl GpuBackend for Gles3Backend {
                 format: desc.format,
                 fbo: None,
                 depth_fbo: None,
+                converted: None,
             })
             .into()
     }
@@ -1416,6 +1535,7 @@ impl GpuBackend for Gles3Backend {
                 format: desc.format,
                 fbo: None,
                 depth_fbo: None,
+                converted: None,
             })
             .into()
     }
@@ -1593,9 +1713,13 @@ impl GpuBackend for Gles3Backend {
 
     fn destroy_texture(&mut self, id: TextureId) {
         if let Some(t) = self.textures.remove(id.into()) {
-            // SAFETY: as for buffers; the framebuffer is deleted with it.
+            // SAFETY: as for buffers; the framebuffer and the planes
+            // uploaded to it are deleted with it.
             unsafe {
                 (self.libs.gl.glDeleteTextures)(1, &t.name);
+                for plane in t.converted.into_iter().flatten().filter(|p| *p != 0) {
+                    (self.libs.gl.glDeleteTextures)(1, &plane);
+                }
                 for fbo in t.fbo.into_iter().chain(t.depth_fbo.map(|(_, fbo)| fbo)) {
                     (self.libs.gl.glDeleteFramebuffers)(1, &fbo);
                 }
@@ -1642,6 +1766,110 @@ impl GpuBackend for Gles3Backend {
                 bytes.as_ptr().cast(),
             );
         }
+    }
+
+    fn import_external(&mut self, image: &ExternalImage) -> Option<TextureId> {
+        let (read, holds) = self.external_read(image)?;
+        let (width, height) = image.size();
+        let id = self.converted_texture(width, height);
+        self.convert(id, &read, Some(&holds));
+        Some(id)
+    }
+
+    fn adopt_external(&mut self, id: TextureId, image: &ExternalImage) -> bool {
+        let Some(t) = self.textures.get(id.into()) else {
+            return false;
+        };
+        if t.converted.is_none() || (t.width, t.height) != image.size() {
+            return false;
+        }
+        let Some((read, holds)) = self.external_read(image) else {
+            return false;
+        };
+        self.convert(id, &read, Some(&holds));
+        true
+    }
+
+    fn write_nv12(&mut self, id: Option<TextureId>, picture: &Nv12<'_>) -> Option<TextureId> {
+        let (w, h) = (picture.width, picture.height);
+        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+        let holds = |bytes: &[u8], stride: usize, row: usize, rows: usize| {
+            stride >= row && bytes.len() >= stride * (rows - 1) + row
+        };
+        if w == 0
+            || h == 0
+            || !picture.uv_stride.is_multiple_of(2)
+            || !holds(picture.y, picture.y_stride, w as usize, h as usize)
+            || !holds(picture.uv, picture.uv_stride, cw as usize * 2, ch as usize)
+        {
+            return None;
+        }
+        self.ctx();
+        if !self.converter.ready(&self.libs.gl, false) {
+            return None;
+        }
+        let id = match id {
+            Some(id)
+                if self
+                    .textures
+                    .get(id.into())
+                    .is_some_and(|t| t.converted.is_some() && (t.width, t.height) == (w, h)) =>
+            {
+                id
+            }
+            _ => self.converted_texture(w, h),
+        };
+        let gl = &self.libs.gl;
+        let t = self.textures.get_mut(id.into()).expect("made above");
+        let planes = t.converted.get_or_insert([0, 0]);
+        let sizes = [(w, h, GL_R8, GL_RED), (cw, ch, GL_RG8, GL_RG)];
+        // SAFETY: the context is current; each plane is a texture of its
+        // size made once, written from rows checked above to hold it
+        // (`row length` texels apart).
+        unsafe {
+            for (k, (pw, ph, internal, upload)) in sizes.into_iter().enumerate() {
+                if planes[k] == 0 {
+                    (gl.glGenTextures)(1, &mut planes[k]);
+                    (gl.glBindTexture)(GL_TEXTURE_2D, planes[k]);
+                    (gl.glTexStorage2D)(GL_TEXTURE_2D, 1, internal, pw as GLsizei, ph as GLsizei);
+                    for (param, value) in [
+                        (GL_TEXTURE_MIN_FILTER, GL_LINEAR),
+                        (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
+                        (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE),
+                        (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE),
+                    ] {
+                        (gl.glTexParameteri)(GL_TEXTURE_2D, param, value);
+                    }
+                }
+                let (bytes, row_length) = if k == 0 {
+                    (picture.y, picture.y_stride)
+                } else {
+                    (picture.uv, picture.uv_stride / 2)
+                };
+                (gl.glBindTexture)(GL_TEXTURE_2D, planes[k]);
+                (gl.glPixelStorei)(GL_UNPACK_ROW_LENGTH, row_length as GLint);
+                (gl.glTexSubImage2D)(
+                    GL_TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    pw as GLsizei,
+                    ph as GLsizei,
+                    upload,
+                    GL_UNSIGNED_BYTE,
+                    bytes.as_ptr().cast(),
+                );
+            }
+            (gl.glPixelStorei)(GL_UNPACK_ROW_LENGTH, 0);
+            (gl.glBindTexture)(GL_TEXTURE_2D, 0);
+        }
+        let read = external::Read::Planar {
+            textures: *planes,
+            rows: picture.matrix.rows(picture.full_range),
+            site: external::site(picture),
+        };
+        self.convert(id, &read, None);
+        Some(id)
     }
 
     fn write_texture(&mut self, id: TextureId, x: u32, y: u32, w: u32, h: u32, bytes: &[u8]) {
@@ -1896,6 +2124,7 @@ impl GpuBackend for Gles3Backend {
         s.region_set = false;
         let egl = s.egl;
         self.make_current(egl);
+        self.converter.release(&self.libs.gl);
         self.epoch += 1;
         Some(Frame {
             surface,

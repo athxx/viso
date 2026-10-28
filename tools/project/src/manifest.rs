@@ -566,12 +566,56 @@ pub struct Web {
     pub serve: WebServe,
 }
 
-/// `[target.android]`. The GPU backend is not configuration: each target's is
-/// fixed at compile time.
+/// `[target.android]`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Android {
     /// Minimum Android SDK level.
     pub min_sdk: Option<Spanned<u32>>,
+    /// The GPU API it draws with; [`AndroidGpu::Auto`] when absent.
+    pub gpu: Option<Spanned<AndroidGpu>>,
+}
+
+impl Android {
+    /// The GPU API it draws with.
+    pub fn gpu(&self) -> AndroidGpu {
+        self.gpu.map_or(AndroidGpu::Auto, |gpu| gpu.value)
+    }
+
+    /// The variables an Android build compiles with: `VISO_GPU` where `gpu`
+    /// pins an API, which the GPU crate's build reads.
+    pub fn build_env(&self) -> Vec<(&'static str, String)> {
+        match self.gpu() {
+            AndroidGpu::Auto => Vec::new(),
+            gpu => vec![("VISO_GPU", gpu.as_str().to_owned())],
+        }
+    }
+}
+
+/// The GPU API an Android build draws with (`[target.android] gpu`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AndroidGpu {
+    /// Vulkan where the device opens it, else OpenGL ES 3: both compiled in.
+    #[default]
+    Auto,
+    /// Vulkan alone.
+    Vulkan,
+    /// OpenGL ES 3 alone.
+    Gles,
+}
+
+impl AndroidGpu {
+    /// The name `Viso.toml` gives it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AndroidGpu::Auto => "auto",
+            AndroidGpu::Vulkan => "vulkan",
+            AndroidGpu::Gles => "gles",
+        }
+    }
+
+    /// Every value, in declaration order.
+    pub const ALL: &'static [AndroidGpu] =
+        &[AndroidGpu::Auto, AndroidGpu::Vulkan, AndroidGpu::Gles];
 }
 
 /// `[target.ios]`.
@@ -1692,9 +1736,12 @@ impl<'a> Reader<'a> {
                     devices,
                     android: match self.table(t, "android") {
                         Some(a) => {
-                            self.deny_unknown(a, &["min_sdk"], "target.android");
+                            self.deny_unknown(a, &["min_sdk", "gpu"], "target.android");
+                            let gpus: Vec<(&str, AndroidGpu)> =
+                                AndroidGpu::ALL.iter().map(|g| (g.as_str(), *g)).collect();
                             Android {
                                 min_sdk: self.sdk_level(a, "min_sdk", "target.android"),
+                                gpu: self.choice(a, "gpu", "target.android", &gpus),
                             }
                         }
                         None => Android::default(),
@@ -3805,6 +3852,23 @@ profile = "embedded-cpu"
         }
         assert!(locale_tag("pt-BR").is_ok() && locale_tag("sr-Latn-RS").is_ok());
         assert!(locale_tag("").is_err() && locale_tag("en-").is_err() && locale_tag("e1").is_err());
+    }
+
+    #[test]
+    fn an_android_build_chooses_its_gpu_unless_pinned() {
+        let (m, warnings) = parse("[package]\nname = \"a\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(m.targets.android.gpu(), AndroidGpu::Auto);
+        assert!(m.targets.android.build_env().is_empty());
+        let (m, warnings) = parse("[target.android]\ngpu = \"gles\"\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            m.targets.android.build_env(),
+            [("VISO_GPU", "gles".to_owned())]
+        );
+        let diags = errors("[target.android]\ngpu = \"metal\"\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, ConfigCode::InvalidValue);
     }
 
     #[test]

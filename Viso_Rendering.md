@@ -479,7 +479,7 @@ discrete GPU                       mapped upload/staging -> transfer/copy -> dev
 
 ## 6.8 Backend 静态选择与 fast path
 
-Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是 type alias —— apple → Metal，Windows → D3D12，Linux/Android → Vulkan（`native-vulkan`，facade 默认开启），wasm32 → WebGpu，其余 → CpuRaster。Footprint profile 的 feature 改选（ADR 0044）：`gles` → `Gles3Backend`（Linux / Android，embedded-gpu），`cpu` 或 `headless` → `CpuRaster`（embedded-cpu、测试与 golden）；embedded build 关闭 facade 默认 feature，`embedded-cpu` 与 GLES 板卡不开 `native-vulkan`，不链接 Vulkan bindings（`ash`），Linux/Android 上 `gles` 与 `native-vulkan` 都没开时 Backend 是 CpuRaster。`vulkan` feature 在其他平台额外编译 Vulkan 模块（macOS 的 MoltenVK、Windows 的 Vulkan runtime），只用于交叉测试。D3D12 在没有 feature level 11.0 的硬件 adapter 时退回 WARP 软件 adapter（`d3d12.rs`）。Tier-2 backend 以 module + cfg 加入，能力差异通过 `Caps` 表达。
+Backend 由 cfg 在编译期静态选定（ADR 0029）：`viso_gpu::Backend` 是 type alias —— apple → Metal，Windows → D3D12，Linux/Android → Vulkan（`native-vulkan`，facade 默认开启），wasm32 → WebGpu，其余 → CpuRaster。Android 的例外（ADR 0062）：`[target.android] gpu` 默认 `auto`，`Backend` 是 `AndroidBackend`（`VulkanBackend` / `Gles3Backend` 的枚举），进程内首次建 backend 或首次问 `viso_gpu::shader_lang()` 时选定：Vulkan 设备像 Vulkan backend 那样打得开就用它，否则用 GLES 并打印一次原因，启动变量 `VISO_GPU=vulkan|gles`（Android 是 intent extra，facade 经 `viso_gpu::ask_api` 交入）改选；每个 RHI 调用一个 `match`（不到 primitive），program 两种 AOT 语言都带，`__per_backend!` 按选定的 API 取；`gpu = "vulkan"` / `"gles"`（构建环境 `VISO_GPU`，`cfg(viso_gpu)`）只编译其一。Footprint profile 的 feature 改选（ADR 0044）：`gles` → `Gles3Backend`（Linux / Android，embedded-gpu），`cpu` 或 `headless` → `CpuRaster`（embedded-cpu、测试与 golden）；embedded build 关闭 facade 默认 feature，`embedded-cpu` 与 GLES 板卡不开 `native-vulkan`，不链接 Vulkan bindings（`ash`），Linux/Android 上 `gles` 与 `native-vulkan` 都没开时 Backend 是 CpuRaster。`vulkan` feature 在其他平台额外编译 Vulkan 模块（macOS 的 MoltenVK、Windows 的 Vulkan runtime），只用于交叉测试。D3D12 在没有 feature level 11.0 的硬件 adapter 时退回 WARP 软件 adapter（`d3d12.rs`）。Tier-2 backend 以 module + cfg 加入，能力差异通过 `Caps` 表达。
 
 ### 6.8.1 CpuRaster
 
@@ -512,7 +512,9 @@ Web 回退：wasm 的 `Backend` 是 `WebBackend`，枚举 `Gpu(WebGpuBackend)` /
 - 用户 program 在共享对象的第二个 context 上编译，编译器可在任意线程运行（`Gles3Compiler`），结束后恢复调用线程原有的 current context；vertex array 不共享，安装时在主 context 创建；
 - 能力表：无 compute、无 bindless、无 indirect；
 - partial update：`EGL_EXT_buffer_age` → `frame_age`，`EGL_KHR_partial_update` 区域来自 surface pass 的 scissor，`eglSwapBuffersWithDamage`；
-- 面板旋转而 plane 不能旋转时，顶点阶段按 `viso_target` 的四分之一圈数旋转绘制（`viso_place` / `viso_frag_position`），damage 与 scissor 同步旋转。
+- 面板旋转而 plane 不能旋转时，顶点阶段按 `viso_target` 的四分之一圈数旋转绘制（`viso_place` / `viso_frag_position`），damage 与 scissor 同步旋转；
+- 外部画面（`gles::external`）：Android `AHardwareBuffer` 经 `EGL_ANDROID_get_native_client_buffer` 成 EGL image，以 `samplerExternalOES`（`GL_OES_EGL_image_external_essl3`，驱动做 Y′CbCr 转换）按区域与四分之一圈数采样；线性 NV12 dma-buf 两个平面各成 `R8` / `GR88` EGL image（`EGL_EXT_image_dma_buf_import`，有 modifiers 扩展时注明 linear）；手头 NV12 平面上传进 texture 自带的 `R8` / `RG8` texture；后两者按矩阵行（含范围）与色度缩放/偏移转换；都以一个三角形画进自建的 `SRGB8_ALPHA8` texture，framebuffer 写入时编码，shader 先把读到的 gamma 编码值解码；image 按 holds 缓存最近 16 个（buffer 已无人引用的随即释放），每次转换后放一个 fence，hold 持有到 fence signal（帧首与每次转换时轮询）；
+- `read_texture`：经 texture 的 framebuffer `glReadPixels`，顶行在前，验证路径。
 
 禁止在热路径对每个 primitive 做 `Box<dyn GpuBackend>::draw(...)` 式 virtual dispatch。
 
