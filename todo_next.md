@@ -1010,9 +1010,19 @@ Rules (as for `todo_features.md`):
 
 ## N7 — Widgets and extras
 
-- [ ] `adaptive_split` (list-detail that collapses to a stack) and `adaptive_navigation` (bottom
+- [x] `adaptive_split` (list-detail that collapses to a stack) and `adaptive_navigation` (bottom
   bar, rail or sidebar by size class). Verify with headless tests that resize across size classes
   and check the tree and the focus.
+  - Built: both anchor the environment at their root and re-arrange the same nodes in a structure
+    hook when the size class there changes. `adaptive_split` stands list and detail side by side
+    from `side_by_side` (default expanded) up, else relinks them into a paged stack, the detail
+    pushed over the list by `SplitHandle::show_detail` and popped by a back gesture; focus in a
+    folded pane moves to the one in front, back where it last was there. `adaptive_navigation`
+    lays its destinations out as a bottom bar, a rail or a sidebar (`layouts`), a roving tablist
+    whose arrows follow its axis, over a paged content area.
+  - Verified: `viso-widgets/tests/adaptive_layouts.rs` resizes compact, medium and expanded and
+    checks parents, visibility, bounds, arrangement, selection and focus;
+    `viso/tests/adaptive_widgets.rs` resizes a window under the frame loop.
 - [ ] Move PDF out of the core into `viso-ext`. The core keeps a public paged capture API: a
   view laid out at a page's width, cut into pages with `page_break`/`keep_together` and its
   header and footer, giving each page's primitives with glyph outlines and a raster callback for

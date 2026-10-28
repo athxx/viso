@@ -5,9 +5,11 @@
 //! share the pattern of a focusable node with pointer and key handlers plus a
 //! reactive visual state. The members so far are [`Button`], [`CheckBox`],
 //! [`Toggle`], [`Chip`], [`Stepper`], [`RadioGroup`], [`SegmentedControl`], [`Slider`], [`TextInput`], [`Splitter`],
-//! [`Tabs`], [`NavigationStack`], [`Popup`], [`Modal`], [`Sheet`], [`Toast`],
-//! and [`Dock`].
+//! [`Tabs`], [`NavigationStack`], [`AdaptiveSplit`], [`AdaptiveNavigation`],
+//! [`Popup`], [`Modal`], [`Sheet`], [`Toast`], and [`Dock`].
 
+mod adaptive_navigation;
+mod adaptive_split;
 mod button;
 mod calendar;
 mod caption_bar;
@@ -43,6 +45,13 @@ mod toast;
 mod toggle;
 mod tooltip;
 
+pub use adaptive_navigation::{
+    AdaptiveNavigation, AdaptiveNavigationStyle, DestinationHandle, NavigationLayout,
+    adaptive_navigation,
+};
+pub use adaptive_split::{
+    AdaptiveSplit, AdaptiveSplitStyle, SplitHandle, SplitPane, adaptive_split,
+};
 pub use button::{Button, ButtonStyle, button};
 pub use calendar::{Calendar, CalendarStyle, DateNames, calendar};
 pub use caption_bar::{CaptionBar, CaptionBarStyle, caption_bar};

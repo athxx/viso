@@ -3821,12 +3821,12 @@ DSL `ComboBox` 与 `SearchField` 同样如此：逻辑在 `viso_ui::combo_box::C
 | 文字与媒体 | label、rich_text、link_label、document（markdown、html）、image、icon、video、camera_view、avatar、badge、progress_bar / progress_ring / spinner、skeleton / placeholder |
 | controls | button、checkbox、toggle、radio_group、chip、slider / knob / range_slider、stepper、segmented_control、text_input、number_field、search_field、select、combo_box、color_picker、calendar、date_picker、time_picker、field / Form / fieldset、labelled |
 | containers | view、blur_view、grid、scroll、virtual_list、lazy_grid、pager、carousel、interactive_viewer、splitter、swipe_row、reorder_handle、draggable / drop_zone |
-| navigation | navigation_stack、tabs |
+| navigation | navigation_stack、tabs、adaptive_split、adaptive_navigation |
 | overlays | popup / popover、modal、sheet、toast、tooltip、menu / context_menu |
 | adaptive | DSL 的 `SafeArea`、`KeyboardAvoiding`、`AdaptiveScope`（`viso-ui` 的 layout 节点）；`LazyGrid` 的 `Columns::Adaptive` |
 | desktop | caption_bar、menu_bar、dock、file_tree、data_grid |
 
-目标（尚未实现）：`adaptive_split`（list-detail，窄屏时变为导航栈）与 `adaptive_navigation`（底栏 / rail / 侧栏随 size class 切换）。路由由 typed router（§6.1，`RouterView`）、`NavigationStack` 与 `Application::on_open_url` 承担；自绘标题栏窗口的缩放边框由 platform 提供，不另设 resize region。
+**自适应布局**（`viso_widgets::adaptive_split`、`adaptive_navigation`）：二者都在根节点上取环境锚点（`StateStore::anchor_env`），读该处的 size class（窗口的，或最近的 AdaptiveScope 的），由一个结构钩子在 size class 变化时重排同一批节点，不重建内容，内容的状态、滚动与焦点因此保留。`adaptive_split` 在 `side_by_side`（默认 expanded）及以上把列表窗格（`list_width`，默认 320 dp）与详情并排、中间一条分隔线；更窄时两窗格移入一个分页栈，一次只显示一个：`SplitHandle::show_detail` 把详情按平台的导航方式推到列表之上，返回手势（控件内焦点下的 Escape/Backspace 或系统返回）回到列表；详情是否显示跨 size class 保留。焦点所在窗格被折叠时，焦点移到前面的窗格：回到该窗格上次持有焦点的节点，否则其第一个可聚焦节点。`adaptive_navigation` 的每个目的地是标题、可选图标与一页内容，选中页填满内容区（分页栈，默认淡入淡出）；compact 为内容下方的底栏（目的地均分宽度，图标在标题上方），medium 为前缘的 rail（80 dp），expanded 为前缘的侧栏（240 dp，图标在标题旁），由 `layouts` 改变映射；目的地是一个漫游组，箭头沿条的方向移动选择与焦点，语义为 `tablist`/`tab`/`tabpanel`。路由由 typed router（§6.1，`RouterView`）、`NavigationStack` 与 `Application::on_open_url` 承担；自绘标题栏窗口的缩放边框由 platform 提供，不另设 resize region。
 
 ---
 

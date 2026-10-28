@@ -44,6 +44,11 @@ pub use badge::{Badge, badge, dot_badge};
 pub use camera_view::{CameraView, camera_view};
 pub use containers::{View, ViewStyle, blur_view, view};
 pub use controls::{
+    AdaptiveNavigation, AdaptiveNavigationStyle, AdaptiveSplit, AdaptiveSplitStyle,
+    DestinationHandle, NavigationLayout, SplitHandle, SplitPane, adaptive_navigation,
+    adaptive_split,
+};
+pub use controls::{
     Button, ButtonStyle, CaptionBar, CaptionBarStyle, CheckBox, CheckBoxStyle, Dock, DockHandle,
     DockNode, DockStyle, DockTree, DropPart, FileTree, FileTreeHandle, FileTreeStyle, Floating,
     Labelled, Modal, ModalHandle, ModalStyle, NavHandle, NavigationStack, NavigationStackStyle,
