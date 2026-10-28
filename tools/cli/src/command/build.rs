@@ -240,16 +240,20 @@ pub(super) fn stage_loaded(
         Check::Done => (project, None),
     };
     let root = project.root.clone();
-    // A `web-dom` app is its page's: the check lowered the root view to it.
+    // A `web-dom` or `web-hybrid` app is its page's: the check lowered the
+    // root view to it.
     let page = match (target, page) {
-        (Target::WebDom, Some(page)) => Some(build::web::WebPage {
+        (Target::WebDom | Target::WebHybrid, Some(page)) => Some(build::web::WebPage {
             page,
             assets: root.join(viso_dsl::assets::ASSET_DIR),
         }),
-        (Target::WebDom, None) => {
+        (Target::WebDom | Target::WebHybrid, None) => {
             return Err(out.failure(
                 BUILD_FAILED,
-                "the `web-dom` page was not made: its sources were not checked for it",
+                &format!(
+                    "the `{}` page was not made: its sources were not checked for it",
+                    target.as_str()
+                ),
                 &[],
             ));
         }

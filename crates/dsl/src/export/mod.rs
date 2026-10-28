@@ -173,6 +173,9 @@ pub struct DomPage {
     pub build: u64,
     /// The component the view mounts.
     pub component: String,
+    /// Whether the renderer draws an island of it: its app then runs the
+    /// module it embeds, built with the page.
+    pub island: bool,
     /// The path under the project's `assets/` of each asset the page shows,
     /// written to the same path under the page's `assets/`.
     pub assets: Vec<String>,
@@ -277,6 +280,7 @@ fn page(compiled: &Compiled, options: &DomOptions, split: bool) -> Result<DomPag
         module: vb.bytes.clone(),
         build: viso_behavior::aot::build_hash(&vb.module),
         component: vb.component.clone(),
+        island: split && !vb.islands.is_empty(),
         assets: page.assets.values().cloned().collect(),
     })
 }

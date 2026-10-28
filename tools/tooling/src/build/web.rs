@@ -180,7 +180,8 @@ fn fingerprint(
 /// the module `module`, in place of the page written there before, whose
 /// files go once the new `index.html` is in place. A dev page carries the
 /// view's module, which the app runs in place of its own: a `.vs` edit then
-/// needs no new app.
+/// needs no new app. A page with an island does not: the app draws the
+/// island from the view it was built with.
 ///
 /// # Errors
 ///
@@ -211,8 +212,8 @@ pub fn write_dom_page(
     let styles = named("styles", "css", dom.styles.as_bytes())?;
     let script = named("page", "js", dom.script.as_bytes())?;
     let view_name = match profile {
-        Profile::Dev => Some(named("view", "vsb", &dom.module)?),
-        Profile::Release | Profile::Shipping => None,
+        Profile::Dev if !dom.island => Some(named("view", "vsb", &dom.module)?),
+        Profile::Dev | Profile::Release | Profile::Shipping => None,
     };
     let view = view_name.as_ref().map_or_else(
         || "undefined".to_owned(),
@@ -243,7 +244,7 @@ pub fn write_dom_page(
         ));
     }
     boot.push_str(&format!(
-        "<script type=\"module\">import init, {{ visoDom }} from \"./{glue}\"; await init({{ module_or_path: \"./{module}\" }}); visoPage(visoDom(\"{}\", {view}, {}n));</script>\n",
+        "<script type=\"module\">import init, {{ visoDom }} from \"./{glue}\"; await init({{ module_or_path: \"./{module}\" }}); visoPage(await visoDom(\"{}\", {view}, {}n));</script>\n",
         dom.component, dom.build
     ));
     // A page loading now reads the old `index.html` or the new one whole.

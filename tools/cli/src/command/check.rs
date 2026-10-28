@@ -45,7 +45,7 @@ use crate::dev::watch::{WatchScope, Watcher};
 use crate::error::{
     BUILD_FAILED, DIAGNOSTICS, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST,
     ENV_SOURCE_UNREADABLE, ENVIRONMENT, INTERRUPTED, SUCCESS, WEB_DOM_NO_VIEW, WEB_DOM_UNSUPPORTED,
-    WEB_GPU_ONLY_NODE,
+    WEB_GPU_ONLY_NODE, WEB_HYBRID_NO_ISLAND,
 };
 use crate::interrupt;
 use crate::output::{Output, Source};
@@ -559,8 +559,8 @@ pub(super) fn package_for(
         profile,
         page: None,
     };
-    if options.target == Some(Target::WebDom) {
-        checked.page = checked.dom_page(out);
+    if let Some(target @ (Target::WebDom | Target::WebHybrid)) = options.target {
+        checked.page = checked.dom_page(target == Target::WebHybrid, out);
     }
     if fixed_langs(&checked.project, options.target).is_some() {
         for file in &checked.package.files {
@@ -575,10 +575,11 @@ pub(super) fn package_for(
 }
 
 impl Checked {
-    /// The `web-dom` page of the component `src/app.vs` exports, reporting
-    /// each place it needs what a page's DOM cannot have at its source;
-    /// `None` when it has no page.
-    fn dom_page(&self, out: &mut Output) -> Option<DomPage> {
+    /// The `web-dom` page of the component `src/app.vs` exports, or the
+    /// `web-hybrid` one where the page is `split` around its island,
+    /// reporting each place it needs what a page's DOM cannot have at its
+    /// source; `None` when it has no page.
+    fn dom_page(&self, split: bool, out: &mut Output) -> Option<DomPage> {
         let Some(file) = self
             .package
             .files
@@ -625,11 +626,32 @@ impl Checked {
                     s.value.clone()
                 }),
         };
-        match viso_dsl::export::dom(&compiled, &options) {
+        let lowered = if split {
+            viso_dsl::export::hybrid(&compiled, &options)
+        } else {
+            viso_dsl::export::dom(&compiled, &options)
+        };
+        let source = Source::new(&file.path, &self.project.root, &file.source)
+            .of_module(file.module.join("::"));
+        match lowered {
+            Ok(page) if split && !page.island => {
+                let at = compiled.component.as_ref().map_or(
+                    viso_dsl::syntax::TextRange::empty(viso_dsl::syntax::TextSize::ZERO),
+                    |component| component.schema.view.unwrap_or(component.source_origin),
+                );
+                let mut diagnostic = Diagnostic::error(
+                    WEB_HYBRID_NO_ISLAND.name,
+                    at,
+                    "the view has no `Island` for the renderer to draw".to_owned(),
+                );
+                diagnostic.notes = vec![
+                    "wrap the component it draws in `Island { … }`, or build `web-dom`".to_owned(),
+                ];
+                out.source(Some(&source), &[], &diagnostic);
+                None
+            }
             Ok(page) => Some(page),
             Err(findings) => {
-                let source = Source::new(&file.path, &self.project.root, &file.source)
-                    .of_module(file.module.join("::"));
                 for finding in &findings {
                     let code = match finding.need {
                         Need::GpuOnly => WEB_GPU_ONLY_NODE,

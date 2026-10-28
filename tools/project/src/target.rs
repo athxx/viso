@@ -110,9 +110,7 @@ impl Target {
 
     /// Whether this build can produce the target.
     ///
-    /// The host, headless, the iOS Simulator, the Android Emulator, the
-    /// WebGPU and DOM browser targets and every device target are; the
-    /// hybrid one is not yet. This is a
+    /// Every built-in target and every device target is. This is a
     /// property of the *build*, not of the machine: it is what separates "you
     /// asked for something that does not exist yet" from "you asked for
     /// something your machine cannot do".
@@ -125,6 +123,7 @@ impl Target {
                 | Target::Android
                 | Target::WebGpu
                 | Target::WebDom
+                | Target::WebHybrid
                 | Target::Device(_)
         )
     }
@@ -718,22 +717,19 @@ mod tests {
 
     /// The distinction this build has to keep honest: a declared-but-unbuilt target
     /// is exit 3 with a clear message, not a parse failure and not a silent
-    /// success.
+    /// success. Every built-in target is built today.
     #[test]
     fn declared_but_unavailable_targets_fail_cleanly() {
         for target in Target::ALL {
             let parsed = Target::parse(target.as_str()).expect("declared targets parse");
-            match parsed.require_available() {
-                Ok(t) => assert!(!matches!(t, Target::WebHybrid)),
-                Err(d) => {
-                    assert_eq!(d.code, ConfigCode::TargetUnavailable);
-                    assert_eq!(d.code.exit_code(), 3);
-                    assert!(d.message.contains(target.as_str()));
-                    // The note must name what the user *can* do, otherwise the
-                    // error is a dead end.
-                    assert!(d.notes.join(" ").contains("host"));
-                }
-            }
+            assert_eq!(parsed.require_available().ok(), Some(*target));
+            let d = target.unavailable();
+            assert_eq!(d.code, ConfigCode::TargetUnavailable);
+            assert_eq!(d.code.exit_code(), 3);
+            assert!(d.message.contains(target.as_str()));
+            // The note must name what the user *can* do, otherwise the error
+            // is a dead end.
+            assert!(d.notes.join(" ").contains("host"));
         }
     }
 

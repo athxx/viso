@@ -139,8 +139,8 @@ pub enum Deploy {
     },
 }
 
-/// A `web-dom` lane's page: the latest lowering of its view, and the
-/// service worker the page registers.
+/// A `web-dom` or `web-hybrid` lane's page: the latest lowering of its
+/// view, and the service worker the page registers.
 pub struct PageSource {
     pub page: WebPage,
     pub worker: Option<String>,
@@ -445,10 +445,10 @@ impl Deploy {
                 let turn = std::sync::atomic::AtomicBool::new(false);
                 let worker = viso_package::fragment::worker(&declared.fragments.worker);
                 let page = page.clone();
-                let target = if page.is_some() {
-                    Target::WebDom
-                } else {
-                    Target::WebGpu
+                let target = match &page {
+                    Some(page) if lock(page).page.page.island => Target::WebHybrid,
+                    Some(_) => Target::WebDom,
+                    None => Target::WebGpu,
                 };
                 BuildPlan {
                     rust: rust_plan(target, None, Profile::Dev, None),
@@ -619,7 +619,8 @@ impl Deploy {
 
     /// Takes `page`, the view's page lowered again: a `web-dom` lane writes it
     /// beside the app it serves and has the open pages load it. Whether it
-    /// did: not for a page as it was, nor for any other deploy.
+    /// did: not for a page as it was, nor for any other deploy, nor for a
+    /// `web-hybrid` page, which the next build of its app writes.
     ///
     /// # Errors
     ///
@@ -641,6 +642,10 @@ impl Deploy {
                 return Ok(false);
             }
             source.page = page;
+            // A page with an island waits for the app built with it.
+            if source.page.page.island {
+                return Ok(false);
+            }
         }
         let Some(dir) = bundle else {
             return Ok(false);

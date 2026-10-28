@@ -957,7 +957,7 @@ Rules (as for `todo_features.md`):
   - [x] `web-dom` dev session (`viso run`/`serve web-dom`): `.vs` edits rewrite the page and
     reload it without a Rust build. Verified on a `viso new` app in headless Chrome.
   - [x] Package natives in the page lowering: values calling them are computed by the page's VM.
-  - [ ] `web-hybrid` (ADR 0059): a DOM page with one component the renderer draws.
+  - [x] `web-hybrid` (ADR 0059): a DOM page with one component the renderer draws.
     - [x] `Island` in `.vs`: one component of the file, recorded in `ViewBehavior::islands` (its
       input and event entries); a stack of its child where nothing splits the view. Verified:
       `view_islands` tests (record, mount errors, package mount).
@@ -972,7 +972,15 @@ Rules (as for `todo_features.md`):
       (`ViewHost::set_event_sink`), which a microtask runs on the page. `view!` no longer
       rejects the states of a component it inlines. Verified: `dsl_island` test (the root, a
       pushed value landing, events running the page's handler), wasm check of both features.
-    - [ ] Target, bundle, `check`/`build`/`run`/`serve web-hybrid`.
+    - [x] Target, bundle, `check`/`build`/`run`/`serve web-hybrid`: the target is available and
+      builds with `viso/web-hybrid`; the page carries no `.vsb` (the app draws the island), and
+      `visoDom` resolves once the app's `build` offered the view, which a hybrid app reaches
+      after its WebGPU device. `WEB_HYBRID_NO_ISLAND` for a view without one. A `.vs` edit in
+      `run web-hybrid` rebuilds the app, whose bundle writes the page lowered again; the
+      watcher's first delivery does not. Verified: headless Chrome with WebGPU: page clicks
+      push into the island, the island's click runs the page's handler, a `.vs` edit in
+      `viso run` rebuilt and served the new island; `web-dom` page still runs; CLI
+      check/doctor/json/golden and tooling/project unit tests.
 - [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
   dev-protocol message and asserting identical bytes.
 - [ ] Extend the VM-vs-native differential test to every DSL doc-example fixture. Verify that it

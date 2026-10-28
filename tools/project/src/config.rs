@@ -846,25 +846,6 @@ opt_level = 2
         assert!(parse_bool("maybe").is_err());
     }
 
-    /// An unavailable target fails with the environment exit code.
-    #[test]
-    fn an_unavailable_target_is_an_environment_failure() {
-        let (_s, project) = project(MINIMAL);
-        let diags = resolve(
-            &project,
-            Target::WebHybrid,
-            ArtifactKind::Build,
-            &Overrides::default(),
-            &Env::empty(),
-        )
-        .unwrap_err();
-        let diag = diags
-            .iter()
-            .find(|d| d.code == ConfigCode::TargetUnavailable)
-            .expect("expected a target diagnostic");
-        assert_eq!(diag.code.exit_code(), 3);
-    }
-
     /// Manifest warnings survive resolution. Dropping them here would mean a
     /// warning is reported by `viso check` and silently ignored by `viso build`.
     #[test]

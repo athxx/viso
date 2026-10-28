@@ -291,6 +291,7 @@ EXPORT_WRITE                  The export could not be written.
 WEB_GPU_ONLY_NODE             A node only the Viso renderer can draw is in a `web-dom` page.
 WEB_DOM_UNSUPPORTED           Part of the view has no form in a `web-dom` page.
 WEB_DOM_NO_VIEW               The project has no view for its `web-dom` page.
+WEB_HYBRID_NO_ISLAND          A `web-hybrid` page's view has no `Island`.
 RUN_APP_FAILED                The app could not be launched, crashed, or exited with a failure.
 RUN_TEST_CRASHED              A test case's runner could not start, crashed, or ended without its report.
 RUN_SNAPSHOT_FAILED           A scenario's snapshot could not be taken.

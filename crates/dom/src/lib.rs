@@ -47,6 +47,8 @@ pub struct Boot {
 
 thread_local! {
     static OFFERED: RefCell<Vec<Boot>> = const { RefCell::new(Vec::new()) };
+    /// What waits for the next offer.
+    static WAITING: RefCell<Vec<std::task::Waker>> = const { RefCell::new(Vec::new()) };
     /// The page open on the app's module, by component.
     static OPEN: RefCell<Vec<(&'static str, SharedPage)>> = const { RefCell::new(Vec::new()) };
 }
@@ -60,6 +62,23 @@ pub fn offer(boot: Boot) {
             offered.push(boot);
         }
     });
+    for waker in WAITING.with(|waiting| std::mem::take(&mut *waiting.borrow_mut())) {
+        waker.wake();
+    }
+}
+
+/// Ready once the app offered the view of `component`: at once where `build`
+/// ran before the page opens, later where the app builds once its window
+/// can draw, as a `web-hybrid` app does.
+pub fn offered(component: &str) -> impl std::future::Future<Output = ()> + '_ {
+    std::future::poll_fn(move |cx| {
+        if OFFERED.with(|offered| offered.borrow().iter().any(|b| b.component == component)) {
+            std::task::Poll::Ready(())
+        } else {
+            WAITING.with(|waiting| waiting.borrow_mut().push(cx.waker().clone()));
+            std::task::Poll::Pending
+        }
+    })
 }
 
 /// A page the app and the page script share.

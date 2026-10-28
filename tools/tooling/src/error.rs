@@ -386,9 +386,15 @@ codes! {
     }
     WEB_DOM_NO_VIEW = DIAGNOSTICS {
         summary: "The project has no view for its `web-dom` page.",
-        explanation: "A `web-dom` page mounts the component `src/app.vs` exports, the root view `Application::build` mounts with `view!`; the project has no such file.",
+        explanation: "A `web-dom` or `web-hybrid` page mounts the component `src/app.vs` exports, the root view `Application::build` mounts with `view!`; the project has no such file.",
         fix: "Add `src/app.vs` exporting the app's root component, as `viso new` starts a project, and mount it with `view!(\"app.vs\")`.",
         commands: ["viso new"],
+    }
+    WEB_HYBRID_NO_ISLAND = DIAGNOSTICS {
+        summary: "A `web-hybrid` page's view has no `Island`.",
+        explanation: "A `web-hybrid` page is a `web-dom` page with one `Island`, the component the Viso renderer draws in it; the view has none, so the renderer would have nothing to draw and its window would cover the page.",
+        fix: "Wrap the component the renderer draws in `Island { … }`, or build the page alone with `viso build web-dom`.",
+        commands: ["viso build web-dom"],
     }
     RUN_APP_FAILED = RUNTIME {
         summary: "The app could not be launched, crashed, or exited with a failure.",

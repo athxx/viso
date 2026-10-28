@@ -191,11 +191,31 @@ struct Lane {
     waiting: Option<Build>,
     /// When a `web-dom` lane lowers its page again, after an edit.
     page_due: Option<Instant>,
+    /// The hash of each `.vs` file a `web-hybrid` lane's app draws its
+    /// island from, as the watcher first delivered it or last changed it.
+    views: Vec<(PathBuf, u64)>,
 }
 
 impl Lane {
     fn live(&self) -> bool {
         self.ended.is_none()
+    }
+
+    /// Whether `bytes`, the content of the `.vs` file `path`, changes the
+    /// view the lane's app was built from: not the watcher's first delivery,
+    /// nor the content it had.
+    fn view_changed(&mut self, path: &Path, bytes: &[u8]) -> bool {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let hash = hasher.finish();
+        match self.views.iter_mut().find(|(p, _)| p == path) {
+            Some((_, seen)) => std::mem::replace(seen, hash) != hash,
+            None => {
+                self.views.push((path.to_owned(), hash));
+                false
+            }
+        }
     }
 
     /// Takes `build`, a newer build than the one waiting: the restart runs
@@ -652,10 +672,10 @@ pub(super) fn session(
                 }
             };
         }
-        // A `web-dom` lane serves its view's page, which its sources check
-        // for, as `viso build web-dom` does.
+        // A `web-dom` or `web-hybrid` lane serves its view's page, which its
+        // sources check for, as `viso build` does.
         let page = match target {
-            Target::WebDom => match dom_page(ctx, out) {
+            Target::WebDom | Target::WebHybrid => match dom_page(ctx, target, out) {
                 Ok(Some(page)) => Some(Arc::new(Mutex::new(PageSource {
                     page,
                     worker: viso_package::fragment::worker(&declared.fragments.worker),
@@ -885,6 +905,7 @@ pub(super) fn session(
             restart: None,
             waiting: None,
             page_due: None,
+            views: Vec::new(),
         });
     }
     // The watcher starts before the builds, so an edit saved while the apps
@@ -1284,30 +1305,37 @@ pub(super) fn session(
     exit_code(out, status)
 }
 
-/// The project's `web-dom` page, its sources checked for it and each
-/// diagnostic reported; `None` when they did not lower to one.
-fn dom_page(ctx: &Context<'_>, out: &mut Output) -> Result<Option<WebPage>, u8> {
+/// The project's page for `target`, `web-dom` or `web-hybrid`, its sources
+/// checked for it and each diagnostic reported; `None` when they did not
+/// lower to one.
+fn dom_page(ctx: &Context<'_>, target: Target, out: &mut Output) -> Result<Option<WebPage>, u8> {
     let project = ctx.project(out)?;
     let assets = project.root.join(viso_dsl::assets::ASSET_DIR);
-    let checked = check::package_for(project, &check::Options::target(Target::WebDom), out)?;
+    let checked = check::package_for(project, &check::Options::target(target), out)?;
     Ok(checked.page.map(|page| WebPage { page, assets }))
 }
 
-/// Lowers `lane`'s page again after an edit and has its open pages load it;
-/// sources that do not lower keep the page as it was.
+/// Lowers `lane`'s page again after an edit and has its open pages load it,
+/// or, for a `web-hybrid` page, keeps it for the build of the app the edit
+/// starts; sources that do not lower keep the page as it was.
 fn repage(ctx: &Context<'_>, out: &mut Output, lane: &mut Lane) {
-    let Ok(Some(page)) = dom_page(ctx, out) else {
+    let kind = lane.target.as_str();
+    let Ok(Some(page)) = dom_page(ctx, lane.target, out) else {
         out.log(
             "warn",
             "tool",
-            "the `web-dom` page keeps its last version until its sources check",
+            &format!("the `{kind}` page keeps its last version until its sources check"),
         );
         return;
     };
     match lane.deploy.repage(page) {
-        Ok(true) => out.log("info", "tool", "the `web-dom` page was written again"),
+        Ok(true) => out.log(
+            "info",
+            "tool",
+            &format!("the `{kind}` page was written again"),
+        ),
         Ok(false) => {}
-        Err(why) => out.log("warn", "tool", &format!("the `web-dom` page stays: {why}")),
+        Err(why) => out.log("warn", "tool", &format!("the `{kind}` page stays: {why}")),
     }
 }
 
@@ -1624,14 +1652,28 @@ fn relay(
             }
         }
         Incoming::Change(change) => {
-            // A `web-dom` page is its sources' lowering, which any of them
-            // can change.
-            let due = Instant::now() + PAGE_SETTLE;
+            // A page is its sources' lowering, which any of them can change;
+            // a `web-hybrid` app draws its island from the view it was built
+            // with, so a `.vs` edit builds it again.
+            let now = Instant::now();
+            let due = now + PAGE_SETTLE;
+            let mut rebuilt = false;
             for lane in lanes
                 .iter_mut()
-                .filter(|lane| lane.target == Target::WebDom)
+                .filter(|lane| matches!(lane.target, Target::WebDom | Target::WebHybrid))
             {
                 lane.page_due = Some(due);
+                if lane.target == Target::WebHybrid
+                    && lane.live()
+                    && change.path.extension().is_some_and(|e| e == "vs")
+                    && lane.view_changed(&change.path, &change.bytes)
+                {
+                    lane.builds.change(change.path.clone(), now);
+                    rebuilt = true;
+                }
+            }
+            if rebuilt {
+                dev.rust_changed(out);
             }
             dev.change(change, out);
         }

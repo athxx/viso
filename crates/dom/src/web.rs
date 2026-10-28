@@ -34,15 +34,21 @@ extern "C" {
 }
 
 /// Opens the page of component `component` on `module`, the page's own
-/// build of it, or on the app's, which must be build `build`: the page the
-/// app shares with the script, open already where the app mounted its
-/// island.
+/// build of it, or on the app's, which must be build `build`, once the app
+/// offered it: the page the app shares with the script, open already where
+/// the app mounted its island.
 ///
 /// # Errors
 ///
 /// What keeps the view from running.
 #[wasm_bindgen(js_name = visoDom)]
-pub fn viso_dom(component: &str, module: Option<Vec<u8>>, build: u64) -> Result<DomPage, JsError> {
+pub async fn viso_dom(
+    component: String,
+    module: Option<Vec<u8>>,
+    build: u64,
+) -> Result<DomPage, JsError> {
+    crate::offered(&component).await;
+    let component = component.as_str();
     let page = match module {
         Some(module) => Page::open(component, Some(&module), build).map(|p| Rc::new(RefCell::new(p))),
         None => crate::shared(component).and_then(|page| {

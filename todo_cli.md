@@ -286,8 +286,9 @@ gap, and CI can run all of it headless.
 - [x] `check <target>`: target capability checks (a GPU-only node on `web-dom`, a
       platform-gated API on a target that lacks it) on top of the fast default (§17.1).
       (The target's configuration and availability, and the input its devices have;
-      `web-dom` computes its page and reports the C4.4 findings; `web-hybrid` is still
-      unavailable.)
+      `web-dom` computes its page and reports the C4.4 findings; `web-hybrid` computes
+      its split page the same way, and a view without an `Island` is
+      `WEB_HYBRID_NO_ISLAND`.)
 - [x] `--watch`: reuses the dev session watcher; re-checks on change, prints a
       per-batch summary, emits one `summary` per batch under `--json`, Ctrl-C exits
       130. (Per §17.3: `progress{phase:"idle"}` ends each round; one `summary`, at
@@ -655,8 +656,9 @@ alternative.
         memory (`viso_package::web::shares_memory`).
   - [x] One human line and one `server` event (`target` added; `url` with the lane's
         path) per lane; the LAN warning once; `--open` opens every lane's page.
-  - [ ] End to end with a `web-hybrid` lane: waits on `web-hybrid` (C4.3); `web-dom`
-        lanes run.
+  - [x] End to end with a `web-hybrid` lane: `viso serve web-dom web-hybrid` on one project
+        serves both lanes; in headless Chrome the hybrid lane's page pushes into its island
+        and runs the island's event, the `web-dom` lane shows the island's component inline.
 
 ### C4.2 — web-gpu remaining
 
@@ -708,8 +710,15 @@ alternative.
         compiled against (a package's are schema stubs); a value calling one is left to the
         page's VM rather than prerendered. Verified: `export_dom` test with a schema-read
         library. (An initial state calling one still does not lower.)
-- [ ] `web-hybrid` (§32): DOM shell with GPU islands; the bundle carries both runtimes
-      and the capability split.
+- [x] `web-hybrid` (§32, ADR 0059): a DOM page with one `Island` the renderer draws; the
+      bundle carries both runtimes (`viso/web-hybrid`) and the split page
+      (`export::hybrid`).
+  - Built: `Island` in the IR (`ViewBehavior::islands`), the hybrid lowering, the facade's
+    island mount (`viso_dom::shared`, `viso_dom::island`, `ViewHost::push_input` /
+    `set_event_sink`), the target in `build`/`check`/`run`/`serve` (`WEB_HYBRID_NO_ISLAND`).
+  - Verified: `dsl_island` test; `viso build web-hybrid` and `viso run web-hybrid` in
+    headless Chrome with WebGPU (page → island inputs, island → page events, a `.vs` edit
+    rebuilt the island).
 
 ### C4.4 — Web capability diagnostics (§33)
 
@@ -718,9 +727,11 @@ alternative.
       `build`; each diagnostic names the node, the target and the alternative
       (`WEB_*` codes registered in C2.3). `web-dom`'s rows are done:
       `WEB_GPU_ONLY_NODE`, `WEB_DOM_UNSUPPORTED`, `WEB_DOM_NO_VIEW`, from the page
-      lowering's findings, in `check web-dom` and `build web-dom`. On `web-gpu` every
-      node, shader and native the compiler knows is available, so the rest of the table
-      is `web-hybrid`'s and the platform-gated natives' (the item above). The
+      lowering's findings, in `check web-dom` and `build web-dom`; `web-hybrid`'s are the
+      same outside the island (a second island or one in a region is
+      `WEB_DOM_UNSUPPORTED`) plus `WEB_HYBRID_NO_ISLAND`. On `web-gpu` every node, shader
+      and native the compiler knows is available, so the rest of the table is the
+      platform-gated natives' (the item above). The
       §33 classification already runs where a target lacks something today — the
       export lowering's findings (`viso export html|solid`), each at its span with
       the node, the capability and the alternative.
@@ -1087,7 +1098,8 @@ and traced from the CLI and from Studio over the same services.
       their environments alone; no signing, provisioning or physical device in the dev
       loop; no `sdkmanager`/`avdmanager`/`simctl` in ordinary workflows.
 - [ ] Web: `web-gpu`, `web-dom`, `web-hybrid`, `serve`, capability diagnostics.
-      (`web-gpu`, `web-dom` and `serve` done; `web-hybrid` remains, C4.3.)
+      (`web-gpu`, `web-dom`, `web-hybrid` and `serve` done; the platform-gated rows of
+      the capability table remain, C4.4.)
 - [x] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
 - [ ] Test/Debug: `test`, `snapshot`, `inspect`, `profile`, `studio`.
       (All but `studio`, which waits for Studio itself.)

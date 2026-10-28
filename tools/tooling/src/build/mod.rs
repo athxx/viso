@@ -106,8 +106,13 @@ fn target_plan(
             ..RustPlan::default()
         },
         Target::Android => android_plan(Abi::host(), profile, sdk),
-        Target::WebGpu | Target::WebHybrid => RustPlan {
+        Target::WebGpu => RustPlan {
             target: Some(bundle::TRIPLE.to_owned()),
+            ..RustPlan::default()
+        },
+        Target::WebHybrid => RustPlan {
+            target: Some(bundle::TRIPLE.to_owned()),
+            features: vec![cargo::WEB_HYBRID],
             ..RustPlan::default()
         },
         Target::WebDom => RustPlan {

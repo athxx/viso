@@ -183,10 +183,6 @@ fn what_stops_a_build_before_cargo_runs() {
         stderr.starts_with("error[ENV_LOCK_HELD]: the build cache for `host` is held (pid 1"),
         "{stderr}"
     );
-
-    // A target this build cannot produce.
-    let out = viso(&root, &["build", "web-hybrid"]);
-    assert_eq!(out.status.code(), Some(3), "{}", text(&out.stderr));
 }
 
 #[test]

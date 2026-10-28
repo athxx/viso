@@ -498,9 +498,9 @@ fn a_target_is_checked_for_the_input_its_devices_have() {
         stderr(&dom)
     );
     let hybrid = viso(&s.0, &["check", "web-hybrid"]);
-    assert_eq!(code(&hybrid), 3);
+    assert_ne!(code(&hybrid), 0);
     assert!(
-        stderr(&hybrid).contains("error[C0011]"),
+        stderr(&hybrid).contains("error[WEB_DOM_NO_VIEW]"),
         "{}",
         stderr(&hybrid)
     );
