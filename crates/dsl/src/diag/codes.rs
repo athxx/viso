@@ -2807,7 +2807,10 @@ export component Poller {
             the reactive graph is feeding itself: typically an effect writes one of its own \
             dependencies, or a computed's evaluation reaches itself. The runtime stops that \
             frame's flush, reports the dropped cells and the effects they would wake, and \
-            keeps the values already written without running their reactions.",
+            keeps the values already written without running their reactions. An effect that \
+            runs 16 frames in a row only because effects wrote what it reads is cut the same \
+            way. Under `viso run`, the report names each state at its declaration and each \
+            effect at its body, rendered like a compiler diagnostic.",
         example: Example::Text(
             r#"Running this component and clicking the text raises E4202: the effect
 depends on `count` and writes `count`, so every run schedules another.
