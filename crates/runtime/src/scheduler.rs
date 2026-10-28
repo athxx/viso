@@ -724,6 +724,8 @@ fn normalize_gesture(g: RawGesture, scale: f32) -> GestureSample {
         y: g.y as f32 * scale,
         scale: g.scale as f32,
         rotation: g.rotation as f32,
+        dx: g.dx as f32 * scale,
+        dy: g.dy as f32 * scale,
         modifiers: normalize_modifiers(g.modifiers),
         phase: g.phase,
     }

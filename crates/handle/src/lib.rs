@@ -11,7 +11,9 @@
 //!
 //! The one non-data variant is [`RawWindowHandle::Scanout`]: a display with
 //! no compositor is presented to through the platform's page flips, so the
-//! handle carries the [`Scanout`] the backend hands its frames to.
+//! handle carries the [`Scanout`] the backend hands its frames to, and the
+//! window its video pictures to show on planes of their own
+//! ([`PlaneImage`]).
 //!
 //! Deliberately minimal and dependency-free: we do NOT pull in the
 //! `raw-window-handle` crate. Viso's RHI is the sole consumer of these handles,
@@ -300,6 +302,11 @@ pub struct GbmTarget {
 ///
 /// Damage rects are `(x, y, w, h)` in pixels from the top-left: what changed
 /// since the frame presented before. An empty slice is the whole frame.
+///
+/// A display may also show video pictures on planes of their own, over the
+/// frames: the display's hardware scans them out and blends them, so no GPU
+/// converts or draws them, and a new picture is shown without a new frame
+/// ([`show_plane`](Self::show_plane)).
 pub trait Scanout {
     /// The mode's size in pixels.
     fn size(&self) -> (u32, u32);
@@ -320,6 +327,60 @@ pub trait Scanout {
     fn present_pixels(&self, pixels: &[u8], stride: usize, damage: &[(u32, u32, u32, u32)]);
     /// A GPU-drawn frame was swapped into the GBM surface.
     fn presented(&self, damage: &[(u32, u32, u32, u32)]);
+    /// How many pictures the display can show over the frames at once, each
+    /// on a plane of its own; none by default.
+    fn planes(&self) -> usize {
+        0
+    }
+    /// Shows `image` on plane `plane` over the frames from now on, or takes
+    /// the plane down (`None`). Returns whether the display shows it: one it
+    /// cannot show — its size, scale, place or format — leaves the plane
+    /// down, and the picture is the frame's to draw. It shows with the next
+    /// frame presented, or by itself at the next refresh when no frame is.
+    fn show_plane(&self, plane: usize, image: Option<&PlaneImage<'_>>) -> bool {
+        let _ = plane;
+        image.is_none()
+    }
+    /// Shows plane `plane`'s picture at another place or crop (as
+    /// [`PlaneImage`] has them); `false` when it cannot, the plane left as
+    /// it was.
+    fn move_plane(&self, plane: usize, crop: [f32; 4], at: [i32; 4]) -> bool {
+        let _ = (plane, crop, at);
+        false
+    }
+}
+
+/// A video picture for a display's plane ([`Scanout::show_plane`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneImage<'a> {
+    pub picture: PlanePicture<'a>,
+    /// The part of the picture shown, in its texels: left, top, width and
+    /// height.
+    pub crop: [f32; 4],
+    /// Where on the frame it shows, in pixels from the top-left: left, top,
+    /// width and height.
+    pub at: [i32; 4],
+}
+
+/// The texels of a [`PlaneImage`].
+#[derive(Debug, Clone, Copy)]
+pub enum PlanePicture<'a> {
+    /// NV12 planes at hand, which the display copies into memory it scans
+    /// out.
+    Nv12(Nv12<'a>),
+    /// An [`ExternalImage::DmaBuf`], scanned out where it lies and held while
+    /// it is on the screen.
+    External(ExternalImage),
+}
+
+impl PlanePicture<'_> {
+    /// Its size in texels.
+    pub fn size(&self) -> (u32, u32) {
+        match self {
+            PlanePicture::Nv12(p) => (p.width, p.height),
+            PlanePicture::External(image) => image.size(),
+        }
+    }
 }
 
 /// A picture in 4:2:0 Y′CbCr planes at hand: luma, then Cb and Cr

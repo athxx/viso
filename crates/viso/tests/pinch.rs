@@ -61,6 +61,8 @@ fn gesture(scale: f64, rotation: f64, phase: GesturePhase) -> RawEvent {
         y: 50.0,
         scale,
         rotation,
+        dx: 0.0,
+        dy: 0.0,
         modifiers: Modifiers::default(),
         phase,
     })

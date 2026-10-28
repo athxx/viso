@@ -30,7 +30,8 @@ impl Library {
             // SAFETY: loading a system library by name runs its initializers,
             // the documented way to reach it.
             let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-            (!handle.is_null()).then_some(Library(handle))
+            // Made only for a handle: a null one dropped would be closed.
+            (!handle.is_null()).then(|| Library(handle))
         })
     }
 

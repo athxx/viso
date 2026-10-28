@@ -239,7 +239,8 @@ pub struct RawScroll {
 
 /// A trackpad's pinch or turn, in logical points: two fingers spreading or
 /// turning on it. A system that reports the two apart reports one gesture
-/// while either runs.
+/// while either runs. Three fingers or more swiping on it are one too, which
+/// neither scales nor turns but moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawGesture {
     pub window: WindowId,
@@ -250,6 +251,10 @@ pub struct RawGesture {
     pub scale: f64,
     /// How far they turned since the last sample, in radians, clockwise.
     pub rotation: f64,
+    /// How far the fingers' middle moved since the last sample; zero where
+    /// the system tells only of the spread and the turn.
+    pub dx: f64,
+    pub dy: f64,
     pub modifiers: Modifiers,
     pub phase: GesturePhase,
 }

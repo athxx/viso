@@ -1,6 +1,6 @@
 //! DRM/KMS through the kernel's ioctls, with no libdrm: the card's
-//! resources, connectors, planes and properties, dumb buffers and
-//! framebuffers, atomic commits (and the legacy calls for a driver without
+//! resources, connectors, planes and properties, dumb buffers, dma-bufs
+//! imported, and framebuffers, atomic commits (and the legacy calls for a driver without
 //! atomic), and the page-flip events read back from the card.
 
 use std::io;
@@ -23,6 +23,7 @@ const fn iow<T>(nr: u32) -> libc::Ioctl {
 pub(super) const FORMAT_XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
 pub(super) const FORMAT_RGB565: u32 = u32::from_le_bytes(*b"RG16");
 pub(super) const FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
+pub(super) const FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
 
 const CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
 const CLIENT_CAP_ATOMIC: u64 = 3;
@@ -39,11 +40,15 @@ const OBJECT_PLANE: u32 = 0xeeee_eeee;
 
 const CONNECTED: u32 = 1;
 const MODE_TYPE_PREFERRED: u32 = 1 << 3;
+const PROP_RANGE: u32 = 1 << 1;
+const PROP_IMMUTABLE: u32 = 1 << 2;
 const PROP_ENUM: u32 = 1 << 3;
 const PROP_BITMASK: u32 = 1 << 5;
 
 const EVENT_VBLANK: u32 = 0x01;
 const EVENT_FLIP_COMPLETE: u32 = 0x02;
+const EVENT_CRTC_SEQUENCE: u32 = 0x03;
+const CRTC_SEQUENCE_RELATIVE: u32 = 0x01;
 
 const CURSOR_BO: u32 = 0x01;
 const CURSOR_MOVE: u32 = 0x02;
@@ -248,6 +253,30 @@ struct Atomic {
 
 #[repr(C)]
 #[derive(Default)]
+struct PrimeHandle {
+    handle: u32,
+    flags: u32,
+    fd: i32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct QueueSequence {
+    crtc_id: u32,
+    flags: u32,
+    sequence: u64,
+    user_data: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct GemClose {
+    handle: u32,
+    pad: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
 struct CreateBlob {
     data: u64,
     length: u32,
@@ -294,6 +323,9 @@ struct Cursor {
 
 const SET_CLIENT_CAP: libc::Ioctl = iow::<SetClientCap>(0x0d);
 const GET_CAP: libc::Ioctl = iowr::<GetCap>(0x0c);
+const GEM_CLOSE: libc::Ioctl = iow::<GemClose>(0x09);
+const PRIME_FD_TO_HANDLE: libc::Ioctl = iowr::<PrimeHandle>(0x2e);
+const CRTC_QUEUE_SEQUENCE: libc::Ioctl = iowr::<QueueSequence>(0x3c);
 const MODE_GETRESOURCES: libc::Ioctl = iowr::<CardRes>(0xa0);
 const MODE_SETCRTC: libc::Ioctl = iowr::<Crtc>(0xa2);
 const MODE_CURSOR: libc::Ioctl = iowr::<Cursor>(0xa3);
@@ -353,12 +385,18 @@ pub(super) struct Property {
     pub id: u32,
     pub name: String,
     pub enums: Vec<(u64, String)>,
+    /// A range's least and greatest values.
+    pub range: Option<(u64, u64)>,
+    /// Whether only the kernel sets it.
+    pub immutable: bool,
 }
 
-/// One page flip that completed.
+/// One page flip that completed, or a refresh asked for that came.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Flip {
     pub crtc: u32,
+    /// A refresh asked for ([`Card::queue_refresh`]), not a flip.
+    pub refresh: bool,
 }
 
 /// An open DRM card.
@@ -557,10 +595,24 @@ impl Card {
             self.ioctl(MODE_GETPROPERTY, &mut q)?;
             enums = blobs.iter().map(|e| (e.value, name_of(&e.name))).collect();
         }
+        let mut range = None;
+        if p.flags & PROP_RANGE != 0 && p.count_values == 2 {
+            let mut values = [0u64; 2];
+            let mut q = GetProperty {
+                prop_id: id,
+                values_ptr: ptr_of(&mut values),
+                count_values: 2,
+                ..GetProperty::default()
+            };
+            self.ioctl(MODE_GETPROPERTY, &mut q)?;
+            range = Some((values[0], values[1]));
+        }
         Ok(Property {
             id,
             name: name_of(&p.name),
             enums,
+            range,
+            immutable: p.flags & PROP_IMMUTABLE != 0,
         })
     }
 
@@ -631,6 +683,51 @@ impl Card {
         };
         self.ioctl(MODE_ADDFB2, &mut f)?;
         Ok(f.fb_id)
+    }
+
+    /// A framebuffer of `format` over up to four planes, each a buffer
+    /// object's handle, pitch and byte offset (unused ones zero).
+    pub fn add_fb_planes(
+        &self,
+        (width, height): (u32, u32),
+        format: u32,
+        handles: [u32; 4],
+        pitches: [u32; 4],
+        offsets: [u32; 4],
+    ) -> io::Result<u32> {
+        let mut f = FbCmd2 {
+            width,
+            height,
+            pixel_format: format,
+            handles,
+            pitches,
+            offsets,
+            ..FbCmd2::default()
+        };
+        self.ioctl(MODE_ADDFB2, &mut f)?;
+        Ok(f.fb_id)
+    }
+
+    /// A buffer object of the card's over dma-buf `fd`, which stays the
+    /// caller's; let it go with [`close_handle`](Self::close_handle). The
+    /// same dma-buf imported again yields the same handle.
+    pub fn import_dma_buf(&self, fd: RawFd) -> io::Result<u32> {
+        let mut p = PrimeHandle {
+            fd,
+            ..PrimeHandle::default()
+        };
+        self.ioctl(PRIME_FD_TO_HANDLE, &mut p)?;
+        Ok(p.handle)
+    }
+
+    pub fn close_handle(&self, handle: u32) {
+        let _ = self.ioctl(
+            GEM_CLOSE,
+            &mut GemClose {
+                handle,
+                ..GemClose::default()
+            },
+        );
     }
 
     pub fn remove_fb(&self, fb: u32) {
@@ -717,6 +814,18 @@ impl Card {
         self.ioctl(MODE_PAGE_FLIP, &mut f)
     }
 
+    /// Asks for an event at `crtc`'s next refresh, read back as a
+    /// [`Flip`] that is a `refresh`.
+    pub fn queue_refresh(&self, crtc: u32) -> io::Result<()> {
+        let mut q = QueueSequence {
+            crtc_id: crtc,
+            flags: CRTC_SEQUENCE_RELATIVE,
+            sequence: 1,
+            user_data: u64::from(crtc),
+        };
+        self.ioctl(CRTC_QUEUE_SEQUENCE, &mut q)
+    }
+
     /// Shows dumb buffer `handle` (a `w`×`h` ARGB8888 image; `0` hides it)
     /// as `crtc`'s cursor.
     pub fn set_cursor(&self, crtc: u32, handle: u32, w: u32, h: u32) -> io::Result<()> {
@@ -766,6 +875,12 @@ impl Card {
                 if matches!(kind, EVENT_VBLANK | EVENT_FLIP_COMPLETE) && len >= 32 {
                     f(Flip {
                         crtc: word(at + 28),
+                        refresh: false,
+                    });
+                } else if kind == EVENT_CRTC_SEQUENCE && len >= 32 {
+                    f(Flip {
+                        crtc: word(at + 8),
+                        refresh: true,
                     });
                 }
                 at += len;
@@ -832,6 +947,9 @@ mod tests {
         assert_eq!(size_of::<Atomic>(), 56);
         assert_eq!(size_of::<PageFlip>(), 24);
         assert_eq!(size_of::<Cursor>(), 28);
+        assert_eq!(size_of::<PrimeHandle>(), 12);
+        assert_eq!(size_of::<GemClose>(), 8);
+        assert_eq!(size_of::<QueueSequence>(), 24);
     }
 
     #[test]
@@ -841,6 +959,9 @@ mod tests {
         assert_eq!(MODE_ATOMIC as u64, 0xc038_64bc);
         assert_eq!(MODE_CREATE_DUMB as u64, 0xc020_64b2);
         assert_eq!(SET_CLIENT_CAP as u64, 0x4010_640d);
+        assert_eq!(PRIME_FD_TO_HANDLE as u64, 0xc00c_642e);
+        assert_eq!(GEM_CLOSE as u64, 0x4008_6409);
+        assert_eq!(CRTC_QUEUE_SEQUENCE as u64, 0xc018_643c);
     }
 
     #[test]

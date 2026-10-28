@@ -251,6 +251,8 @@ impl Rt {
                 y,
                 scale,
                 rotation,
+                dx: 0.0,
+                dy: 0.0,
                 phase,
             },
             &mut self.scratch,

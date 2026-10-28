@@ -110,6 +110,10 @@ pub struct GestureSample {
     pub scale: f32,
     /// How far they turned since the last sample, in radians, clockwise.
     pub rotation: f32,
+    /// How far the fingers' middle moved since the last sample, in physical
+    /// pixels.
+    pub dx: f32,
+    pub dy: f32,
     pub modifiers: Modifiers,
     pub phase: GesturePhase,
 }

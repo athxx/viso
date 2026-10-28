@@ -1067,8 +1067,28 @@ Rules (as for `todo_features.md`):
     script and gets back the title, the text and the box's viewport on macOS (800x519) and on an
     Android 37 emulator (411x818, GLES there since the emulator's Vulkan would not start with the
     display asleep); a screenshot shows the page under the toolbar.
-- [ ] KMS: libinput gestures (pinch, swipe) as `RawEvent::Gesture`, and overlay planes for video.
+- [x] KMS: libinput gestures (pinch, swipe) as `RawEvent::Gesture`, and overlay planes for video.
   Verify with a libinput fixture, and a video scanned out on a board without the GLES pass.
+  - Built: libinput's touchpad pinch and swipe events become `RawEvent::Gesture`. The scale since
+    begin turns into a ratio per step. `RawGesture` gains `dx`/`dy`, the move of the fingers'
+    middle; X11 and Wayland fill it too, and the pinch's focal point follows it. The tape format
+    is now version 2. Video planes (ADR 0061): `Scanout::planes`/`show_plane`/`move_plane` on the
+    CRTC's overlay planes. An NV12 plane imports a dma-buf or copies NV12 into dumb buffers; an
+    XRGB-only plane gets a converted copy. Each new place is tried with `TEST_ONLY` first, and a
+    frame with nothing to present waits for the refresh through `CRTC_QUEUE_SEQUENCE`. The facade
+    moves a video that `Renderer::topmost_image` finds plainly on top onto a plane after upload,
+    and back into its texture once it is covered. `Renderer::texture_rewritten` fixes in-place
+    texture writes not redrawing under partial redraw. Also fixed: a crash at start on boards
+    missing one of the dlopened libraries (libinput, libseat, libgbm), from `dlclose(NULL)`.
+  - Verified: a fixture in `libinput debug-events` format (a pinch, a swipe, a cancelled pinch)
+    replays through the gesture state machine in a Linux container. Videos tests with a fake
+    display check a video going onto the plane and back when covered, and a refused place staying
+    in the texture; renderer tests check `topmost_image` under clips and `texture_rewritten`. The
+    board was vkms (`enable_overlay=1`) in a podman VM, running a CPU build with gstreamer. Uncovered,
+    a 640x360 video sat on overlay plane 1 and its framebuffer changed ~30 times a second. The
+    primary framebuffer did not change, so no UI frame was drawn, and the CRC showed 31 distinct
+    frames a second. With a box over it, the plane came down and the video was composited again.
+    Not verified: the NV12 and dma-buf paths, which vkms does not offer, and real hardware.
 
 ## N8 — Devices and verification
 

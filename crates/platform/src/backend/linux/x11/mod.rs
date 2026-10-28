@@ -1309,7 +1309,7 @@ impl X11 {
             }
             Event::XinputGesturePinchUpdate(e) => {
                 let at = (e.event, e.event_x, e.event_y);
-                let by = Some((e.scale, e.delta_angle));
+                let by = Some((e.scale, e.delta_angle, e.delta_x, e.delta_y));
                 self.on_pinch(at, e.mods.effective, crate::GesturePhase::Changed, by);
             }
             Event::XinputGesturePinchEnd(e) => {
@@ -1811,17 +1811,18 @@ impl X11 {
     }
 
     /// A touchpad pinch's event of `phase` at `(xid, x, y)`, a window and a
-    /// point in it; an update brings its scale since the begin and its turn
-    /// (degrees, clockwise) since the update before.
+    /// point in it; an update brings its scale since the begin, and its turn
+    /// (degrees, clockwise) and the move of its middle (pixels) since the
+    /// update before.
     fn on_pinch(
         &mut self,
         (xid, x, y): (xproto::Window, i32, i32),
         mods: u32,
         phase: crate::GesturePhase,
-        update: Option<(i32, i32)>,
+        update: Option<(i32, i32, i32, i32)>,
     ) {
-        let (scale, rotation) = match update {
-            Some((scale, angle)) => {
+        let (scale, rotation, pan) = match update {
+            Some((scale, angle, dx, dy)) => {
                 let scale = input::fp1616(scale);
                 let by = if scale > 0.0 && self.pinch_scale > 0.0 {
                     scale / self.pinch_scale
@@ -1829,11 +1830,12 @@ impl X11 {
                     1.0
                 };
                 self.pinch_scale = scale;
-                (by, input::fp1616(angle).to_radians())
+                let pan = (input::fp1616(dx), input::fp1616(dy));
+                (by, input::fp1616(angle).to_radians(), pan)
             }
             None => {
                 self.pinch_scale = 1.0;
-                (1.0, 0.0)
+                (1.0, 0.0, (0.0, 0.0))
             }
         };
         let Some(i) = self.index_xid(xid) else { return };
@@ -1845,6 +1847,8 @@ impl X11 {
             y: input::fp1616(y) / win.scale,
             scale,
             rotation,
+            dx: pan.0 / win.scale,
+            dy: pan.1 / win.scale,
             modifiers,
             phase,
         }));

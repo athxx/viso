@@ -22,7 +22,7 @@
 //! of the screen updates only that.
 
 use viso_gpu::backend::{DrawCommand, Geometry};
-use viso_gpu::{BufferDesc, BufferId, BufferUsage, Frame, GpuBackend};
+use viso_gpu::{BufferDesc, BufferId, BufferUsage, Frame, GpuBackend, TextureId};
 use viso_math::Affine2;
 
 use super::{
@@ -141,6 +141,9 @@ pub(super) struct Presenter {
     /// How many times each [`Atlas`] was written: part of the key of every
     /// entry sampling it, so a write damages them.
     atlas_writes: [u64; 2],
+    /// How many times each texture of the caller's was written where it lies
+    /// ([`Renderer::texture_rewritten`]), the same way.
+    texture_writes: Vec<(TextureId, u64)>,
 }
 
 impl Default for Presenter {
@@ -170,6 +173,7 @@ impl Default for Presenter {
             clear_buffer: None,
             stats: DamageStats::default(),
             atlas_writes: [0; 2],
+            texture_writes: Vec::new(),
         }
     }
 }
@@ -196,7 +200,7 @@ impl Presenter {
         self.placing.clear();
         self.placed_of.clear();
         for d in &self.draws[first..first + added] {
-            match place(transforms, d, surface) {
+            match place_draw(transforms, d, surface) {
                 Some(drawn) => {
                     self.staged.push(drawn.rect);
                     self.placed_of.push((at + self.placing.len()) as u32);
@@ -244,7 +248,7 @@ impl Presenter {
         let mut placed = Vec::new();
         assert_eq!(self.drawn_of.len(), self.draws.len());
         for (d, &at) in self.draws.iter().zip(&self.drawn_of) {
-            match place(transforms, d, surface) {
+            match place_draw(transforms, d, surface) {
                 Some(drawn) => {
                     assert_eq!(at as usize, placed.len(), "where the draw was shown");
                     placed.push(drawn);
@@ -254,6 +258,11 @@ impl Presenter {
         }
         let keyed = |v: &[Drawn]| v.iter().map(|d| d.rect).collect::<Vec<_>>();
         assert_eq!(keyed(&self.presented), keyed(&placed), "the shown rects");
+    }
+
+    /// Texture `texture` is gone: its writes are no longer counted.
+    pub(super) fn forget_texture(&mut self, texture: TextureId) {
+        self.texture_writes.retain(|(t, _)| *t != texture);
     }
 
     pub(super) fn atlas_written(&mut self, atlas: Atlas) {
@@ -279,12 +288,21 @@ impl Presenter {
 /// No entry.
 const NONE: u32 = u32::MAX;
 
+/// An image shown plainly and on top ([`Renderer::topmost_image`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TopImage {
+    /// The part of its texture that shows, in normalized coordinates.
+    pub uv: Rect,
+    /// Where that part shows on the surface, in points.
+    pub rect: Rect,
+}
+
 /// How many rects splices stage before the next frame is redrawn whole.
 const STAGED: usize = 256;
 
 /// Where surface draw `d` draws now, within `surface`, or `None` where it
 /// draws nothing.
-fn place(transforms: &Transforms, d: &SurfaceDraw, surface: Rect) -> Option<Drawn> {
+fn place_draw(transforms: &Transforms, d: &SurfaceDraw, surface: Rect) -> Option<Drawn> {
     let place = transforms.place(d.space.slot);
     let mut rect = if place.is_identity() {
         d.paint
@@ -541,6 +559,14 @@ impl Keying<'_> {
             StoreRef::Gradient(_) => {
                 key = key.word(p.atlas_writes[Atlas::GradientLut as usize]);
             }
+            StoreRef::Image(id) => {
+                if let Some(image) = self.scene.images.get(id)
+                    && let Some(&(_, writes)) =
+                        p.texture_writes.iter().find(|(t, _)| *t == image.texture)
+                {
+                    key = key.word(writes);
+                }
+            }
             StoreRef::GlyphRun(run)
                 if self
                     .scene
@@ -620,7 +646,7 @@ impl Renderer {
         p.drawn.clear();
         p.drawn_of.clear();
         for d in &p.draws {
-            match place(&self.transforms, d, surface) {
+            match place_draw(&self.transforms, d, surface) {
                 Some(drawn) => {
                     p.drawn_of.push(p.drawn.len() as u32);
                     p.drawn.push(drawn);
@@ -635,6 +661,111 @@ impl Renderer {
         p.staged.iter().for_each(|&r| merger.add(r));
         diff(&p.presented, &p.drawn, |r| merger.add(r));
         merger.finish()
+    }
+
+    /// Texture `texture`, the caller's, was written where it lies — a video's
+    /// next picture, an animation's next frame — so what samples it is drawn
+    /// again with the next frame.
+    pub fn texture_rewritten(&mut self, texture: TextureId) {
+        let writes = &mut self.present.texture_writes;
+        match writes.iter_mut().find(|(t, _)| *t == texture) {
+            Some((_, n)) => *n += 1,
+            None => writes.push((texture, 1)),
+        }
+        let sampling: Vec<usize> = self
+            .scene
+            .paint_order
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| match e.store {
+                StoreRef::Image(id) => self
+                    .scene
+                    .images
+                    .get(id)
+                    .is_some_and(|i| i.texture == texture),
+                _ => false,
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in sampling {
+            if i < self.present.keys.len() {
+                self.rekey(i);
+            }
+        }
+    }
+
+    /// Where the image drawn from `texture` shows on a `viewport`-sized
+    /// surface, when it shows plainly and on top: drawn once, straight into
+    /// the surface, untinted, unmasked, unturned and unmirrored, and touched
+    /// by nothing drawn after it. As the uploaded frame stands, placed where
+    /// its root is now; `None` otherwise, or where none of it shows.
+    pub fn topmost_image(&self, texture: TextureId, viewport: [f32; 2]) -> Option<TopImage> {
+        let scene = &self.scene;
+        let mut found = None;
+        for (i, entry) in scene.paint_order.iter().enumerate() {
+            let StoreRef::Image(id) = entry.store else {
+                continue;
+            };
+            if scene.images.get(id).is_none_or(|e| e.texture != texture) {
+                continue;
+            }
+            if found.is_some() || entry.context.offscreen.is_some() {
+                return None;
+            }
+            found = Some((i, id));
+        }
+        let (i, id) = found?;
+        let image = &scene.images.get(id)?.instance;
+        let entry = &scene.paint_order[i];
+        if image.color != [1.0; 4]
+            || image.mask_radius != [0.0; 4]
+            || image.uv_size[0] <= 0.0
+            || image.uv_size[1] <= 0.0
+        {
+            return None;
+        }
+        let space = entry.context.space;
+        let place = self.transforms.place(space.slot);
+        if place.b != 0.0 || place.c != 0.0 || place.a <= 0.0 || place.d <= 0.0 {
+            return None;
+        }
+        let drawn = Rect::new(
+            image.rect_pos[0],
+            image.rect_pos[1],
+            image.rect_size[0],
+            image.rect_size[1],
+        )
+        .transform_bounds(&place);
+        let surface = Rect::new(0.0, 0.0, viewport[0], viewport[1]);
+        let mut shown = drawn.intersect(surface);
+        if let Some(clip) = self.transforms.clip(space, entry.context.clip) {
+            shown = shown.intersect(clip);
+        }
+        if !shown.has_area() || !drawn.has_area() {
+            return None;
+        }
+        let p = &self.present;
+        let d = *p.draw_of.get(i)?;
+        if d == NONE {
+            return None;
+        }
+        for later in &p.draws[d as usize + 1..] {
+            if place_draw(&self.transforms, later, surface)
+                .is_some_and(|l| l.rect.intersects(shown))
+            {
+                return None;
+            }
+        }
+        let (kx, ky) = (image.uv_size[0] / drawn.w, image.uv_size[1] / drawn.h);
+        Some(TopImage {
+            uv: Rect::new(
+                image.uv_pos[0] + (shown.x - drawn.x) * kx,
+                image.uv_pos[1] + (shown.y - drawn.y) * ky,
+                shown.w * kx,
+                shown.h * ky,
+            ),
+            rect: shown,
+        })
     }
 
     /// Whether to keep each frame's unchanged pixels and redraw only what

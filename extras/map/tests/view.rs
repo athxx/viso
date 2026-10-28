@@ -423,6 +423,8 @@ fn a_trackpad_scroll_pans_and_its_pinch_zooms() {
             y: 240.0,
             scale,
             rotation: 0.0,
+            dx: 0.0,
+            dy: 0.0,
             modifiers: Modifiers::default(),
             phase,
         })

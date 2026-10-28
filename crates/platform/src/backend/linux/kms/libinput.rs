@@ -1,7 +1,8 @@
 //! The libinput adapter, used when libinput is installed: mice, touchpads,
 //! touchscreens and absolute pointers read through it (loaded at run time)
 //! for its pointer acceleration, touchpad handling (tapping, two-finger and
-//! edge scrolling, palm rejection) and touchscreen calibration. Keyboards and
+//! edge scrolling, pinches and swipes, palm rejection) and touchscreen
+//! calibration. Keyboards and
 //! rotary encoders stay with the evdev decoder, which keeps the kernel's key
 //! repeat and turns encoder detents into focus steps; so does every device
 //! libinput declines. `VISO_KMS_INPUT=evdev` keeps every device on the
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 use super::gbm::Library;
 use super::input::Input;
 use super::seat::Seat;
-use crate::event::{PointerButtons, PointerPhase};
+use crate::event::{GesturePhase, PointerButtons, PointerPhase};
 
 const DEVICE_ADDED: c_int = 1;
 const KEYBOARD_KEY: c_int = 300;
@@ -31,6 +32,12 @@ const TOUCH_DOWN: c_int = 500;
 const TOUCH_UP: c_int = 501;
 const TOUCH_MOTION: c_int = 502;
 const TOUCH_CANCEL: c_int = 503;
+const GESTURE_SWIPE_BEGIN: c_int = 800;
+const GESTURE_SWIPE_UPDATE: c_int = 801;
+const GESTURE_SWIPE_END: c_int = 802;
+const GESTURE_PINCH_BEGIN: c_int = 803;
+const GESTURE_PINCH_UPDATE: c_int = 804;
+const GESTURE_PINCH_END: c_int = 805;
 
 const AXIS_VERTICAL: c_int = 0;
 const AXIS_HORIZONTAL: c_int = 1;
@@ -180,6 +187,11 @@ api! {
     libinput_event_touch_get_seat_slot: fn(Ev) -> i32;
     libinput_event_touch_get_x_transformed: fn(Ev, u32) -> f64;
     libinput_event_touch_get_y_transformed: fn(Ev, u32) -> f64;
+    libinput_event_get_gesture_event: fn(Ev) -> Ev;
+    libinput_event_gesture_get_dx: fn(Ev) -> f64;
+    libinput_event_gesture_get_dy: fn(Ev) -> f64;
+    libinput_event_gesture_get_scale: fn(Ev) -> f64;
+    libinput_event_gesture_get_angle_delta: fn(Ev) -> f64;
 }
 
 /// A device libinput reads for the display.
@@ -200,6 +212,7 @@ pub(super) struct LibInput {
     /// Where each contact down is: serial, slot, position. A lift carries
     /// no position of its own.
     contacts: Vec<(u32, u32, f64, f64)>,
+    gestures: Gestures,
 }
 
 /// The first serial: above any descriptor number, so a contact's pointer id
@@ -240,6 +253,7 @@ impl LibInput {
             next_serial: FIRST_SERIAL,
             calibration,
             contacts: Vec::new(),
+            gestures: Gestures::default(),
         })
     }
 
@@ -339,6 +353,25 @@ impl LibInput {
                 let device = (api.libinput_event_get_device)(ev);
                 let serial = (api.libinput_device_get_user_data)(device) as usize as u32;
                 let kind = (api.libinput_event_get_type)(ev);
+                if (GESTURE_SWIPE_BEGIN..=GESTURE_PINCH_END).contains(&kind) {
+                    let g = (api.libinput_event_get_gesture_event)(ev);
+                    let mut gesture = Gesture {
+                        kind,
+                        dx: (api.libinput_event_gesture_get_dx)(g),
+                        dy: (api.libinput_event_gesture_get_dy)(g),
+                        scale: 1.0,
+                        angle: 0.0,
+                    };
+                    if kind == GESTURE_PINCH_UPDATE {
+                        gesture.scale = (api.libinput_event_gesture_get_scale)(g);
+                        gesture.angle = (api.libinput_event_gesture_get_angle_delta)(g);
+                    }
+                    if let Some(input) = self.gestures.hear(gesture) {
+                        out.push((serial, input));
+                    }
+                    (api.libinput_event_destroy)(ev);
+                    continue;
+                }
                 for mut input in translate(api, kind, ev).into_iter().flatten() {
                     if let Input::Touch {
                         id, phase, x, y, ..
@@ -527,6 +560,57 @@ unsafe fn translate(api: &Api, kind: c_int, ev: Ev) -> [Option<Input>; 2] {
     }
 }
 
+/// A touchpad's gesture event, as libinput reports it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Gesture {
+    kind: c_int,
+    /// How far the fingers' middle moved since the last event, in pixels.
+    dx: f64,
+    dy: f64,
+    /// A pinch update's spread, as a factor of the spread at its begin.
+    scale: f64,
+    /// A pinch update's turn since the last, in degrees, clockwise.
+    angle: f64,
+}
+
+/// Turns a touchpad's gesture events into inputs, each a step from the last.
+#[derive(Debug, Default)]
+struct Gestures {
+    /// The spread the running pinch reached by its last update.
+    scale: f64,
+}
+
+impl Gestures {
+    fn hear(&mut self, g: Gesture) -> Option<Input> {
+        let (phase, scale, rotation, dx, dy) = match g.kind {
+            GESTURE_SWIPE_BEGIN | GESTURE_PINCH_BEGIN => {
+                self.scale = 1.0;
+                (GesturePhase::Began, 1.0, 0.0, 0.0, 0.0)
+            }
+            GESTURE_SWIPE_UPDATE => (GesturePhase::Changed, 1.0, 0.0, g.dx, g.dy),
+            GESTURE_PINCH_UPDATE => {
+                let by = if g.scale > 0.0 && self.scale > 0.0 {
+                    g.scale / self.scale
+                } else {
+                    1.0
+                };
+                self.scale = g.scale;
+                (GesturePhase::Changed, by, g.angle.to_radians(), g.dx, g.dy)
+            }
+            // Lifted or cancelled alike: whatever it did stays done.
+            GESTURE_SWIPE_END | GESTURE_PINCH_END => (GesturePhase::Ended, 1.0, 0.0, 0.0, 0.0),
+            _ => return None,
+        };
+        Some(Input::Gesture {
+            phase,
+            scale,
+            rotation,
+            dx,
+            dy,
+        })
+    }
+}
+
 impl Drop for LibInput {
     fn drop(&mut self) {
         for taken in self.devices.drain(..) {
@@ -557,7 +641,110 @@ fn parse_calibration(text: &str) -> Option<[f32; 6]> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_calibration;
+    use super::*;
+
+    /// The gesture events in `libinput debug-events` output, as libinput
+    /// would hand them over.
+    fn recorded(text: &str) -> Vec<Gesture> {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            let (Some(_device), Some(name)) = (words.next(), words.next()) else {
+                continue;
+            };
+            let kind = match name {
+                "GESTURE_SWIPE_BEGIN" => GESTURE_SWIPE_BEGIN,
+                "GESTURE_SWIPE_UPDATE" => GESTURE_SWIPE_UPDATE,
+                "GESTURE_SWIPE_END" => GESTURE_SWIPE_END,
+                "GESTURE_PINCH_BEGIN" => GESTURE_PINCH_BEGIN,
+                "GESTURE_PINCH_UPDATE" => GESTURE_PINCH_UPDATE,
+                "GESTURE_PINCH_END" => GESTURE_PINCH_END,
+                _ => continue,
+            };
+            // The time, then the finger count, then an update's motion
+            // (accelerated, then raw in parentheses) and a pinch's scale
+            // `@` turn.
+            let rest = words.skip(2).collect::<Vec<_>>().join(" ");
+            let mut g = Gesture {
+                kind,
+                dx: 0.0,
+                dy: 0.0,
+                scale: 1.0,
+                angle: 0.0,
+            };
+            if let Some((motion, tail)) = rest.split_once('(') {
+                let motion: Vec<f64> = motion
+                    .split(['/', ' '])
+                    .filter_map(|v| v.parse().ok())
+                    .collect();
+                (g.dx, g.dy) = (motion[0], motion[1]);
+                let tail = tail.split_once(')').map_or("", |(_, t)| t);
+                if let Some((scale, angle)) = tail.split_once('@') {
+                    g.scale = scale.trim().parse().unwrap();
+                    g.angle = angle.trim().parse().unwrap();
+                }
+            }
+            out.push(g);
+        }
+        out
+    }
+
+    #[test]
+    fn recorded_pinches_and_swipes_come_out_as_steps() {
+        let events = recorded(include_str!("fixtures/libinput-gestures.txt"));
+        assert_eq!(events.len(), 12);
+        let mut gestures = Gestures::default();
+        let inputs: Vec<_> = events
+            .into_iter()
+            .filter_map(|g| gestures.hear(g))
+            .collect();
+        let steps = |range: std::ops::Range<usize>| {
+            let (mut scale, mut rotation, mut dx, mut dy) = (1.0, 0.0, 0.0, 0.0);
+            for input in &inputs[range] {
+                let Input::Gesture {
+                    scale: s,
+                    rotation: r,
+                    dx: x,
+                    dy: y,
+                    ..
+                } = *input
+                else {
+                    panic!("{input:?}");
+                };
+                (scale, rotation, dx, dy) = (scale * s, rotation + r, dx + x, dy + y);
+            }
+            (scale, rotation, dx, dy)
+        };
+        let phase = |i: usize| match inputs[i] {
+            Input::Gesture { phase, .. } => phase,
+            _ => unreachable!(),
+        };
+        let phases: Vec<_> = (0..inputs.len()).map(phase).collect();
+        use GesturePhase::{Began, Changed, Ended};
+        assert_eq!(
+            phases,
+            [
+                Began, Changed, Changed, Changed, Ended, Began, Changed, Changed, Ended, Began,
+                Changed, Ended
+            ]
+        );
+
+        // A pinch's steps multiply to the spread libinput reports since its
+        // begin, and its turns add up.
+        let (scale, rotation, dx, dy) = steps(0..5);
+        assert!((scale - 1.5).abs() < 1e-9, "{scale}");
+        assert!((rotation - 2.0f64.to_radians()).abs() < 1e-9, "{rotation}");
+        assert!((dx - 2.0).abs() < 1e-9 && (dy - 0.79).abs() < 1e-9);
+
+        // A swipe moves and neither scales nor turns.
+        let (scale, rotation, dx, dy) = steps(5..9);
+        assert_eq!((scale, rotation), (1.0, 0.0));
+        assert!((dx - 32.0).abs() < 1e-9 && dy.abs() < 1e-9);
+
+        // A pinch begun anew starts from its own spread.
+        let (scale, ..) = steps(9..12);
+        assert!((scale - 0.8).abs() < 1e-9, "{scale}");
+    }
 
     #[test]
     fn a_calibration_is_six_finite_numbers() {

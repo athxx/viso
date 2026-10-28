@@ -714,7 +714,7 @@ impl<A: Application> AppDriver<A> {
             let still = ws.states.env().environment().reduced_motion;
             ws.animation_due = ws.players.step(
                 &mut ws.store,
-                &mut gpu.backend,
+                (&mut gpu.backend, &mut gpu.renderer),
                 playback,
                 now,
                 viewport,

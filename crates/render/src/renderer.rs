@@ -66,7 +66,7 @@ mod testing;
 
 use crate::damage::Region;
 use present::Atlas;
-pub use present::DamageStats;
+pub use present::{DamageStats, TopImage};
 
 /// Bytes of one quad instance.
 const QUAD_STRIDE: usize = core::mem::size_of::<QuadInstance>();
@@ -4090,6 +4090,7 @@ impl Renderer {
     /// still names it. The next paint that samples a replacement texture binds
     /// it afresh.
     pub fn release_texture<B: GpuBackend>(&mut self, backend: &mut B, texture: TextureId) {
+        self.present.forget_texture(texture);
         self.programs.release_texture(backend, texture);
         self.texture_bindings.retain(|tb| {
             if tb.texture != texture {
@@ -5979,6 +5980,77 @@ mod tests {
             },
             texture,
         ))
+    }
+
+    #[test]
+    fn a_texture_rewritten_where_it_lies_redraws_what_samples_it() {
+        use crate::damage::Region;
+        let mut gpu = testing::Gpu::new();
+        let texture = gpu.texture();
+        let scene = [image(texture), quad(40.0, 40.0)];
+        gpu.upload(&scene);
+        gpu.present();
+        gpu.present();
+        assert!(matches!(gpu.r.last_damage(), Region::Empty));
+        gpu.r.texture_rewritten(texture);
+        gpu.present();
+        let Region::Rects(rects) = *gpu.r.last_damage() else {
+            panic!("a partial redraw, not {:?}", gpu.r.last_damage());
+        };
+        let covered = rects.iter().fold(Rect::new(0.0, 0.0, 0.0, 0.0), |u, r| {
+            if u.has_area() { u.union(*r) } else { *r }
+        });
+        assert!(
+            covered.contains(1.0, 1.0) && covered.contains(7.0, 7.0),
+            "{covered:?}"
+        );
+        assert!(!covered.contains(45.0, 45.0), "the quad is not redrawn");
+        gpu.present();
+        assert!(matches!(gpu.r.last_damage(), Region::Empty));
+    }
+
+    #[test]
+    fn an_image_on_top_shows_where_its_clip_lets_it() {
+        let mut gpu = testing::Gpu::new();
+        let texture = gpu.texture();
+        let top = |gpu: &mut testing::Gpu, scene: &[Primitive]| {
+            gpu.upload(scene);
+            gpu.r.topmost_image(texture, [testing::SIZE, testing::SIZE])
+        };
+        let whole = Some(TopImage {
+            uv: Rect::new(0.0, 0.0, 1.0, 1.0),
+            rect: Rect::new(0.0, 0.0, 8.0, 8.0),
+        });
+        assert_eq!(top(&mut gpu, &[image(texture)]), whole);
+        // Something drawn after it elsewhere leaves it on top; over it, not.
+        assert_eq!(top(&mut gpu, &[image(texture), quad(20.0, 20.0)]), whole);
+        assert_eq!(top(&mut gpu, &[image(texture), quad(4.0, 4.0)]), None);
+        assert_eq!(top(&mut gpu, &[quad(4.0, 4.0), image(texture)]), whole);
+        // A sharp clip cuts what shows, and the texture's part with it.
+        let clip = Rect::new(2.0, 2.0, 4.0, 4.0);
+        assert_eq!(
+            top(
+                &mut gpu,
+                &[layer_color(clip, 1.0), image(texture), Primitive::LayerEnd]
+            ),
+            Some(TopImage {
+                uv: Rect::new(0.25, 0.25, 0.5, 0.5),
+                rect: clip,
+            })
+        );
+        // A fade draws it through a pass of its own; a tint changes it.
+        assert_eq!(
+            top(
+                &mut gpu,
+                &[layer_color(clip, 0.5), image(texture), Primitive::LayerEnd]
+            ),
+            None
+        );
+        let Primitive::Image(mut tinted) = image(texture) else {
+            unreachable!()
+        };
+        tinted.tint.a = 0.5;
+        assert_eq!(top(&mut gpu, &[Primitive::Image(tinted)]), None);
     }
 
     /// Build a renderer over a headless surface, run `upload`, and return the

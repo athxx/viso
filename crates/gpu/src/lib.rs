@@ -233,7 +233,10 @@ pub use viso_gpu_abi::{
 pub use viso_gpu_abi::{instance, program, resource, scene, srgb};
 /// Re-exported so consumers of [`GpuBackend::create_surface`] can name the
 /// handle type without depending on `viso-handle` directly.
-pub use viso_handle::{ExternalImage, Nv12, RawWindowHandle, YuvMatrix};
+pub use viso_handle::{
+    ExternalImage, GbmTarget, Nv12, PlaneImage, PlanePicture, RawWindowHandle, Scanout,
+    ScanoutFormat, YuvMatrix,
+};
 
 /// Derive an explicit, validated GPU instance layout for a `#[repr(C)]` struct.
 ///

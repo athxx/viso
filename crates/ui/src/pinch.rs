@@ -397,6 +397,9 @@ pub struct TrackpadPinch {
     pub scale: f32,
     /// How far it turned since its last sample, in radians, clockwise.
     pub rotation: f32,
+    /// How far the fingers' middle moved since its last sample.
+    pub dx: f32,
+    pub dy: f32,
     pub phase: PinchPhase,
 }
 
@@ -435,11 +438,12 @@ pub fn route_trackpad_pinch(
         }
     };
     let pinch = &mut store.pinches.pinches[i];
-    let phase = if pinch.started {
-        ev.phase
+    let (phase, at) = if pinch.started {
+        // The middle starts at the pointer and moves with the fingers.
+        (ev.phase, [pinch.focal[0] + ev.dx, pinch.focal[1] + ev.dy])
     } else {
         pinch.started = true;
-        PinchPhase::Start
+        (PinchPhase::Start, at)
     };
     let (scale, rotation) = (pinch.scale * ev.scale, pinch.rotation + ev.rotation);
     pinch.record(phase, scale, rotation, at);

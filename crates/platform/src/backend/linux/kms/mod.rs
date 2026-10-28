@@ -53,7 +53,7 @@ use super::{After, Display, Pump, WakeReceiver, Waker, translate, wake_channel};
 use crate::control::{PlatformCaps, PlatformError, WindowConfig, WindowId};
 use crate::event::{
     Appearance, CursorIcon, KeyCode, Modifiers, PointerButtons, PointerId, PointerKind,
-    PointerPhase, RawEvent, RawPointer, RawScroll, RawText,
+    PointerPhase, RawEvent, RawGesture, RawPointer, RawScroll, RawText,
 };
 use crate::handler::AppHandler;
 use crate::menu::Menu;
@@ -265,8 +265,11 @@ pub(crate) struct KmsDisplay {
     /// Keys whose press was delivered, released if the session pauses.
     pressed: Vec<u16>,
     window: Option<WindowId>,
-    /// A redraw waits for the flip in flight, or for the panel to return.
+    /// A redraw waits for the flip in flight, the next refresh, or the panel
+    /// to return.
     wants_redraw: bool,
+    /// A frame is being drawn: one it asks for comes after it.
+    drawing: bool,
     paused: bool,
     connected: bool,
     scale: f64,
@@ -330,6 +333,7 @@ impl KmsDisplay {
             pressed: Vec::new(),
             window: None,
             wants_redraw: false,
+            drawing: false,
             paused: false,
             connected: true,
             scale,
@@ -357,9 +361,24 @@ impl KmsDisplay {
         if self.window != Some(window) {
             return;
         }
-        if self.output.flip_pending() || !self.visible() {
+        if self.drawing || self.output.flip_pending() || !self.visible() {
             self.wants_redraw = true;
         } else {
+            self.pump.push_redraw(window);
+        }
+    }
+
+    /// A frame was drawn, or declined: the video planes go up if it did not
+    /// carry them, and the next frame it asked for waits for the flip, or
+    /// for the next refresh when nothing flips.
+    fn redrawn(&mut self) {
+        self.drawing = false;
+        self.output.flush_planes();
+        if !self.wants_redraw || !self.visible() || self.output.queue_refresh() {
+            return;
+        }
+        self.wants_redraw = false;
+        if let Some(window) = self.window {
             self.pump.push_redraw(window);
         }
     }
@@ -487,6 +506,8 @@ impl KmsDisplay {
         }
         self.tags = tags;
         self.retry_due();
+        // What the video planes wanted while a flip was in flight.
+        self.output.flush_planes();
         if self.output.take_flipped() && self.wants_redraw && self.visible() {
             self.wants_redraw = false;
             if let Some(window) = self.window {
@@ -755,6 +776,29 @@ impl KmsDisplay {
                 }));
             }
             Input::Dial { steps } => self.dial(steps),
+            Input::Gesture {
+                phase,
+                scale,
+                rotation,
+                dx,
+                dy,
+            } => {
+                let Some(window) = self.window else {
+                    return;
+                };
+                let s = self.scale;
+                self.pump.push(RawEvent::Gesture(RawGesture {
+                    window,
+                    x: self.mouse.0 / s,
+                    y: self.mouse.1 / s,
+                    scale,
+                    rotation,
+                    dx: dx / s,
+                    dy: dy / s,
+                    modifiers: self.modifiers(),
+                    phase,
+                }));
+            }
             Input::Touch {
                 id,
                 phase,
@@ -955,7 +999,9 @@ impl Display for KmsDisplay {
         true
     }
 
-    fn before_redraw(&mut self, _window: WindowId) {}
+    fn before_redraw(&mut self, _window: WindowId) {
+        self.drawing = true;
+    }
 
     fn finish(&mut self, after: After) {
         match after {
@@ -968,8 +1014,9 @@ impl Display for KmsDisplay {
                     self.pump.push(RawEvent::WindowClosed { window });
                 }
             }
+            After::Redrawn(_) => self.redrawn(),
             // A panel has no other clients to drag from.
-            After::Redrawn(_) | After::Dropped(..) => {}
+            After::Dropped(..) => {}
         }
     }
 }

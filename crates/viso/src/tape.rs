@@ -132,6 +132,8 @@ impl TapeRecorder {
                 y: g.y / scale,
                 scale: g.scale,
                 rotation: g.rotation,
+                dx: g.dx / scale,
+                dy: g.dy / scale,
                 modifiers: modifiers(g.modifiers),
                 phase: match g.phase {
                     GesturePhase::Began => TapeGesturePhase::Began,
@@ -555,6 +557,8 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             y,
             scale,
             rotation,
+            dx,
+            dy,
             modifiers,
             phase,
         } => RawEvent::Gesture(RawGesture {
@@ -563,6 +567,8 @@ fn raw(window: WindowId, input: &TapeInput) -> Vec<viso_platform::RawEvent> {
             y: f64::from(*y),
             scale: f64::from(*scale),
             rotation: f64::from(*rotation),
+            dx: f64::from(*dx),
+            dy: f64::from(*dy),
             modifiers: mods(*modifiers),
             phase: match phase {
                 TapeGesturePhase::Began => GesturePhase::Began,

@@ -8,7 +8,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 
 use super::seat::{Device, Seat};
-use crate::event::{PointerButtons, PointerPhase};
+use crate::event::{GesturePhase, PointerButtons, PointerPhase};
 
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
@@ -101,6 +101,16 @@ pub(super) enum Input {
     Scroll { dx: f64, dy: f64 },
     /// Encoder detents: positive is clockwise.
     Dial { steps: i32 },
+    /// A touchpad's pinch or swipe: the factor the spread scaled by and the
+    /// turn (radians, clockwise) since the last sample, and the move of the
+    /// fingers' middle in pixels. A swipe neither scales nor turns.
+    Gesture {
+        phase: GesturePhase,
+        scale: f64,
+        rotation: f64,
+        dx: f64,
+        dy: f64,
+    },
     /// A touch contact, positioned `0..=1` across the panel.
     Touch {
         id: u32,

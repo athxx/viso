@@ -9,13 +9,27 @@
 //! The panel turns through the plane's `rotation` where the hardware takes
 //! it; otherwise a CPU-drawn frame is turned as it is copied and a GPU draws
 //! turned ([`Scanout::turns`]) into a surface the panel's shape.
+//!
+//! The CRTC's overlay planes that stack over the primary show video pictures
+//! over the frames ([`Scanout::show_plane`]), on an unturned panel. A plane
+//! that scans out NV12 takes a decoder's dma-buf as it lies, or planes at
+//! hand copied into dumb buffers of the plane's; one that scans out only
+//! XRGB takes planes at hand converted into its dumb buffers. A picture goes up with the next frame's
+//! commit, or in a commit of its own once the frame drawn declined to
+//! present; each new place, crop or size is tried first with a test-only
+//! commit, so one the hardware cannot show is refused rather than failing a
+//! frame. A picture stays held until the flip after the one replacing it.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::c_void;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 
-use viso_handle::{GbmTarget, Scanout, ScanoutFormat};
+use viso_handle::{
+    ExternalHold, ExternalHolds, ExternalImage, GbmTarget, Nv12, PlaneImage, PlanePicture, Scanout,
+    ScanoutFormat, YuvMatrix,
+};
 
 use super::drm::{self, Card, ModeInfo, Request};
 use super::gbm::Gbm;
@@ -31,7 +45,17 @@ const MAX_RECTS: usize = 16;
 /// The hardware cursor's buffer edge, the size every driver accepts.
 const CURSOR: u32 = 64;
 
+const PLANE_TYPE_OVERLAY: u64 = 0;
 const PLANE_TYPE_PRIMARY: u64 = 1;
+
+/// The overlay planes taken for videos, at most.
+const MAX_PLANES: usize = 4;
+/// The dumb buffers a plane copies pictures into: one on the screen, one in
+/// flight, one being written.
+const POOL: usize = 3;
+/// The framebuffers over imported dma-bufs kept for the next pictures: a
+/// decoder cycles through a few buffers.
+const IMPORTS: usize = 8;
 
 /// A turn of the panel, as the plane's `rotation` names it: the image is
 /// turned counter-clockwise by this much on its way to the panel.
@@ -134,6 +158,8 @@ struct Dumb {
     pitch: usize,
     map: *mut u8,
     len: usize,
+    /// The framebuffer's size in pixels.
+    size: (u32, u32),
 }
 
 impl Dumb {
@@ -146,8 +172,37 @@ impl Dumb {
     }
 
     fn with(card: &Card, (w, h): (u32, u32), bpp: u32, fourcc: u32) -> io::Result<Dumb> {
+        Dumb::mapped(card, (w, h), (w, h), bpp, |handle, pitch| {
+            card.add_fb(w, h, fourcc, handle, pitch)
+        })
+    }
+
+    /// An NV12 picture's buffer: the luma rows, then the chroma rows, each
+    /// `pitch` bytes apart.
+    fn nv12(card: &Card, (w, h): (u32, u32)) -> io::Result<Dumb> {
+        let (we, he) = (w.next_multiple_of(2), h.next_multiple_of(2));
+        Dumb::mapped(card, (we, he + he / 2), (w, h), 8, |handle, pitch| {
+            card.add_fb_planes(
+                (w, h),
+                drm::FORMAT_NV12,
+                [handle, handle, 0, 0],
+                [pitch, pitch, 0, 0],
+                [0, pitch * he, 0, 0],
+            )
+        })
+    }
+
+    /// A `w`×`h` dumb buffer of `bpp` bits a pixel, mapped, with the
+    /// framebuffer `fb` makes over its handle and pitch, `size` pixels.
+    fn mapped(
+        card: &Card,
+        (w, h): (u32, u32),
+        size_px: (u32, u32),
+        bpp: u32,
+        fb: impl FnOnce(u32, u32) -> io::Result<u32>,
+    ) -> io::Result<Dumb> {
         let (handle, pitch, size) = card.create_dumb(w, h, bpp)?;
-        let fb = match card.add_fb(w, h, fourcc, handle, pitch) {
+        let fb = match fb(handle, pitch) {
             Ok(fb) => fb,
             Err(e) => {
                 card.destroy_dumb(handle);
@@ -190,6 +245,7 @@ impl Dumb {
             pitch: pitch as usize,
             map,
             len: size as usize,
+            size: size_px,
         })
     }
 
@@ -226,6 +282,94 @@ struct Cursor {
     shown: bool,
 }
 
+/// An overlay plane's property ids.
+#[derive(Debug, Clone, Copy)]
+struct PlaneProps {
+    fb_id: u32,
+    crtc_id: u32,
+    src: [u32; 4],
+    dst: [u32; 4],
+    /// Where it stacks, where the card lets it be set: the property and the
+    /// value over the primary.
+    zpos: Option<(u32, u64)>,
+    /// `COLOR_ENCODING`'s values for BT.601, BT.709 and BT.2020.
+    encoding: Option<(u32, [Option<u64>; 3])>,
+    /// `COLOR_RANGE`'s values for studio and full range.
+    range: Option<(u32, [Option<u64>; 2])>,
+}
+
+/// What a plane scans out.
+struct Shown {
+    /// Over one of the plane's dumb buffers, or an imported dma-buf.
+    fb: u32,
+    /// The part of the buffer shown, in 16.16 pixels: x, y, w, h.
+    src: [u64; 4],
+    /// Where on the screen: x, y (signed), w, h.
+    dst: [u64; 4],
+    /// The picture's size in pixels.
+    size: (u32, u32),
+    matrix: YuvMatrix,
+    full_range: bool,
+    /// The decoder's buffer, kept from reuse while it may be scanned out.
+    holds: Option<Arc<ExternalHolds>>,
+    _hold: Option<ExternalHold>,
+}
+
+/// An overlay plane a video shows on.
+struct VideoPlane {
+    id: u32,
+    /// What its buffers hold: NV12, else 32-bit RGB a picture is converted
+    /// into.
+    format: u32,
+    props: PlaneProps,
+    /// What it scans out now, what a flip in flight puts up, and what the
+    /// next commit puts up (`Some(None)` takes it down).
+    screen: Option<Shown>,
+    flight: Option<Option<Shown>>,
+    want: Option<Option<Shown>>,
+    /// The NV12 buffers pictures at hand are copied into.
+    dumbs: Vec<Dumb>,
+    /// The place last accepted by a test-only commit.
+    tested: Option<Placed>,
+}
+
+/// A picture's crop and place, as the plane properties take them, and its
+/// size.
+type Placed = ([u64; 4], [u64; 4], (u32, u32));
+
+impl VideoPlane {
+    /// What it shows once every commit made lands.
+    fn latest(&self) -> Option<&Shown> {
+        match (&self.want, &self.flight) {
+            (Some(want), _) => want.as_ref(),
+            (None, Some(flight)) => flight.as_ref(),
+            (None, None) => self.screen.as_ref(),
+        }
+    }
+
+    /// Everything it shows or is about to.
+    fn shown(&self) -> impl Iterator<Item = &Shown> {
+        let flight = self.flight.as_ref().and_then(Option::as_ref);
+        let want = self.want.as_ref().and_then(Option::as_ref);
+        self.screen.iter().chain(flight).chain(want)
+    }
+
+    /// The flip in flight landed.
+    fn settle(&mut self) {
+        if let Some(next) = self.flight.take() {
+            self.screen = next;
+        }
+    }
+}
+
+/// A framebuffer over an imported dma-buf.
+struct Import {
+    handle: u32,
+    /// The layout it was made for: offsets, strides and size.
+    layout: ([u64; 2], [u32; 2], (u32, u32)),
+    fb: u32,
+}
+
 struct State {
     mode: ModeInfo,
     mode_blob: u32,
@@ -246,6 +390,11 @@ struct State {
     gbm: Option<GbmSurface>,
     gbm_device: *mut c_void,
     cursor: Option<Cursor>,
+    planes: Vec<VideoPlane>,
+    /// Least recently used first.
+    imports: Vec<Import>,
+    /// An event at the next refresh is asked for.
+    refresh: bool,
 }
 
 /// What a connector change did to the output.
@@ -276,6 +425,106 @@ pub(super) struct Output {
 /// Each named property's id, from an object's property list.
 fn prop(props: &[(drm::Property, u64)], name: &str) -> Option<u32> {
     drm::find(props, name).map(|(p, _)| p.id)
+}
+
+/// The overlay planes of the CRTC at `crtc_index` over the primary, whose
+/// properties are `primary`, that scan out NV12, or else XRGB.
+fn video_planes(
+    card: &Card,
+    crtc_index: usize,
+    primary: &[(drm::Property, u64)],
+) -> io::Result<Vec<VideoPlane>> {
+    let under = drm::find(primary, "zpos").map_or(0, |(_, z)| *z);
+    let mut planes = Vec::new();
+    for p in card.planes()? {
+        if planes.len() == MAX_PLANES {
+            break;
+        }
+        // NV12 as it comes, else converted.
+        let format = [drm::FORMAT_NV12, drm::FORMAT_XRGB8888, drm::FORMAT_ARGB8888]
+            .into_iter()
+            .find(|f| p.formats.contains(f));
+        let Some(format) = format.filter(|_| p.possible_crtcs & (1 << crtc_index) != 0) else {
+            continue;
+        };
+        let pp = card.plane_properties(p.id)?;
+        if !drm::find(&pp, "type").is_some_and(|(_, v)| *v == PLANE_TYPE_OVERLAY) {
+            continue;
+        }
+        // Over the primary: where it stacks fixed, above it; where it can be
+        // set, as the next one up.
+        let zpos = match drm::find(&pp, "zpos") {
+            None => None,
+            Some((z, now)) if z.immutable => {
+                if *now <= under {
+                    continue;
+                }
+                None
+            }
+            Some((z, _)) => {
+                let want = under + 1 + planes.len() as u64;
+                match z.range {
+                    Some((lo, hi)) if want <= hi => Some((z.id, want.max(lo))),
+                    None => Some((z.id, want)),
+                    Some(_) => continue,
+                }
+            }
+        };
+        let named = |name: &str, values: &[&str]| {
+            drm::find(&pp, name).map(|(prop, _)| {
+                let value = |n: &str| prop.enums.iter().find(|(_, e)| e == n).map(|(v, _)| *v);
+                (prop.id, values.iter().map(|n| value(n)).collect::<Vec<_>>())
+            })
+        };
+        let encoding = named(
+            "COLOR_ENCODING",
+            &[
+                "ITU-R BT.601 YCbCr",
+                "ITU-R BT.709 YCbCr",
+                "ITU-R BT.2020 YCbCr",
+            ],
+        )
+        .map(|(id, v)| (id, [v[0], v[1], v[2]]));
+        let range = named("COLOR_RANGE", &["YCbCr limited range", "YCbCr full range"])
+            .map(|(id, v)| (id, [v[0], v[1]]));
+        let need = |name: &str| prop(&pp, name);
+        let (Some(fb_id), Some(crtc_id)) = (need("FB_ID"), need("CRTC_ID")) else {
+            continue;
+        };
+        let rect = |names: [&str; 4]| -> Option<[u32; 4]> {
+            Some([
+                need(names[0])?,
+                need(names[1])?,
+                need(names[2])?,
+                need(names[3])?,
+            ])
+        };
+        let (Some(src), Some(dst)) = (
+            rect(["SRC_X", "SRC_Y", "SRC_W", "SRC_H"]),
+            rect(["CRTC_X", "CRTC_Y", "CRTC_W", "CRTC_H"]),
+        ) else {
+            continue;
+        };
+        planes.push(VideoPlane {
+            id: p.id,
+            format,
+            props: PlaneProps {
+                fb_id,
+                crtc_id,
+                src,
+                dst,
+                zpos,
+                encoding,
+                range,
+            },
+            screen: None,
+            flight: None,
+            want: None,
+            dumbs: Vec::new(),
+            tested: None,
+        });
+    }
+    Ok(planes)
 }
 
 impl Output {
@@ -331,6 +580,7 @@ impl Output {
         let mut props = Props::default();
         let mut formats = vec![drm::FORMAT_XRGB8888, drm::FORMAT_RGB565];
         let mut hw_rotation = None;
+        let mut planes = Vec::new();
         if card.atomic {
             let mut primary = None;
             for p in card.planes()? {
@@ -380,6 +630,9 @@ impl Output {
                     .find(|(_, n)| *n == name)
                     .map(|(bit, _)| 1u64 << bit);
             }
+            if rotation == Rotation::R0 {
+                planes = video_planes(&card, crtc_index, &pp).unwrap_or_default();
+            }
             plane = p.id;
             formats = p.formats;
         }
@@ -418,6 +671,9 @@ impl Output {
                 gbm: None,
                 gbm_device: std::ptr::null_mut(),
                 cursor: None,
+                planes,
+                imports: Vec::new(),
+                refresh: false,
             }),
             flipped: Cell::new(false),
             gbm: OnceCell::new(),
@@ -470,9 +726,25 @@ impl Output {
         self.rotation != Rotation::R0 && s.hw_rotation.is_none()
     }
 
-    /// Whether a flip is in flight: the next frame waits for it.
+    /// Whether a flip is in flight, or an event at the next refresh is asked
+    /// for: the next frame waits for it.
     pub fn flip_pending(&self) -> bool {
-        self.s.borrow().pending
+        let s = self.s.borrow();
+        s.pending || s.refresh
+    }
+
+    /// Asks for an event at the next refresh, which paces the next frame as
+    /// a flip would; `false` when the card gives none.
+    pub fn queue_refresh(&self) -> bool {
+        let mut s = self.s.borrow_mut();
+        if s.pending || s.refresh {
+            return true;
+        }
+        if !(s.active && s.connected) || s.modeset {
+            return false;
+        }
+        s.refresh = self.card.queue_refresh(self.crtc).is_ok();
+        s.refresh
     }
 
     /// Whether a flip completed since the last call.
@@ -487,9 +759,20 @@ impl Output {
     }
 
     fn read_events(&self, s: &mut State) {
-        let mut done = false;
-        self.card
-            .read_events(|flip| done |= flip.crtc == self.crtc || flip.crtc == 0);
+        let (mut done, mut refreshed) = (false, false);
+        self.card.read_events(|flip| {
+            if flip.crtc == self.crtc || flip.crtc == 0 {
+                if flip.refresh {
+                    refreshed = true;
+                } else {
+                    done = true;
+                }
+            }
+        });
+        if refreshed && s.refresh {
+            s.refresh = false;
+            self.flipped.set(true);
+        }
         if done {
             self.complete_flip(s);
         }
@@ -498,6 +781,9 @@ impl Output {
     fn complete_flip(&self, s: &mut State) {
         s.pending = false;
         self.flipped.set(true);
+        for plane in &mut s.planes {
+            plane.settle();
+        }
         if let (Some(g), Some(gbm)) = (&mut s.gbm, self.gbm.get().and_then(Option::as_ref))
             && let Some(next) = g.next.take()
             && let Some(old) = g.front.replace(next)
@@ -553,7 +839,89 @@ impl Output {
             }
         }
         req.set(self.plane, p.fb_id, u64::from(fb));
+        self.plane_rows(s, &mut req, s.modeset);
         req
+    }
+
+    /// Adds to `req` what the video planes are to show: what changed, or
+    /// everything when `all`.
+    fn plane_rows(&self, s: &State, req: &mut Request, all: bool) {
+        for plane in &s.planes {
+            match (&plane.want, all) {
+                (Some(want), _) => self.plane_row(plane, want.as_ref(), req),
+                (None, true) => self.plane_row(plane, plane.latest(), req),
+                (None, false) => {}
+            }
+        }
+    }
+
+    /// Adds to `req` that `plane` shows `shown`, or nothing.
+    fn plane_row(&self, plane: &VideoPlane, shown: Option<&Shown>, req: &mut Request) {
+        let p = &plane.props;
+        let Some(v) = shown else {
+            req.set(plane.id, p.fb_id, 0);
+            req.set(plane.id, p.crtc_id, 0);
+            return;
+        };
+        req.set(plane.id, p.crtc_id, u64::from(self.crtc));
+        req.set(plane.id, p.fb_id, u64::from(v.fb));
+        for (id, value) in p.src.iter().zip(v.src).chain(p.dst.iter().zip(v.dst)) {
+            req.set(plane.id, *id, value);
+        }
+        if let Some((id, z)) = p.zpos {
+            req.set(plane.id, id, z);
+        }
+        if plane.format != drm::FORMAT_NV12 {
+            return;
+        }
+        let matrix = match v.matrix {
+            YuvMatrix::Bt601 => 0,
+            YuvMatrix::Bt709 => 1,
+            YuvMatrix::Bt2020 => 2,
+        };
+        if let Some((id, values)) = p.encoding
+            && let Some(value) = values[matrix]
+        {
+            req.set(plane.id, id, value);
+        }
+        if let Some((id, values)) = p.range
+            && let Some(value) = values[usize::from(v.full_range)]
+        {
+            req.set(plane.id, id, value);
+        }
+    }
+
+    /// A commit carried what the video planes wanted: a flip puts it up.
+    fn planes_sent(s: &mut State) {
+        for plane in &mut s.planes {
+            if let Some(want) = plane.want.take() {
+                plane.flight = Some(want);
+            }
+        }
+    }
+
+    /// Puts up what the video planes want in a commit of its own, when no
+    /// frame carried it and nothing is in flight; what waits on a flip goes
+    /// once it lands.
+    pub fn flush_planes(&self) {
+        let mut s = self.s.borrow_mut();
+        let s = &mut *s;
+        if s.pending
+            || s.modeset
+            || !(s.active && s.connected)
+            || !s.planes.iter().any(|p| p.want.is_some())
+        {
+            return;
+        }
+        let mut req = Request::default();
+        self.plane_rows(s, &mut req, false);
+        let r = self
+            .card
+            .commit(&req, drm::PAGE_FLIP_EVENT | drm::ATOMIC_NONBLOCK);
+        if r.is_ok() {
+            s.pending = true;
+            Self::planes_sent(s);
+        }
     }
 
     /// Puts framebuffer `fb` on the screen with `damage` (its coordinates);
@@ -591,6 +959,7 @@ impl Output {
         }
         r?;
         s.modeset = false;
+        Self::planes_sent(s);
         Ok(true)
     }
 
@@ -644,7 +1013,11 @@ impl Output {
         let mut s = self.s.borrow_mut();
         s.active = false;
         s.pending = false;
+        s.refresh = false;
         s.modeset = true;
+        for plane in &mut s.planes {
+            plane.settle();
+        }
     }
 
     /// The session is back: the mode is set again with the newest frame.
@@ -901,9 +1274,291 @@ impl Output {
     }
 }
 
+impl Output {
+    /// `image` as plane `index` would scan it out: its buffer filled or
+    /// imported, cut to the screen. `None` when it cannot be.
+    fn plane_picture(&self, s: &mut State, index: usize, image: &PlaneImage<'_>) -> Option<Shown> {
+        let size = image.picture.size();
+        let (src, dst) = Self::placement(s, size, image.crop, image.at)?;
+        let (fb, matrix, full_range, holds) = match image.picture {
+            PlanePicture::Nv12(picture) => {
+                let fb = self.copy_picture(s, index, &picture)?;
+                (fb, picture.matrix, picture.full_range, None)
+            }
+            PlanePicture::External(ExternalImage::DmaBuf {
+                fd,
+                len: _,
+                offsets,
+                strides,
+                holds,
+                matrix,
+                full_range,
+                left_chroma: _,
+                width,
+                height,
+            }) if s.planes[index].format == drm::FORMAT_NV12 => {
+                let fb = self.import(s, fd, (offsets, strides, (width, height)))?;
+                // SAFETY: the producer keeps `holds` alive while it hands the
+                // picture over, for this call.
+                let holds = unsafe { ExternalHolds::retain(holds) };
+                (fb, matrix, full_range, Some(holds))
+            }
+            PlanePicture::External(_) => return None,
+        };
+        Some(Shown {
+            fb,
+            src,
+            dst,
+            size,
+            matrix,
+            full_range,
+            _hold: holds.as_ref().map(ExternalHolds::hold),
+            holds,
+        })
+    }
+
+    /// A `size` picture's `crop` shown `at`, cut to the screen: the plane's
+    /// source rect in 16.16 pixels and its place on the screen.
+    fn placement(
+        s: &State,
+        (pw, ph): (u32, u32),
+        [cx, cy, cw, ch]: [f32; 4],
+        [x, y, w, h]: [i32; 4],
+    ) -> Option<([u64; 4], [u64; 4])> {
+        let (sw, sh) = (u32::from(s.mode.hdisplay), u32::from(s.mode.vdisplay));
+        if w <= 0 || h <= 0 || cw <= 0.0 || ch <= 0.0 || pw == 0 || ph == 0 {
+            return None;
+        }
+        // Cut to the screen, the crop cut with it.
+        let (x0, y0) = (x.max(0), y.max(0));
+        let (x1, y1) = ((x + w).min(sw as i32), (y + h).min(sh as i32));
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        let (kx, ky) = (cw / w as f32, ch / h as f32);
+        let fixed = |v: f32, most: u32| (v.clamp(0.0, most as f32) * 65536.0).round() as u64;
+        let src = [
+            fixed(cx + (x0 - x) as f32 * kx, pw),
+            fixed(cy + (y0 - y) as f32 * ky, ph),
+            fixed((x1 - x0) as f32 * kx, pw),
+            fixed((y1 - y0) as f32 * ky, ph),
+        ];
+        let dst = [
+            x0 as i64 as u64,
+            y0 as i64 as u64,
+            (x1 - x0) as u64,
+            (y1 - y0) as u64,
+        ];
+        Some((src, dst))
+    }
+
+    /// Plane `plane` to show `shown` with the next commit, once the card
+    /// takes it as placed; whether it does.
+    fn want(&self, s: &mut State, plane: usize, shown: Shown) -> bool {
+        let key = (shown.src, shown.dst, shown.size);
+        let p = &mut s.planes[plane];
+        if p.tested != Some(key) {
+            let mut req = Request::default();
+            self.plane_row(p, Some(&shown), &mut req);
+            if self.card.commit(&req, drm::ATOMIC_TEST_ONLY).is_err() {
+                p.tested = None;
+                return false;
+            }
+            p.tested = Some(key);
+        }
+        p.want = Some(Some(shown));
+        true
+    }
+
+    /// Copies `picture` into a dumb buffer of plane `index` that nothing
+    /// shows or is about to; its framebuffer.
+    fn copy_picture(&self, s: &mut State, index: usize, picture: &Nv12<'_>) -> Option<u32> {
+        let size = (picture.width, picture.height);
+        let plane = &mut s.planes[index];
+        let used = |plane: &VideoPlane, fb: u32| plane.shown().any(|v| v.fb == fb);
+        // Free buffers of another size go.
+        let mut at = 0;
+        while at < plane.dumbs.len() {
+            let fb = plane.dumbs[at].fb;
+            if plane.dumbs[at].size != size && !used(plane, fb) {
+                plane.dumbs.swap_remove(at).free(&self.card);
+            } else {
+                at += 1;
+            }
+        }
+        let free = plane
+            .dumbs
+            .iter()
+            .position(|d| d.size == size && !used(plane, d.fb));
+        let at = match free {
+            Some(at) => at,
+            None if plane.dumbs.len() < POOL => {
+                let dumb = match plane.format {
+                    drm::FORMAT_NV12 => Dumb::nv12(&self.card, size),
+                    format => Dumb::with(&self.card, size, 32, format),
+                };
+                plane.dumbs.push(dumb.ok()?);
+                plane.dumbs.len() - 1
+            }
+            None => return None,
+        };
+        let format = plane.format;
+        let d = &mut plane.dumbs[at];
+        let (fb, pitch) = (d.fb, d.pitch);
+        if format != drm::FORMAT_NV12 {
+            return nv12_to_xrgb(picture, d.bytes(), pitch).then_some(fb);
+        }
+        let luma_rows = size.1.next_multiple_of(2) as usize;
+        let bytes = d.bytes();
+        let (w, h) = (size.0 as usize, size.1 as usize);
+        let rows = |dst: &mut [u8], src: &[u8], stride: usize, row_len: usize, count: usize| {
+            for r in 0..count {
+                let (Some(to), Some(from)) = (
+                    dst.get_mut(r * pitch..r * pitch + row_len),
+                    src.get(r * stride..r * stride + row_len),
+                ) else {
+                    return false;
+                };
+                to.copy_from_slice(from);
+            }
+            true
+        };
+        let (luma, chroma) = bytes.split_at_mut((luma_rows * pitch).min(bytes.len()));
+        let whole = rows(luma, picture.y, picture.y_stride, w, h)
+            && rows(
+                chroma,
+                picture.uv,
+                picture.uv_stride,
+                w.next_multiple_of(2),
+                h.div_ceil(2),
+            );
+        whole.then_some(fb)
+    }
+
+    /// The framebuffer over dma-buf `fd` laid out as `layout`, made once and
+    /// kept for its next pictures.
+    fn import(
+        &self,
+        s: &mut State,
+        fd: i32,
+        layout: ([u64; 2], [u32; 2], (u32, u32)),
+    ) -> Option<u32> {
+        let handle = self.card.import_dma_buf(fd).ok()?;
+        if let Some(at) = s
+            .imports
+            .iter()
+            .position(|i| i.handle == handle && i.layout == layout)
+        {
+            // Most recently used last.
+            let import = s.imports.remove(at);
+            let fb = import.fb;
+            s.imports.push(import);
+            return Some(fb);
+        }
+        let ([y, uv], [ys, uvs], size) = layout;
+        let made = self.card.add_fb_planes(
+            size,
+            drm::FORMAT_NV12,
+            [handle, handle, 0, 0],
+            [ys, uvs, 0, 0],
+            [u32::try_from(y).ok()?, u32::try_from(uv).ok()?, 0, 0],
+        );
+        let Ok(fb) = made else {
+            if !s.imports.iter().any(|i| i.handle == handle) {
+                self.card.close_handle(handle);
+            }
+            return None;
+        };
+        s.imports.push(Import { handle, layout, fb });
+        self.evict_imports(s);
+        Some(fb)
+    }
+
+    /// Lets go of the least recently used imports nothing shows, past the
+    /// most kept.
+    fn evict_imports(&self, s: &mut State) {
+        let mut at = 0;
+        while s.imports.len() > IMPORTS && at < s.imports.len() {
+            let fb = s.imports[at].fb;
+            if s.planes.iter().any(|p| p.shown().any(|v| v.fb == fb)) {
+                at += 1;
+                continue;
+            }
+            let import = s.imports.remove(at);
+            self.card.remove_fb(import.fb);
+            if !s.imports.iter().any(|i| i.handle == import.handle) {
+                self.card.close_handle(import.handle);
+            }
+        }
+    }
+}
+
 impl Scanout for Output {
     fn size(&self) -> (u32, u32) {
         self.logical_size()
+    }
+
+    fn planes(&self) -> usize {
+        self.s.borrow().planes.len()
+    }
+
+    fn show_plane(&self, plane: usize, image: Option<&PlaneImage<'_>>) -> bool {
+        let mut s = self.s.borrow_mut();
+        let s = &mut *s;
+        let Some(p) = s.planes.get_mut(plane) else {
+            return image.is_none();
+        };
+        // What was wanted and never sent is let go first: its buffer is the
+        // one to write again.
+        p.want = None;
+        let up = p.latest().is_some();
+        let Some(image) = image else {
+            if up {
+                p.want = Some(None);
+            }
+            return true;
+        };
+        let refuse = |s: &mut State| {
+            if s.planes[plane].latest().is_some() {
+                s.planes[plane].want = Some(None);
+            }
+            false
+        };
+        if s.modeset || !(s.active && s.connected) {
+            return refuse(s);
+        }
+        let Some(shown) = self.plane_picture(s, plane, image) else {
+            return refuse(s);
+        };
+        self.want(s, plane, shown) || refuse(s)
+    }
+
+    fn move_plane(&self, plane: usize, crop: [f32; 4], at: [i32; 4]) -> bool {
+        let mut s = self.s.borrow_mut();
+        let s = &mut *s;
+        if s.modeset || !(s.active && s.connected) {
+            return false;
+        }
+        let Some(latest) = s.planes.get(plane).and_then(VideoPlane::latest) else {
+            return false;
+        };
+        let Some((src, dst)) = Self::placement(s, latest.size, crop, at) else {
+            return false;
+        };
+        if (src, dst) == (latest.src, latest.dst) {
+            return true;
+        }
+        let moved = Shown {
+            fb: latest.fb,
+            src,
+            dst,
+            size: latest.size,
+            matrix: latest.matrix,
+            full_range: latest.full_range,
+            _hold: latest.holds.as_ref().map(ExternalHolds::hold),
+            holds: latest.holds.clone(),
+        };
+        self.want(s, plane, moved)
     }
 
     fn format(&self) -> ScanoutFormat {
@@ -1055,6 +1710,28 @@ impl Drop for Output {
             let _ = self.card.set_cursor(self.crtc, 0, 0, 0);
             c.dumb.free(&self.card);
         }
+        if s.planes.iter().any(|p| p.latest().is_some()) && s.active && s.connected {
+            let mut req = Request::default();
+            for plane in &s.planes {
+                self.plane_row(plane, None, &mut req);
+            }
+            let _ = self.card.commit(&req, 0);
+        }
+        for mut plane in std::mem::take(&mut s.planes) {
+            (plane.screen, plane.flight, plane.want) = (None, None, None);
+            for d in plane.dumbs.drain(..) {
+                d.free(&self.card);
+            }
+        }
+        // Each handle closed once: a dma-buf imports under one handle.
+        let mut closed = Vec::new();
+        for import in std::mem::take(&mut s.imports) {
+            self.card.remove_fb(import.fb);
+            if !closed.contains(&import.handle) {
+                self.card.close_handle(import.handle);
+                closed.push(import.handle);
+            }
+        }
         self.free_gbm_surface(s);
         // The GBM device stays: a GPU backend's EGL display is made on it and
         // may outlive the window, until the process ends.
@@ -1062,6 +1739,41 @@ impl Drop for Output {
             self.card.destroy_blob(s.mode_blob);
         }
     }
+}
+
+/// Writes `picture` into `out` as blue, green, red and padding bytes, rows
+/// `pitch` apart, turned to RGB as its matrix and range say; `false` where
+/// either is too short.
+fn nv12_to_xrgb(picture: &Nv12<'_>, out: &mut [u8], pitch: usize) -> bool {
+    // Each channel's weights on the 8-bit codes of Y′, Cb and Cr, and its
+    // offset, in 16.16.
+    let fixed = |v: f32| (v * 65536.0).round() as i32;
+    let rows = picture.matrix.rows(picture.full_range);
+    let [r, g, b] = rows.map(|k| [fixed(k[0]), fixed(k[1]), fixed(k[2]), fixed(k[3] * 255.0)]);
+    let (w, h) = (picture.width as usize, picture.height as usize);
+    let pairs = w.next_multiple_of(2);
+    for y in 0..h {
+        let (ys, cs) = (y * picture.y_stride, y / 2 * picture.uv_stride);
+        let (Some(luma), Some(chroma), Some(row)) = (
+            picture.y.get(ys..ys + w),
+            picture.uv.get(cs..cs + pairs),
+            out.get_mut(y * pitch..y * pitch + w * 4),
+        ) else {
+            return false;
+        };
+        for (x, texel) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (l, cb, cr) = (
+                i32::from(luma[x]),
+                i32::from(chroma[x & !1]),
+                i32::from(chroma[x | 1]),
+            );
+            let channel = |k: [i32; 4]| {
+                ((k[0] * l + k[1] * cb + k[2] * cr + k[3] + 0x8000) >> 16).clamp(0, 255) as u8
+            };
+            *texel = [channel(b), channel(g), channel(r), 0xff];
+        }
+    }
+    true
 }
 
 /// `r` cut to a `w`×`h` frame.
@@ -1297,10 +2009,11 @@ mod tests {
         add_damage(&mut list, &[(0, 0, 4, 4)]);
         add_damage(&mut list, &[(10, 10, 2, 2)]);
         assert_eq!(list.len(), 2);
-        for i in 0..MAX_RECTS as u32 {
+        // One past the most kept merges them all into their bounds.
+        for i in 0..MAX_RECTS as u32 - 1 {
             add_damage(&mut list, &[(i, i, 1, 1)]);
         }
-        assert_eq!(list, [(0, 0, 16, 16)]);
+        assert_eq!(list, [(0, 0, 15, 15)]);
         add_damage(&mut list, &[]);
         add_damage(&mut list, &[(1, 1, 1, 1)]);
         assert_eq!(list, [(0, 0, u32::MAX, u32::MAX)]);

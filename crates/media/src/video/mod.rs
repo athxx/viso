@@ -391,7 +391,20 @@ impl<'a> Frame<'a> {
 
     /// Writes its texels into `out`, tightly packed, in RGBA order. Returns
     /// whether they could be read: not for a picture in GPU memory alone.
+    /// A picture in planes copied tells its player rows are wanted, so the
+    /// next come as rows.
     pub fn copy_rgba(&self, out: &mut Vec<u8>) -> bool {
+        self.write_rgba(out, true)
+    }
+
+    /// Writes its texels into `out` as [`copy_rgba`](Self::copy_rgba) does,
+    /// telling the player nothing: for one whose next pictures are wanted in
+    /// planes still, for a display's plane.
+    pub fn convert_rgba(&self, out: &mut Vec<u8>) -> bool {
+        self.write_rgba(out, false)
+    }
+
+    fn write_rgba(&self, out: &mut Vec<u8>, tell: bool) -> bool {
         let (w, h) = (self.width as usize, self.height as usize);
         let copy = |layout: PixelLayout, rows: &[u8], stride: usize, out: &mut Vec<u8>| {
             out.clear();
@@ -421,7 +434,7 @@ impl<'a> Frame<'a> {
                 picture.read(|rows, stride| copy(picture.layout(), rows, stride, out))
             }
             Texels::Planes { picture, copied } => {
-                if let Some(copied) = copied {
+                if let Some(copied) = copied.filter(|_| tell) {
                     copied.set(true);
                 }
                 let plane = |bytes, row_stride, pixel_stride| yuv::Plane {
@@ -801,9 +814,12 @@ mod tests {
         assert_eq!(frame.planes().map(|p| p.y_stride), Some(4));
         assert!(!copied.get());
         let mut out = Vec::new();
+        let white_black = [255, 255, 255, 255, 0, 0, 0, 255];
+        assert!(frame.convert_rgba(&mut out));
+        assert_eq!(out, [white_black, white_black].concat());
+        assert!(!copied.get(), "converted quietly");
         assert!(frame.copy_rgba(&mut out));
         assert!(copied.get());
-        let white_black = [255, 255, 255, 255, 0, 0, 0, 255];
         assert_eq!(out, [white_black, white_black].concat());
     }
 

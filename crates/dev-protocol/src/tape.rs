@@ -212,13 +212,15 @@ pub enum TapeInput {
         repeat: bool,
         modifiers: TapeModifiers,
     },
-    /// A trackpad's pinch or turn: the factor and the angle (radians,
-    /// clockwise) since its last sample.
+    /// A trackpad's pinch, turn or swipe: the factor, the angle (radians,
+    /// clockwise) and the move of the fingers' middle since its last sample.
     Gesture {
         x: f32,
         y: f32,
         scale: f32,
         rotation: f32,
+        dx: f32,
+        dy: f32,
         modifiers: TapeModifiers,
         phase: TapeGesturePhase,
     },
@@ -268,7 +270,7 @@ pub enum TapeInput {
 
 /// What follows the stream tag of a tape file, then its version.
 const TAPE_KIND: &[u8; 6] = b"uitape";
-const TAPE_VERSION: u16 = 1;
+const TAPE_VERSION: u16 = 2;
 
 impl UiTape {
     /// The live patches the run took up to frame `frame`, inclusive.
@@ -544,6 +546,8 @@ impl Encode for TapeInput {
                 y,
                 scale,
                 rotation,
+                dx,
+                dy,
                 modifiers,
                 phase,
             } => {
@@ -553,6 +557,8 @@ impl Encode for TapeInput {
                 enc.write_f32(*y);
                 enc.write_f32(*scale);
                 enc.write_f32(*rotation);
+                enc.write_f32(*dx);
+                enc.write_f32(*dy);
                 enc.write_u8(modifiers.0);
             }
         }
@@ -703,6 +709,8 @@ impl Decode for TapeInput {
                     y: dec.read_f32()?,
                     scale: dec.read_f32()?,
                     rotation: dec.read_f32()?,
+                    dx: dec.read_f32()?,
+                    dy: dec.read_f32()?,
                     modifiers: modifiers(dec)?,
                     phase,
                 }
@@ -878,6 +886,8 @@ mod tests {
                             y: 4.0,
                             scale: 1.25,
                             rotation: -0.5,
+                            dx: 2.0,
+                            dy: -1.5,
                             modifiers,
                             phase: TapeGesturePhase::Changed,
                         },

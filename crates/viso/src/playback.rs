@@ -25,8 +25,8 @@ use std::time::Duration;
 use viso_gpu::GpuBackend;
 use viso_image::{Animation, Loops};
 use viso_platform::{Instant, LoopWaker};
-use viso_render::Rect;
 use viso_render::asset::{ResourceId, ResourceRevision};
+use viso_render::{Rect, Renderer};
 use viso_ui::{AssetBytes, NodeStore, TextureId};
 
 /// What the app asks the playback thread.
@@ -302,7 +302,7 @@ impl Players {
     pub(crate) fn step<B: GpuBackend>(
         &mut self,
         store: &mut NodeStore,
-        backend: &mut B,
+        (backend, renderer): (&mut B, &mut Renderer),
         playback: &mut Playback,
         now: Instant,
         viewport: Rect,
@@ -357,10 +357,26 @@ impl Players {
             playback.send(Order::Open { key, bytes }, waker);
         }
         self.take(playback);
-        self.play(store, backend, playback, now, viewport, still, waker);
+        self.play(
+            store,
+            (&mut *backend, &mut *renderer),
+            playback,
+            now,
+            viewport,
+            still,
+            waker,
+        );
         // Decoded where it plays, what was just asked for is at hand.
         if self.take(playback) {
-            self.play(store, backend, playback, now, viewport, still, waker);
+            self.play(
+                store,
+                (&mut *backend, &mut *renderer),
+                playback,
+                now,
+                viewport,
+                still,
+                waker,
+            );
         }
         self.players
             .iter()
@@ -399,7 +415,7 @@ impl Players {
     fn play<B: GpuBackend>(
         &mut self,
         store: &mut NodeStore,
-        backend: &mut B,
+        (backend, renderer): (&mut B, &mut Renderer),
         playback: &mut Playback,
         now: Instant,
         viewport: Rect,
@@ -429,6 +445,7 @@ impl Players {
                 backend.write_texture(p.texture, 0, 0, w, h, &pixels);
                 playback.frames += 1;
                 store.repaint_asset(p.resource);
+                renderer.texture_rewritten(p.texture);
                 p.spare = pixels;
                 // On time the next follows this one's schedule; late, it
                 // counts from now.
@@ -513,6 +530,7 @@ mod tests {
         gif: ResourceId,
         assets: Assets,
         backend: CpuRaster,
+        renderer: Renderer,
         players: Players,
     }
 
@@ -556,6 +574,7 @@ mod tests {
                 gif: gif.id,
                 assets,
                 backend,
+                renderer,
                 players: Players::default(),
             }
         }
@@ -563,7 +582,7 @@ mod tests {
         fn step(&mut self, at: Instant, viewport: Rect, still: bool) -> Option<Instant> {
             self.players.step(
                 &mut self.store,
-                &mut self.backend,
+                (&mut self.backend, &mut self.renderer),
                 &mut self.assets.playback,
                 at,
                 viewport,

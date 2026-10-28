@@ -12,10 +12,21 @@
 //! player loading, or playing where nothing beats for it, is polled on a
 //! timer instead; one paused is polled briefly after it is ready or sought,
 //! until the picture it then shows comes.
+//!
+//! On a display with planes of its own ([`Scanout::planes`]), a video drawn
+//! plainly and on top — nothing over it, unturned, untinted, unrounded —
+//! shows on a plane instead, from its next picture on: the picture goes to
+//! the plane and not the texture, so no frame is drawn for it. Once it is no
+//! longer on top, the next picture goes into the texture again (a paused
+//! video is sought where it is, to hand it over again), and the plane comes
+//! down with the frame that draws it.
 
 use std::time::Duration;
 
-use viso_gpu::{GpuBackend, TextureDesc, TextureFormat, TextureId};
+use viso_gpu::{
+    ExternalImage, GpuBackend, PlaneImage, PlanePicture, Scanout, TextureDesc, TextureFormat,
+    TextureId,
+};
 use viso_media::{Frame, VideoError, VideoEvent, VideoPlayer};
 use viso_render::Renderer;
 use viso_runtime::Instant;
@@ -102,6 +113,12 @@ pub(crate) struct Videos<P = VideoPlayer> {
     scratch: Vec<u8>,
     /// Pictures written into textures, for the counters.
     pub(crate) frames: u64,
+    /// Pictures shown on display planes, for the counters.
+    pub(crate) scanned: u64,
+    /// The display planes up, a bit each.
+    planes_up: u32,
+    /// The window's display has planes for videos.
+    planes_offered: bool,
 }
 
 impl<P> Default for Videos<P> {
@@ -110,6 +127,9 @@ impl<P> Default for Videos<P> {
             players: Vec::new(),
             scratch: Vec::new(),
             frames: 0,
+            scanned: 0,
+            planes_up: 0,
+            planes_offered: false,
         }
     }
 }
@@ -136,6 +156,20 @@ struct Played<P> {
     copied: bool,
     /// The texture its pictures are shown as.
     texture: Option<Shown>,
+    /// The display plane its pictures show on, while one does.
+    plane: Option<usize>,
+    /// Its pictures go to a display plane, not the texture.
+    on_plane: bool,
+    /// The texture holds its newest picture: none went to a plane since.
+    fresh: bool,
+    /// Where its plane shows it: the picture's crop and the place on the
+    /// screen.
+    placed: Option<([f32; 4], [i32; 4])>,
+    /// A place a display would not show it at, not asked again.
+    plane_refused: Option<[i32; 4]>,
+    /// Its last picture was one a plane shows: NV12, at hand or in a
+    /// dma-buf.
+    plane_ready: bool,
 }
 
 /// The texture a video's pictures are shown as.
@@ -275,6 +309,12 @@ impl<P: Play> Videos<P> {
                 refused: false,
                 copied: false,
                 texture: None,
+                plane: None,
+                on_plane: false,
+                fresh: true,
+                placed: None,
+                plane_refused: None,
+                plane_ready: false,
             });
         }
         let mut step = Step::default();
@@ -399,6 +439,10 @@ impl<P: Play> Videos<P> {
             if !shown && p.texture.is_some() {
                 continue;
             }
+            // Its pictures are the plane's.
+            if p.on_plane {
+                continue;
+            }
             let Some(player) = &mut p.player else {
                 continue;
             };
@@ -415,6 +459,8 @@ impl<P: Play> Videos<P> {
                 continue;
             };
             p.awaits = None;
+            p.fresh = true;
+            p.plane_ready = plane_picture(&frame).is_some();
             let size = (frame.width, frame.height);
             let shown_as = p.texture.filter(|t| t.size == size);
             // In place where the backend adopts it: the same texture pointed
@@ -426,6 +472,7 @@ impl<P: Play> Videos<P> {
                     && backend.adopt_external(t.texture, &image)
                 {
                     store.repaint_asset(p.resource);
+                    renderer.texture_rewritten(t.texture);
                     self.frames += 1;
                     continue;
                 }
@@ -452,6 +499,7 @@ impl<P: Play> Videos<P> {
                 if let Some(texture) = backend.write_nv12(into, &planes) {
                     if Some(texture) == into {
                         store.repaint_asset(p.resource);
+                        renderer.texture_rewritten(texture);
                     } else {
                         if let Some(old) = store.show_video_frame(p.resource, texture, size) {
                             renderer.release_texture(*backend, old);
@@ -467,13 +515,21 @@ impl<P: Play> Videos<P> {
                 }
                 p.copied = true;
             }
-            if !frame.copy_rgba(&mut self.scratch) {
+            // Where a display's planes may take its next pictures, the
+            // player is not told to hand them over as rows.
+            let copied = if self.planes_offered {
+                frame.convert_rgba(&mut self.scratch)
+            } else {
+                frame.copy_rgba(&mut self.scratch)
+            };
+            if !copied {
                 continue;
             }
             match shown_as.filter(|t| !t.adopted) {
                 Some(t) => {
                     backend.write_texture(t.texture, 0, 0, size.0, size.1, &self.scratch);
                     store.repaint_asset(p.resource);
+                    renderer.texture_rewritten(t.texture);
                 }
                 None => {
                     // A video's texels are sRGB-encoded: sampling decodes them.
@@ -498,6 +554,132 @@ impl<P: Play> Videos<P> {
             self.frames += 1;
         }
         step
+    }
+
+    /// Puts the videos drawn plainly and on top on `display`'s planes, as
+    /// `renderer` uploaded the frame on a `viewport` (points) `scale` pixels
+    /// a point, and takes down the planes of those no longer on top. Runs
+    /// after the frame's upload, before it is presented, so a plane goes up
+    /// or down with the frame drawn under it.
+    pub(crate) fn scan_out<S: Scanout + ?Sized>(
+        &mut self,
+        display: &S,
+        renderer: &Renderer,
+        viewport: [f32; 2],
+        scale: f32,
+        now: Instant,
+    ) {
+        let planes = display.planes().min(32);
+        self.planes_offered = planes > 0;
+        if planes == 0 {
+            return;
+        }
+        // Planes whose video went come down.
+        let held = self
+            .players
+            .iter()
+            .filter_map(|p| p.plane)
+            .fold(0u32, |held, i| held | 1 << i);
+        for i in 0..planes {
+            if self.planes_up & !held & (1 << i) != 0 {
+                display.show_plane(i, None);
+            }
+        }
+        self.planes_up = held;
+        for p in &mut self.players {
+            let (Some(player), Some(texture)) = (&mut p.player, p.texture) else {
+                if let Some(i) = p.plane.take() {
+                    display.show_plane(i, None);
+                    self.planes_up &= !(1 << i);
+                }
+                p.on_plane = false;
+                continue;
+            };
+            // Where it would show: the picture's part, and the pixels.
+            let place = renderer
+                .topmost_image(texture.texture, viewport)
+                .map(|top| {
+                    let (w, h) = (texture.size.0 as f32, texture.size.1 as f32);
+                    let crop = [top.uv.x * w, top.uv.y * h, top.uv.w * w, top.uv.h * h];
+                    let px = |v: f32| (v * scale).round() as i32;
+                    let (x0, y0) = (px(top.rect.x), px(top.rect.y));
+                    let (x1, y1) = (px(top.rect.x + top.rect.w), px(top.rect.y + top.rect.h));
+                    (crop, [x0, y0, x1 - x0, y1 - y0])
+                })
+                .filter(|&(_, at)| Some(at) != p.plane_refused);
+            if !p.on_plane {
+                // Coming off: the plane stays over the texture until the
+                // texture holds the newest picture, which this frame draws.
+                if let Some(i) = p.plane
+                    && p.fresh
+                {
+                    display.show_plane(i, None);
+                    self.planes_up &= !(1 << i);
+                    p.plane = None;
+                    p.placed = None;
+                }
+                // Going on: a plane is its own from now, its next picture
+                // the plane's.
+                if p.plane.is_none()
+                    && place.is_some()
+                    && p.plane_ready
+                    && let Some(i) = (0..planes).find(|&i| self.planes_up & (1 << i) == 0)
+                {
+                    p.plane = Some(i);
+                    self.planes_up |= 1 << i;
+                    p.on_plane = true;
+                }
+                continue;
+            }
+            let (Some((crop, at)), Some(plane)) = (place, p.plane) else {
+                leave(p, now);
+                continue;
+            };
+            if let Some(frame) = player.frame() {
+                let shown = plane_picture(&frame).is_some_and(|picture| {
+                    display.show_plane(plane, Some(&PlaneImage { picture, crop, at }))
+                });
+                if shown {
+                    p.placed = Some((crop, at));
+                    p.fresh = false;
+                    self.scanned += 1;
+                } else {
+                    p.plane_refused = Some(at);
+                    leave(p, now);
+                }
+            } else if p.placed.is_some_and(|placed| placed != (crop, at)) {
+                if display.move_plane(plane, crop, at) {
+                    p.placed = Some((crop, at));
+                } else {
+                    p.plane_refused = Some(at);
+                    leave(p, now);
+                }
+            }
+        }
+    }
+}
+
+/// A plane's view of `frame`: a dma-buf, else NV12 planes at hand.
+fn plane_picture<'a>(frame: &Frame<'a>) -> Option<PlanePicture<'a>> {
+    match frame.native() {
+        Some(image @ ExternalImage::DmaBuf { .. }) => Some(PlanePicture::External(image)),
+        Some(_) => None,
+        None => frame.planes().map(PlanePicture::Nv12),
+    }
+}
+
+/// `p`'s pictures go to its texture again; while its plane shows a picture
+/// the texture lacks, it stays up, and a paused player is sought where it is
+/// to hand that picture over again.
+fn leave<P: Play>(p: &mut Played<P>, now: Instant) {
+    p.on_plane = false;
+    if p.plane.is_some()
+        && !p.fresh
+        && let Some(player) = &mut p.player
+        && !player.is_playing()
+    {
+        player.seek(player.position());
+        p.awaits = Some(now);
     }
 }
 
@@ -909,6 +1091,163 @@ mod tests {
         assert_eq!(win.texel(), [40; 3]);
         assert_eq!(win.shown().0, before, "the same texture");
         assert_eq!(win.videos.frames, 2);
+    }
+
+    /// What a plane shows: the picture's luma, crop and place.
+    type OnPlane = (u8, [f32; 4], [i32; 4]);
+
+    /// A display with one plane, which records what it shows.
+    #[derive(Default)]
+    struct Display {
+        shown: RefCell<Option<OnPlane>>,
+        /// It refuses every picture.
+        refuses: bool,
+    }
+
+    impl Scanout for Display {
+        fn size(&self) -> (u32, u32) {
+            (64, 64)
+        }
+        fn format(&self) -> viso_gpu::ScanoutFormat {
+            viso_gpu::ScanoutFormat::Xrgb8888
+        }
+        fn gbm(&self) -> Option<viso_gpu::GbmTarget> {
+            None
+        }
+        fn turns(&self) -> u8 {
+            0
+        }
+        fn present_pixels(&self, _: &[u8], _: usize, _: &[(u32, u32, u32, u32)]) {}
+        fn presented(&self, _: &[(u32, u32, u32, u32)]) {}
+        fn planes(&self) -> usize {
+            1
+        }
+        fn show_plane(&self, _: usize, image: Option<&PlaneImage<'_>>) -> bool {
+            let Some(image) = image else {
+                *self.shown.borrow_mut() = None;
+                return true;
+            };
+            let PlanePicture::Nv12(picture) = image.picture else {
+                return false;
+            };
+            if self.refuses {
+                return false;
+            }
+            *self.shown.borrow_mut() = Some((picture.y[0], image.crop, image.at));
+            true
+        }
+        fn move_plane(&self, _: usize, crop: [f32; 4], at: [i32; 4]) -> bool {
+            let mut shown = self.shown.borrow_mut();
+            let Some(shown) = shown.as_mut() else {
+                return false;
+            };
+            (shown.1, shown.2) = (crop, at);
+            true
+        }
+    }
+
+    impl Window {
+        /// Draws the frame, with `over` drawn after it, and puts what it can
+        /// on `display`'s plane.
+        fn scan_out(&mut self, display: &Display, over: &[viso_render::primitive::Primitive]) {
+            let mut scene = Vec::new();
+            viso_ui::paint_tree(&self.store, self.leaf, &mut scene);
+            scene.extend_from_slice(over);
+            self.renderer.upload(&mut self.backend, &scene);
+            self.videos
+                .scan_out(display, &self.renderer, [100.0, 100.0], 2.0, self.now);
+        }
+    }
+
+    #[test]
+    fn a_video_on_top_shows_on_a_plane_until_something_covers_it() {
+        use viso_render::primitive::{Border, Primitive, Quad, Rgba};
+        let display = Display::default();
+        let mut win = Window::new(VideoSource::file("clip.mp4"));
+        win.step(SCREEN);
+        let script = opened(0);
+        script.borrow_mut().events.push_back(ready(8, 6));
+        script.borrow_mut().planes.push_back((8, 6, 200));
+        win.step(SCREEN);
+        // The first picture is the texture's; the plane is its from the next.
+        win.scan_out(&display, &[]);
+        assert_eq!(*display.shown.borrow(), None);
+        win.store.set_video_playing(win.leaf, true);
+        script.borrow_mut().planes.push_back((8, 6, 40));
+        assert!(win.step(SCREEN).beating);
+        assert_eq!(win.texel(), [200; 3], "the texture is passed over");
+        win.scan_out(&display, &[]);
+        // Contained in the 100-point box, at two pixels a point.
+        let whole = Some((40, [0.0, 0.0, 8.0, 6.0], [0, 25, 200, 150]));
+        assert_eq!(*display.shown.borrow(), whole);
+        assert_eq!((win.videos.frames, win.videos.scanned), (1, 1));
+        // A frame with no new picture leaves it as it is.
+        win.step(SCREEN);
+        win.scan_out(&display, &[]);
+        assert_eq!(*display.shown.borrow(), whole);
+
+        // Covered: the next picture is the texture's, and the plane comes
+        // down with the frame that draws it.
+        let over = [Primitive::Quad(Quad {
+            rect: viso_render::primitive::Rect::new(10.0, 10.0, 4.0, 4.0),
+            color: Rgba {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            },
+            radius: 0.0,
+            border: Border::NONE,
+        })];
+        win.scan_out(&display, &over);
+        assert_eq!(
+            *display.shown.borrow(),
+            whole,
+            "up until the texture has caught up"
+        );
+        script.borrow_mut().planes.push_back((8, 6, 90));
+        win.step(SCREEN);
+        assert_eq!(win.texel(), [90; 3]);
+        win.scan_out(&display, &over);
+        assert_eq!(*display.shown.borrow(), None);
+
+        // Uncovered, it goes back; paused and covered, it is sought where it
+        // is to hand its picture to the texture again.
+        win.scan_out(&display, &[]);
+        script.borrow_mut().planes.push_back((8, 6, 120));
+        win.step(SCREEN);
+        win.scan_out(&display, &[]);
+        assert_eq!(display.shown.borrow().map(|s| s.0), Some(120));
+        win.store.set_video_playing(win.leaf, false);
+        win.step(SCREEN);
+        script.borrow_mut().playing = false;
+        win.scan_out(&display, &over);
+        assert_eq!(script.borrow().seeks.len(), 1);
+        assert_eq!(display.shown.borrow().map(|s| s.0), Some(120));
+    }
+
+    #[test]
+    fn a_video_a_display_refuses_stays_in_its_texture() {
+        let display = Display {
+            refuses: true,
+            ..Display::default()
+        };
+        let mut win = Window::new(VideoSource::file("clip.mp4"));
+        win.step(SCREEN);
+        let script = opened(0);
+        script.borrow_mut().events.push_back(ready(8, 6));
+        script.borrow_mut().planes.push_back((8, 6, 200));
+        win.step(SCREEN);
+        win.store.set_video_playing(win.leaf, true);
+        win.scan_out(&display, &[]);
+        for luma in [40, 60, 80] {
+            script.borrow_mut().planes.push_back((8, 6, luma));
+            win.step(SCREEN);
+            win.scan_out(&display, &[]);
+        }
+        // One picture went to the refusing plane; the rest to the texture.
+        assert_eq!(win.texel(), [80; 3]);
+        assert_eq!((win.videos.frames, win.videos.scanned), (3, 0));
     }
 
     /// A `side` × `side` BGRA IOSurface every texel of which is `bgra`.

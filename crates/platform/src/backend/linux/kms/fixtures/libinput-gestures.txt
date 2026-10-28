@@ -1,0 +1,14 @@
+-event9   DEVICE_ADDED            SynPS/2 Synaptics TouchPad        seat0 default group9  cap:pg  size 70x50mm tap(dl off) left scroll-nat scroll-2fg-edge click-buttonareas-clickfinger dwt-on
+ event9   POINTER_MOTION          +1.204s	  1.20/  0.40 (  2.00/  0.67)
+ event9   GESTURE_PINCH_BEGIN     +3.502s	2
+ event9   GESTURE_PINCH_UPDATE    +3.524s	2  0.52/-0.21 ( 0.98/-0.39 unaccelerated)  1.02 @  0.31
+ event9   GESTURE_PINCH_UPDATE    +3.540s	2  1.48/ 0.00 ( 2.10/ 0.00 unaccelerated)  1.20 @  2.69
+ event9   GESTURE_PINCH_UPDATE    +3.557s	2  0.00/ 1.00 ( 0.00/ 1.50 unaccelerated)  1.50 @ -1.00
+ event9   GESTURE_PINCH_END       +3.601s	2
+ event9   GESTURE_SWIPE_BEGIN     +5.010s	3
+ event9   GESTURE_SWIPE_UPDATE    +5.026s	3 12.00/ 0.50 (18.00/ 0.75 unaccelerated)
+ event9   GESTURE_SWIPE_UPDATE    +5.043s	3 20.00/-0.50 (30.00/-0.75 unaccelerated)
+ event9   GESTURE_SWIPE_END       +5.080s	3
+ event9   GESTURE_PINCH_BEGIN     +7.100s	3
+ event9   GESTURE_PINCH_UPDATE    +7.117s	3  0.00/ 0.00 ( 0.00/ 0.00 unaccelerated)  0.80 @  0.00
+ event9   GESTURE_PINCH_END       +7.150s	3 cancelled

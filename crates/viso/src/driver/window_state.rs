@@ -907,6 +907,19 @@ impl WindowState {
     /// a device pixel keeps the retained draws. Then the renderer takes the
     /// displacements as they are now, and when a moved root holds content a
     /// shift cannot move, the tree is painted again there.
+    /// Puts the videos drawn plainly and on top on `display`'s planes, as
+    /// the frame just uploaded draws them.
+    pub(crate) fn scan_out_videos(&mut self, display: &dyn viso_gpu::Scanout, now: Instant) {
+        let Some(gpu) = &self.gpu else {
+            return;
+        };
+        let scale = self.dpi.max(1.0);
+        let (w, h) = gpu.size;
+        let viewport = [w as f32 / scale, h as f32 / scale];
+        self.videos
+            .scan_out(display, &gpu.renderer, viewport, scale, now);
+    }
+
     pub(crate) fn upload_gpu_changes(&mut self) {
         let Some(gpu) = &mut self.gpu else {
             return;

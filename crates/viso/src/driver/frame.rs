@@ -798,6 +798,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     y: g.y / scale,
                     scale: g.scale,
                     rotation: g.rotation,
+                    dx: g.dx / scale,
+                    dy: g.dy / scale,
                     phase: match g.phase {
                         viso_runtime::GesturePhase::Began => viso_ui::PinchPhase::Start,
                         viso_runtime::GesturePhase::Changed => viso_ui::PinchPhase::Move,
@@ -1885,8 +1887,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 }
             }
             FramePhase::UploadGpuChanges => {
+                let now = cx.frame_now();
                 for ws in &mut self.windows {
                     ws.upload_gpu_changes();
+                    // Videos drawn plainly and on top show on the display's
+                    // planes, where it has them, going up or down with this
+                    // frame.
+                    if !ws.videos.is_empty()
+                        && let Some(viso_gpu::RawWindowHandle::Scanout { scanout }) =
+                            cx.raw_handle(ws.window)
+                    {
+                        // SAFETY: a scanout handle's display lives as long as
+                        // its window, on this thread.
+                        ws.scan_out_videos(unsafe { &*scanout }, now);
+                    }
                 }
             }
             FramePhase::Submit => {

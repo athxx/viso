@@ -3931,7 +3931,8 @@ Tier-2 compatibility backend 可以存在，例如 Linux OpenGL、Android GLES�
 - **热插拔**：内核 uevent netlink（不依赖 udev 守护进程）：输入设备增删（权限未就绪时短暂重试），connector 变化重新探测；断开/恢复以 `Suspended` / `Resumed` 报告，mode 尺寸变化以 `SurfaceDestroyed` → `ScaleFactorChanged` → `SurfaceCreated` 报告。
 - **Session**：有 seatd/logind 时经 libseat 打开设备并在 VT 切换时暂停/恢复（暂停期间不碰 card，恢复时重开输入设备、重设 mode 并显示最新帧）；否则直接打开节点，并把控制 VT 切到 `KD_GRAPHICS` + `K_OFF`，退出时恢复。
 - **能力**：`PlatformApp::capabilities()` 返回 `PlatformCaps::FULLSCREEN`（单窗口、无菜单栏但 accelerator 仍生效、无 portal、应用内剪贴板、无 IME）；`framed_windows()` 为 false。
-- **未做**：视频 overlay plane（视频画面经 renderer 合成，§50A.4）；触摸板 pinch / swipe（`RawEvent::Gesture` 已有，libinput 的 gesture 事件尚未翻译）。
+- **手势**：libinput 的触摸板 pinch / swipe 事件翻译为 `RawEvent::Gesture`：libinput 报告自 begin 起的绝对 scale，平台换成逐步比值；`dx`/`dy` 是手指中点每步的移动（逻辑点，pinch 的焦点随之平移），swipe 的 scale 为 1、rotation 为 0；取消的手势以 `Cancelled` 结束。
+- **视频 plane**（ADR 0061）：未旋转的面板上，CRTC 中叠在 primary 之上的 overlay plane 经 `Scanout::planes` / `show_plane` / `move_plane` 显示视频画面。NV12 plane 直接导入 decoder 的 dma-buf（`PRIME_FD_TO_HANDLE` + `ADDFB2`，按 fd 缓存最近 8 个导入），或把手头的 NV12 平面拷进 plane 自己的 3 个 dumb buffer；只有 XRGB 的 plane 拷贝时以定点运算转换。每个新尺寸、裁剪、位置先以 `TEST_ONLY` 提交试过，硬件不能显示的被拒绝、画面留给帧画。画面随下一帧的提交上屏；帧不 present 时由 plane 单独提交；没有可提交的内容时，下一帧经 `DRM_IOCTL_CRTC_QUEUE_SEQUENCE` 等下一次刷新，不用定时器。画面在替换它的那一次 flip 之后才释放。facade 每帧在 GPU 上传之后、submit 之前为 scanout 窗口挑选 plane：`Renderer::topmost_image` 说明视频纹理是否朴素地画在最上层（无旋转、着色、mask、offscreen，之后没有相交的绘制）及其屏幕位置；是则下一张画面去 plane 而不进纹理，窗口不再为视频画帧；被覆盖或移到显示拒绝的位置后，下一张画面回到纹理（暂停的视频原地 seek 以取得画面），纹理画出之前 plane 不撤下。原地改写的纹理经 `Renderer::texture_rewritten` 使采样它的绘制成为 damage。
 
 ### 48.1.2 手柄
 
@@ -5257,7 +5258,7 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 
 ## 73A. Phase 10 — Architecture 修正与 Embedded（ADR 0041–0044）
 
-**状态**：工作 1–12 已完成（`todo_arch.md` A1–A18；ADR 0042–0044 的文件状态仍为 Proposed）。缺口：KMS overlay plane（视频）；退出标准中的板卡实测与板卡 bit-exact 对比尚无数据（`benches/footprint/baseline.md` 只有桌面与 headless）；release 产物中不含 VM 尚无自动检查。
+**状态**：工作 1–12 已完成（`todo_arch.md` A1–A18；ADR 0042–0044 的文件状态仍为 Proposed）。KMS 视频 overlay plane 见 ADR 0061（只在 vkms 虚拟板上验证）。缺口：退出标准中的板卡实测与板卡 bit-exact 对比尚无数据（`benches/footprint/baseline.md` 只有桌面与 headless）；release 产物中不含 VM 尚无自动检查。
 
 ### 工作
 
@@ -5269,7 +5270,7 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 6. Damage-driven present（GPU 与 CPU；Metal / WebGPU 不知道 drawable age，变化帧整帧重画）；
 7. `CpuRaster` 生产化（tile、RGB565、SIMD、damage tile）；
 8. `Gles3Backend` 与 GLSL ES 3.00 codegen；
-9. `backend/linux/kms`：KMS atomic、GBM/EGL、dumb buffer、evdev、epoll（overlay plane 未做）；
+9. `backend/linux/kms`：KMS atomic、GBM/EGL、dumb buffer、evdev、libinput 手势、epoll、视频 overlay plane（ADR 0061）；
 10. Footprint Profile、`MemoryBudget`、`check-profiles`、footprint benchmark、与 Makepad 的对比基线；
 11. Embedded 字体：subset、baked atlas；资源构建期转换；
 12. MCU-ready 不变量的 `no_std` CI（`cargo xtask mcu-smoke`）。

@@ -747,18 +747,23 @@ impl Seat {
     }
 
     /// A touchpad pinch's event: the scale it reports is since its begin,
-    /// its turn (degrees, clockwise) since the update before.
+    /// its turn (degrees, clockwise) and the move of its middle since the
+    /// update before.
     fn on_pinch(&mut self, state: &mut State, event: zwp_pointer_gesture_pinch_v1::Event) {
         let modifiers = self.modifiers();
         let Some(p) = &mut self.pointer else { return };
-        let (phase, scale, rotation) = match event {
+        let (phase, scale, rotation, pan) = match event {
             zwp_pointer_gesture_pinch_v1::Event::Begin { serial, .. } => {
                 self.last_serial = serial;
                 p.pinch_scale = 1.0;
-                (GesturePhase::Began, 1.0, 0.0)
+                (GesturePhase::Began, 1.0, 0.0, (0.0, 0.0))
             }
             zwp_pointer_gesture_pinch_v1::Event::Update {
-                scale, rotation, ..
+                dx,
+                dy,
+                scale,
+                rotation,
+                ..
             } => {
                 let by = if p.pinch_scale > 0.0 && scale > 0.0 {
                     scale / p.pinch_scale
@@ -766,9 +771,11 @@ impl Seat {
                     1.0
                 };
                 p.pinch_scale = scale;
-                (GesturePhase::Changed, by, rotation.to_radians())
+                (GesturePhase::Changed, by, rotation.to_radians(), (dx, dy))
             }
-            zwp_pointer_gesture_pinch_v1::Event::End { .. } => (GesturePhase::Ended, 1.0, 0.0),
+            zwp_pointer_gesture_pinch_v1::Event::End { .. } => {
+                (GesturePhase::Ended, 1.0, 0.0, (0.0, 0.0))
+            }
             _ => return,
         };
         let Some(window) = p.focus else { return };
@@ -778,6 +785,8 @@ impl Seat {
             y: p.y,
             scale,
             rotation,
+            dx: pan.0,
+            dy: pan.1,
             modifiers,
             phase,
         }));

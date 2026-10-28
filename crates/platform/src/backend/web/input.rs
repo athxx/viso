@@ -335,6 +335,8 @@ fn on_gesture(page: &Page, e: &Event) {
         y: read("clientY") - top,
         scale: scale / before_scale,
         rotation: (turn - before_turn).to_radians(),
+        dx: 0.0,
+        dy: 0.0,
         modifiers: modifiers(
             held("shiftKey"),
             held("ctrlKey"),
