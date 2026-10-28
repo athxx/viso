@@ -96,6 +96,42 @@ fn a_source_error_points_at_its_file_line_and_column() {
 }
 
 #[test]
+fn a_shader_compiler_diagnostic_renders_like_the_frontends() {
+    // The brush profile is checked by the shader compiler: its diagnostic
+    // carries the primary span, the view that paints with the shader and the
+    // explanation pointer as any other.
+    let s = Scratch::new("brush");
+    s.write("Viso.toml", MANIFEST).write(
+        "src/app.vs",
+        "shader Glow {
+    uniform viewport_size: Vec2F32;
+    instance rect_pos: Vec2F32;
+    vertex(vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id);
+        return VertexOutput { clip_position: to_clip(rect_pos + unit, viewport_size) };
+    }
+    fragment() -> Vec4F32 {
+        return Vec4F32(1.0, 0.0, 0.0, 1.0);
+    }
+}
+export component Card {
+    view {
+        ShaderView { shader: Glow {}; width: 120dp; height: 80dp; }
+    }
+}
+",
+    );
+    let out = viso(&s.0, &["check"]);
+    assert_eq!(code(&out), 1);
+    let err = stderr(&out);
+    assert!(err.starts_with("error[E8107]: "), "{err}");
+    assert!(err.contains(" --> src/app.vs:1:8\n"), "{err}");
+    assert!(err.contains("`Glow` paints this view"), "{err}");
+    assert!(err.contains("viso explain E8107"), "{err}");
+    assert_eq!(stdout(&out), "checked `demo`: 1 file, 1 error\n");
+}
+
+#[test]
 fn a_view_that_does_not_mount_is_an_error_its_file_points_at() {
     let s = Scratch::new("unmounted");
     s.write("Viso.toml", MANIFEST)

@@ -23,6 +23,7 @@ use std::sync::Arc;
 use viso_dsl::Diagnostic;
 use viso_dsl::LineIndex;
 use viso_dsl::Parse;
+use viso_dsl::frontend::compile_parsed_in;
 use viso_dsl::native_package;
 use viso_dsl::resolve::{
     ModuleGraph, ModulePath, NameInterner, ResolvedModule, SourceUnit, resolve,
@@ -31,6 +32,7 @@ use viso_dsl::schema::Natives;
 use viso_dsl::syntax::grammar::parse;
 use viso_dsl::tokenize;
 
+use crate::actions::origin;
 use crate::index::ReferenceIndex;
 
 /// A stable identifier for an open document, assigned by [`SourceMap::open`].
@@ -61,20 +63,15 @@ pub struct OpenDoc {
     pub resolved: ResolvedModule,
     /// Reverse def→use index and declaration spans over `resolved`.
     pub index: ReferenceIndex,
-    /// The module graph's diagnostics: an import naming no module or
-    /// native library.
-    pub graph_errors: Vec<Diagnostic>,
+    /// Every diagnostic a full check of the document raises, from parsing
+    /// through the shader compiler, as `viso check` reports them.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl OpenDoc {
-    /// Every diagnostic of the document: its parse's, its imports' and its
-    /// resolution's.
+    /// Every diagnostic of the document.
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.parse
-            .errors
-            .iter()
-            .chain(&self.graph_errors)
-            .chain(&self.resolved.errors)
+        self.diagnostics.iter()
     }
 
     /// Derives every artifact from source text, resolving it as a single-module
@@ -84,10 +81,7 @@ impl OpenDoc {
         native_package::link_with(
             manifest,
             |natives| OpenDoc::derive_in(source.clone(), module_path, natives),
-            |doc, visit| {
-                doc.graph_errors.iter_mut().for_each(&mut *visit);
-                doc.resolved.errors.iter_mut().for_each(visit);
-            },
+            |doc, visit| doc.diagnostics.iter_mut().for_each(visit),
         )
         .made
     }
@@ -99,8 +93,7 @@ impl OpenDoc {
         let mut interner = NameInterner::new();
         let path = ModulePath::intern(&mut interner, module_path);
         let mut units = vec![SourceUnit::new(path, parse_result.clone())];
-        let graph = ModuleGraph::build_with(&units, &interner, natives, "");
-        let graph_errors = graph.errors().to_vec();
+        let graph = ModuleGraph::build_with(&units, &interner, natives.clone(), "");
         let mut resolved = resolve(&graph, &mut units, &mut interner, "");
         // A single-unit graph resolves to exactly one module.
         let resolved = resolved.pop().unwrap_or_else(|| ResolvedModule {
@@ -110,13 +103,16 @@ impl OpenDoc {
             errors: Vec::new(),
         });
         let index = ReferenceIndex::build(&resolved);
+        let module: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();
+        let diagnostics =
+            compile_parsed_in(&source, parse_result.clone(), &origin(&module), natives).diagnostics;
         OpenDoc {
             source,
             line_index,
             parse: parse_result,
             resolved,
             index,
-            graph_errors,
+            diagnostics,
         }
     }
 }

@@ -23,7 +23,9 @@
 
 use viso_gpu_abi::{AttrFormat, InstanceLayout, ProgramAbi};
 
-use super::{Binding, ExprKind, Program, ProgramError, Scalar, Span, Stage, Ty};
+use viso_diag::Diagnostic;
+
+use super::{Binding, ExprKind, Program, Scalar, Span, Stage, Ty};
 
 /// The version of the rules above.
 pub const LAYOUT_VERSION: u32 = 1;
@@ -378,11 +380,13 @@ impl ShaderInterface {
     ///
     /// # Errors
     ///
-    /// Each disagreement, `E8104`.
-    pub fn check_instance(&self, host: &InstanceLayout) -> Result<(), Vec<ProgramError>> {
+    /// Each disagreement, `E8104`; one about the host struct alone has an
+    /// empty span at the start.
+    pub fn check_instance(&self, host: &InstanceLayout) -> Result<(), Vec<Diagnostic>> {
         let mut errors = Vec::new();
-        let mut error =
-            |span: Span, message: String| errors.push(ProgramError::new("E8104", span, message));
+        let mut error = |span: Span, message: String| {
+            errors.push(Diagnostic::error("E8104", span.range(), message));
+        };
         if host.stride != self.instance.size as usize {
             error(
                 Span::default(),

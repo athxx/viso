@@ -162,7 +162,7 @@ text (pure CPU) / shader
 gpu → handle
 ```
 
-The compiler side is separate: `dsl -> lexer / schema / dev-protocol / behavior / shader / ende / math`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `behavior` (the VM) sits on `ende / math / schema`; `shader` sees GPU types only through `gpu-abi`. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `gpu-abi`, `lexer`, and the tooling leaves `project`, `package`) sit outside this chain; `schema` is a pure-data contract on `ende` only; `macros` sits on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode); `pdf` on `render`; `media` on `handle`. The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
+The compiler side is separate: `dsl -> diag / lexer / schema / dev-protocol / behavior / shader / ende / math`, with `lsp` and `ui-macros` on `dsl` (ADR 0042). `ui` and `view` re-export `schema`; `dev-protocol` is the CLI↔runtime dev link both sides depend on; `behavior` (the VM) sits on `ende / math / schema`; `shader` sees GPU types only through `gpu-abi`; `lexer` takes its spans and `shader` its diagnostics from `diag`, the one diagnostic shape both compilers report in. Leaf crates (`math`, `ende`, `handle`, `glyph-a8`, `gpu-abi`, `diag`, and the tooling leaves `project`, `package`) sit outside this chain; `schema` is a pure-data contract on `ende` only; `macros` sits on `glyph-a8` (the A8 glyph rasterizer and baked pages `text` also reads); `render` sits on `svg` (parser) and `image` (raster decode); `pdf` on `render`; `media` on `handle`. The transitive closure of `dsl`/`lsp`/`ui-macros`/`cli` must not contain runtime, platform or gpu; `check-deps` enforces it. The exact allowed edges are the allowlist in `xtask/src/main.rs` (§3.6, Architecture §10).
 
 Exact low-level edges can differ where required by surface creation and runtime ownership, but the following are forbidden:
 
@@ -232,6 +232,7 @@ crates/
     handle/
     math/
     ende/
+    diag/        source spans + the one diagnostic shape (dsl, shader, CLI, LSP)
     lexer/       .vs tokenizer (compiler + code-editor highlighter)
     runtime/
     platform/

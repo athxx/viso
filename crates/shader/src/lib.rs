@@ -11,15 +11,12 @@
 //! represented directly in a typed IR
 //! without sharing a script VM.
 //!
-//! Diagnostics are self-contained: `viso-shader` sits below `viso-dsl` in the
-//! crate DAG, so it cannot import the DSL's `Diagnostic`; sharing diagnostic
-//! infrastructure would be permitted, but the dependency direction forbids that
-//! specific edge, so this crate carries its own.
+//! Errors in source text are `viso-diag` diagnostics, the shape the `.vs`
+//! frontend reports in, so a tool renders both through one path.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod code;
-pub mod diag;
 pub mod ir;
 pub mod manifest;
 pub mod msl;
@@ -27,7 +24,6 @@ pub mod program;
 pub mod reload;
 
 pub use code::{scene_program_code, shader_code};
-pub use diag::{Diagnostic, Severity};
 pub use manifest::{
     ColorTargetClass, PipelineEntry, PipelineFamily, PipelineManifest, VariantKey,
     standard_manifest,
@@ -41,7 +37,7 @@ pub use msl::{
     gradient_schema, image_schema, instance_schema, mesh_schema, output_encode_schema, quad_schema,
     scene_schema, shader_source,
 };
-pub use reload::{CompiledShader, ShaderPipeline};
+pub use reload::{CompiledShader, ShaderPipeline, describe_layout_error};
 
 /// The stages a shader source passes through, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

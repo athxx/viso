@@ -866,8 +866,29 @@ Rules (as for `todo_features.md`):
     - The CLI places a runtime diagnostic in the running source.
     - The wire round trip carries every label kind.
     - The flush and reactive suites pass with origins and cells.
-- [ ] One diagnostic shape shared by `viso-shader` and `viso-dsl`, in a leaf crate. Verify that the
+- [x] One diagnostic shape shared by `viso-shader` and `viso-dsl`, in a leaf crate. Verify that the
   LSP and the CLI render shader diagnostics through one path.
+  - Built:
+    - The leaf `viso-diag` holds the source spans (`TextSize`, `TextRange`, `LineIndex`) and the one
+      `Diagnostic` with its related spans, fixes and severity. `viso-lexer` and `viso_dsl::diag`
+      re-export them at their old paths.
+    - `viso-shader` drops its parallel `Diagnostic` and `ProgramError`:
+      - Program validation, the instance check and the brush profile return spanned diagnostics.
+        The DSL forwards them as they are, without a conversion.
+      - A built-in body error converts with its span relative to its fragment.
+      - The dev pipeline's ABI check points at no source, so it returns the typed `LayoutError`.
+    - The LSP publishes a full check of the document, the same one `viso check` runs. Before, it
+      published only parse and resolve diagnostics, so type and shader errors never reached the
+      editor.
+    - The LSP also carries a diagnostic's related spans in the document as `relatedInformation`,
+      with its notes after the message.
+  - Verified:
+    - A brush-profile error from the shader compiler renders in `viso check` with its primary
+      span, the view that paints with it and the `viso explain` pointer.
+    - The same error publishes over the LSP at the shader's name, with the painting view as its
+      related information.
+    - The shader, LSP, DSL diag and brush, and CLI check suites pass.
+    - `check-deps` passes.
 
 ## N6 — DSL and tooling
 

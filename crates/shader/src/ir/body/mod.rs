@@ -23,10 +23,10 @@ pub mod parse;
 pub mod print;
 
 use crate::CompileStage;
-use crate::diag::Diagnostic;
 use crate::ir::body::ast::{Function, Item};
 use crate::ir::body::lex::Span;
 use crate::ir::module::ShaderIr;
+use viso_diag::{Diagnostic, TextRange};
 
 /// Which fragment of a [`ShaderIr`] a body error is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,10 +84,10 @@ impl BodyError {
         }
     }
 
-    /// As a tooling diagnostic.
+    /// As a tooling diagnostic, its span relative to the fragment.
     pub fn to_diagnostic(&self) -> Diagnostic {
-        let mut d =
-            Diagnostic::error(self.code, self.stage(), self.message.clone()).with_span(self.span);
+        let range = TextRange::new(self.span.start.into(), self.span.end.into());
+        let mut d = Diagnostic::error(self.code, range, self.message.clone());
         if let Some(part) = self.part {
             d = d.with_note(format!(
                 "in `{}` at {}:{}",
@@ -238,8 +238,11 @@ mod tests {
         assert_eq!((e.span.line, e.span.col), (1, 11));
         let d = e.to_diagnostic();
         assert_eq!(d.code, "S0301");
-        assert_eq!(d.stage, CompileStage::TypedIr);
-        assert_eq!(d.span, Some(e.span));
+        assert_eq!(e.stage(), CompileStage::TypedIr);
+        assert_eq!(
+            d.primary,
+            TextRange::new(e.span.start.into(), e.span.end.into())
+        );
         assert!(e.to_string().starts_with("S0301 fragment_body:1:11:"));
     }
 }

@@ -26,7 +26,7 @@ use crate::diag::Diagnostic;
 use crate::hir::Ty as HostTy;
 use crate::hir::infer::FieldInfo;
 use crate::resolve::SymbolId;
-use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
+use crate::syntax::{SyntaxKind, SyntaxNode, TextRange, TextSize};
 
 /// A checked shader: its program, when it checked cleanly, and its layout as a
 /// brush, when it is one.
@@ -628,14 +628,10 @@ pub(super) fn check(
     {
         // The checker and the validator disagree: a checker bug, reported so
         // the program is never used.
-        for e in errors {
-            let range = TextRange::new(e.span.start.into(), e.span.end.into());
-            diagnostics_push(
-                sh.diagnostics,
-                e.code,
-                range,
-                format!("internal: {}", e.message),
-            );
+        for mut e in errors {
+            debug_assert!(false, "{}: {}", e.code, e.message);
+            e.message.insert_str(0, "internal: ");
+            sh.diagnostics.push(e);
         }
         return CheckedShader {
             name,
@@ -648,20 +644,14 @@ pub(super) fn check(
     let (brush, brush_errors) = match &program {
         Some(program) => match BrushLayout::new(program, &program.interface()) {
             Ok(layout) => (Some(BrushLayout { samplers, ..layout }), Vec::new()),
-            Err(errors) => {
-                let errors = errors
-                    .into_iter()
-                    .map(|e| {
-                        // A member the shader lacks has no span: the shader's
-                        // name stands for it.
-                        let range = if e.span == Span::default() {
-                            at
-                        } else {
-                            TextRange::new(e.span.start.into(), e.span.end.into())
-                        };
-                        Diagnostic::error(e.code, range, e.message)
-                    })
-                    .collect();
+            Err(mut errors) => {
+                // A member the shader lacks has no span: the shader's name
+                // stands for it.
+                for e in &mut errors {
+                    if e.primary == TextRange::empty(TextSize::ZERO) {
+                        e.primary = at;
+                    }
+                }
                 (None, errors)
             }
         },
@@ -713,16 +703,6 @@ pub(super) fn check_brushes(
             per_module[home].push(d);
         }
     }
-}
-
-fn diagnostics_push(
-    d: &mut Vec<Diagnostic>,
-    code: &'static str,
-    range: TextRange,
-    message: String,
-) {
-    debug_assert!(false, "{code}: {message}");
-    d.push(Diagnostic::error(code, range, message));
 }
 
 const fn stage_word(stage: Stage) -> &'static str {

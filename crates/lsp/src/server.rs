@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use viso_dsl::LineIndex;
 use viso_dsl::diag::{Diagnostic, Severity, codes};
 
 use crate::actions;
@@ -417,10 +418,9 @@ impl Server {
                     m.insert("isPreferred".to_string(), Json::Bool(true));
                 }
                 if let Some(d) = &a.fixes {
-                    let range = position::to_lsp_range(&doc.line_index, d.primary);
                     m.insert(
                         "diagnostics".to_string(),
-                        Json::Arr(vec![diagnostic_json(range, d)]),
+                        Json::Arr(vec![diagnostic_json(&uri, &doc.line_index, d)]),
                     );
                 }
                 Json::Obj(m)
@@ -507,10 +507,7 @@ impl Server {
         };
         let mut items = Vec::new();
         for d in doc.diagnostics() {
-            items.push(diagnostic_json(
-                position::to_lsp_range(&doc.line_index, d.primary),
-                d,
-            ));
+            items.push(diagnostic_json(uri, &doc.line_index, d));
         }
         Outbound {
             reply: None,
@@ -610,17 +607,44 @@ fn text_edit_json(range: LspRange, new_text: &str) -> Json {
     Json::Obj(m)
 }
 
-/// A protocol `Diagnostic` from a frontend [`Diagnostic`] and its converted range.
-fn diagnostic_json(range: LspRange, d: &Diagnostic) -> Json {
+/// A protocol `Diagnostic` from a [`Diagnostic`] in the document `uri`, whichever
+/// compiler raised it: its notes follow the message, and its related spans in
+/// this document are its related information.
+fn diagnostic_json(uri: &str, line_index: &LineIndex, d: &Diagnostic) -> Json {
     let mut m = BTreeMap::new();
-    m.insert("range".to_string(), range_json(range));
+    m.insert(
+        "range".to_string(),
+        range_json(position::to_lsp_range(line_index, d.primary)),
+    );
     m.insert(
         "severity".to_string(),
         Json::Num(lsp_severity(d.severity) as f64),
     );
     m.insert("code".to_string(), Json::Str(d.code.to_string()));
     m.insert("source".to_string(), Json::Str("viso".to_string()));
-    m.insert("message".to_string(), Json::Str(d.message.clone()));
+    let mut message = d.message.clone();
+    for note in &d.notes {
+        message.push_str("\nnote: ");
+        message.push_str(note);
+    }
+    m.insert("message".to_string(), Json::Str(message));
+    let related: Vec<Json> = d
+        .related
+        .iter()
+        .filter(|r| r.module.is_none())
+        .map(|r| {
+            Json::object([
+                (
+                    "location",
+                    location_json(uri, position::to_lsp_range(line_index, r.range)),
+                ),
+                ("message", Json::Str(r.label.clone())),
+            ])
+        })
+        .collect();
+    if !related.is_empty() {
+        m.insert("relatedInformation".to_string(), Json::Arr(related));
+    }
     Json::Obj(m)
 }
 
@@ -989,6 +1013,38 @@ mod tests {
         let (_, exit) = s.handle(&notif("exit", Json::Null));
         assert!(exit);
         assert_eq!(s.exit_code(), 1, "an exit without shutdown");
+    }
+
+    #[test]
+    fn a_shader_compiler_diagnostic_publishes_with_its_related_span() {
+        // The brush profile is checked by the shader compiler; its diagnostic
+        // reaches the editor as the frontend's do.
+        let Some(codes::Example::Source(src)) = codes::lookup("E8107").map(|c| c.example) else {
+            panic!("E8107 has a source example");
+        };
+        let mut s = Server::new();
+        let uri = "file:///glow.vs";
+        let (out, _) = s.handle(&open(uri, src));
+        let params = out.notifications[0].get("params").unwrap();
+        let items = params.get("diagnostics").and_then(Json::as_arr).unwrap();
+        let d = &items[0];
+        assert_eq!(d.get("code").and_then(Json::as_str), Some("E8107"));
+        let start = d.get("range").and_then(|r| r.get("start")).unwrap();
+        assert_eq!(
+            (
+                start.get("line").and_then(Json::as_u32),
+                start.get("character").and_then(Json::as_u32)
+            ),
+            (Some(0), Some(7)),
+            "a missing member points at the shader's name"
+        );
+        let related = d.get("relatedInformation").and_then(Json::as_arr).unwrap();
+        assert_eq!(
+            related[0].get("message").and_then(Json::as_str),
+            Some("`Glow` paints this view")
+        );
+        let at = related[0].get("location").unwrap();
+        assert_eq!(at.get("uri").and_then(Json::as_str), Some(uri));
     }
 
     #[test]

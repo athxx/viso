@@ -34,8 +34,8 @@ pub use layout::{
 pub use ops::{BinaryOp, Intrinsic, StageUse, UnaryOp};
 pub use package::{PackedBrush, PackedCode, ProgramCode, ShaderLang};
 pub use ty::{Scalar, Texel, Ty};
-pub use validate::ProgramError;
 pub use value::{EncodeError, Lane, Value};
+use viso_diag::{TextRange, TextSize};
 pub use viso_gpu_abi::{AddressMode, BlendMode, CpuTexels, CpuTexture, FilterMode, SamplerDesc};
 
 /// A byte range of the source a program was built from.
@@ -43,6 +43,13 @@ pub use viso_gpu_abi::{AddressMode, BlendMode, CpuTexels, CpuTexture, FilterMode
 pub struct Span {
     pub start: u32,
     pub end: u32,
+}
+
+impl Span {
+    /// As a diagnostic's span.
+    pub const fn range(self) -> TextRange {
+        TextRange::new(TextSize::new(self.start), TextSize::new(self.end))
+    }
 }
 
 /// A user shader.

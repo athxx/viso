@@ -104,7 +104,7 @@ Viso 1.0 将以下地基问题定义为正式架构决策：
 11. **Hot Reload 是 Dev-only build capability。** Dev Runtime、patch transport、DevSnapshot endpoint 与 hot-reload-only metadata 只编入 Dev artifact（facade feature `viso/hot-reload`）；Release/Shipping 完全不编入这些路径（facade 的 build script 拒绝带 `hot-reload` 的 release/shipping build，`cargo xtask check-release-absence` 扫描产物），不能靠运行时配置重新开启，release frame hot path 不承担热更税（`cargo xtask check-frame-tax`）。
 12. **`viso run` 的 desktop host 是隐式且唯一的。** macOS/Windows/Linux 开发统一使用无参数 `viso run`；`viso run ios/android` 只面向 Simulator/Emulator；`viso run web-gpu|web-dom|web-hybrid` 面向浏览器；Android/iOS 开发环境分别由 `viso android` / `viso ios` 管理，不把手机 physical-device debugging 作为 Viso 1.0 开发闭环的一部分。Embedded class 的开发闭环是：经 SSH 的板卡 Dev session（`viso run <target>`，target 写 `deploy`），以及在 macOS 上仿真 `embedded-cpu` 板卡（`viso run <target> --emulate`）（`Viso_CLI.md` §13.11，§50A.7）。
 13. **Release 不解释执行 UI 行为。** `ui!` / `component!` / `view!` 都是构建期入口；Release 中模块的每个 chunk（handler、region entry、显示值、computed、effect、state 初始化、函数、闭包、task）都 lower 为生成的 Rust 函数（按 chunk 索引的静态函数表），task 是可恢复状态机。Behavior bytecode 解释器是 facade 的 `vm` feature，不在默认集内，由 `viso build` / `viso run` 只为 Dev build 打开：开启时 debug build 运行 bytecode（Dev 热更新 patch 替换它）；release build 与任何不开 `vm` 的 build 只运行生成的 Rust（`viso::__behavior!`）。显式 dynamic capability 包与 sandbox/AI preview 使用解释器是目标（尚未实现，§44）（§41，ADR 0041）。
-14. **编译器不依赖运行时栈。** `viso-dsl` frontend 只依赖纯数据与无 runtime 的 crate：`viso-lexer`、`viso-schema`、`viso-ende`、`viso-behavior`、`viso-shader`、`viso-dev-protocol`、`viso-math`；LSP、`viso check` 与 CI 分析不链接 GPU/platform/runtime。`gpu` 不依赖 `runtime`，`text` 不依赖 `gpu`（§10，ADR 0042）。
+14. **编译器不依赖运行时栈。** `viso-dsl` frontend 只依赖纯数据与无 runtime 的 crate：`viso-diag`、`viso-lexer`、`viso-schema`、`viso-ende`、`viso-behavior`、`viso-shader`、`viso-dev-protocol`、`viso-math`；LSP、`viso check` 与 CI 分析不链接 GPU/platform/runtime。`gpu` 不依赖 `runtime`，`text` 不依赖 `gpu`（§10，ADR 0042）。
 15. **资源占用是一等合同。** 每个 Device Class 都有 Footprint Profile，在编译期裁剪能力；`cargo xtask footprint` 度量二进制体积（含 data/bss）、首帧时间、峰值/空闲 RSS、counted heap、GPU 内存与空闲 CPU，基线记录在 `benches/footprint/baseline.md`，`--check` 按容差比较；CI 以 `--against <base>` 在同一台机器上与所基于的提交成对比较。Embedded-GPU（嵌入式 Linux + GLES3/Vulkan）属于 1.0 目标；Embedded-CPU（无 GPU，CPU 光栅 + damage 局部刷新）是 1.0 Tier-2；MCU 不在 1.0 交付，但 core crates 必须保持 MCU-ready（CI 的 `cargo xtask mcu-smoke`）（§50A，ADR 0044）。
 
 这些条目属于 Viso 1.0 的架构合同；如果要改变，必须新增/修改 ADR 并附 benchmark 或实现证据。
@@ -625,7 +625,8 @@ viso/
 │   ├── viso/          facade
 │   ├── macros/        viso-macros（proc-macro）
 │   ├── ui-macros/     viso-ui-macros（ui! / component! / view!）
-│   ├── math/  ende/  handle/  glyph-a8/  gpu-abi/  lexer/   叶子
+│   ├── math/  ende/  handle/  glyph-a8/  gpu-abi/  diag/   叶子
+│   ├── lexer/         viso-lexer（`.vs` tokenizer，span 来自 diag）
 │   ├── schema/  dev-protocol/   编译边界与 dev 链路的纯数据合同（ADR 0042）
 │   ├── runtime/  platform/
 │   ├── gpu/  shader/  text/  render/  svg/  image/
@@ -928,9 +929,13 @@ Layout / hit test / transform 的几何类型来自 `viso-math`（`ui -> math`�
 
 只依赖 `viso-ui` 与 `viso-math`。PDF/browser/chart/map/code editor 等不是基础 widget：图表、地图、代码编辑器在 `extras/`（见下），PDF 输出是 `viso-pdf` + `viso::pdf`，不平铺进核心 widgets。
 
+### `viso-diag`
+
+叶子 crate：源码 span（`TextSize` / `TextRange` / `LineIndex`）与唯一的诊断结构（`Diagnostic`、`Related`、`Fix`、`TextEdit`、`Severity`）。`.vs` 前端与 shader 编译器都产出它，CLI 渲染器与 LSP 只读它，不论哪个编译器报出。
+
 ### `viso-lexer`
 
-`.vs` tokenizer，叶子 crate：源码到扁平、lossless 的 token 流（`SyntaxKind`、`Token`、`LexError`、`TextRange` / `LineIndex`），错误 span 不中断扫描；`LexState` 支持逐行续扫（跨行只带块注释深度或 raw string 的 `#` 数）。`viso-dsl` 从它解析并在原路径 re-export，`viso-code-editor` 用它逐行高亮，因此编辑器不链接编译器。
+`.vs` tokenizer：源码到扁平、lossless 的 token 流（`SyntaxKind`、`Token`、`LexError`，span 类型来自 `viso-diag`），错误 span 不中断扫描；`LexState` 支持逐行续扫（跨行只带块注释深度或 raw string 的 `#` 数）。`viso-dsl` 从它解析并在原路径 re-export，`viso-code-editor` 用它逐行高亮，因此编辑器不链接编译器。
 
 ### `viso-dsl`
 
@@ -946,7 +951,7 @@ Layout / hit test / transform 的几何类型来自 `viso-math`（`ui -> math`�
 - Behavior IR → bytecode lowering（`Program::bytecode`，ADR 0035），只服务 Dev 热更新与显式 dynamic；
 - Native Package（ADR 0051）：扩展 crate 在 Cargo manifest 中声明的 Native Library，以 `viso-natives` JSON Schema（`viso_behavior::native::schema`，包的测试以 `viso::native::check` 保持同步）读入为 stub；`native_package::link_with` 先按标准 Registry 编译，出现 `E2001` 时经 `cargo metadata` 发现 App crate 直接依赖中的包并重编译，`view!`/`component!`、`viso check`/`export`/`dev`/`schema` 与 LSP 共用。展开把模块调用到的包的 Rust Library 交给 `viso-view` 的 Host，Host、其 Game 与 Release View Package 以 `Natives::shared`（每组 Library 一个进程内共享 Registry）链接。框架不认识任何扩展。网络不是 DSL Library：`.vs` 调用应用 workspace 中 natives crate 的领域 Native，其 Rust 实现使用 `viso-ext/viso-net`。
 
-`viso-dsl` 只依赖 `viso-lexer`、`viso-schema`、`viso-dev-protocol`、`viso-ende`、`viso-behavior`、`viso-shader` 与叶子 `viso-math`（Web 导出按其缓动曲线采样 CSS）；集成测试另 dev-depend `viso-ui`、`viso-view` 以挂载编译结果。传递依赖闭包不含 `ui`/`render`/`gpu`（backend）/`runtime`/`platform`，这样 LSP、`viso check` 与 CI 分析不链接运行时栈（`check-deps` 的闭包规则执行）；任何 app artifact（含 dev artifact）都不链接 `viso-dsl`：`view!` 在构建期展开，dev artifact 应用 host 编译好的 patch（`check-release-absence` 检查）。Shader IR 的唯一 owner 是 `viso-shader`：`viso-dsl` 解析、检查 `.vs` 中的 shader 声明（与其余 DSL 共用 CST、resolver 与诊断），lower 为 `viso_shader::program::Program`，validation 与 codegen 由 `viso-shader` 完成。
+`viso-dsl` 只依赖 `viso-diag`、`viso-lexer`、`viso-schema`、`viso-dev-protocol`、`viso-ende`、`viso-behavior`、`viso-shader` 与叶子 `viso-math`（Web 导出按其缓动曲线采样 CSS）；集成测试另 dev-depend `viso-ui`、`viso-view` 以挂载编译结果。传递依赖闭包不含 `ui`/`render`/`gpu`（backend）/`runtime`/`platform`，这样 LSP、`viso check` 与 CI 分析不链接运行时栈（`check-deps` 的闭包规则执行）；任何 app artifact（含 dev artifact）都不链接 `viso-dsl`：`view!` 在构建期展开，dev artifact 应用 host 编译好的 patch（`check-release-absence` 检查）。Shader IR 的唯一 owner 是 `viso-shader`：`viso-dsl` 解析、检查 `.vs` 中的 shader 声明（与其余 DSL 共用 CST、resolver 与诊断），lower 为 `viso_shader::program::Program`，validation 与 codegen 由 `viso-shader` 完成；`viso-shader` 的 validation 与 brush profile 错误本身就是 `viso-diag` 诊断，DSL 原样转发。
 
 ### `viso-behavior`
 
@@ -1015,7 +1020,7 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 | `viso-ui-macros` | dsl | — | |
 | `viso-lsp` | dsl | — | |
 | `viso-cli` | project, package, dsl, dev-protocol, schema, ende, image, svg, text | — | |
-| `viso-dsl` | lexer, schema, dev-protocol, ende, behavior, shader, math | ui, view | |
+| `viso-dsl` | diag, lexer, schema, dev-protocol, ende, behavior, shader, math | ui, view | |
 | `viso-view` | ui, schema, dev-protocol, behavior, ende | — | `behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
 | `viso-behavior` | ende, math, schema | — | |
 | `viso-services` | platform | — | manifest 只在 Android 上依赖 platform |
@@ -1026,14 +1031,15 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 | `viso-image` | schema, gpu-abi, svg, math | — | |
 | `viso-media` | handle | — | 各 target 的媒体栈是外部依赖 |
 | `viso-text` | glyph-a8 | — | |
-| `viso-shader` | gpu-abi, ende | — | |
+| `viso-shader` | gpu-abi, ende, diag | — | |
 | `viso-gpu` | handle, macros, gpu-abi | — | |
 | `viso-runtime` | platform | — | |
 | `viso-platform` | handle | — | |
 | `viso-dev-protocol` | ende, math, schema, gpu-abi | — | |
 | `viso-schema` | ende | — | |
 | `viso-macros` | glyph-a8 | — | |
-| `viso-gpu-abi` / `viso-math` / `viso-ende` / `viso-handle` / `viso-glyph-a8` / `viso-lexer` / `viso-project` / `viso-package` | —（叶子） | — | |
+| `viso-lexer` | diag | — | |
+| `viso-gpu-abi` / `viso-math` / `viso-ende` / `viso-handle` / `viso-glyph-a8` / `viso-diag` / `viso-project` / `viso-package` | —（叶子） | — | |
 
 `xtask`、`examples/*`、`benches/*`（`viso-footprint`）与 `libs/*`（`viso-woff2`）在 DAG 之外：它们是应用、checker 自身或无框架依赖的独立库，没有任何框架 crate 依赖它们（框架 crate 一旦命名它们，allowlist 照样拒绝）。`tools/*` 只能依赖框架，框架依赖 `tools/*` 由 `check-deps` 以单独的 FORBIDDEN EDGE 报出（CLI §41）。
 
@@ -3485,7 +3491,7 @@ Backend Codegen
    └── CPU 寄存器码（`ShaderLang::None`，CpuRaster）
 ```
 
-用户 shader 与 Viso DSL 共用前端（lexer、lossless CST、module、名字解析、类型检查与 source span）；`viso-shader` 位于 `viso-dsl` 之下，带自己的 `Diagnostic` / `ProgramError`。GPU program 与 CPU 解释器都不共享 behavior VM。
+用户 shader 与 Viso DSL 共用前端（lexer、lossless CST、module、名字解析、类型检查与 source span）；`viso-shader` 位于 `viso-dsl` 之下，与它共用叶子 `viso-diag` 的 `Diagnostic`：program validation 与 brush profile 的错误直接是带 span 的诊断。GPU program 与 CPU 解释器都不共享 behavior VM。
 
 ### 36.1 ABI 验证
 
@@ -3570,7 +3576,7 @@ Embedded profile 下默认：
 
 ## 38. 定位：Viso DSL 是一等 Authoring Layer，不是 UI Runtime 的地基
 
-- 依赖方向固定为编译器到运行时单向：`viso-dsl -> viso-schema <- viso-ui`（ADR 0042）。`viso-dsl` 只依赖 `viso-schema`、`viso-dev-protocol`、`viso-behavior`、`viso-shader`、`viso-lexer`、`viso-ende` 与 `viso-math`；`viso-dsl`、`viso-lsp`、`viso-ui-macros` 与 `viso-cli` 的传递闭包不含 runtime、platform 与 gpu（`cargo xtask check-deps`）。`viso-ui` 永不依赖 `viso-dsl` 或 behavior VM（§10）；把 behavior 挂到节点上的是 `viso-view`。纯 Rust 应用完全关闭 `hot-reload` feature 时，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
+- 依赖方向固定为编译器到运行时单向：`viso-dsl -> viso-schema <- viso-ui`（ADR 0042）。`viso-dsl` 只依赖 `viso-schema`、`viso-dev-protocol`、`viso-behavior`、`viso-shader`、`viso-diag`、`viso-lexer`、`viso-ende` 与 `viso-math`；`viso-dsl`、`viso-lsp`、`viso-ui-macros` 与 `viso-cli` 的传递闭包不含 runtime、platform 与 gpu（`cargo xtask check-deps`）。`viso-ui` 永不依赖 `viso-dsl` 或 behavior VM（§10）；把 behavior 挂到节点上的是 `viso-view`。纯 Rust 应用完全关闭 `hot-reload` feature 时，UI runtime、layout、renderer、widgets 的基础能力仍然成立。
 - Release 加载路径只在 `viso_ui::aot`（`load_from_bytes`）与 `viso_view::load_static_view`，不得触达 `viso-dsl`（ADR 0016）。
 
 ### 38.1 三个 Rust 入口，一套语言语义
@@ -4742,7 +4748,7 @@ InvariantError 框架内部 bug
 这是分类约定，不是一个公共 enum。各级在代码中的落点：
 
 - UserError：`viso-project` 的 `ConfigDiagnostic`（`C####`）、CLI usage error（exit 2）；
-- CompileError：`viso_dsl::diag::Diagnostic`（`E1xxx`–`E9xxx`），shader IR 的 `viso_shader::diag::Diagnostic`；
+- CompileError：`viso_diag::Diagnostic`（`E1xxx`–`E9xxx`），`.vs` 前端与 shader 编译器共用；
 - RuntimeError：behavior fault `E7101`–`E7106`（只影响出错的 handler）、跨帧 effect 环 `E4202`、`BudgetExceeded`、service 的 `ServiceError`；
 - DeviceError：`GpuBackend::abandon_frame` 放弃未 present 的帧；`GpuBackend::is_lost` 报告 device 丢失（D3D12 removed/reset、Vulkan `VK_ERROR_DEVICE_LOST`、WebGPU `lost` promise、EGL context lost、Metal device removed），facade 在新 device 上重建窗口；
 - InvariantError：Debug panic，Release 尽量输出上下文并安全终止/降级，不 silent corruption。
@@ -4763,9 +4769,9 @@ Diagnostic {
 }
 ```
 
-- `viso_dsl::diag::Diagnostic` 是 lexer、parser、resolver、Typed HIR、UI/Binding IR、hot reload 迁移检查共用的类型；LSP、CLI 渲染器读同一个类型。
+- `viso_diag::Diagnostic`（`viso_dsl::diag` 原路径 re-export）是 lexer、parser、resolver、Typed HIR、UI/Binding IR、hot reload 迁移检查与 shader 编译器共用的类型；LSP、CLI 渲染器读同一个类型。LSP 推送的是对文档的完整检查（与 `viso check` 相同），相关 span 转为 `relatedInformation`，note 附在 message 后。
 - `viso_dsl::diag::codes` 是唯一的 code 注册表：编译期与运行时（`Stage::Runtime`）的 code 都在这里，每条带 stage、标题、解释、示例与修复；`viso explain`、LSP hover 与生成的 code 表都读它。
-- `viso-shader` 位于 `viso-dsl` 之下，不能依赖它，所以有一个平行的 `Diagnostic`（severity 排序相同，多一个 `CompileStage`）；`.vs` 中 shader 块的错误由 DSL 前端以 `E81xx` 报出。
+- `viso-shader` 位于 `viso-dsl` 之下，所以诊断结构在两者之下的叶子 `viso-diag`：shader 的 program validation 与 brush profile（`E81xx`）直接产出它，DSL 原样转发；内建 shader body 的错误（`S0xxx`）也转为它，span 相对所在片段。dev 模式下内建 shader 的 ABI 校验不指向源码，返回类型化的 `LayoutError`。
 - 配置诊断用 `C####`，与源码诊断的 code 范围不重叠；CLI 的输出层把源码、配置与 cargo 诊断渲染成同一种 JSON 诊断对象。
 
 ---

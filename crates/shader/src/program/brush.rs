@@ -27,10 +27,11 @@
 //! ([`BrushLayout::set`]); a draw copies the instance and places the box in
 //! it ([`BrushLayout::place`]).
 
+use viso_diag::Diagnostic;
 use viso_gpu_abi::{PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, SamplerDesc};
 
 use super::layout::{FieldDescriptor, ShaderInterface};
-use super::{EncodeError, Program, ProgramError, Span, Texel, Ty};
+use super::{EncodeError, Program, Span, Texel, Ty};
 
 /// The uniform the renderer writes the target size into.
 pub const VIEWPORT_SIZE: &str = "viewport_size";
@@ -201,14 +202,15 @@ impl BrushLayout {
     /// Each way it breaks the profile, `E8107`: a reserved member missing or
     /// of another type, a uniform the renderer does not write, a parameter of
     /// a type no host value converts into, a texture of no image, more
-    /// textures or samplers than a draw binds.
+    /// textures or samplers than a draw binds. A member the program lacks has
+    /// an empty span at the start.
     pub fn new(
         program: &Program,
         interface: &ShaderInterface,
-    ) -> Result<BrushLayout, Vec<ProgramError>> {
+    ) -> Result<BrushLayout, Vec<Diagnostic>> {
         let mut errors = Vec::new();
         let mut error = |span: Span, message: String| {
-            errors.push(ProgramError::new(PROFILE, span, message));
+            errors.push(Diagnostic::error(PROFILE, span.range(), message));
         };
         let leaf = |fields: &[FieldDescriptor], member: usize| -> Option<u32> {
             fields
@@ -514,7 +516,7 @@ mod tests {
         }
     }
 
-    fn layout(p: &Program) -> Result<BrushLayout, Vec<ProgramError>> {
+    fn layout(p: &Program) -> Result<BrushLayout, Vec<Diagnostic>> {
         BrushLayout::new(p, &p.interface())
     }
 
@@ -628,7 +630,7 @@ mod tests {
             assert!(errors.iter().all(|e| e.code == PROFILE));
             errors
                 .into_iter()
-                .map(|e| (e.span.start, e.message))
+                .map(|e| (e.primary.start().to_u32(), e.message))
                 .collect()
         };
 

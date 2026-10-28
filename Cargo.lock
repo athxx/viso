@@ -3106,6 +3106,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-diag"
+version = "0.0.0"
+
+[[package]]
 name = "viso-dsl"
 version = "0.0.0"
 dependencies = [
@@ -3116,6 +3120,7 @@ dependencies = [
  "toml_edit",
  "viso-behavior",
  "viso-dev-protocol",
+ "viso-diag",
  "viso-ende",
  "viso-lexer",
  "viso-math",
@@ -3296,6 +3301,7 @@ name = "viso-lexer"
 version = "0.0.0"
 dependencies = [
  "icu_properties",
+ "viso-diag",
 ]
 
 [[package]]
@@ -3482,6 +3488,7 @@ name = "viso-shader"
 version = "0.0.0"
 dependencies = [
  "naga",
+ "viso-diag",
  "viso-ende",
  "viso-gpu-abi",
 ]

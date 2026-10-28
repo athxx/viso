@@ -1,0 +1,14 @@
+[package]
+name = "viso-diag"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# LEAF, depends on no other viso-* crate. Source spans and the one diagnostic
+# shape every compiler in the workspace reports in: the `.vs` frontend and the
+# shader compiler emit it, the CLI and the language server render it.
+[dependencies]
+
+[lints]
+workspace = true

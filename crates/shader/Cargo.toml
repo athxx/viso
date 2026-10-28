@@ -9,6 +9,8 @@ rust-version.workspace = true
 # backend codegen. May share diagnostic/source infrastructure with the DSL
 # but does NOT share a runtime VM with it.
 [dependencies]
+# Errors in shader text, in the shape the `.vs` frontend reports in.
+viso-diag = { workspace = true }
 # The GPU ABI a program is laid out and coded for; no backend.
 viso-gpu-abi = { workspace = true }
 # The codec a view package carries a brush's layout and code in.

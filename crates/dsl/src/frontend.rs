@@ -404,6 +404,24 @@ pub fn compile_file_in(source: &str, origin: &Origin, natives: Arc<Natives>) -> 
     compile_file_for(source, origin, natives, TargetProfile::default())
 }
 
+/// [`compile_file_in`] over `parse`, the parse of `source` the caller
+/// already holds.
+pub fn compile_parsed_in(
+    source: &str,
+    parse: Parse,
+    origin: &Origin,
+    natives: Arc<Natives>,
+) -> Compiled {
+    compile_unit(
+        source,
+        parse,
+        origin,
+        natives,
+        TargetProfile::default(),
+        None,
+    )
+}
+
 /// [`compile_file_in`] for the targets and build `profile` describes.
 pub fn compile_file_for(
     source: &str,

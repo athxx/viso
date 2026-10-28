@@ -217,27 +217,39 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dev: &["viso", "viso-lsp"],
             },
         ),
-        // dsl works against a schema/registry, NOT concrete widgets or the
-        // runtime: it emits schema data (`viso-schema`)
-        // and dev-link patches (`viso-dev-protocol`), encodes them with
-        // `viso-ende`, lowers behavior to `viso-behavior` and shaders to
-        // `viso-shader`, and samples `viso-math`'s easing curves for export. Its integration tests mount what it compiles, so they
-        // link the runtime as dev-dependencies.
-        // The `.vs` tokenizer: a leaf the compiler and the code editor's
-        // highlighter share.
+        // Source spans and the one diagnostic shape: a leaf the `.vs`
+        // frontend and the shader compiler both report in.
         (
-            "viso-lexer",
+            "viso-diag",
             Allowed {
-                dir: "crates/lexer",
+                dir: "crates/diag",
                 deps: &[],
                 dev: &[],
             },
         ),
+        // The `.vs` tokenizer the compiler and the code editor's highlighter
+        // share, its spans from the diagnostics leaf.
+        (
+            "viso-lexer",
+            Allowed {
+                dir: "crates/lexer",
+                deps: &["viso-diag"],
+                dev: &[],
+            },
+        ),
+        // dsl works against a schema/registry, NOT concrete widgets or the
+        // runtime: it emits schema data (`viso-schema`) and dev-link patches
+        // (`viso-dev-protocol`), encodes them with `viso-ende`, lowers behavior
+        // to `viso-behavior` and shaders to `viso-shader`, reports in
+        // `viso-diag`'s shape, and samples `viso-math`'s easing curves for
+        // export. Its integration tests mount what it compiles, so they link
+        // the runtime as dev-dependencies.
         (
             "viso-dsl",
             Allowed {
                 dir: "crates/dsl",
                 deps: &[
+                    "viso-diag",
                     "viso-lexer",
                     "viso-schema",
                     "viso-dev-protocol",
@@ -379,7 +391,7 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-shader",
             Allowed {
                 dir: "crates/shader",
-                deps: &["viso-gpu-abi", "viso-ende"],
+                deps: &["viso-gpu-abi", "viso-ende", "viso-diag"],
                 dev: &[],
             },
         ),

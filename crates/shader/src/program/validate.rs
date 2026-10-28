@@ -3,29 +3,12 @@
 //! is bounded, records and calls are acyclic, and each stage uses only what
 //! it may.
 
+use viso_diag::Diagnostic;
+
 use super::{
     Binding, Block, Builtin, Expr, ExprKind, Function, Intrinsic, Place, Program, Root, Scalar,
     Span, Stage, StageUse, Stmt, Ty,
 };
-
-/// A rule a program breaks, with the span of what breaks it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProgramError {
-    /// The stable diagnostic code.
-    pub code: &'static str,
-    pub message: String,
-    pub span: Span,
-}
-
-impl ProgramError {
-    pub fn new(code: &'static str, span: Span, message: impl Into<String>) -> ProgramError {
-        ProgramError {
-            code,
-            message: message.into(),
-            span,
-        }
-    }
-}
 
 /// An expression whose type does not follow from its parts.
 const TYPE: &str = "E2103";
@@ -37,8 +20,9 @@ const STAGE: &str = "E8106";
 const ABI: &str = "E8104";
 
 impl Program {
-    /// Every rule the program breaks; `Ok` when it breaks none.
-    pub fn validate(&self) -> Result<(), Vec<ProgramError>> {
+    /// Every rule the program breaks, each at the span of what breaks it;
+    /// `Ok` when it breaks none.
+    pub fn validate(&self) -> Result<(), Vec<Diagnostic>> {
         let mut v = Validator {
             program: self,
             errors: Vec::new(),
@@ -60,7 +44,7 @@ impl Program {
 
 struct Validator<'p> {
     program: &'p Program,
-    errors: Vec<ProgramError>,
+    errors: Vec<Diagnostic>,
 }
 
 /// Where in a function the walk is.
@@ -75,7 +59,8 @@ struct Cx<'f> {
 
 impl Validator<'_> {
     fn error(&mut self, code: &'static str, span: Span, message: impl Into<String>) {
-        self.errors.push(ProgramError::new(code, span, message));
+        self.errors
+            .push(Diagnostic::error(code, span.range(), message));
     }
 
     fn interface(&mut self) {
