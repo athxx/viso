@@ -52,8 +52,7 @@ mod headless;
 #[cfg(any(feature = "hot-reload", feature = "headless"))]
 mod inspect;
 pub mod native;
-#[cfg(feature = "pdf")]
-pub mod pdf;
+pub mod paged;
 mod persist;
 mod places;
 mod playback;

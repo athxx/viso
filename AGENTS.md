@@ -244,7 +244,6 @@ crates/
     image/
     media/
     render/
-    pdf/         primitive stream -> PDF
     ui/
     widgets/
     schema/

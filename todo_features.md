@@ -763,10 +763,10 @@ behind one easy client, as Flutter's dio does, compiled for the target alone.
   and hour cycle (the `dates` feature, under 500 KB; ISO 8601 without it), `{n, number,
   integer}` rounds half to even; the web export writes them through `Intl`. Checked in
   en-US, de-DE and ja-JP under the dev runtime, the release package and Node.
-- [x] Printing (desktop) and PDF export of a view: `viso::pdf::export(Pdf::new(view))`
-  lays a view out at the page width, cuts it between lines and around leaves (with
-  `page_break` and `keep_together`), adds a header and footer per page, and writes PDF
-  1.7 through `viso-pdf`: boxes, paths, gradients, meshes, clips and blended groups as
+- [x] Printing (desktop) and PDF export of a view: `viso_pdf::export(Pdf::new(view))`
+  (viso-ext) over the core's paged capture (`viso::paged`), which lays a view out at the
+  page width, cuts it between lines and around leaves (with `page_break` and
+  `keep_together`) and adds a header and footer per page; the writer emits PDF 1.7: boxes, paths, gradients, meshes, clips and blended groups as
   vectors, text as Type 3 outline fonts that select and copy, images, shadows, shaders
   and scenes as 300 dpi rasters (left out on web and GLES). The system print dialog is
   the `viso-print` plugin in viso-ext (PDFKit, UIPrintInteractionController,

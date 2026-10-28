@@ -1,14 +1,18 @@
-//! PDF documents of views: a view laid out at the width of a page and cut
-//! into pages, drawn as vectors with its text as text.
+//! Paged capture: a view laid out at the width of a page and cut into pages,
+//! each page's primitives handed over with its text as glyph runs.
 //!
-//! [`export`] takes a [`Pdf`] — the view, built like any other with a
-//! [`BuildCx`], and the paper it goes on — and answers with the file's bytes
-//! once the view's text and images are ready, a frame or a few later. The
-//! window it is built in lends it its fonts, theme and images; nothing of it
-//! shows there.
+//! [`capture`] takes a [`Paged`] — the view, built like any other with a
+//! [`BuildCx`], and the paper it goes on — and once the view's text and
+//! images are ready, a frame or a few later, runs the closure it is given on
+//! the [`Capture`]: every page's [`PagePart`]s (its body, header and footer)
+//! in paint order, a [`PageSource`] that hands out each glyph's outline and
+//! draws what has no vector form into a raster, all while the window's
+//! device is at hand. The window it is built in lends it its fonts, theme
+//! and images; nothing of it shows there. A document writer — a PDF one, a
+//! print spooler's — works from the capture alone.
 //!
 //! ```no_run
-//! use viso::pdf::{self, Margins, PageSize, Pdf};
+//! use viso::paged::{self, Margins, PageSize, Paged};
 //! use viso::ui::{BuildCx, FlexStyle};
 //!
 //! fn invoice(cx: &mut BuildCx<'_>) {
@@ -17,33 +21,30 @@
 //!     });
 //! }
 //!
-//! let reply = pdf::export(
-//!     Pdf::new(invoice)
+//! let reply = paged::capture(
+//!     Paged::new(invoice)
 //!         .size(PageSize::A4)
 //!         .margins(Margins::all(48.0))
-//!         .title("Invoice 42")
 //!         .footer(|cx, page| {
 //!             let _ = (cx, page.number, page.count);
 //!         }),
+//!     |capture| capture.pages().len(),
 //! );
-//! // `reply` resolves to the bytes: write them to a file, share them, or
-//! // hand them to the system's print dialog.
+//! // `reply` resolves to what the closure returned.
 //! # drop(reply);
 //! ```
 //!
-//! The page holds the view at [`Pdf::scale`] points per pixel, 0.75 by
+//! The page holds the view at [`Paged::scale`] points per pixel, 0.75 by
 //! default: a 16 px body text prints at 12 pt, as a browser prints a page.
 //! Pages break between lines of text and around images and other leaves,
 //! never through one shorter than a page; [`page_break`] forces a break and
 //! [`keep_together`] keeps a box on one page. A header and a footer, built
 //! once for each page with its number, sit in the top and bottom margins.
 //!
-//! What draws as vectors: boxes and their borders, paths, gradients, meshes,
-//! clips, translucent and blended groups, color effects; text as glyph
-//! outlines a reader selects, searches and copies. Images, shadows, shader
-//! brushes and 3D scenes draw as rasters at [`Pdf::raster_dpi`], 300 by
-//! default; a frosted surface shows its border alone, having no backdrop to
-//! blur. On the web, and on a GLES device, the rasters are left out.
+//! Text comes as [`TextRun`]s of glyphs, each mapped back to the text it
+//! shows; the source gives a glyph's outline, or a coverage mask where the
+//! face's outline is out of reach. Rasters draw through the window's
+//! renderer; on the web, and on a GLES device, there are none.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -51,10 +52,9 @@ use std::time::{Duration, Instant};
 
 use viso_gpu::{GpuBackend, TextureDesc, TextureFormat};
 use viso_math::{Affine2, linear_to_srgb, srgb_to_linear};
-use viso_pdf::{Document, Draw, Glyph, GlyphShape, Info, Part, Raster, Source, TextGlyph, TextRun};
 use viso_platform::LoopWaker;
-use viso_render::{PathCmd, Point, Primitive, Rect, TransformSlot};
-use viso_services::{Completer, Reply, ServiceError, reply};
+use viso_render::{PathCmd, Point, Primitive, Rect, Rgba, TransformSlot};
+use viso_services::{Reply, ServiceError, reply};
 use viso_text::FontFaceId;
 use viso_ui::BoxStyle;
 use viso_ui::{
@@ -136,106 +136,206 @@ pub struct PageNumber {
 type View = Box<dyn FnOnce(&mut BuildCx<'_>)>;
 type Band = Rc<dyn Fn(&mut BuildCx<'_>, PageNumber)>;
 
-/// A document to write: a view and the paper it goes on.
-pub struct Pdf {
+/// A view to capture and the paper it goes on.
+pub struct Paged {
     view: View,
     size: PageSize,
     margins: Margins,
     scale: f32,
-    raster_dpi: f32,
-    info: Info,
     header: Option<Band>,
     footer: Option<Band>,
 }
 
-impl Pdf {
-    /// A document of the view `view` builds, on A4 with half-inch margins.
-    pub fn new(view: impl FnOnce(&mut BuildCx<'_>) + 'static) -> Pdf {
-        Pdf {
+impl Paged {
+    /// The view `view` builds, on A4 with half-inch margins.
+    pub fn new(view: impl FnOnce(&mut BuildCx<'_>) + 'static) -> Paged {
+        Paged {
             view: Box::new(view),
             size: PageSize::A4,
             margins: Margins::default(),
             scale: 0.75,
-            raster_dpi: viso_pdf::RASTER_DPI,
-            info: Info::default(),
             header: None,
             footer: None,
         }
     }
 
-    pub fn size(mut self, size: PageSize) -> Pdf {
+    pub fn size(mut self, size: PageSize) -> Paged {
         self.size = size;
         self
     }
 
-    pub fn margins(mut self, margins: Margins) -> Pdf {
+    pub fn margins(mut self, margins: Margins) -> Paged {
         self.margins = margins;
         self
     }
 
     /// How many points a pixel of the view takes on paper; 0.75 by default.
-    pub fn scale(mut self, points_per_pixel: f32) -> Pdf {
+    pub fn scale(mut self, points_per_pixel: f32) -> Paged {
         if points_per_pixel.is_finite() && points_per_pixel > 0.0 {
             self.scale = points_per_pixel;
         }
         self
     }
 
-    /// The resolution what has no vector form draws at, in pixels per inch.
-    pub fn raster_dpi(mut self, dpi: f32) -> Pdf {
-        self.raster_dpi = dpi;
-        self
-    }
-
-    pub fn title(mut self, title: impl Into<String>) -> Pdf {
-        self.info.title = Some(title.into());
-        self
-    }
-
-    pub fn author(mut self, author: impl Into<String>) -> Pdf {
-        self.info.author = Some(author.into());
-        self
-    }
-
-    pub fn subject(mut self, subject: impl Into<String>) -> Pdf {
-        self.info.subject = Some(subject.into());
-        self
-    }
-
-    pub fn keywords(mut self, keywords: impl Into<String>) -> Pdf {
-        self.info.keywords = Some(keywords.into());
-        self
-    }
-
-    /// The language the document is written in, a BCP 47 tag.
-    pub fn lang(mut self, lang: impl Into<String>) -> Pdf {
-        self.info.lang = Some(lang.into());
-        self
-    }
-
     /// Builds a header in each page's top margin.
-    pub fn header(mut self, header: impl Fn(&mut BuildCx<'_>, PageNumber) + 'static) -> Pdf {
+    pub fn header(mut self, header: impl Fn(&mut BuildCx<'_>, PageNumber) + 'static) -> Paged {
         self.header = Some(Rc::new(header));
         self
     }
 
     /// Builds a footer in each page's bottom margin.
-    pub fn footer(mut self, footer: impl Fn(&mut BuildCx<'_>, PageNumber) + 'static) -> Pdf {
+    pub fn footer(mut self, footer: impl Fn(&mut BuildCx<'_>, PageNumber) + 'static) -> Paged {
         self.footer = Some(Rc::new(footer));
         self
     }
 }
 
-/// Writes `pdf`, answering with the file's bytes once its view is laid out
-/// with its text and images: a frame or a few after the call returns.
-/// Callable from anywhere on the app's thread. It is built in the app's
-/// first window; with none open it fails with
+/// One stretch of content a page shows: a slice of content pixels mapped
+/// into a box of the paper. A page shows its body this way, and its header
+/// and footer.
+#[derive(Debug, Clone, Copy)]
+pub struct PagePart<'a> {
+    /// The box on the paper the content shows in, in points from the top
+    /// left; nothing of it draws outside.
+    pub area: Rect,
+    /// Points per content pixel.
+    pub scale: f32,
+    /// The content pixel at the area's top left.
+    pub origin: [f32; 2],
+    /// What it draws, in paint order.
+    pub draws: &'a [Draw<'a>],
+    /// Where each transform root of `draws` is placed.
+    pub places: &'a [Affine2],
+}
+
+/// One captured page: its paper and what shows on it, in order.
+#[derive(Debug, Clone)]
+pub struct Page<'a> {
+    /// The paper, in points.
+    pub size: [f32; 2],
+    pub parts: Vec<PagePart<'a>>,
+}
+
+/// One thing a page draws, in paint order.
+#[derive(Debug, Clone, Copy)]
+pub enum Draw<'a> {
+    Primitive(&'a Primitive),
+    Text(&'a TextRun),
+}
+
+/// A run of glyphs of one face, size and color.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextRun {
+    /// The face, as the [`PageSource`] names it.
+    pub face: u32,
+    /// The size in content pixels per em.
+    pub size: f32,
+    pub color: Rgba,
+    pub glyphs: Vec<TextGlyph>,
+}
+
+/// A glyph placed on its baseline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextGlyph {
+    pub glyph: u16,
+    /// Its pen position on the baseline, in content pixels.
+    pub origin: [f32; 2],
+    /// The text it shows; empty for a glyph that continues another's.
+    pub text: Box<str>,
+}
+
+/// A glyph's design, in font units, y up from the baseline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Glyph {
+    pub units_per_em: f32,
+    /// The face's reach above the baseline and below it (negative).
+    pub ascender: f32,
+    pub descender: f32,
+    pub advance: f32,
+    pub shape: GlyphShape,
+}
+
+/// What a glyph draws.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GlyphShape {
+    /// Its outline, filled nonzero.
+    Outline(Vec<PathCmd>),
+    /// A coverage mask, for a face whose outline is out of reach: `width ×
+    /// height` bytes, rows top first, its bottom left at `origin` and each
+    /// pixel `unit` font units wide.
+    Mask {
+        width: u32,
+        height: u32,
+        coverage: Vec<u8>,
+        origin: [f32; 2],
+        unit: f32,
+    },
+    /// Nothing: a space.
+    Empty,
+}
+
+/// A raster of primitives: `width × height` straight-alpha sRGB RGBA8
+/// pixels, rows top first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Raster {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+/// Where a page's glyphs and rasters come from.
+pub trait PageSource {
+    /// Glyph `glyph` of face `face`; `None` where the face has no such
+    /// glyph.
+    fn glyph(&mut self, face: u32, glyph: u16) -> Option<Glyph>;
+
+    /// `draws` drawn over transparency into a raster of the box `rect` of
+    /// content pixels at `scale` raster pixels per content pixel; `None`
+    /// where they cannot be.
+    fn raster(&mut self, draws: &[Primitive], rect: Rect, scale: f32) -> Option<Raster>;
+}
+
+/// The captured pages, and the source of their glyphs and rasters while the
+/// window that laid them out is at hand.
+pub struct Capture<'a> {
+    pages: &'a [Page<'a>],
+    source: &'a mut dyn PageSource,
+}
+
+impl<'a> Capture<'a> {
+    /// Every page, in order.
+    pub fn pages(&self) -> &'a [Page<'a>] {
+        self.pages
+    }
+}
+
+impl PageSource for Capture<'_> {
+    fn glyph(&mut self, face: u32, glyph: u16) -> Option<Glyph> {
+        self.source.glyph(face, glyph)
+    }
+
+    fn raster(&mut self, draws: &[Primitive], rect: Rect, scale: f32) -> Option<Raster> {
+        self.source.raster(draws, rect, scale)
+    }
+}
+
+/// Captures `paged`, answering with what `take` makes of the [`Capture`]
+/// once its view is laid out with its text and images: a frame or a few
+/// after the call returns. `take` runs in the frame, the window's device at
+/// hand. Callable from anywhere on the app's thread. It is built in the
+/// app's first window; with none open it fails with
 /// [`ServiceError::Unsupported`].
-pub fn export(pdf: Pdf) -> Reply<Vec<u8>> {
+pub fn capture<T: 'static>(
+    paged: Paged,
+    take: impl FnOnce(&mut Capture<'_>) -> T + 'static,
+) -> Reply<T> {
     let (done, answer) = reply();
+    let take: Take = Box::new(move |captured| {
+        done.complete(captured.map(take));
+    });
     ASKED.with(|asked| {
         let mut asked = asked.borrow_mut();
-        asked.jobs.push((pdf, done));
+        asked.jobs.push((paged, take));
         if let Some(waker) = &asked.waker {
             waker.wake();
         }
@@ -243,7 +343,7 @@ pub fn export(pdf: Pdf) -> Reply<Vec<u8>> {
     answer
 }
 
-/// Breaks the page before what `cx` declares next, in a [`Pdf`]'s view.
+/// Breaks the page before what `cx` declares next, in a [`Paged`] view.
 pub fn page_break(cx: &mut BuildCx<'_>) {
     let mark = cx.leaf(LeafStyle {
         size: Sizing::fixed(0.0, 0.0),
@@ -252,15 +352,19 @@ pub fn page_break(cx: &mut BuildCx<'_>) {
     MARKS.with(|marks| marks.borrow_mut().breaks.push(mark.id()));
 }
 
-/// Keeps `node`'s box on one page where it fits on one, in a [`Pdf`]'s view.
+/// Keeps `node`'s box on one page where it fits on one, in a [`Paged`]
+/// view.
 pub fn keep_together(node: Handle) {
     MARKS.with(|marks| marks.borrow_mut().keeps.push(node.id()));
 }
 
-/// The documents asked for that the loop has not taken.
+/// What runs on a capture once it is made, or on why it is not.
+type Take = Box<dyn FnOnce(Result<&mut Capture<'_>, ServiceError>)>;
+
+/// The captures asked for that the loop has not taken.
 #[derive(Default)]
 struct Asked {
-    jobs: Vec<(Pdf, Completer<Vec<u8>>)>,
+    jobs: Vec<(Paged, Take)>,
     waker: Option<LoopWaker>,
 }
 
@@ -281,16 +385,16 @@ pub(crate) fn launch(waker: LoopWaker) {
     ASKED.with(|asked| asked.borrow_mut().waker = Some(waker));
 }
 
-/// The documents asked for since the last call.
-pub(crate) fn take_asked() -> Vec<(Pdf, Completer<Vec<u8>>)> {
+/// The captures asked for since the last call.
+pub(crate) fn take_asked() -> Vec<(Paged, Take)> {
     ASKED.with(|asked| std::mem::take(&mut asked.borrow_mut().jobs))
 }
 
-/// How long a document waits for its text and images before it is written
-/// with what it has.
+/// How long a capture waits for its text and images before it is made with
+/// what it has.
 const PATIENCE: Duration = Duration::from_secs(10);
 
-/// Content laid out for a document: a detached subtree of the window's store.
+/// Content laid out for a capture: a detached subtree of the window's store.
 struct Laid {
     root: NodeId,
     /// The box it lays out in, in pixels; `None` tall for content that
@@ -300,10 +404,10 @@ struct Laid {
     marks: Marks,
 }
 
-/// A document being written.
+/// A capture being made.
 pub(crate) struct Running {
-    pdf: Pdf,
-    done: Option<Completer<Vec<u8>>>,
+    paged: Paged,
+    take: Option<Take>,
     body: Option<Laid>,
     /// Where each page starts and the last ends, in body pixels, once cut.
     cuts: Vec<f32>,
@@ -314,10 +418,10 @@ pub(crate) struct Running {
 }
 
 impl Running {
-    pub(crate) fn new(pdf: Pdf, done: Completer<Vec<u8>>) -> Running {
+    pub(crate) fn new(paged: Paged, take: Take) -> Running {
         Running {
-            pdf,
-            done: Some(done),
+            paged,
+            take: Some(take),
             body: None,
             cuts: Vec::new(),
             bands: Vec::new(),
@@ -328,29 +432,29 @@ impl Running {
 
     /// Fails it, when no window is there to build it in.
     pub(crate) fn fail(mut self, error: ServiceError) {
-        if let Some(done) = self.done.take() {
-            done.complete(Err(error));
+        if let Some(take) = self.take.take() {
+            take(Err(error));
         }
     }
 
     /// The content width in pixels.
     fn width(&self) -> f32 {
-        let p = &self.pdf;
+        let p = &self.paged;
         ((p.size.width - p.margins.left - p.margins.right) / p.scale).max(1.0)
     }
 
     /// The page height a body page shows, in pixels.
     fn page_height(&self) -> f32 {
-        let p = &self.pdf;
+        let p = &self.paged;
         ((p.size.height - p.margins.top - p.margins.bottom) / p.scale).max(1.0)
     }
 
     /// Moves it on by one frame in `ws`: builds, lays out, waits for its
-    /// text and images, cuts its pages and writes it. Returns whether it is
-    /// done.
+    /// text and images, cuts its pages and hands them over. Returns whether
+    /// it is done.
     pub(crate) fn step(&mut self, ws: &mut WindowState) -> bool {
         if self.body.is_none() {
-            let view = std::mem::replace(&mut self.pdf.view, Box::new(|_| {}));
+            let view = std::mem::replace(&mut self.paged.view, Box::new(|_| {}));
             let width = self.width();
             self.body = Some(build(ws, width, None, view));
         }
@@ -368,17 +472,16 @@ impl Running {
         }
         if self.cuts.is_empty() {
             self.cuts = self.cut(ws);
-            if self.pdf.header.is_some() || self.pdf.footer.is_some() {
+            if self.paged.header.is_some() || self.paged.footer.is_some() {
                 self.build_bands(ws);
                 self.frames = 0;
                 return false;
             }
         }
-        let bytes = self.write(ws);
-        self.free(ws);
-        if let Some(done) = self.done.take() {
-            done.complete(Ok(bytes));
+        if let Some(take) = self.take.take() {
+            self.hand_over(ws, take);
         }
+        self.free(ws);
         true
     }
 
@@ -393,10 +496,10 @@ impl Running {
     fn build_bands(&mut self, ws: &mut WindowState) {
         let count = self.cuts.len().saturating_sub(1);
         let width = self.width();
-        let scale = self.pdf.scale;
+        let scale = self.paged.scale;
         let (top, bottom) = (
-            self.pdf.margins.top / scale,
-            self.pdf.margins.bottom / scale,
+            self.paged.margins.top / scale,
+            self.paged.margins.bottom / scale,
         );
         for number in 1..=count {
             let page = PageNumber { number, count };
@@ -410,8 +513,8 @@ impl Running {
                     )
                 })
             };
-            let header = band(ws, &self.pdf.header, top);
-            let footer = band(ws, &self.pdf.footer, bottom);
+            let header = band(ws, &self.paged.header, top);
+            let footer = band(ws, &self.paged.footer, bottom);
             self.bands.push((header, footer));
         }
     }
@@ -475,11 +578,9 @@ impl Running {
         paginate(height, page, &keeps, &breaks)
     }
 
-    /// The document's bytes.
-    fn write(&mut self, ws: &mut WindowState) -> Vec<u8> {
+    /// Hands the pages over to `take`, with the window as their source.
+    fn hand_over(&mut self, ws: &mut WindowState, take: Take) {
         ws.resolve_style();
-        let mut doc = Document::new(self.pdf.info.clone());
-        doc.set_raster_dpi(self.pdf.raster_dpi);
         let painted_body = self.body.as_ref().map(|laid| Painted::of(ws, laid));
         let bands: Vec<(Option<Painted>, Option<Painted>)> = self
             .bands
@@ -491,24 +592,29 @@ impl Running {
                 )
             })
             .collect();
-        let p = &self.pdf;
+        let body_draws = painted_body.as_ref().map(Painted::draws);
+        let band_draws: Vec<[Option<Vec<Draw<'_>>>; 2]> = bands
+            .iter()
+            .map(|(h, f)| {
+                [
+                    h.as_ref().map(Painted::draws),
+                    f.as_ref().map(Painted::draws),
+                ]
+            })
+            .collect();
+        let p = &self.paged;
         let size = [p.size.width, p.size.height];
         let width = p.size.width - p.margins.left - p.margins.right;
-        let mut source = PrintSource {
-            text: ws.text.as_ref(),
-            gpu: ws.gpu.as_mut(),
-            drew: false,
-        };
-        let pages = self.cuts.windows(2).count().max(1);
-        for page in 0..pages {
+        let count = self.cuts.windows(2).count().max(1);
+        let mut pages = Vec::with_capacity(count);
+        for page in 0..count {
             let (top, bottom) = match self.cuts.get(page..page + 2) {
                 Some(&[top, bottom]) => (top, bottom),
                 _ => (0.0, 0.0),
             };
             let mut parts = Vec::with_capacity(3);
-            let body_draws = painted_body.as_ref().map(Painted::draws);
             if let (Some(body), Some(draws)) = (&painted_body, &body_draws) {
-                parts.push(Part {
+                parts.push(PagePart {
                     area: Rect::new(
                         p.margins.left,
                         p.margins.top,
@@ -525,19 +631,21 @@ impl Running {
                 Some((h, f)) => (h.as_ref(), f.as_ref()),
                 None => (None, None),
             };
-            let header_draws = header.map(Painted::draws);
-            let footer_draws = footer.map(Painted::draws);
+            let (header_draws, footer_draws) = match band_draws.get(page) {
+                Some([h, f]) => (h.as_ref(), f.as_ref()),
+                None => (None, None),
+            };
             for (band, draws, y, h) in [
-                (header, &header_draws, 0.0, p.margins.top),
+                (header, header_draws, 0.0, p.margins.top),
                 (
                     footer,
-                    &footer_draws,
+                    footer_draws,
                     p.size.height - p.margins.bottom,
                     p.margins.bottom,
                 ),
             ] {
                 if let (Some(band), Some(draws)) = (band, draws) {
-                    parts.push(Part {
+                    parts.push(PagePart {
                         area: Rect::new(p.margins.left, y, width, h),
                         scale: p.scale,
                         origin: band.origin,
@@ -546,12 +654,20 @@ impl Running {
                     });
                 }
             }
-            doc.page(size, &parts, &mut source);
+            pages.push(Page { size, parts });
         }
+        let mut source = PrintSource {
+            text: ws.text.as_ref(),
+            gpu: ws.gpu.as_mut(),
+            drew: false,
+        };
+        take(Ok(&mut Capture {
+            pages: &pages,
+            source: &mut source,
+        }));
         if source.drew {
             restore(ws);
         }
-        doc.finish()
     }
 
     /// Frees its content from the window's store.
@@ -806,7 +922,7 @@ fn to_runs(
     out.extend(run);
 }
 
-/// Where a document of a window gets its glyphs and rasters.
+/// Where a capture of a window gets its glyphs and rasters.
 struct PrintSource<'a> {
     text: Option<&'a TextShaper>,
     gpu: Option<&'a mut GpuState>,
@@ -818,7 +934,7 @@ struct PrintSource<'a> {
 /// The size a glyph without an outline the parser reads is rasterized at.
 const MASK_PPEM: u16 = 512;
 
-impl Source for PrintSource<'_> {
+impl PageSource for PrintSource<'_> {
     fn glyph(&mut self, face: u32, glyph: u16) -> Option<Glyph> {
         let text = self.text?;
         let id = FontFaceId(face);
@@ -868,7 +984,7 @@ impl Source for PrintSource<'_> {
             height,
             format: TextureFormat::Bgra8UnormSrgb,
             render_target: true,
-            label: "pdf raster",
+            label: "page raster",
         });
         let logical = [width as f32 / scale, height as f32 / scale];
         gpu.renderer

@@ -3012,7 +3012,6 @@ dependencies = [
  "viso-macros",
  "viso-math",
  "viso-media",
- "viso-pdf",
  "viso-platform",
  "viso-render",
  "viso-runtime",
@@ -3396,15 +3395,6 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "sha2",
-]
-
-[[package]]
-name = "viso-pdf"
-version = "0.0.0"
-dependencies = [
- "miniz_oxide",
- "viso-math",
- "viso-render",
 ]
 
 [[package]]

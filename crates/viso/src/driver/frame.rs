@@ -31,8 +31,7 @@ use crate::{
 impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     fn on_launch(&mut self, cx: &mut RuntimeCx<'_>) {
         shell::launch(cx);
-        #[cfg(feature = "pdf")]
-        crate::pdf::launch(cx.loop_waker());
+        crate::paged::launch(cx.loop_waker());
         // Construct the user application now that the pump is live, then take the
         // faces it registered through `AppCx::load_font` so every window opened
         // this session loads them ahead of the system fallbacks.
@@ -2115,8 +2114,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                 }
                 self.watch_budget(cx);
-                #[cfg(feature = "pdf")]
-                self.drive_pdfs(cx);
+                self.drive_captures(cx);
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
                     let mounts = self.harness.mounts();
@@ -2194,13 +2192,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 false
             }
         };
-        // A PDF document being written lays out and settles over frames.
-        #[cfg(feature = "pdf")]
-        let writing = !self.pdf_jobs.is_empty();
-        #[cfg(not(feature = "pdf"))]
-        let writing = false;
+        // A capture being made lays out and settles over frames.
         scripted
-            || writing
+            || !self.captures.is_empty()
             || self.windows.iter().any(|w| {
                 w.is_animating() || w.text_work_pending() || viso_ui::work::inline_pending()
             })

@@ -99,9 +99,8 @@ pub(crate) struct AppDriver<A: Application> {
     pub(crate) pending_urls: Vec<String>,
     /// What the session shows in the desktop shell.
     pub(crate) shell: shell::Shown,
-    /// The PDF documents being written, each in the window it is built in.
-    #[cfg(feature = "pdf")]
-    pub(crate) pdf_jobs: Vec<(WindowId, crate::pdf::Running)>,
+    /// The paged captures being made, each in the window it is built in.
+    pub(crate) captures: Vec<(WindowId, crate::paged::Running)>,
     /// The windows whose size and place are kept across launches.
     pub(crate) places: places::Places,
     /// The development session: the mounted views, their watched files and
@@ -569,8 +568,7 @@ impl<A: Application> AppDriver<A> {
             menu_picks: Default::default(),
             pending_urls: Vec::new(),
             shell: shell::Shown::default(),
-            #[cfg(feature = "pdf")]
-            pdf_jobs: Vec::new(),
+            captures: Vec::new(),
             places: places::Places::default(),
             #[cfg(feature = "hot-reload")]
             hot_reload: crate::hot_reload::HotReloadSession::default(),
@@ -606,19 +604,18 @@ impl<A: Application> AppDriver<A> {
         }
     }
 
-    /// Moves each PDF document being written on by a frame, taking those
+    /// Moves each paged capture being made on by a frame, taking those
     /// asked for since the last; each is built in the first window.
-    #[cfg(feature = "pdf")]
-    pub(crate) fn drive_pdfs(&mut self, cx: &mut RuntimeCx<'_>) {
-        for (pdf, done) in crate::pdf::take_asked() {
-            let job = crate::pdf::Running::new(pdf, done);
+    pub(crate) fn drive_captures(&mut self, cx: &mut RuntimeCx<'_>) {
+        for (paged, take) in crate::paged::take_asked() {
+            let job = crate::paged::Running::new(paged, take);
             match self.windows.first() {
-                Some(ws) => self.pdf_jobs.push((ws.window, job)),
+                Some(ws) => self.captures.push((ws.window, job)),
                 None => job.fail(services::ServiceError::Unsupported),
             }
         }
         let windows = &mut self.windows;
-        self.pdf_jobs.retain_mut(|(window, job)| {
+        self.captures.retain_mut(|(window, job)| {
             match windows.iter_mut().find(|ws| ws.window == *window) {
                 Some(ws) => {
                     let finished = job.step(ws);

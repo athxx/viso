@@ -393,7 +393,7 @@ Accessibility 的 canonical model 是 Viso 自有 semantics tree；平台 adapte
 viso = "1"
 ```
 
-facade 的 feature 少而稳定，普通应用不手工设置任何 feature：默认集（`desktop`、`native-vulkan`、`rasterizer`、`complex-line-break`、`avif`、`dates`、`pdf`）覆盖桌面、移动与 Web；`vm`（behavior 解释器）由 CLI 为每个 target 的 Dev build 加入，release/shipping build 不带；`hot-reload`（隐含 `vm`）由 `viso run` 的 Dev build 加入，release/shipping build 带它会被拒绝；`headless` 由 `viso build headless` / `viso test` 加入；`inspector` 是工具用的可选项。
+facade 的 feature 少而稳定，普通应用不手工设置任何 feature：默认集（`desktop`、`native-vulkan`、`rasterizer`、`complex-line-break`、`avif`、`dates`）覆盖桌面、移动与 Web；`vm`（behavior 解释器）由 CLI 为每个 target 的 Dev build 加入，release/shipping build 不带；`hot-reload`（隐含 `vm`）由 `viso run` 的 Dev build 加入，release/shipping build 带它会被拒绝；`headless` 由 `viso build headless` / `viso test` 加入；`inspector` 是工具用的可选项。
 
 不推荐暴露一个巨大的 feature 笛卡尔积。底层 executor、平台 backend、GPU backend 由 target 自动解析（ADR 0029），而不是让普通用户手工组合。
 
@@ -445,7 +445,7 @@ Internal    Viso 自身，不保证兼容
 
 ```rust
 viso::prelude                     // Stable：默认集
-viso::{audio, cursor, shell, services, native, fonts, clipboard, svg, pdf, …}
+viso::{audio, cursor, shell, services, native, fonts, clipboard, svg, paged, …}
                                   // Stable：按需进入的应用能力
 viso::{ui, widgets, render, gpu, platform, runtime, math}
                                   // Advanced：内部 crate 的整体重导出
@@ -630,7 +630,6 @@ viso/
 │   ├── schema/  dev-protocol/   编译边界与 dev 链路的纯数据合同（ADR 0042）
 │   ├── runtime/  platform/
 │   ├── gpu/  shader/  text/  render/  svg/  image/
-│   ├── pdf/           viso-pdf（primitive 流写成 PDF 1.7）
 │   ├── media/         viso-media（经 OS 播放器播放媒体，叶子，ADR 0049）
 │   ├── ui/  widgets/
 │   ├── behavior/  view/   viso-behavior（VM）/ viso-view（compiled view 运行时）
@@ -700,10 +699,10 @@ Facade。热路径逻辑在下层 crate；facade 负责把它们组装成一个 
 - `run::<App>()`；
 - app driver：`AppDriver` 实现 `viso_runtime::FrameDriver`，持有每个窗口的 `WindowState`（node store、renderer、surface、语义镜像），把 platform 事件、ui 的帧阶段、render 的提交与 gpu 的 present 接在一起；
 - `prelude`；
-- feature 聚合（`vm`、`hot-reload`、`headless`、`desktop`、`gles`、`kms`、`cpu`、`emulate`、`pdf`、`avif`、`rasterizer`、`complex-line-break`、`dates`、`inspector` 等）；
+- feature 聚合（`vm`、`hot-reload`、`headless`、`desktop`、`gles`、`kms`、`cpu`、`emulate`、`avif`、`rasterizer`、`complex-line-break`、`dates`、`inspector` 等）；
 - public module re-export；
 - 平台能力查询（`AppCx::capabilities`）；
-- 只有 facade 能接线的部分：CoreText / DirectWrite / fontconfig / Android 系统字体 provider（ADR 0026）、媒体播放器与 asset 表、dev session（`hot-reload`）、headless 运行、`viso::pdf` 导出。
+- 只有 facade 能接线的部分：CoreText / DirectWrite / fontconfig / Android 系统字体 provider（ADR 0026）、媒体播放器与 asset 表、dev session（`hot-reload`）、headless 运行、`viso::paged` 分页捕获。
 
 目标（尚未实现）：版本查询 API。
 
@@ -886,9 +885,9 @@ GPU ABI 描述（ADR 0042），叶子 crate：instance layout 与 shader 声明�
 
 SVG 输入通道：bytes 一次性解析为规范化 vector 文档（`tree::Tree`），只依赖 `viso-math`，不依赖 renderer；不是逐帧 renderer。lower 为 retained `viso_render::Primitive` 流的一步在 `viso_render::svg`，因此 tooling 校验 SVG asset 不链接 render/gpu。
 
-### `viso-pdf`
+### 分页捕获（`viso::paged`）
 
-PDF 1.7 输出：页面是 `viso_render::Primitive` 流加按字形定位的文本 run，写成矢量路径、shading、Type 3 字体（带 ToUnicode，可选中复制）、透明组与 SMask；没有矢量形式的（图像、阴影、shader、scene）由调用方的 `Source` 栅格化后嵌入。只依赖 `viso-render` 与 `viso-math`，不依赖 ui/gpu；facade 的 `viso::pdf`（`pdf` feature，默认开启）在窗口的 store 里排版一棵分离子树、分页并提供字形与栅格。系统打印对话框不在核心，是 viso-ext 的 `viso-print`。
+facade 的 `viso::paged::capture(Paged, take)` 在应用第一个窗口的 store 里以页宽排版一棵分离子树（窗口借出字体、主题与图像，屏幕上不显示），等文本与图像就绪后按行与叶子分页（`page_break` 强制分页，`keep_together` 让一个盒子不跨页），为每页在上下页边距中各建一次页眉页脚，然后在该帧内把 `Capture` 交给 `take`：每页的 `PagePart`（正文、页眉、页脚各一段内容像素到纸面区域的映射），其中按绘制顺序列出 `viso_render::Primitive` 与按字形定位、映射回原文的 `TextRun`；`Capture` 同时是 `PageSource`，给出字形的轮廓（读不到轮廓时为平台的覆盖率 mask），并经窗口的 renderer 把没有矢量形式的内容画成栅格（Web 与 GLES 上没有）。文档写出器只依赖这份捕获：PDF 1.7 写出器与 `export` 在 viso-ext 的 `viso-pdf`（矢量路径、shading、Type 3 字体、透明组与 SMask，栅格化的部分按 dpi 嵌入），系统打印对话框是 viso-ext 的 `viso-print`。
 
 ### `viso-image`
 
@@ -928,7 +927,7 @@ Layout / hit test / transform 的几何类型来自 `viso-math`（`ui -> math`�
 - desktop shell；
 - theme defaults。
 
-只依赖 `viso-ui` 与 `viso-math`。PDF/browser/chart/map/code editor 等不是基础 widget：图表、地图、代码编辑器在 `extras/`（见下），PDF 输出是 `viso-pdf` + `viso::pdf`，不平铺进核心 widgets。
+只依赖 `viso-ui` 与 `viso-math`。PDF/browser/chart/map/code editor 等不是基础 widget：图表、地图、代码编辑器在 `extras/`（见下），PDF 输出是 viso-ext 的 `viso-pdf`（基于核心的 `viso::paged`），不平铺进核心 widgets。
 
 ### `viso-diag`
 
@@ -1021,7 +1020,7 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 
 | crate | allowlist（normal） | 另允许的 dev-dependency | 备注 |
 |---|---|---|---|
-| `viso`（facade） | runtime, ui, ui-macros, widgets, view, behavior, services, render, image, media, gpu, platform, text, shader, macros, ende, math, pdf, dom | dsl, dev-protocol | DSL 测试自己编译 `.vs` 并用 dev link 的 patch 重载，app 不链接二者；`pdf` 是可选依赖（`pdf` feature，默认开启）；`dom` 只在 `web-dom` feature 下；`behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
+| `viso`（facade） | runtime, ui, ui-macros, widgets, view, behavior, services, render, image, media, gpu, platform, text, shader, macros, ende, math, dom | dsl, dev-protocol | DSL 测试自己编译 `.vs` 并用 dev link 的 patch 重载，app 不链接二者；`dom` 只在 `web-dom` feature 下；`behavior` 的解释器只在 `vm` feature 下编入（ADR 0041） |
 | `viso-widgets` | ui, math | — | |
 | `viso-charts`（extras） | ui, widgets, math | viso | |
 | `viso-map`（extras） | ui, widgets, render, text, math, services, ende | viso | bench 用 criterion |
@@ -1036,7 +1035,6 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 | `viso-services` | platform | — | manifest 只在 Android 上依赖 platform |
 | `viso-ui` | render, runtime, ende, text, math, schema | — | |
 | `viso-render` | math, ende, schema, text, image, svg, shader, gpu | — | ende 用于 glTF JSON |
-| `viso-pdf` | render, math | — | |
 | `viso-svg` | math, ende | — | `ende` 只为 data URL 的 base64 |
 | `viso-image` | schema, gpu-abi, svg, math | — | |
 | `viso-media` | handle | — | 各 target 的媒体栈是外部依赖 |
@@ -3250,7 +3248,7 @@ InstancePool::sync（只上传改变的 slot，经 dirty-range coalescer）
 DrawList（RenderPass + DrawCommand）→ GpuBackend::encode / present
 ```
 
-只移动 transform root 的帧不经过 ingest：`Renderer::set_transforms` 换 place 后 `submit` 重新 encode（§19.2）。同一份 primitive 流也是 PDF 导出（`viso-pdf`）的输入。
+只移动 transform root 的帧不经过 ingest：`Renderer::set_transforms` 换 place 后 `submit` 重新 encode（§19.2）。同一份 primitive 流也是分页捕获（`viso::paged`）交给文档写出器的内容。
 
 ### 30.1 为什么不是每帧完整 DisplayList 重建
 
@@ -3839,7 +3837,7 @@ DSL `ComboBox` 与 `SearchField` 同样如此：逻辑在 `viso_ui::combo_box::C
 | Charts | `extras/charts`（`viso-charts`） |
 | Map | `extras/map`（`viso-map`）；瓦片读取、离线下载、搜索与导航不是 UI，在 viso-ext（`viso-tiles`、`viso-map-nav`、`viso-map-build`） |
 | Code editor | `extras/code-editor`（`viso-code-editor`，语言服务经其 `lsp` feature） |
-| PDF | 生成在核心（`viso::pdf`，facade 的 `pdf` feature，`viso-pdf`）；打印在 viso-ext（`viso-print`）；查看器尚无 |
+| PDF | 核心提供分页捕获（`viso::paged`）；PDF 写出与导出在 viso-ext（`viso-pdf`），打印在 viso-ext（`viso-print`）；查看器尚无 |
 | Browser / WebView | viso-ext 的 `viso-webview`（尚未实现） |
 | Video editor、XR | 尚无 |
 
@@ -5290,7 +5288,7 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 当前仓库结构与 crate 清单见 §8/§9，依赖方向见 §10；本节不再重复一份目录树。顶层目录：
 
 - `crates/`：框架 crate；
-- `extras/`：选装的高阶组件：`charts`、`code-editor`、`map`（Markdown/HTML 文档在 `viso-widgets`，PDF 输出在 `crates/pdf`）；
+- `extras/`：选装的高阶组件：`charts`、`code-editor`、`map`（Markdown/HTML 文档在 `viso-widgets`，PDF 输出在 viso-ext 的 `viso-pdf`）；
 - `tools/`：`cli`、`project`、`package`（打包）；Inspector 是 `viso inspect` 与 `viso_view::inspect`，不是单独的 tool crate；Studio 尚未建立；
 - `libs/`：框架自有、可独立复用的小型算法 crate（§76）；
 - `examples/`：教程按编号（`01-counter`、`10-custom-shader`），功能示例按名字（`hello_world`、`i18n`、`images`、`video`、`code-editor`、`map` 等）；
@@ -5666,7 +5664,7 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 
 *对应 ADR 0012、0042（几何只有 `viso-math` 一个 owner，§10）。*
 
-**决定**：`viso-math` 提供 allocation-free vector/matrix/rect/size/transform/geometry primitives，是 `no_std`、无依赖的 DAG 叶子，可被任意上层 crate 使用（当前 ui、widgets、render、svg、behavior、dsl、image、pdf、dev-protocol、extras 与 facade）；`check-deps` 拒绝 `crates/math` 之外的 public `Rect`/`Point`/`Vec2`/`Affine2` 等几何类型。Math ABI 不等于 GPU ABI。
+**决定**：`viso-math` 提供 allocation-free vector/matrix/rect/size/transform/geometry primitives，是 `no_std`、无依赖的 DAG 叶子，可被任意上层 crate 使用（当前 ui、widgets、render、svg、behavior、dsl、image、dev-protocol、extras 与 facade）；`check-deps` 拒绝 `crates/math` 之外的 public `Rect`/`Point`/`Vec2`/`Affine2` 等几何类型。Math ABI 不等于 GPU ABI。
 
 **理由**：这些类型横跨 layout、input、render、shader interface、text geometry、animation 与 game；不应被某个上层 subsystem 所有。
 

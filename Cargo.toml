@@ -30,7 +30,6 @@ members = [
     "crates/diag",
     "crates/lsp",
     "crates/services",
-    "crates/pdf",
     "extras/charts",
     "extras/map",
     "extras/code-editor",
@@ -112,7 +111,6 @@ viso-lexer = { path = "crates/lexer", version = "0.0.0" }
 viso-diag = { path = "crates/diag", version = "0.0.0" }
 viso-lsp = { path = "crates/lsp", version = "0.0.0" }
 viso-services = { path = "crates/services", version = "0.0.0", default-features = false }
-viso-pdf = { path = "crates/pdf", version = "0.0.0" }
 
 # Tooling crates. The dependency direction is one-way (architecture 41): a tools
 # crate may depend on a framework crate, never the reverse. `check-deps` enforces

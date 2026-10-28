@@ -1023,13 +1023,21 @@ Rules (as for `todo_features.md`):
   - Verified: `viso-widgets/tests/adaptive_layouts.rs` resizes compact, medium and expanded and
     checks parents, visibility, bounds, arrangement, selection and focus;
     `viso/tests/adaptive_widgets.rs` resizes a window under the frame loop.
-- [ ] Move PDF out of the core into `viso-ext`. The core keeps a public paged capture API: a
+- [x] Move PDF out of the core into `viso-ext`. The core keeps a public paged capture API: a
   view laid out at a page's width, cut into pages with `page_break`/`keep_together` and its
   header and footer, giving each page's primitives with glyph outlines and a raster callback for
   what has no vector form. `viso-pdf` (the writer) and `pdf::export` move to `viso-ext/viso-pdf`
   over that API, beside `viso-print`, and the facade's `pdf` feature goes. Verify that the
   moved export writes the same bytes for the existing PDF tests, and that `check-deps` and the
   facade build without it.
+  - Built: `viso::paged::capture(Paged, take)` runs `take` in the frame on a `Capture`: each
+    page's `PagePart`s (primitives and `TextRun`s in paint order) and a `PageSource` for glyph
+    outlines (or platform masks) and rasters through the window's renderer. The writer, `Pdf`
+    and `export` live in `viso-ext/viso-pdf` over it; `crates/pdf`, the `pdf` feature and its
+    allowlist entries are gone.
+  - Verified: the moved export test writes byte-identical output to the pre-move build (`cmp`),
+    the writer's unit tests pass, `check-deps` is clean, and the facade checks and lints with
+    defaults and with `--no-default-features --features rasterizer`.
 - [ ] A PDF viewer widget over `viso-pdf`'s reader side. Verify that a multi-page document renders
   and selects text in a golden test.
 - [ ] A browser widget in `viso-ext/viso-webview`, which is still the cargo template. Verify that a

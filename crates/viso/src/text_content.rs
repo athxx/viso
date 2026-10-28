@@ -277,7 +277,6 @@ struct PositionedGlyph {
 /// A glyph as a document draws it: its face at its exact size, and the
 /// text it shows.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(not(feature = "pdf"), allow(dead_code))]
 pub(crate) struct PrintGlyph {
     pub(crate) face: FontFaceId,
     pub(crate) glyph: GlyphId,
@@ -879,7 +878,6 @@ impl TextShaper {
 
     /// `slot`'s text and its drawn glyphs as a document draws them, in
     /// node-local logical pixels; `None` until it draws a layout.
-    #[cfg(feature = "pdf")]
     pub(crate) fn print_glyphs(&self, slot: ParagraphSlot) -> Option<(Arc<str>, Vec<PrintGlyph>)> {
         let drawn = self.slots.get(&slot)?.drawn.as_ref()?;
         let mut glyphs = Vec::new();
@@ -895,14 +893,12 @@ impl TextShaper {
 
     /// The top of each of `slot`'s lines and, after the last, the bottom of
     /// its text, in node-local logical pixels.
-    #[cfg(feature = "pdf")]
     pub(crate) fn line_rows(&self, slot: ParagraphSlot) -> Option<&[f32]> {
         let drawn = self.slots.get(&slot)?.drawn.as_ref()?;
         Some(&drawn.placed.rows)
     }
 
     /// The bytes, index and instance of a face a layout draws with.
-    #[cfg(feature = "pdf")]
     pub(crate) fn face_data(&self, face: FontFaceId) -> Option<viso_text::FaceData> {
         self.resolver
             .face_data(face)
@@ -911,7 +907,6 @@ impl TextShaper {
 
     /// Glyph `glyph` of `face` as grayscale coverage at `pixels_per_em`,
     /// through the platform, for an outline the parser cannot read.
-    #[cfg(feature = "pdf")]
     pub(crate) fn platform_mask(
         &self,
         face: FontFaceId,

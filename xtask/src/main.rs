@@ -75,22 +75,11 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-macros",
                     "viso-ende",
                     "viso-math",
-                    "viso-pdf",
                 ],
                 // The DSL tests compile `.vs` sources themselves and reload
                 // them with the patch the dev link carries; an app links
                 // neither.
                 dev: &["viso-dsl", "viso-dev-protocol"],
-            },
-        ),
-        // PDF documents of the renderer's primitives, the facade's `pdf`
-        // feature: it reads the primitive types and nothing of the runtime.
-        (
-            "viso-pdf",
-            Allowed {
-                dir: "crates/pdf",
-                deps: &["viso-render", "viso-math"],
-                dev: &[],
             },
         ),
         // The proc macro bakes glyphs with the rasterizer the text runtime
