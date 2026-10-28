@@ -3541,7 +3541,7 @@ Mismatch 在编译 / 热重载时失败（热重载保留 last-good pipeline，`
 - 大字体 parse、large paragraph shaping、可线程化 raster 进入 worker/staging；主线程只做有预算的 commit。
 - 复杂文字以 UAX #29 / #9 / #14 + locale tailoring 为基线；logical text 是 source truth，BiDi visual reorder 在断行后按行执行；UTF-8/UTF-16 offset、grapheme、cluster、glyph index 使用不同 typed identity；caret/selection/hit-test/IME 共享 logical↔visual 映射；incremental 结果必须与 full recompute 等价。宽度感知 reflow 见 ADR 0027。
 - Unicode 官方 conformance corpus（`GraphemeBreakTest`、`LineBreakTest`、`BidiTest`、`BidiCharacterTest`）与 CJK/RTL/IME golden corpus 进入 CI；核心 regression gate：系统字体数量不能让普通 App startup 产生线性 parse 成本。
-- 目标（尚未实现）：`ShapedGlyph` 的 cluster 与 glyph id 仍是裸整数，未用 typed identity；`zh-Hans` / `zh-Hant` / `ja` / `ko` 的断行 tailoring 只有一个 ICU ja/zh bucket，尚不能各自区分（Text 规范 §29.1 未勾选项）。
+- `ShapedGlyph` 的 cluster 是 run 内 `RunOffset`、glyph 是 `GlyphId`，一路成型到 `GlyphKey` 与各 raster，只在读字体文件处转回 `u16`。断行在 ICU 的 `ja_zh` 表之上按 `zh-Hans` / `zh-Hant` / `ja` / `ko` 各叠一张禁则表（引号开闭、间隔号、韩文助词），见 Text 规范 §12.10。
 
 ### 37.6 Benchmark 覆盖（合同）
 

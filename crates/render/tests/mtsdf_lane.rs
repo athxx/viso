@@ -52,7 +52,7 @@ const ATLAS: u32 = 256;
 /// distance channel rounds off and a multi-channel field keeps.
 const GLYPH: &str = "V";
 
-fn glyph_id() -> u16 {
+fn glyph_id() -> viso_text::GlyphId {
     let mut shaper = Shaper::new();
     let run = shaper
         .shape_run(
@@ -129,7 +129,7 @@ fn coverage_run(
     at_px_per_em: f32,
     origin: [f32; 2],
 ) -> GlyphRunDraw {
-    let bitmap = rasterize_coverage(FONT, 0, glyph_id(), raster_px_per_em)
+    let bitmap = rasterize_coverage(FONT, 0, glyph_id().0, raster_px_per_em)
         .expect("the subset face rasterizes");
     let texture = gpu.create_texture(&TextureDesc {
         width: ATLAS,

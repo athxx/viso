@@ -720,7 +720,7 @@ impl WorkerState {
             for glyph in &run.glyphs {
                 // Color glyphs rasterize on the main thread as they draw; an
                 // ellipsis, a run of no text of its own, never is one.
-                let cluster = run.logical_range.0.0 + glyph.cluster as usize;
+                let cluster = glyph.cluster.from_run(run.logical_range.0).0;
                 if run.logical_range.0 < run.logical_range.1 && starts_emoji(&job.text, cluster) {
                     continue;
                 }
@@ -770,7 +770,7 @@ impl WorkerState {
     /// baked the size, otherwise rasterized from the outline.
     fn raster(&mut self, key: GlyphKey) -> Rastered {
         let baked = self.baked.get(&key.face);
-        if let Some(bitmap) = baked.and_then(|baked| baked.coverage(key.glyph, key.bucket)) {
+        if let Some(bitmap) = baked.and_then(|baked| baked.coverage(key.glyph.0, key.bucket)) {
             return (key, Some(bitmap));
         }
         (key, self.unbaked(key))
@@ -804,7 +804,7 @@ impl WorkerState {
             &face.bytes,
             face.index,
             face.variations.as_slice(),
-            key.glyph,
+            key.glyph.0,
             f32::from(key.bucket),
         )
     }

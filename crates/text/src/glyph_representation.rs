@@ -630,7 +630,7 @@ mod tests {
                         index: 0,
                         variations: crate::Variations::DEFAULT,
                         face: FACE,
-                        glyph: self.glyph,
+                        glyph: crate::GlyphId(self.glyph),
                         revision: REVISION,
                         px_per_em: f32::from(representation.bucket),
                     };
@@ -646,7 +646,7 @@ mod tests {
             };
             let key = GlyphKey {
                 face: FACE,
-                glyph: self.glyph,
+                glyph: crate::GlyphId(self.glyph),
                 kind: representation.kind,
                 bucket: representation.bucket,
             };

@@ -815,8 +815,34 @@ Rules (as for `todo_features.md`):
     - DSL tests: `Wrap` lowers to a flow with its gaps and placements. A `ui!` wrap breaks
       lines, and a `row_gap` in `sp` follows the text scale. The HTML export wraps. The AOT
       round trip carries `line_gap`.
-- [ ] Typed `ShapedGlyph` cluster and glyph ids, and per-locale kinsoku for zh-Hans, zh-Hant, ja
+- [x] Typed `ShapedGlyph` cluster and glyph ids, and per-locale kinsoku for zh-Hans, zh-Hant, ja
   and ko. Verify with Text §29.1's open rows.
+  - Built:
+    - `RunOffset` (a byte offset within one shaped run) and `GlyphId`. They are carried from
+      shaping through `GlyphKey`, the outline cache, MTSDF, the color rasterizer and the platform
+      raster seams. Ids go back to `u16` only where font files are read.
+    - `LineBreakLocale` resolves a BCP-47 tag into one of five rule sets: zh-Hans, zh-Hant, ja, ko
+      or other. For `zh`, Traditional comes from the `Hant` script or a TW, HK or MO region.
+    - Each locale adds its own prohibition table over ICU's `ja_zh` table:
+      - Chinese and Japanese: curly quotation marks open and close. This adds breaks ICU
+        withholds before an opening mark and after a closing one.
+      - The name interpunct `·` never starts a line in Chinese. In Simplified it also never
+        ends one.
+      - Korean: quotation marks stay unresolved, so a particle stays attached to its closing mark.
+    - Scoping:
+      - Prohibitions apply at Strict and Normal only.
+      - The quotation-mark breaks apply at every level except Anywhere, and not under keep-all.
+    - The new breaks are found by a byte scan between the provider's breaks, so text with no
+      curly quotation marks costs no extra decoding.
+  - Verified:
+    - Each tag resolves to its own locale.
+    - One sentence breaks four different ways across the four locales.
+    - Chinese and Japanese quotation marks open and close, and an apostrophe inside a word gets
+      no break.
+    - A Korean closing quotation mark keeps its particle.
+    - Strictness and `keep-all` scope the rules.
+    - The paragraph content locale carries each locale.
+    - Cross-target clippy is clean on wasm32, Windows, Android and Linux.
 - [ ] Name `ReactiveCycle` (E4202) cells and effect nodes by state name and source span, routed to
   dev diagnostics. Verify with an E4202 sample in `viso dev`.
 - [ ] One diagnostic shape shared by `viso-shader` and `viso-dsl`, in a leaf crate. Verify that the

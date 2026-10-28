@@ -43,6 +43,7 @@
 
 use crate::FontFaceId;
 use crate::ligature_caret;
+use crate::text_position::{GlyphId, RunOffset};
 use crate::variation::Variations;
 
 /// One positioned glyph produced by shaping.
@@ -54,11 +55,11 @@ use crate::variation::Variations;
 /// cluster, and several glyphs forming one character (marks) share one too.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShapedGlyph {
-    /// Glyph index within the face. Zero is `.notdef` — a coverage miss the
-    /// caller resolves through fallback in a later stage.
-    pub glyph_id: u16,
-    /// Source byte offset of the cluster this glyph belongs to.
-    pub cluster: u32,
+    /// Glyph index within the face. [`GlyphId::NOTDEF`] is a coverage miss
+    /// the caller resolves through fallback in a later stage.
+    pub glyph_id: GlyphId,
+    /// Where, in the run's source, the cluster this glyph belongs to starts.
+    pub cluster: RunOffset,
     /// Horizontal advance in em units (design units / `units_per_em`).
     pub x_advance: f32,
     /// Horizontal glyph placement offset in em units.
@@ -99,7 +100,7 @@ pub struct ShapedRun {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LigatureCarets {
     /// The ligature glyph the carets belong to.
-    pub glyph_id: u16,
+    pub glyph_id: GlyphId,
     /// Caret offsets from the glyph origin in em units, ascending.
     pub carets: Vec<f32>,
 }
@@ -122,7 +123,7 @@ impl ShapedRun {
     }
 
     /// The font's caret offsets inside ligature glyph `glyph_id`, if recorded.
-    pub fn carets_for(&self, glyph_id: u16) -> Option<&[f32]> {
+    pub fn carets_for(&self, glyph_id: GlyphId) -> Option<&[f32]> {
         self.ligature_carets
             .iter()
             .find(|l| l.glyph_id == glyph_id)
@@ -132,10 +133,10 @@ impl ShapedRun {
     /// Whether any glyph in the run is `.notdef` (glyph id 0), i.e. the face
     /// could not cover some cluster and the caller must resolve it via fallback.
     pub fn has_coverage_miss(&self) -> bool {
-        self.glyphs.iter().any(|g| g.glyph_id == 0)
+        self.glyphs.iter().any(|g| g.glyph_id.is_notdef())
     }
 
-    /// Whether a line break at source byte offset `byte` is shaping-safe: the
+    /// Whether a line break at run offset `at` is shaping-safe: the
     /// run's glyphs can be split there and each side reused without reshaping.
     ///
     /// The run's endpoints (`0` and `text_len`) are always safe. An interior
@@ -143,15 +144,15 @@ impl ShapedRun {
     /// offset as its `cluster` — and the starting glyph of that cluster is not
     /// [`ShapedGlyph::unsafe_to_break`]. An offset inside a cluster (not any
     /// glyph's `cluster`) is never safe: splitting there would cut a cluster.
-    pub fn is_safe_break(&self, byte: u32) -> bool {
-        if byte == 0 || byte == self.text_len {
+    pub fn is_safe_break(&self, at: RunOffset) -> bool {
+        if at.0 == 0 || at.0 == self.text_len {
             return true;
         }
         // A cluster boundary is safe when the glyphs starting there are not
         // flagged unsafe. Marks in one cluster share a `cluster` value; the
         // flag rides the whole group, so `all` and `any` agree — use `all`.
         let mut found = false;
-        for glyph in self.glyphs.iter().filter(|g| g.cluster == byte) {
+        for glyph in self.glyphs.iter().filter(|g| g.cluster == at) {
             found = true;
             if glyph.unsafe_to_break {
                 return false;
@@ -161,36 +162,37 @@ impl ShapedRun {
     }
 
     /// The minimal source-byte span `[start, end)` a paragraph layer must
-    /// reshape to break at `byte`. When `byte` is already a safe break the span
-    /// is empty (`(byte, byte)`): nothing needs reshaping. Otherwise the span
+    /// reshape to break at `at`. When `at` is already a safe break the span
+    /// is empty (`(at, at)`): nothing needs reshaping. Otherwise the span
     /// grows left and right to the nearest safe breaks (bounded by `0` and
     /// `text_len`), enclosing the unsafe boundary so both sides can be reshaped
     /// in isolation instead of splitting the glyph array mechanically.
-    pub fn reshape_span(&self, byte: u32) -> (u32, u32) {
-        if self.is_safe_break(byte) {
-            return (byte, byte);
+    pub fn reshape_span(&self, at: RunOffset) -> (RunOffset, RunOffset) {
+        if self.is_safe_break(at) {
+            return (at, at);
         }
         // Ordered, de-duplicated set of every candidate boundary in the run.
-        let mut boundaries: std::collections::BTreeSet<u32> = self
+        let end_of_run = RunOffset(self.text_len);
+        let mut boundaries: std::collections::BTreeSet<RunOffset> = self
             .glyphs
             .iter()
             .map(|g| g.cluster)
-            .filter(|&c| c <= self.text_len)
+            .filter(|&c| c <= end_of_run)
             .collect();
-        boundaries.insert(0);
-        boundaries.insert(self.text_len);
+        boundaries.insert(RunOffset(0));
+        boundaries.insert(end_of_run);
 
         let start = boundaries
             .iter()
             .rev()
-            .find(|&&b| b <= byte && self.is_safe_break(b))
+            .find(|&&b| b <= at && self.is_safe_break(b))
             .copied()
-            .unwrap_or(0);
+            .unwrap_or(RunOffset(0));
         let end = boundaries
             .iter()
-            .find(|&&b| b >= byte && self.is_safe_break(b))
+            .find(|&&b| b >= at && self.is_safe_break(b))
             .copied()
-            .unwrap_or(self.text_len);
+            .unwrap_or(end_of_run);
         (start, end)
     }
 }
@@ -262,8 +264,8 @@ impl Shaper {
         for (info, pos) in infos.iter().zip(positions.iter()) {
             let x_advance = pos.x_advance as f32 / units_per_em;
             glyphs.push(ShapedGlyph {
-                glyph_id: info.glyph_id as u16,
-                cluster: info.cluster,
+                glyph_id: GlyphId(info.glyph_id as u16),
+                cluster: RunOffset(info.cluster),
                 x_advance,
                 x_offset: pos.x_offset as f32 / units_per_em,
                 y_offset: pos.y_offset as f32 / units_per_em,
@@ -284,7 +286,7 @@ impl Shaper {
                 if ligature_carets.iter().any(|l| l.glyph_id == glyph.glyph_id) {
                     continue;
                 }
-                if let Some(carets) = ligature_caret::ligature_carets(gdef, glyph.glyph_id) {
+                if let Some(carets) = ligature_caret::ligature_carets(gdef, glyph.glyph_id.0) {
                     ligature_carets.push(LigatureCarets {
                         glyph_id: glyph.glyph_id,
                         carets: carets
@@ -341,15 +343,15 @@ mod tests {
         assert_eq!(run.face, FontFaceId(0));
         assert_eq!(run.glyphs.len(), 2);
 
-        assert_eq!(run.glyphs[0].glyph_id, 34);
-        assert_eq!(run.glyphs[0].cluster, 0);
+        assert_eq!(run.glyphs[0].glyph_id, GlyphId(34));
+        assert_eq!(run.glyphs[0].cluster, RunOffset(0));
         assert!(approx(run.glyphs[0].x_advance, 0.684_082_03));
         assert_eq!(run.glyphs[0].x_offset, 0.0);
         assert_eq!(run.glyphs[0].y_offset, 0.0);
         assert!(!run.glyphs[0].unsafe_to_break);
 
-        assert_eq!(run.glyphs[1].glyph_id, 55);
-        assert_eq!(run.glyphs[1].cluster, 1);
+        assert_eq!(run.glyphs[1].glyph_id, GlyphId(55));
+        assert_eq!(run.glyphs[1].cluster, RunOffset(1));
         assert!(approx(run.glyphs[1].x_advance, 0.684_082_03));
 
         // The run width is the sum of glyph advances.
@@ -365,7 +367,7 @@ mod tests {
         // Each ASCII letter is one byte, so clusters run 0,1,2 and stay
         // monotonic in left-to-right visual order.
         let run = shape("AVA");
-        let clusters: Vec<u32> = run.glyphs.iter().map(|g| g.cluster).collect();
+        let clusters: Vec<u32> = run.glyphs.iter().map(|g| g.cluster.0).collect();
         assert_eq!(clusters, vec![0, 1, 2]);
         // The repeated 'A' shapes to the same glyph id both times.
         assert_eq!(run.glyphs[0].glyph_id, run.glyphs[2].glyph_id);
@@ -383,7 +385,7 @@ mod tests {
         // Every glyph resolves to a real (non-notdef) id.
         let run = shape("AV");
         assert!(!run.has_coverage_miss());
-        assert!(run.glyphs.iter().all(|g| g.glyph_id != 0));
+        assert!(run.glyphs.iter().all(|g| !g.glyph_id.is_notdef()));
     }
 
     #[test]
@@ -455,11 +457,11 @@ mod tests {
         // Both boundaries of the run are safe breaks regardless of contents —
         // including the empty run, whose only offset (0 == text_len) is safe.
         let run = shape("AVA");
-        assert!(run.is_safe_break(0));
-        assert!(run.is_safe_break(run.text_len));
+        assert!(run.is_safe_break(RunOffset(0)));
+        assert!(run.is_safe_break(RunOffset(run.text_len)));
 
         let empty = shape("");
-        assert!(empty.is_safe_break(0));
+        assert!(empty.is_safe_break(RunOffset(0)));
         assert_eq!(empty.text_len, 0);
     }
 
@@ -470,7 +472,10 @@ mod tests {
         // a safe break.
         let run = shape("AVA");
         for byte in 0..=run.text_len {
-            assert!(run.is_safe_break(byte), "byte {byte} should be safe");
+            assert!(
+                run.is_safe_break(RunOffset(byte)),
+                "byte {byte} should be safe"
+            );
         }
     }
 
@@ -481,11 +486,14 @@ mod tests {
         // breaking there would cut a shaping cluster and is never safe.
         let run = shape("\u{4F60}\u{597D}");
         assert_eq!(run.text_len, 6);
-        assert!(run.is_safe_break(0));
-        assert!(run.is_safe_break(3));
-        assert!(run.is_safe_break(6));
+        assert!(run.is_safe_break(RunOffset(0)));
+        assert!(run.is_safe_break(RunOffset(3)));
+        assert!(run.is_safe_break(RunOffset(6)));
         for byte in [1, 2, 4, 5] {
-            assert!(!run.is_safe_break(byte), "byte {byte} is cluster-interior");
+            assert!(
+                !run.is_safe_break(RunOffset(byte)),
+                "byte {byte} is cluster-interior"
+            );
         }
     }
 
@@ -497,9 +505,9 @@ mod tests {
         // boundary, so it is not a safe break.
         let run = shape("e\u{301}");
         assert_eq!(run.text_len, 3);
-        assert!(run.is_safe_break(0));
-        assert!(run.is_safe_break(3));
-        assert!(!run.is_safe_break(1));
+        assert!(run.is_safe_break(RunOffset(0)));
+        assert!(run.is_safe_break(RunOffset(3)));
+        assert!(!run.is_safe_break(RunOffset(1)));
     }
 
     #[test]
@@ -507,7 +515,8 @@ mod tests {
         // A safe break needs no reshaping: the span is empty at that offset.
         let run = shape("AVA");
         for byte in [0u32, 1, 2, 3] {
-            assert_eq!(run.reshape_span(byte), (byte, byte));
+            let at = RunOffset(byte);
+            assert_eq!(run.reshape_span(at), (at, at));
         }
     }
 
@@ -520,11 +529,11 @@ mod tests {
         // exercises the cluster-interior branch — the span semantics are the
         // same as for a shaper-flagged unsafe boundary.)
         let run = shape("\u{4F60}\u{597D}");
-        assert_eq!(run.reshape_span(1), (0, 3));
-        assert_eq!(run.reshape_span(2), (0, 3));
+        assert_eq!(run.reshape_span(RunOffset(1)), (RunOffset(0), RunOffset(3)));
+        assert_eq!(run.reshape_span(RunOffset(2)), (RunOffset(0), RunOffset(3)));
         // The second cluster's interior expands to [3, 6).
-        assert_eq!(run.reshape_span(4), (3, 6));
-        assert_eq!(run.reshape_span(5), (3, 6));
+        assert_eq!(run.reshape_span(RunOffset(4)), (RunOffset(3), RunOffset(6)));
+        assert_eq!(run.reshape_span(RunOffset(5)), (RunOffset(3), RunOffset(6)));
     }
 
     #[test]

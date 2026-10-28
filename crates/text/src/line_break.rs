@@ -1,10 +1,10 @@
 //! Line breaking (UAX#14): the mandatory and permitted break opportunities in a
 //! paragraph, the base the width-driven line filling chooses from.
 //!
-//! This module produces the *candidate set*, not the final line layout. The
-//! width fit, CJK line-start/line-end prohibition ("kinsoku"), and hyphenation
-//! layer on top in [`crate::paragraph`] and [`crate::line_break_tailoring`];
-//! shaping-safe boundary handling (never split an unsafe-to-break cluster) is
+//! This module produces the *candidate set*, not the final line layout. The set
+//! already honours the locale's line-start/line-end prohibitions ("kinsoku",
+//! chosen in [`crate::line_break_tailoring`]); the width fit and hyphenation
+//! layer on top in [`crate::paragraph`]; shaping-safe boundary handling (never split an unsafe-to-break cluster) is
 //! [`crate::shaping`]'s concern. UAX#14 is the base, not full typography.
 //!
 //! # Why wrap ICU4X rather than a pair table
@@ -38,15 +38,15 @@
 //! documentation recommends.
 
 use icu_locale_core::LanguageIdentifier;
-use icu_properties::CodePointMapData;
 use icu_properties::props::LineBreak;
+use icu_properties::{CodePointMapData, CodePointMapDataBorrowed};
 use icu_segmenter::{LineSegmenter, LineSegmenterBorrowed};
 // The constructors return the borrowed, `'static` form backed by baked data;
 // `LineSegmenter` itself is only the constructor namespace here.
 
 use unicode_script::{Script, UnicodeScript};
 
-use crate::line_break_tailoring::LineBreakTailoring;
+use crate::line_break_tailoring::{Kinsoku, LineBreakTailoring};
 use crate::text_position::TextOffset;
 
 /// The class of a line-break opportunity.
@@ -69,6 +69,7 @@ pub enum BreakOpportunity {
 pub struct LineBreaker {
     segmenter: LineSegmenterBorrowed<'static>,
     line_break: CodePointMapData<LineBreak>,
+    kinsoku: Kinsoku,
 }
 
 impl std::fmt::Debug for LineBreaker {
@@ -109,6 +110,7 @@ impl LineBreaker {
         Self {
             segmenter: segmenter(tailoring),
             line_break: CodePointMapData::<LineBreak>::new().static_to_owned(),
+            kinsoku: tailoring.kinsoku(),
         }
     }
 
@@ -127,26 +129,41 @@ impl LineBreaker {
         text: &'a str,
     ) -> impl Iterator<Item = (TextOffset, BreakOpportunity)> + 'a {
         let map = self.line_break.as_borrowed();
-        self.segmenter
+        let kinsoku = self.kinsoku;
+        // The provider emits a leading 0 for the text start; it is not a break
+        // opportunity, so drop it.
+        let mut provided = self
+            .segmenter
             .segment_str(text)
-            // The provider emits a leading 0 for the text start; it is not a
-            // break opportunity, so drop it.
             .filter(|&offset| offset != 0)
-            .map(move |offset| {
-                // A break at `offset` is mandatory when the character ending
-                // there is a hard line break (UAX#14 LB4/LB5), or when it is the
-                // end of the text (LB3).
-                let ends_hard = text[..offset]
+            .peekable();
+        let mut cursor = 0;
+        std::iter::from_fn(move || {
+            loop {
+                let next = *provided.peek()?;
+                if kinsoku.quotes
+                    && let Some(added) = quote_break(text, cursor, next, kinsoku, map)
+                {
+                    cursor = added;
+                    return Some((TextOffset(added), BreakOpportunity::Allowed));
+                }
+                provided.next();
+                cursor = next;
+                // A break at `next` is mandatory when the character ending
+                // there is a hard line break (UAX#14 LB4/LB5), or when it is
+                // the end of the text (LB3).
+                let ends_hard = text[..next]
                     .chars()
                     .next_back()
                     .is_some_and(|c| is_mandatory_break_after(map.get(c)));
-                let class = if ends_hard || offset == text.len() {
-                    BreakOpportunity::Mandatory
-                } else {
-                    BreakOpportunity::Allowed
-                };
-                (TextOffset(offset), class)
-            })
+                if ends_hard || next == text.len() {
+                    return Some((TextOffset(next), BreakOpportunity::Mandatory));
+                }
+                if !prohibited(text, next, kinsoku) {
+                    return Some((TextOffset(next), BreakOpportunity::Allowed));
+                }
+            }
+        })
     }
 
     /// The first break opportunity strictly after `from`, with its class, or
@@ -188,6 +205,99 @@ pub fn is_complex_script_locale(locale: &str) -> bool {
         Some(script) => matches!(script.as_str(), "Thai" | "Laoo" | "Khmr" | "Mymr"),
         None => LANGUAGES.contains(&id.language.as_str()),
     }
+}
+
+/// Whether the locale's prohibitions forbid an allowed break at `at`: the
+/// line it would start begins with a no-start character, or the line it would
+/// end ends with a no-end one.
+fn prohibited(text: &str, at: usize, kinsoku: Kinsoku) -> bool {
+    if kinsoku.no_start.is_empty() && kinsoku.no_end.is_empty() {
+        return false;
+    }
+    let after = text[at..].chars().next();
+    let before = text[..at].chars().next_back();
+    after.is_some_and(|c| kinsoku.no_start.contains(&c))
+        || before.is_some_and(|c| kinsoku.no_end.contains(&c))
+}
+
+/// The first break the provider withheld in `(from, until)` that resolved
+/// quotation marks allow: before an opening mark after an ideograph, CJK
+/// punctuation or a closing mark, and after a closing mark before an
+/// ideograph, an opening bracket or an opening mark.
+///
+/// The marks are three bytes each (`E2 80 98`/`99`/`9C`/`9D`), so the scan
+/// tests bytes and decodes only around a hit.
+fn quote_break(
+    text: &str,
+    from: usize,
+    until: usize,
+    kinsoku: Kinsoku,
+    map: CodePointMapDataBorrowed<'_, LineBreak>,
+) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut at = from;
+    while at + 3 <= until {
+        if bytes[at] != 0xE2 || bytes[at + 1] != 0x80 {
+            at += 1;
+            continue;
+        }
+        let candidate = match bytes[at + 2] {
+            0x98 | 0x9C if at > from => {
+                let before = text[..at].chars().next_back();
+                before
+                    .is_some_and(|c| closes(c) || precedes_opening(map.get(c)))
+                    .then_some(at)
+            }
+            0x99 | 0x9D if at + 3 < until => {
+                let after = text[at + 3..].chars().next();
+                after
+                    .is_some_and(|c| opens(c) || follows_closing(map.get(c)))
+                    .then_some(at + 3)
+            }
+            _ => None,
+        };
+        if let Some(candidate) = candidate.filter(|&c| !prohibited(text, c, kinsoku)) {
+            return Some(candidate);
+        }
+        at += 3;
+    }
+    None
+}
+
+/// An opening curly quotation mark.
+fn opens(c: char) -> bool {
+    matches!(c, '\u{2018}' | '\u{201C}')
+}
+
+/// A closing curly quotation mark.
+fn closes(c: char) -> bool {
+    matches!(c, '\u{2019}' | '\u{201D}')
+}
+
+/// Whether a line may end on a character of this class before an opening
+/// quotation mark: an ideograph or kana, a Hangul syllable, or closing, stop
+/// and nonstarter punctuation.
+fn precedes_opening(class: LineBreak) -> bool {
+    matches!(
+        class,
+        LineBreak::Ideographic
+            | LineBreak::H2
+            | LineBreak::H3
+            | LineBreak::ClosePunctuation
+            | LineBreak::CloseParenthesis
+            | LineBreak::Nonstarter
+            | LineBreak::Exclamation
+    )
+}
+
+/// Whether a line may start with a character of this class after a closing
+/// quotation mark: an ideograph or kana, a Hangul syllable, or an opening
+/// bracket.
+fn follows_closing(class: LineBreak) -> bool {
+    matches!(
+        class,
+        LineBreak::Ideographic | LineBreak::H2 | LineBreak::H3 | LineBreak::OpenPunctuation
+    )
 }
 
 #[cfg(feature = "complex-line-break")]
@@ -505,7 +615,9 @@ mod tests {
 #[cfg(test)]
 mod tailoring_tests {
     use super::*;
-    use crate::line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
+    use crate::line_break_tailoring::{
+        LineBreakLocale, LineBreakStrictness, LineBreakTailoring, WordBreak,
+    };
 
     /// A CJK sample carrying the characters that make strictness observable: a
     /// small kana (ぁ), a prolonged sound mark (ー), CJK ideographs and CJK
@@ -519,40 +631,102 @@ mod tailoring_tests {
             .collect()
     }
 
-    /// The four locales the specification names map onto the provider's two
-    /// buckets: `ja`/`zh-Hans`/`zh-Hant` flip the CJK bit, `ko` does not. The
-    /// three CJK locales are indistinguishable at the provider (all `ja_zh`), so
-    /// their break sets are identical; the API still lets a caller name each.
-    #[test]
-    fn locale_selects_cjk_bucket_ja_zh_but_not_ko() {
-        for cjk_locale in ["ja", "zh-Hans", "zh-Hant"] {
-            let t = LineBreakTailoring::for_locale(cjk_locale);
-            assert!(
-                t.to_icu_options().content_locale.is_some(),
-                "{cjk_locale} should select the CJK bucket"
-            );
+    /// The text with a `|` at every break.
+    fn marked(tailoring: LineBreakTailoring, text: &str) -> String {
+        let breaks = break_offsets(tailoring, text);
+        let mut out = String::new();
+        for (at, c) in text.char_indices() {
+            if at > 0 && breaks.contains(&at) {
+                out.push('|');
+            }
+            out.push(c);
         }
-        assert!(
-            LineBreakTailoring::for_locale("ko")
-                .to_icu_options()
-                .content_locale
-                .is_none(),
-            "ko has inter-word spaces and takes the non-CJK path"
+        out
+    }
+
+    /// Each tag resolves to its own locale; `ja` and both Chinese take the
+    /// provider's CJK tables, `ko` the general ones.
+    #[test]
+    fn each_locale_tag_resolves_to_its_own_rules() {
+        for (tag, locale) in [
+            ("zh-Hans", LineBreakLocale::ZhHans),
+            ("zh-CN", LineBreakLocale::ZhHans),
+            ("zh", LineBreakLocale::ZhHans),
+            ("zh-Hans-HK", LineBreakLocale::ZhHans),
+            ("zh-Hant", LineBreakLocale::ZhHant),
+            ("zh-TW", LineBreakLocale::ZhHant),
+            ("zh_HK", LineBreakLocale::ZhHant),
+            ("zh-Hant-CN", LineBreakLocale::ZhHant),
+            ("ja-JP", LineBreakLocale::Ja),
+            ("ko-KR", LineBreakLocale::Ko),
+            ("en", LineBreakLocale::Other),
+            ("not a tag", LineBreakLocale::Other),
+        ] {
+            assert_eq!(LineBreakLocale::of(tag), locale, "{tag}");
+        }
+        for (tag, cjk) in [
+            ("zh-Hans", true),
+            ("zh-Hant", true),
+            ("ja", true),
+            ("ko", false),
+        ] {
+            let options = LineBreakTailoring::for_locale(tag).to_icu_options();
+            assert_eq!(options.content_locale.is_some(), cjk, "{tag}");
+        }
+    }
+
+    /// A transliterated name and a quotation break four ways: Simplified keeps
+    /// the name whole at its dot, Traditional lets the dot end a line, Japanese
+    /// has no rule for it, and all three let a line start at the opening mark;
+    /// Korean leaves the marks unresolved.
+    #[test]
+    fn the_four_locales_break_a_name_and_a_quotation_their_own_way() {
+        let text = "列夫·托尔说“好”。";
+        let at = |tag| marked(LineBreakTailoring::for_locale(tag), text);
+        assert_eq!(at("zh-Hans"), "列|夫·托|尔|说|“好”。");
+        assert_eq!(at("zh-Hant"), "列|夫·|托|尔|说|“好”。");
+        assert_eq!(at("ja"), "列|夫|·|托|尔|说|“好”。");
+        assert_eq!(at("ko"), "列|夫|·|托|尔|说“好”。");
+    }
+
+    /// Resolved marks break before an opening mark and after a closing one,
+    /// never inside the quotation, and not after an apostrophe in a word.
+    #[test]
+    fn curly_quotation_marks_open_and_close_in_chinese_and_japanese() {
+        let zh = LineBreakTailoring::for_locale("zh-Hans");
+        assert_eq!(marked(zh, "“你好”“再见”我说"), "“你|好”|“再|见”|我|说");
+        assert_eq!(marked(zh, "他说：‘好’。"), "他|说：|‘好’。");
+        assert_eq!(marked(zh, "西安Xi’an的"), "西|安|Xi’an|的");
+        let ja = LineBreakTailoring::for_locale("ja");
+        assert_eq!(marked(ja, "“はい”と言った"), "“は|い”|と|言っ|た");
+    }
+
+    /// A Korean closing mark keeps the particle after it; resolving the marks
+    /// as Chinese would split them.
+    #[test]
+    fn a_korean_closing_mark_keeps_its_particle() {
+        let text = "그는“안녕”이라고";
+        assert!(!marked(LineBreakTailoring::for_locale("ko"), text).contains("”|"));
+        assert!(marked(LineBreakTailoring::for_locale("zh"), text).contains("”|이"));
+    }
+
+    /// `Loose` lets the interpunct start a line, `Anywhere` adds nothing of
+    /// its own, and `keep-all` adds no quotation-mark breaks.
+    #[test]
+    fn strictness_and_word_break_scope_the_locale_rules() {
+        let zh = LineBreakTailoring::for_locale("zh-Hans");
+        let loose = zh.with_strictness(LineBreakStrictness::Loose);
+        assert!(marked(loose, "列夫·托").contains("|·"));
+        let anywhere = zh.with_strictness(LineBreakStrictness::Anywhere);
+        assert_eq!(
+            break_offsets(anywhere, "列夫·托"),
+            break_offsets(
+                LineBreakTailoring::default().with_strictness(LineBreakStrictness::Anywhere),
+                "列夫·托"
+            )
         );
-        assert!(
-            LineBreakTailoring::for_locale("en")
-                .to_icu_options()
-                .content_locale
-                .is_none()
-        );
-        // The three CJK locales collapse to the same provider table, so their
-        // break sets coincide.
-        let ja = break_offsets(LineBreakTailoring::for_locale("ja"), CJK_SAMPLE);
-        let hans = break_offsets(LineBreakTailoring::for_locale("zh-Hans"), CJK_SAMPLE);
-        let hant = break_offsets(LineBreakTailoring::for_locale("zh-Hant"), CJK_SAMPLE);
-        assert_eq!(ja, hans);
-        assert_eq!(ja, hant);
-        assert!(!ja.is_empty());
+        let keep = zh.with_word_break(WordBreak::KeepAll);
+        assert!(!marked(keep, "说“好”").contains("|“"));
     }
 
     /// Loosening strictness only ever *adds* break opportunities: the strict set

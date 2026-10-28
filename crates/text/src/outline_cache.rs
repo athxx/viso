@@ -29,12 +29,13 @@
 
 use std::collections::HashMap;
 
-use ttf_parser::{Face, GlyphId, OutlineBuilder};
+use ttf_parser::{Face, OutlineBuilder};
 
 use crate::FontFaceId;
 use crate::glyph_cache::{Admission, GlyphKey, GlyphResidency, PoolBudget, Reclaimed};
 use crate::glyph_representation::GlyphImageKind;
 use crate::progressive::FontRevision;
+use crate::text_position::GlyphId;
 use crate::variation::Variations;
 
 /// Chord tolerance of the flattening, in em. A quarter-pixel error holds up to
@@ -62,7 +63,7 @@ pub struct OutlineRequest<'a> {
     /// The face's runtime identity.
     pub face: FontFaceId,
     /// Glyph index within the face.
-    pub glyph: u16,
+    pub glyph: GlyphId,
     /// The face's revision; an outline built from an older revision is rebuilt.
     pub revision: FontRevision,
 }
@@ -72,7 +73,7 @@ pub struct OutlineRequest<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutlineGlyph {
     face: FontFaceId,
-    glyph: u16,
+    glyph: GlyphId,
     revision: FontRevision,
     points: Vec<[f32; 2]>,
     /// Exclusive end of each contour in `points`.
@@ -87,7 +88,7 @@ impl OutlineGlyph {
     }
 
     /// The glyph index within that face.
-    pub fn glyph(&self) -> u16 {
+    pub fn glyph(&self) -> GlyphId {
         self.glyph
     }
 
@@ -135,10 +136,10 @@ struct Entry {
 /// by the vector pool's budget.
 #[derive(Debug, Default)]
 pub struct OutlineCache {
-    entries: HashMap<(FontFaceId, u16), Entry>,
+    entries: HashMap<(FontFaceId, GlyphId), Entry>,
     /// Keys whose retained geometry died since the last drain, so the owner of
     /// the vertex buffers frees exactly those.
-    dropped: Vec<(FontFaceId, u16)>,
+    dropped: Vec<(FontFaceId, GlyphId)>,
     reclaims: Vec<Reclaimed>,
     tessellations: u64,
 }
@@ -200,7 +201,7 @@ impl OutlineCache {
 
     /// Move the keys whose retained geometry died since the last drain into
     /// `out`. Empty in steady state.
-    pub fn take_dropped(&mut self, out: &mut Vec<(FontFaceId, u16)>) {
+    pub fn take_dropped(&mut self, out: &mut Vec<(FontFaceId, GlyphId)>) {
         out.append(&mut self.dropped);
     }
 
@@ -266,7 +267,7 @@ fn flatten(req: &OutlineRequest<'_>, tolerance: f32) -> Option<OutlineGlyph> {
         last: [0.0; 2],
     };
     // A glyph with no outline (a space) is an empty outline, not a failure.
-    let _ = face.outline_glyph(GlyphId(req.glyph), &mut sink);
+    let _ = face.outline_glyph(ttf_parser::GlyphId(req.glyph.0), &mut sink);
     sink.finish_contour();
     let mut extent = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
     for &[x, y] in &sink.points {
@@ -412,7 +413,7 @@ mod tests {
             index: 0,
             variations: crate::Variations::DEFAULT,
             face: FACE,
-            glyph,
+            glyph: GlyphId(glyph),
             revision: REVISION,
         }
     }
@@ -568,7 +569,7 @@ mod tests {
         assert!(cache.is_empty());
         let mut dropped = Vec::new();
         cache.take_dropped(&mut dropped);
-        assert_eq!(dropped, [(FACE, glyph)]);
+        assert_eq!(dropped, [(FACE, GlyphId(glyph))]);
 
         for _ in 0..3 {
             cache

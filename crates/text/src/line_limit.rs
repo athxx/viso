@@ -183,8 +183,8 @@ mod tests {
         let glyphs: Vec<ShapedGlyph> = text
             .char_indices()
             .map(|(at, ch)| ShapedGlyph {
-                glyph_id: ch as u16,
-                cluster: at as u32,
+                glyph_id: crate::GlyphId(ch as u16),
+                cluster: crate::RunOffset(at as u32),
                 x_advance: 1.0,
                 x_offset: 0.0,
                 y_offset: 0.0,
@@ -216,7 +216,7 @@ mod tests {
         line.runs
             .iter()
             .flat_map(|run| &run.glyphs)
-            .map(|g| char::from_u32(u32::from(g.glyph_id)).unwrap_or('?'))
+            .map(|g| char::from_u32(u32::from(g.glyph_id.0)).unwrap_or('?'))
             .collect()
     }
 
@@ -286,7 +286,7 @@ mod tests {
             .expect("overflows");
         let line = &cut[0];
         assert!(line.rtl);
-        assert_eq!(line.runs[0].glyphs[0].glyph_id, 0x2026);
+        assert_eq!(line.runs[0].glyphs[0].glyph_id, crate::GlyphId(0x2026));
         assert_eq!(line.runs[0].visual_inline_range, (0.0, 1.0));
         assert_eq!(line.runs[1].visual_inline_range, (1.0, 4.0));
         assert_eq!(line.width, 4.0);

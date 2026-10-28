@@ -32,7 +32,7 @@ use viso_text::system_fonts::ColorGlyph;
 use viso_text::text_work::Priority;
 use viso_text::{
     Admission, ColorGlyphRasterizer, CoverageBitmap, FontCache, FontFaceId, FontRequest,
-    FontResolver, FontRole, FontTarget, GlyphImageKind, GlyphKey, GlyphResidency,
+    FontResolver, FontRole, FontTarget, GlyphId, GlyphImageKind, GlyphKey, GlyphResidency,
     LineBreakTailoring, LineLimit, OUTLINE_POOL, PackagedFirst, PackagedFonts, PackagedSource,
     PoolBudget, Reclaimed, ReplacedFiles, Resolved, TextBudgets, TextOffset, TextPosition,
     inspect_face,
@@ -264,7 +264,7 @@ impl TextCounters {
 #[derive(Debug, Clone, Copy)]
 struct PositionedGlyph {
     face: FontFaceId,
-    glyph: u16,
+    glyph: GlyphId,
     /// The raster bucket it draws from: its style's size at the density.
     bucket: u16,
     /// The span of [`Placing::paint`] it falls in, [`NO_PAINT`] for none.
@@ -280,7 +280,7 @@ struct PositionedGlyph {
 #[cfg_attr(not(feature = "pdf"), allow(dead_code))]
 pub(crate) struct PrintGlyph {
     pub(crate) face: FontFaceId,
-    pub(crate) glyph: u16,
+    pub(crate) glyph: GlyphId,
     pub(crate) size: f32,
     /// The color its span paints it, `None` for the text's own.
     pub(crate) color: Option<Rgba>,
@@ -915,7 +915,7 @@ impl TextShaper {
     pub(crate) fn platform_mask(
         &self,
         face: FontFaceId,
-        glyph: u16,
+        glyph: GlyphId,
         pixels_per_em: u16,
     ) -> Option<viso_text::CoverageBitmap> {
         self.color_raster
@@ -1340,7 +1340,7 @@ impl TextShaper {
                 let own_text = from < to;
                 let printed = print.as_deref().map_or(0, Vec::len);
                 for glyph in &run.glyphs {
-                    let cluster = from.0 + glyph.cluster as usize;
+                    let cluster = glyph.cluster.from_run(from).0;
                     // An ellipsis paints like the text it follows.
                     let painted = if own_text {
                         cluster
@@ -2861,7 +2861,7 @@ mod tests {
     use viso_gpu::{CpuRaster, RawWindowHandle};
     use viso_render::Rgba;
     use viso_text::fallback::{FallbackPlanKey, FallbackStyle};
-    use viso_text::{BakedFace, MemoryClass, TextOffset, rasterize_coverage};
+    use viso_text::{BakedFace, LineBreakLocale, MemoryClass, TextOffset, rasterize_coverage};
     use viso_ui::{FontSize, LengthTerms};
 
     const TEST_FONT: &[u8] = include_bytes!("../fixtures/DejaVuSans-subset.ttf");
@@ -3177,7 +3177,7 @@ mod tests {
                 bucket: 30,
                 kind: GlyphImageKind::MaskA8,
             };
-            let bitmap = rasterize_coverage(TEST_FONT, 0, glyph, 30.0).expect("outline");
+            let bitmap = rasterize_coverage(TEST_FONT, 0, glyph.0, 30.0).expect("outline");
             assert!(shaper.admit_coverage(&mut gpu, key, &bitmap).is_some());
         }
         let placements = shaper.coverage_uv.len();
@@ -3606,7 +3606,7 @@ mod tests {
         let face = shaper.primary.expect("the packaged family");
         let key = |glyph, bucket| GlyphKey {
             face,
-            glyph,
+            glyph: GlyphId(glyph),
             bucket,
             kind: GlyphImageKind::MaskA8,
         };
@@ -3648,7 +3648,7 @@ mod tests {
         );
         let key = |bucket| GlyphKey {
             face,
-            glyph: b,
+            glyph: GlyphId(b),
             bucket,
             kind: GlyphImageKind::MaskA8,
         };
@@ -4263,9 +4263,9 @@ mod tests {
 
             // The static fast path must refuse a CFF2 outline...
             assert!(
-                rasterize_coverage(bytes, index, g.glyph, 48.0).is_none(),
+                rasterize_coverage(bytes, index, g.glyph.0, 48.0).is_none(),
                 "static parser must refuse CFF2 glyph {} (variable outline)",
-                g.glyph,
+                g.glyph.0,
             );
             // ...and the authoritative live path must render real ink for it.
             let live = shaper
@@ -4275,7 +4275,7 @@ mod tests {
             assert!(
                 live.coverage.iter().any(|&v| v > 0),
                 "live raster must produce ink for CFF2 glyph {}",
-                g.glyph,
+                g.glyph.0,
             );
         }
         assert!(
@@ -4612,7 +4612,7 @@ mod tests {
                                 run.visual_inline_range.0.to_bits(),
                                 run.visual_inline_range.1.to_bits(),
                             ),
-                            run.glyphs.iter().map(|g| g.glyph_id).collect(),
+                            run.glyphs.iter().map(|g| g.glyph_id.0).collect(),
                         )
                     })
                     .collect();
@@ -4832,10 +4832,19 @@ mod tests {
                 "{locale}",
             );
         }
-        let tailoring = |n| drawn_tailoring(&shaper, slot(n));
-        assert_eq!(tailoring(0), tailoring(1), "ja and zh share the CJK tables");
-        assert_eq!(tailoring(1), tailoring(2));
-        assert_ne!(tailoring(0), tailoring(3), "ko breaks as a spaced script");
+        let locales: Vec<_> = (0..4)
+            .map(|n| drawn_tailoring(&shaper, slot(n)).locale)
+            .collect();
+        assert_eq!(
+            locales,
+            [
+                LineBreakLocale::Ja,
+                LineBreakLocale::ZhHans,
+                LineBreakLocale::ZhHant,
+                LineBreakLocale::Ko
+            ],
+            "each locale keeps its own rules",
+        );
 
         let unset = wrapped("line breaking");
         settle(&mut shaper, &mut gpu, slot(9), &unset, Some(80.0));

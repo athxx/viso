@@ -60,6 +60,7 @@ use std::collections::HashSet;
 use crate::FontFaceId;
 use crate::glyph_representation::GlyphImageKind;
 use crate::inspect::{self, BudgetState, CacheKey, GlyphExplanation, MissLedger};
+use crate::text_position::GlyphId;
 
 /// The full identity of a resolved glyph image: the face, the glyph, the chosen
 /// representation, and the resolution / size bucket it was resolved into. Color
@@ -68,7 +69,7 @@ use crate::inspect::{self, BudgetState, CacheKey, GlyphExplanation, MissLedger};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
     pub face: FontFaceId,
-    pub glyph: u16,
+    pub glyph: GlyphId,
     pub kind: GlyphImageKind,
     /// Resolution / size bucket the representation was resolved into.
     pub bucket: u16,
@@ -935,7 +936,7 @@ mod tests {
     fn key_kind(glyph: u16, bucket: u16, kind: GlyphImageKind) -> GlyphKey {
         GlyphKey {
             face: FontFaceId(0),
-            glyph,
+            glyph: GlyphId(glyph),
             kind,
             bucket,
         }
@@ -955,7 +956,13 @@ mod tests {
         };
         res.get_or_admit_a8(other, 100);
         res.get_or_admit_a8(doomed, 100);
-        res.get_or_admit_a8(GlyphKey { glyph: 3, ..doomed }, 100);
+        res.get_or_admit_a8(
+            GlyphKey {
+                glyph: GlyphId(3),
+                ..doomed
+            },
+            100,
+        );
 
         assert_eq!(res.forget_face(doomed.face), 2);
 

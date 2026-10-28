@@ -40,12 +40,12 @@ const MAX_EDGE: u32 = 2048;
 pub fn rasterize_color(
     sfnt: &[u8],
     index: u32,
-    glyph: u16,
+    glyph: crate::GlyphId,
     pixels_per_em: u16,
 ) -> Option<ColorGlyph> {
     let face = Face::parse(sfnt, index).ok()?;
     let pixels_per_em = pixels_per_em.max(1);
-    let gid = GlyphId(glyph);
+    let gid = GlyphId(glyph.0);
     if face.is_color_glyph(gid)
         && let Some(painted) = paint_colr(&face, gid, pixels_per_em)
     {
@@ -1032,6 +1032,6 @@ mod tests {
 
     #[test]
     fn a_face_without_color_tables_paints_nothing() {
-        assert!(rasterize_color(&[0u8; 12], 0, 1, 32).is_none());
+        assert!(rasterize_color(&[0u8; 12], 0, crate::GlyphId(1), 32).is_none());
     }
 }

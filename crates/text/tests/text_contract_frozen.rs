@@ -37,9 +37,9 @@ use viso_text::paragraph::{LineLayout, Paragraph, ShapedSegment, ShapedSpan};
 use viso_text::progressive::FontRevision;
 use viso_text::{
     Admission, BaseDirection, CaretAffinity, DEFAULT_PAGE_BYTES, Direction, FontCache, FontFaceId,
-    GlyphImageKind, GlyphKey, GlyphResidency, MemoryClass, PoolBudget, Reclaimed, Representation,
-    RepresentationState, RunClass, ShapedGlyph, ShapedRun, TextOffset, TextPosition,
-    TransformSample,
+    GlyphId, GlyphImageKind, GlyphKey, GlyphResidency, MemoryClass, PoolBudget, Reclaimed,
+    Representation, RepresentationState, RunClass, RunOffset, ShapedGlyph, ShapedRun, TextOffset,
+    TextPosition, TransformSample,
 };
 
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -134,7 +134,7 @@ fn a_run_starts_on_coverage_and_switches_only_at_a_resolve() {
 fn key(face: u32, glyph: u16, kind: GlyphImageKind) -> GlyphKey {
     GlyphKey {
         face: FontFaceId(face),
-        glyph,
+        glyph: GlyphId(glyph),
         kind,
         bucket: 16,
     }
@@ -274,8 +274,8 @@ fn shape(text: &str, _direction: Direction, _style: u16) -> ShapedSpan {
     let glyphs: Vec<ShapedGlyph> = text
         .char_indices()
         .map(|(at, _)| ShapedGlyph {
-            glyph_id: 1,
-            cluster: at as u32,
+            glyph_id: GlyphId(1),
+            cluster: RunOffset(at as u32),
             x_advance: 0.5,
             x_offset: 0.0,
             y_offset: 0.0,

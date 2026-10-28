@@ -1202,6 +1202,14 @@ pub enum LineBreakStrictness {
 
 对于中文，参考 CLReq 的行首/行尾禁则与 strictness 思路；对于日文参考 JLReq；韩文参考 KLReq。Viso 只冻结行为合同，不复制这些文档的内部 class 名称为 public ABI。
 
+实现：ICU provider 只有一个 `ja_zh` 开关，Viso 在它给出的断点之上为每个 `LineBreakLocale` 叠一张自己的表（`LineBreakLocale::of` 解析 BCP-47，`zh` 按 `Hant` script 或 TW/HK/MO region 分繁简）：
+
+- `zh-Hans` / `zh-Hant`：弯引号分开闭——`“‘` 不落行尾、`”’` 不落行首；开引号前、闭引号后与汉字、CJK 标点相邻处补断点（ICU 把 QU 两侧都焊死）。音译人名间隔号 `·` 不落行首；简体另不落行尾，人名不在点上拆开。
+- `ja`：引号同上；小假名、长音、叠字符号随 strictness 走 ICU 的 CJK 表。
+- `ko`：用通用表；闭引号后紧跟助词（`“안녕”이라고`），引号不解析方向。
+
+引号断点在 `Anywhere` 之外的各级生效、`keep-all` 下不加；行首/行尾禁则只在 `Strict` / `Normal` 生效，`Loose` 允许居中标点开行。整段文本一次给出断点，policy 在段内不变。
+
 如果启用 punctuation compression / hanging punctuation：
 
 ```text
@@ -3117,11 +3125,11 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 [x] UAX #9 / #14 / #29 官方 conformance corpus 进入 CI
 [ ] Unicode algorithm property data 来自一致的数据 release
 [x] source text 不被 renderer 隐式 normalization
-[ ] UTF-8 / UTF-16 / grapheme / shaping cluster / glyph index 使用 typed mapping
+[x] UTF-8 / UTF-16 / grapheme / shaping cluster / glyph index 使用 typed mapping
 [x] BiDi paragraph 先 resolve levels，最终 visual reorder 在 line formation 后按行执行
 [x] LRI/RLI/FSI/PDI 与 paired-bracket/neutral/number 场景正确
 [x] line break 使用 UAX #14 + locale tailoring，而不是 ASCII whitespace heuristic
-[ ] zh-Hans / zh-Hant / ja / ko 有独立 CJK line-break tailoring
+[x] zh-Hans / zh-Hant / ja / ko 有独立 CJK line-break tailoring
 [x] unsafe shaping boundary 不被机械切开；需要时 worker boundary reshape
 [ ] Thai/Lao/Khmer 等允许 locale/dictionary segmenter provider
 [x] 同一 logical offset 在 BiDi/line-wrap boundary 可用 affinity 表达双视觉 caret
@@ -3174,6 +3182,8 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 | BiDi 按行 visual reorder | `visual_reorder_matches_uax9_corpus`，`direction_runs_keep_logical_order_and_split_on_level`，`mixed_line_orders_runs_left_to_right`，`rtl_paragraph_incremental_equals_full` |
 | isolate / bracket / neutral / number | `resolves_paragraph_level_and_char_levels_against_uax9_corpus` |
 | UAX #14 + locale tailoring | `line_breaks_match_uax14_corpus`，`the_content_locale_selects_the_paragraph_line_breaking`，`word_break_keep_all_and_break_all_are_observable` |
+| zh-Hans/zh-Hant/ja/ko 独立 tailoring | `each_locale_tag_resolves_to_its_own_rules`，`the_four_locales_break_a_name_and_a_quotation_their_own_way`（同一句四种断点），`curly_quotation_marks_open_and_close_in_chinese_and_japanese`，`a_korean_closing_mark_keeps_its_particle`，`strictness_and_word_break_scope_the_locale_rules` |
+| typed mapping | UTF-8 `TextOffset`、UTF-16 经 `Utf16Bridge`、run 内 cluster `RunOffset`、`GlyphId` 各自成型，从 shaping 一路到 `GlyphKey`、outline、MTSDF 与 color raster；只在读字体文件处转回 `u16`。`a_run_offset_lifts_into_its_paragraph`，`begin_maps_utf16_bounds_to_logical_range` |
 | unsafe shaping boundary | `reshape_span_encloses_unsafe_boundary`，`interior_of_multibyte_cluster_is_unsafe`，`main_thread_shapes_nothing_on_cold_miss`，`an_edit_cadence_shapes_nothing_on_the_main_thread` |
 | affinity 双视觉 caret | `bidi_seam_offset_has_two_visual_carets_picked_by_affinity`，`affinity_places_a_wrap_boundary_caret_on_either_line` |
 | ligature caret | `ltr_ligature_stops_sit_at_font_carets`，`rtl_ligature_stops_mirror_font_carets`，`ligature_stops_stay_on_grapheme_boundaries`，`reads_format1_and_format3_carets_through_glyph_array_coverage` |
@@ -3210,8 +3220,6 @@ Viso Text/Font Runtime 只有同时满足下面条件才算达到 1.0 合同：
 |---|---|
 | WASM lazy fetch | `a_lazy_fetch_resolves_and_refunds_its_budget` 只在模块层成立，没有 web consumer |
 | Unicode 数据同一 release | `LineBreakTest` 15.1.0，`unicode-bidi` 16.0.0，Grapheme/WordBreakTest 17.0.0 |
-| typed mapping | `ShapedGlyph.cluster` 是裸 `u32`，`glyph_id` 是裸 `u16` |
-| zh-Hans/zh-Hant/ja/ko 独立 tailoring | ICU provider 只有一个 ja/zh bucket，`locale_selects_cjk_bucket_ja_zh_but_not_ko` 断言三者 break 集相同 |
 | Thai/Lao/Khmer provider | Thai 只经 ICU 内置 auto segmenter，无可插拔 provider，Lao/Khmer 无测试 |
 
 ---

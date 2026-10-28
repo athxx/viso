@@ -2280,8 +2280,8 @@ mod tests {
                 let mut glyphs: Vec<ShapedGlyph> = slice
                     .char_indices()
                     .map(|(i, _)| ShapedGlyph {
-                        glyph_id: 1,
-                        cluster: i as u32,
+                        glyph_id: viso_text::GlyphId(1),
+                        cluster: viso_text::RunOffset(i as u32),
                         x_advance: 1.0,
                         x_offset: 0.0,
                         y_offset: 0.0,
@@ -2363,8 +2363,8 @@ mod tests {
                     let glyphs: Vec<ShapedGlyph> = slice
                         .char_indices()
                         .map(|(i, _)| ShapedGlyph {
-                            glyph_id: 1,
-                            cluster: i as u32,
+                            glyph_id: viso_text::GlyphId(1),
+                            cluster: viso_text::RunOffset(i as u32),
                             x_advance: 1.0,
                             x_offset: 0.0,
                             y_offset: 0.0,
@@ -3541,8 +3541,8 @@ mod tests {
         let text = "ffix";
         let bidi = BidiInfo::resolve(text, BaseDirection::LeftToRight);
         let glyph = |cluster, x_advance| ShapedGlyph {
-            glyph_id: 7,
-            cluster,
+            glyph_id: viso_text::GlyphId(7),
+            cluster: viso_text::RunOffset(cluster),
             x_advance,
             x_offset: 0.0,
             y_offset: 0.0,

@@ -22,6 +22,49 @@ impl TextOffset {
     }
 }
 
+/// A byte offset into one shaped run's own source substring. A glyph's
+/// cluster is one: the start of the character (or ligature of characters) the
+/// glyph derives from, counted from the run's start rather than the
+/// paragraph's. [`RunOffset::from_run`] lifts it into the paragraph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[repr(transparent)]
+pub struct RunOffset(pub u32);
+
+impl RunOffset {
+    /// The offset as a byte count from the run's start.
+    pub const fn get(self) -> usize {
+        self.0 as usize
+    }
+
+    /// The paragraph offset of this run offset, for a run starting at
+    /// `run_start`.
+    pub const fn from_run(self, run_start: TextOffset) -> TextOffset {
+        TextOffset(run_start.0 + self.0 as usize)
+    }
+}
+
+/// A glyph index within one font face: what shaping produces and what every
+/// glyph cache, outline and raster is keyed by. Index zero is `.notdef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[repr(transparent)]
+pub struct GlyphId(pub u16);
+
+impl GlyphId {
+    /// The `.notdef` glyph a face draws for a character it does not cover.
+    pub const NOTDEF: Self = Self(0);
+
+    /// Whether this is the face's `.notdef` glyph: a coverage miss.
+    pub const fn is_notdef(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl From<GlyphId> for u16 {
+    fn from(glyph: GlyphId) -> u16 {
+        glyph.0
+    }
+}
+
 /// Which side of a boundary a caret belongs to when one logical offset maps to
 /// two visual positions — at a BiDi direction boundary or a soft line-wrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -286,6 +329,17 @@ mod tests {
         let bridge = Utf16Bridge::new("aあ");
         assert_eq!(bridge.offset_to_utf16(TextOffset(2)), 1);
         assert_eq!(bridge.offset_to_utf16(TextOffset(99)), 2);
+    }
+
+    #[test]
+    fn a_run_offset_lifts_into_its_paragraph() {
+        // "ab你" starts at byte 4 of its paragraph; its third cluster sits at
+        // byte 2 of the run.
+        assert_eq!(RunOffset(2).from_run(TextOffset(4)), TextOffset(6));
+        assert_eq!(RunOffset(2).get(), 2);
+        assert!(GlyphId::NOTDEF.is_notdef());
+        assert!(!GlyphId(34).is_notdef());
+        assert_eq!(u16::from(GlyphId(34)), 34);
     }
 
     #[test]

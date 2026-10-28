@@ -200,8 +200,8 @@ mod tests {
         // point selects.
         let text = "\u{05D0}\u{05D5}\u{05DD}";
         let glyph = |cluster, x_advance| crate::shaping::ShapedGlyph {
-            glyph_id: 1,
-            cluster,
+            glyph_id: crate::GlyphId(1),
+            cluster: crate::RunOffset(cluster),
             x_advance,
             x_offset: 0.0,
             y_offset: 0.0,

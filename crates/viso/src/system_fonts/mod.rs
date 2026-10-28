@@ -122,7 +122,7 @@ mod declining {
         pub fn rasterize_coverage_glyph(
             &self,
             _face: viso_text::FontFaceId,
-            _glyph: u16,
+            _glyph: viso_text::GlyphId,
             _pixels_per_em: u16,
         ) -> Option<viso_text::CoverageBitmap> {
             None
@@ -133,7 +133,7 @@ mod declining {
         fn rasterize_color_glyph(
             &self,
             _face: viso_text::FontFaceId,
-            _glyph: u16,
+            _glyph: viso_text::GlyphId,
             _pixels_per_em: u16,
         ) -> Option<viso_text::ColorGlyph> {
             None

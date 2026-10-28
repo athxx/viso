@@ -158,7 +158,7 @@ mod tests {
     fn field(w: u32, h: u32) -> (MtsdfGlyph, Vec<u8>) {
         let meta = MtsdfGlyph {
             face: FontFaceId(0),
-            glyph: 1,
+            glyph: viso_text::GlyphId(1),
             revision: FontRevision(0),
             generator_revision: 1,
             px_per_em: 32.0,

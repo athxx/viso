@@ -47,7 +47,7 @@ use crate::line_break::{BreakOpportunity, LineBreaker};
 use crate::line_break_tailoring::LineBreakTailoring;
 use crate::segment::Segmenter;
 use crate::shaping::{Direction, ShapedGlyph, ShapedRun};
-use crate::text_position::{CaretAffinity, TextOffset, TextPosition};
+use crate::text_position::{CaretAffinity, GlyphId, TextOffset, TextPosition};
 
 /// A caret stop within a run: a legal grapheme boundary paired with the inline
 /// coordinate it sits at, in the run's own visual space.
@@ -496,11 +496,11 @@ fn build_visual_run(
     // One entry per shaping cluster in logical order: its start, its summed
     // advance (a base and its marks share a cluster), and the glyph that may
     // carry ligature carets.
-    let mut clusters: Vec<(usize, f32, u16)> = shaped
+    let mut clusters: Vec<(usize, f32, GlyphId)> = shaped
         .map(|s| {
             s.glyphs
                 .iter()
-                .map(|g| (g.cluster as usize, g.x_advance, g.glyph_id))
+                .map(|g| (g.cluster.get(), g.x_advance, g.glyph_id))
                 .collect()
         })
         .unwrap_or_default();
@@ -907,7 +907,7 @@ impl Paragraph {
                 continue;
             }
             for glyph in &run.glyphs {
-                let at = from.0 + glyph.cluster as usize;
+                let at = glyph.cluster.from_run(from).0;
                 let stretch = ends.partition_point(|&end| end <= at);
                 if stretch < widths.len() && at < kept[stretch] {
                     widths[stretch] += glyph.x_advance;
@@ -2090,8 +2090,8 @@ mod tests {
                 .iter()
                 .map(
                     |&(cluster, x_advance, glyph_id)| crate::shaping::ShapedGlyph {
-                        glyph_id,
-                        cluster,
+                        glyph_id: GlyphId(glyph_id),
+                        cluster: crate::RunOffset(cluster),
                         x_advance,
                         x_offset: 0.0,
                         y_offset: 0.0,
@@ -2104,7 +2104,7 @@ mod tests {
             ligature_carets: carets
                 .iter()
                 .map(|&(glyph_id, c)| crate::shaping::LigatureCarets {
-                    glyph_id,
+                    glyph_id: GlyphId(glyph_id),
                     carets: c.to_vec(),
                 })
                 .collect(),
@@ -2205,8 +2205,8 @@ mod tests {
         let glyphs: Vec<ShapedGlyph> = text
             .char_indices()
             .map(|(at, ch)| ShapedGlyph {
-                glyph_id: ch as u16,
-                cluster: at as u32,
+                glyph_id: GlyphId(ch as u16),
+                cluster: crate::RunOffset(at as u32),
                 x_advance: em,
                 x_offset: 0.0,
                 y_offset: 0.0,

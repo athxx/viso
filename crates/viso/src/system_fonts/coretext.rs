@@ -108,7 +108,7 @@ mod color {
     };
     use objc2_core_text::{CTFont, CTFontOrientation};
 
-    use viso_text::{ColorGlyph, ColorGlyphRasterizer, FontFaceId};
+    use viso_text::{ColorGlyph, ColorGlyphRasterizer, FontFaceId, GlyphId};
 
     /// CoreText raster info flags: premultiplied-first alpha byte-ordered
     /// little-endian, i.e. the context's memory layout is `[B, G, R, A]` with the
@@ -218,12 +218,12 @@ mod color {
         pub fn rasterize_coverage_glyph(
             &self,
             face: FontFaceId,
-            glyph: u16,
+            glyph: GlyphId,
             pixels_per_em: u16,
         ) -> Option<viso_text::CoverageBitmap> {
             let ppem = clamp_ppem(pixels_per_em);
             let font = self.font_for(face, ppem)?;
-            rasterize_coverage_glyph(&font, glyph)
+            rasterize_coverage_glyph(&font, glyph.0)
         }
     }
 
@@ -231,12 +231,12 @@ mod color {
         fn rasterize_color_glyph(
             &self,
             face: FontFaceId,
-            glyph: u16,
+            glyph: GlyphId,
             pixels_per_em: u16,
         ) -> Option<ColorGlyph> {
             let ppem = clamp_ppem(pixels_per_em);
             let font = self.font_for(face, ppem)?;
-            rasterize_glyph(&font, glyph, ppem)
+            rasterize_glyph(&font, glyph.0, ppem)
         }
     }
 
@@ -484,7 +484,7 @@ mod color {
             // emoji whose readback must contain an opaque pixel.
             let mut best_alpha = 0u8;
             for glyph_id in 1u16..40 {
-                if let Some(g) = raster.rasterize_color_glyph(face, glyph_id, 64) {
+                if let Some(g) = raster.rasterize_color_glyph(face, GlyphId(glyph_id), 64) {
                     assert_eq!(
                         g.rgba.len(),
                         g.width as usize * g.height as usize * 4,

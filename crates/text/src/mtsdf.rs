@@ -130,7 +130,7 @@ pub struct MtsdfRequest<'a> {
     /// The face's runtime identity, recorded on the field.
     pub face: FontFaceId,
     /// Glyph index within the face.
-    pub glyph: u16,
+    pub glyph: crate::GlyphId,
     /// The face's revision, recorded so a field outlives its face only as long
     /// as the face is unchanged.
     pub revision: FontRevision,
@@ -147,7 +147,7 @@ pub struct MtsdfGlyph {
     /// The face this field was generated from.
     pub face: FontFaceId,
     /// The glyph index within that face.
-    pub glyph: u16,
+    pub glyph: crate::GlyphId,
     /// The face revision at generation time.
     pub revision: FontRevision,
     /// The generator/error-correction revision at generation time.
@@ -312,7 +312,7 @@ impl MtsdfGenerator {
 
         let mut bounds = BoundsSink::default();
         let inked = face
-            .outline_glyph(GlyphId(req.glyph), &mut bounds)
+            .outline_glyph(GlyphId(req.glyph.0), &mut bounds)
             .and(bounds.bounds);
         let Some((x_min, _, x_max, y_max)) = inked else {
             return Some(meta(0, 0, 0.0, 0.0));
@@ -329,7 +329,7 @@ impl MtsdfGenerator {
         let width = ink_w as u32 + 2 * FIELD_PAD;
         let height = ink_h as u32 + 2 * FIELD_PAD;
 
-        self.build_outline(&face, req.glyph, scale, x_min, y_max)?;
+        self.build_outline(&face, req.glyph.0, scale, x_min, y_max)?;
         self.color_edges();
         self.flatten();
         if self.segs.is_empty() {
@@ -978,7 +978,7 @@ mod tests {
             index: 0,
             variations: crate::Variations::DEFAULT,
             face: FontFaceId(7),
-            glyph,
+            glyph: crate::GlyphId(glyph),
             revision: FontRevision(3),
             px_per_em,
         }

@@ -99,7 +99,9 @@ pub use glyph_representation::{
     GlyphImageKind, Representation, RepresentationState, Resolution, RunClass, TransformSample,
 };
 pub use line_break::{BreakOpportunity, LineBreaker};
-pub use line_break_tailoring::{LineBreakStrictness, LineBreakTailoring, WordBreak};
+pub use line_break_tailoring::{
+    LineBreakLocale, LineBreakStrictness, LineBreakTailoring, WordBreak,
+};
 pub use line_limit::LineLimit;
 pub use memory_budget::{MemoryClass, TextBudgets};
 pub use mtsdf::{
@@ -117,7 +119,7 @@ pub use system_fonts::{
     ColorGlyph, ColorGlyphRasterizer, NoSystemFonts, SystemFontProvider, SystemFontQuery,
     SystemFontResult,
 };
-pub use text_position::{CaretAffinity, TextOffset, TextPosition, Utf16Bridge};
+pub use text_position::{CaretAffinity, GlyphId, RunOffset, TextOffset, TextPosition, Utf16Bridge};
 pub use variation::Variations;
 
 /// Stable identity for a resolved font face.

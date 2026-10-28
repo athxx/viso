@@ -1,6 +1,7 @@
 //! The portable color raster against a COLR v0/v1 fixture (see
 //! `fixtures/make_colr_fixture.py` for what each glyph paints).
 
+use viso_text::GlyphId;
 use viso_text::raster_a8::rasterize_coverage;
 use viso_text::raster_color::rasterize_color;
 use viso_text::system_fonts::ColorGlyph;
@@ -16,7 +17,7 @@ const GLYPH_T: u16 = 53;
 const GLYPH_X: u16 = 57;
 
 fn paint(glyph: u16, ppem: u16) -> ColorGlyph {
-    rasterize_color(COLR, 0, glyph, ppem).expect("color glyph")
+    rasterize_color(COLR, 0, GlyphId(glyph), ppem).expect("color glyph")
 }
 
 /// Unpremultiplied colors of the (nearly) opaque pixels, with their position.
@@ -150,7 +151,7 @@ fn translate_moves_the_origin_by_half_an_em() {
 
 #[test]
 fn a_glyph_without_color_is_none() {
-    assert!(rasterize_color(COLR, 0, GLYPH_A, 32).is_none());
+    assert!(rasterize_color(COLR, 0, GlyphId(GLYPH_A), 32).is_none());
 }
 
 /// `sbix` PNG strikes through the system emoji face (macOS only; the file is
@@ -164,7 +165,7 @@ fn sbix_strike_resamples_to_the_requested_size() {
     let face = ttf_parser::Face::parse(&bytes, 0).expect("face");
     let gid = face.glyph_index('😀').expect("grinning face").0;
     for ppem in [20u16, 40, 96] {
-        let glyph = rasterize_color(&bytes, 0, gid, ppem).expect("strike");
+        let glyph = rasterize_color(&bytes, 0, GlyphId(gid), ppem).expect("strike");
         assert_eq!(glyph.pixels_per_em, ppem);
         let edge = glyph.width.max(glyph.height) as f32;
         assert!(

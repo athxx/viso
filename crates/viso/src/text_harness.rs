@@ -336,7 +336,7 @@ fn structure(lines: &[LineLayout]) -> Vec<LineShape> {
                             run.visual_inline_range.0.to_bits(),
                             run.visual_inline_range.1.to_bits(),
                         ),
-                        run.glyphs.iter().map(|g| g.glyph_id).collect(),
+                        run.glyphs.iter().map(|g| g.glyph_id.0).collect(),
                     )
                 })
                 .collect();

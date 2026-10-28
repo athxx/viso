@@ -798,7 +798,7 @@ fn to_runs(
             glyphs: Vec::new(),
         });
         current.glyphs.push(TextGlyph {
-            glyph: g.glyph,
+            glyph: g.glyph.0,
             origin: [g.origin[0] + shift[0], g.origin[1] + shift[1]],
             text: source.get(g.text.clone()).unwrap_or("").into(),
         });
@@ -836,7 +836,7 @@ impl Source for PrintSource<'_> {
             parsed.tables().cff2.is_none() && parsed.outline_glyph(gid, &mut outline).is_some();
         let shape = if read {
             GlyphShape::Outline(outline.0)
-        } else if let Some(mask) = text.platform_mask(id, glyph, MASK_PPEM) {
+        } else if let Some(mask) = text.platform_mask(id, viso_text::GlyphId(glyph), MASK_PPEM) {
             let unit = units_per_em / f32::from(MASK_PPEM);
             GlyphShape::Mask {
                 width: mask.width,

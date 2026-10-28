@@ -10,6 +10,7 @@
 //! its cascade/fallback and so the negative cache can key on the exact request.
 
 use crate::FontFaceId;
+use crate::GlyphId;
 use crate::font_request::{FontRole, FontSlant, FontWeight, FontWidth};
 use crate::variation::Variations;
 
@@ -96,7 +97,7 @@ pub trait ColorGlyphRasterizer {
     fn rasterize_color_glyph(
         &self,
         face: FontFaceId,
-        glyph: u16,
+        glyph: GlyphId,
         pixels_per_em: u16,
     ) -> Option<ColorGlyph>;
 }

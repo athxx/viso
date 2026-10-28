@@ -241,7 +241,7 @@ pub fn test_glyphs(origin: [f32; 2], font_size: f32) -> TestGlyphs {
         // Pen advances in device pixels from the line's left edge.
         let mut pen_x = origin[0];
         for g in &run.glyphs {
-            if let Some(bitmap) = rasterize_coverage(TEST_FONT, 0, g.glyph_id, font_size)
+            if let Some(bitmap) = rasterize_coverage(TEST_FONT, 0, g.glyph_id.0, font_size)
                 && let AtlasAlloc::Placed(uv) = atlas.alloc_in_page(0, &bitmap)
             {
                 // `left`/`top` are pen-origin-relative device pixels: `top`
