@@ -825,7 +825,7 @@ impl WorkerState {
                 key.bucket,
             );
         }
-        baked.resampled(key.glyph, key.bucket)
+        baked.resampled(key.glyph.0, key.bucket)
     }
 
     /// Drop exactly what is keyed by `face`; every other face keeps its state.
