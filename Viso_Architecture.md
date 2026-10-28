@@ -2828,9 +2828,9 @@ DSL 侧每次 Action / Event Handler 调用自动开启一个 behavior transacti
 
 - **编译期**：DSL `computed` 之间的依赖环报 `E2105`，消息列出完整环路（`a -> b -> a`）；
 - **求值期**：behavior VM 的 computed 缓存条目求值期间标为 `Evaluating`，再次到达即 `ReactiveCycle` 运行时故障（`E4202`）；
-- **flush**：一帧的 flush 至多跑 `SETTLE_ROUNDS`（16）轮，仍有写入即停，丢弃尚未传播的变化并报告 `ReactiveCycle`（`E4202`：被丢弃的 cell 与它们会再唤醒的 effect 节点）；effect 连续 16 帧只因 effect 的写入而重跑视为跨帧环，跳过并报告其节点。adaptive 环境与布局之间的环至多 `ADAPTIVE_ROUNDS`（8）次 layout（`AdaptiveCycle`）。
+- **flush**：一帧的 flush 至多跑 `SETTLE_ROUNDS`（16）轮，仍有写入即停，丢弃尚未传播的变化并报告 `ReactiveCycle`（`E4202`：被丢弃的 cell 与它们会再唤醒的 effect）；effect 连续 16 帧只因 effect 的写入而重跑视为跨帧环，跳过并报告这些 effect 与唤醒它们的 cell。每个 effect 带挂载方给的 `EffectOrigin`（view 的 effect 是其 body 在 handler 表里的条目）。adaptive 环境与布局之间的环至多 `ADAPTIVE_ROUNDS`（8）次 layout（`AdaptiveCycle`）。
 
-依赖用失效与值比较判断，不用 version stamp。Rust 侧 computed 只读（`ComputeCx` 没有 `set`），本身不能成环。目标（尚未实现）：flush 的 `E4202` 报告目前只给出 `StateId` / `NodeId`，开发模式应映射回 State 名与源位置。
+依赖用失效与值比较判断，不用 version stamp。Rust 侧 computed 只读（`ComputeCx` 没有 `set`），本身不能成环。`viso run` 下 `E4202` 作为 `RuntimeMessage::Diagnostic` 发给 host：`.vs` 状态以 FileId + `StateKey` 指出，host 用它持有的该文件编译找到声明；effect 以 body 指令覆盖的字节范围指出；Rust `BuildCx::state` 的 cell 以调用点指出。host 按编译诊断同一渲染路径输出，标注不到源码的部分转为 note。没有 dev 会话时仍打印到 stderr。
 
 ---
 

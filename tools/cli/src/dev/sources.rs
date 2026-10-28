@@ -455,6 +455,23 @@ impl Sources {
         ))
     }
 
+    /// The view whose mount in `mounts` is `file`, the text that mount runs
+    /// and the compile of it the session holds; `None` while the session read
+    /// no version the mount runs.
+    pub fn running<'a>(
+        &'a self,
+        mounts: &'a Mounts,
+        file: FileId,
+    ) -> Option<(usize, &'a str, Option<&'a CandidatePlan>)> {
+        let (&at, mount) = mounts.views.iter().find(|(_, mount)| mount.file == file)?;
+        let (_, text) = self.views[at]
+            .versions
+            .iter()
+            .rev()
+            .find(|&&(hash, _)| hash == mount.running)?;
+        Some((at, text, mount.last_good.as_ref()))
+    }
+
     /// Compiles the version of view `at` its mount in `mounts` runs as the
     /// last-good its edits are planned against, once. `Err` with the reason
     /// when that version is not one the watcher read lately, or does not

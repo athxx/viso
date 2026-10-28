@@ -843,8 +843,29 @@ Rules (as for `todo_features.md`):
     - Strictness and `keep-all` scope the rules.
     - The paragraph content locale carries each locale.
     - Cross-target clippy is clean on wasm32, Windows, Android and Linux.
-- [ ] Name `ReactiveCycle` (E4202) cells and effect nodes by state name and source span, routed to
+- [x] Name `ReactiveCycle` (E4202) cells and effect nodes by state name and source span, routed to
   dev diagnostics. Verify with an E4202 sample in `viso dev`.
+  - Built:
+    - Each effect carries an `EffectOrigin` from whoever mounted it. A view's effect carries its
+      body's handler-table entry.
+    - A cycle across frames now also carries the cells that woke the stopped effects, not only
+      their nodes.
+    - `BuildCx::state` records its call site, so a Rust cell can be named by where it was made.
+    - Under `viso run`, the runtime sends the cycle as a structured `RuntimeMessage::Diagnostic`
+      (protocol 22):
+      - A `.vs` state is labelled by file and `StateKey`.
+      - An effect is labelled by the byte range of its body.
+      - A Rust cell is labelled by its call site.
+    - The CLI resolves each `StateKey` to its declaration in the version the app is running. It
+      renders through the same source path as compile diagnostics. Labels it cannot place become
+      notes.
+    - Without a dev session the cycle still goes to stderr.
+  - Verified:
+    - A feedback effect in a `.vs` fixture raises E4202 across frames, naming `count` and the
+      effect's `count += 1` body.
+    - The CLI places a runtime diagnostic in the running source.
+    - The wire round trip carries every label kind.
+    - The flush and reactive suites pass with origins and cells.
 - [ ] One diagnostic shape shared by `viso-shader` and `viso-dsl`, in a leaf crate. Verify that the
   LSP and the CLI render shader diagnostics through one path.
 

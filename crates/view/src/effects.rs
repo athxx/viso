@@ -19,8 +19,8 @@ use std::rc::Rc;
 use viso_behavior::{ComponentEffect, EffectRun, Value};
 use viso_ui::adaptive::AdaptiveEnv;
 use viso_ui::{
-    BuildCx, Cleanup, ComputeCx, EffectCx, EffectStore, NodeId, NodeStore, StateId, StateValue,
-    TaskFuture, TaskId,
+    BuildCx, Cleanup, ComputeCx, EffectCx, EffectOrigin, EffectStore, NodeId, NodeStore, StateId,
+    StateValue, TaskFuture, TaskId,
 };
 
 use crate::host::{StateCells, ViewHost};
@@ -77,7 +77,8 @@ pub fn release_effects(host: &Rc<RefCell<ViewHost>>, effects: &mut EffectStore) 
     }
 }
 
-/// Mounts `effect` of the view `host` runs on `owner`, run in `scope`. An
+/// Mounts `effect` of the view `host` runs on `owner`, run in `scope`, named
+/// by its body's entry in the view's handler table. An
 /// effect region content mounts is owned by the node it mounts on alone: the
 /// hot reload of a view with regions rebuilds the view, freeing that node.
 pub(crate) fn mount_effect(
@@ -109,8 +110,9 @@ pub(crate) fn mount_effect(
         Some(load) => {
             let resource = Resource::new(mount, body, load, owner);
             gate.resource = Some(Rc::clone(&resource));
-            store.add_effect(
+            store.add_effect_from(
                 owner,
+                EffectOrigin(body),
                 move |cx| gate.open(cx),
                 move |cx| {
                     resource.changed(&mut Writes(cx));
@@ -118,8 +120,9 @@ pub(crate) fn mount_effect(
                 },
             );
         }
-        None => store.add_effect(
+        None => store.add_effect_from(
             owner,
+            EffectOrigin(body),
             move |cx| gate.open(cx),
             move |cx| mount.run(body, cx),
         ),

@@ -1286,7 +1286,21 @@ impl NodeStore {
         body: impl FnMut(&mut crate::reactive::EffectCx<'_>) -> Option<crate::reactive::Cleanup>
         + 'static,
     ) {
-        self.pending_effects.push(node, when, body);
+        self.pending_effects
+            .push(node, crate::reactive::EffectOrigin::NONE, when, body);
+    }
+
+    /// [`add_effect`](Self::add_effect) for an effect its mounter names
+    /// `origin`, which a reactive cycle through it reports.
+    pub fn add_effect_from(
+        &mut self,
+        node: NodeId,
+        origin: crate::reactive::EffectOrigin,
+        when: impl FnMut(&mut crate::reactive::ComputeCx<'_>) -> bool + 'static,
+        body: impl FnMut(&mut crate::reactive::EffectCx<'_>) -> Option<crate::reactive::Cleanup>
+        + 'static,
+    ) {
+        self.pending_effects.push(node, origin, when, body);
     }
 
     /// Whether an effect registered since the last flush waits to run.
@@ -8646,10 +8660,11 @@ impl<'a> BuildCx<'a> {
             .expect("state() requires a with_reactive BuildCx")
             .alloc_local(initial);
         #[cfg(feature = "hot-reload")]
-        crate::state_origin::allocated(
-            id,
-            crate::state_origin::site_key(std::panic::Location::caller()),
-        );
+        {
+            let site = std::panic::Location::caller();
+            crate::state_origin::allocated(id, crate::state_origin::site_key(site));
+            crate::state_origin::allocated_at(id, site);
+        }
         id
     }
 

@@ -269,8 +269,27 @@ type WhenFn = Box<dyn FnMut(&mut ComputeCx<'_>) -> bool>;
 /// the flush moves into the [`EffectStore`] and runs for the first time.
 pub(crate) struct PendingEffect {
     node: NodeId,
+    origin: EffectOrigin,
     when: WhenFn,
     body: EffectFn,
+}
+
+/// What an effect's mounter names it by, so a report about the effect can
+/// point at its source: a view names an effect by its body's behavior chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EffectOrigin(pub u32);
+
+impl EffectOrigin {
+    /// An effect its mounter does not name.
+    pub const NONE: Self = Self(u32::MAX);
+}
+
+/// An effect a reactive cycle runs through: the node it is mounted on and
+/// its origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CycleEffect {
+    pub node: NodeId,
+    pub origin: EffectOrigin,
 }
 
 /// The effects registered since the last flush adopted them.
@@ -281,11 +300,13 @@ impl PendingEffects {
     pub(crate) fn push(
         &mut self,
         node: NodeId,
+        origin: EffectOrigin,
         when: impl FnMut(&mut ComputeCx<'_>) -> bool + 'static,
         body: impl FnMut(&mut EffectCx<'_>) -> Option<Cleanup> + 'static,
     ) {
         self.0.push(PendingEffect {
             node,
+            origin,
             when: Box::new(when),
             body: Box::new(body),
         });
@@ -345,6 +366,8 @@ struct ComputedSlot {
 struct EffectSlot {
     /// The node the effect is scoped to; freeing it cancels the effect.
     node: NodeId,
+    /// What its mounter names it by.
+    origin: EffectOrigin,
     /// The dependency set recorded at the last run.
     deps: Vec<StateId>,
     /// The declared dependencies, when the effect has them: their reads are
@@ -664,8 +687,10 @@ pub struct EffectStore {
     /// latter continues an effect chain.
     writes: Vec<u32>,
     last_writes: Vec<u32>,
-    /// The nodes of the effects the last run cut as a cycle.
-    cycles: Vec<NodeId>,
+    /// The effects the last run cut as a cycle, and the cells effects wrote
+    /// that woke them.
+    cycles: Vec<CycleEffect>,
+    cycle_cells: Vec<StateId>,
     /// The tasks effect bodies spawned and cancelled, for the node store.
     tasks: TaskOps,
 }
@@ -690,7 +715,7 @@ impl EffectStore {
         node: NodeId,
         body: impl FnMut(&mut EffectCx<'_>) -> Option<Cleanup> + 'static,
     ) -> EffectId {
-        self.insert(node, None, Box::new(body))
+        self.insert(node, EffectOrigin::NONE, None, Box::new(body))
     }
 
     /// Register an effect scoped to `node` whose dependencies `when` declares:
@@ -704,7 +729,12 @@ impl EffectStore {
         when: impl FnMut(&mut ComputeCx<'_>) -> bool + 'static,
         body: impl FnMut(&mut EffectCx<'_>) -> Option<Cleanup> + 'static,
     ) -> EffectId {
-        self.insert(node, Some(Box::new(when)), Box::new(body))
+        self.insert(
+            node,
+            EffectOrigin::NONE,
+            Some(Box::new(when)),
+            Box::new(body),
+        )
     }
 
     /// Moves the effects registered on `store` since the last call into the
@@ -718,7 +748,7 @@ impl EffectStore {
             if !store.arena().is_live(effect.node) {
                 continue;
             }
-            let id = self.insert(effect.node, Some(effect.when), effect.body);
+            let id = self.insert(effect.node, effect.origin, Some(effect.when), effect.body);
             if self.enqueue(id, false) {
                 queued += 1;
             }
@@ -726,7 +756,13 @@ impl EffectStore {
         queued
     }
 
-    fn insert(&mut self, node: NodeId, when: Option<WhenFn>, body: EffectFn) -> EffectId {
+    fn insert(
+        &mut self,
+        node: NodeId,
+        origin: EffectOrigin,
+        when: Option<WhenFn>,
+        body: EffectFn,
+    ) -> EffectId {
         let n = node.index() as usize;
         if n >= self.node_head.len() {
             self.node_head.resize(n + 1, NO_EFFECT);
@@ -741,6 +777,7 @@ impl EffectStore {
             slot.chained = false;
             slot.chain = 0;
             slot.node = node;
+            slot.origin = origin;
             slot.deps.clear();
             slot.when = when;
             slot.body = body;
@@ -755,6 +792,7 @@ impl EffectStore {
             let index = self.slots.len() as u32;
             self.slots.push(EffectSlot {
                 node,
+                origin,
                 deps: Vec::new(),
                 when,
                 body,
@@ -814,12 +852,13 @@ impl EffectStore {
         true
     }
 
-    /// Moves the nodes of the effects the last [`run_queued`] cut as a cycle
-    /// onto `out`.
+    /// Moves the effects the last [`run_queued`] cut as a cycle onto
+    /// `effects`, and the cells effects wrote that woke them onto `cells`.
     ///
     /// [`run_queued`]: Self::run_queued
-    pub fn take_cycles(&mut self, out: &mut Vec<NodeId>) {
-        out.append(&mut self.cycles);
+    pub fn take_cycles(&mut self, effects: &mut Vec<CycleEffect>, cells: &mut Vec<StateId>) {
+        effects.append(&mut self.cycles);
+        cells.append(&mut self.cycle_cells);
     }
 
     /// Run every queued effect once, in queue order — the frame's `RunEffects`
@@ -848,8 +887,19 @@ impl EffectStore {
             slot.chain = if slot.chained { slot.chain + 1 } else { 0 };
             if slot.chain >= EFFECT_CHAIN {
                 slot.chain = 0;
-                if !self.cycles.contains(&slot.node) {
-                    self.cycles.push(slot.node);
+                let effect = CycleEffect {
+                    node: slot.node,
+                    origin: slot.origin,
+                };
+                if !self.cycles.contains(&effect) {
+                    self.cycles.push(effect);
+                }
+                for &dep in &slot.deps {
+                    if self.last_writes.binary_search(&dep.index()).is_ok()
+                        && !self.cycle_cells.contains(&dep)
+                    {
+                        self.cycle_cells.push(dep);
+                    }
                 }
                 continue;
             }
@@ -949,9 +999,8 @@ impl EffectStore {
         queued
     }
 
-    /// Appends to `out` the nodes of the effects a change of `changed` would
-    /// run again, once each in first-woken order, running none of them.
-    pub fn woken_by(&self, changed: &[StateId], out: &mut Vec<NodeId>) {
+    /// Appends to `out` the effects a change of `changed` would run again, once each in first-woken order, running none of them.
+    pub fn woken_by(&self, changed: &[StateId], out: &mut Vec<CycleEffect>) {
         for &state in changed {
             let Some(deps) = self.dep_index.get(state.index() as usize) else {
                 continue;
@@ -960,8 +1009,12 @@ impl EffectStore {
                 let Some(slot) = self.slots.get(eff.index as usize) else {
                     continue;
                 };
-                if slot.occupied && slot.generation == eff.generation && !out.contains(&slot.node) {
-                    out.push(slot.node);
+                let effect = CycleEffect {
+                    node: slot.node,
+                    origin: slot.origin,
+                };
+                if slot.occupied && slot.generation == eff.generation && !out.contains(&effect) {
+                    out.push(effect);
                 }
             }
         }

@@ -654,6 +654,41 @@ impl ViewHost {
         Some(result.map(|outcome| outcome.value))
     }
 
+    /// The state slot UI cell `id` mirrors or tracks, and its name: what a
+    /// report about the cell names it by.
+    pub fn cell_state(&self, id: StateId) -> Option<(usize, &str)> {
+        let slot = self.mirror.iter().position(
+            |link| matches!(link, Some(Link::Mirror(cell) | Link::Track(cell)) if *cell == id),
+        )?;
+        let index = self.instance.component()?;
+        let name = self.module().layout(index).states.get(slot)?;
+        Some((slot, name))
+    }
+
+    /// The name of the chunk entry `entry` of the view's handler table runs
+    /// and, when it is written in the view's own file and carries its
+    /// bytecode, the byte span its instructions cover there: where an
+    /// effect body names its source.
+    pub fn entry_source(&self, entry: u32) -> Option<(&str, Option<(u32, u32)>)> {
+        let module = self.module();
+        let layout = module.layout(self.instance.component()?);
+        let chunk = module
+            .chunks()
+            .get(*layout.handlers.get(entry as usize)? as usize)?;
+        let span = (chunk.module == 0)
+            .then(|| chunk.body.code())
+            .flatten()
+            .and_then(|code| {
+                let spans = code.spans.iter().filter(|span| span.end > span.start);
+                spans.fold(None, |cover: Option<(u32, u32)>, span| {
+                    Some(cover.map_or((span.start, span.end), |(start, end)| {
+                        (start.min(span.start), end.max(span.end))
+                    }))
+                })
+            });
+        Some((&chunk.name, span))
+    }
+
     /// Mirrors state slot `slot` into UI cell `id`. Returns `false`, mirroring
     /// nothing, for a slot out of range.
     pub fn mirror(&mut self, slot: usize, id: StateId) -> bool {

@@ -363,7 +363,7 @@ export component Loop {
     let mut rt = Rt::reloaded(source);
     let cycle = rt.click(5.0, 5.0).expect_err("a cycle");
     assert_eq!(ReactiveCycle::CODE, "E4202");
-    assert_eq!(cycle.effects, [rt.root.expect("mounted")]);
+    assert_eq!(cycle.effect_nodes(), [rt.root.expect("mounted")]);
 }
 
 /// No diagnostic.

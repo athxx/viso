@@ -22,7 +22,7 @@
 use crate::binding::BindingTable;
 use crate::component::NodeStore;
 use crate::node::NodeId;
-use crate::reactive::{ComputedStore, EffectStore, SemanticProjector};
+use crate::reactive::{ComputedStore, CycleEffect, EffectStore, SemanticProjector};
 use crate::state::{StateId, StateStore};
 use crate::structure::run_structure_hooks;
 use crate::virtual_list::VirtualLists;
@@ -41,11 +41,15 @@ pub struct ReactiveCycle {
     /// flush stopped. Their values stay written; only the reactions to them
     /// do not run.
     pub dropped: usize,
-    /// The dropped cells, the chain's last writes.
+    /// The dropped cells, the chain's last writes; for a cycle across
+    /// frames, the cells effects wrote that woke the cut effects.
     pub cells: Vec<StateId>,
-    /// The nodes of the effects those cells would have run again: the effects
-    /// on the chain.
-    pub effects: Vec<NodeId>,
+    /// Whether effects kept waking each other frame after frame, rather than
+    /// one frame's flush not settling: the effects were cut, nothing dropped.
+    pub across_frames: bool,
+    /// The effects those cells would have run again: the effects on the
+    /// chain.
+    pub effects: Vec<CycleEffect>,
 }
 
 impl ReactiveCycle {
@@ -53,15 +57,29 @@ impl ReactiveCycle {
     pub const CODE: &'static str = "E4202";
 }
 
+impl ReactiveCycle {
+    /// The nodes the chain's effects are mounted on, each once.
+    pub fn effect_nodes(&self) -> Vec<NodeId> {
+        let mut nodes = Vec::with_capacity(self.effects.len());
+        for effect in &self.effects {
+            if !nodes.contains(&effect.node) {
+                nodes.push(effect.node);
+            }
+        }
+        nodes
+    }
+}
+
 impl std::fmt::Display for ReactiveCycle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.cells.is_empty() {
+        if self.across_frames {
             return write!(
                 f,
-                "{}: effects kept waking each other for {SETTLE_ROUNDS} frames; \
-                 stopped the effects of nodes {:?}",
+                "{}: effects kept waking each other for {SETTLE_ROUNDS} frames through \
+                 cell(s) {:?}; stopped the effects of nodes {:?}",
                 Self::CODE,
-                self.effects
+                self.cells,
+                self.effect_nodes()
             );
         }
         write!(
@@ -73,7 +91,11 @@ impl std::fmt::Display for ReactiveCycle {
             self.cells
         )?;
         if !self.effects.is_empty() {
-            write!(f, ", which re-run the effects of nodes {:?}", self.effects)?;
+            write!(
+                f,
+                ", which re-run the effects of nodes {:?}",
+                self.effect_nodes()
+            )?;
         }
         Ok(())
     }
@@ -126,6 +148,7 @@ pub fn settle_states(
                 dropped: cells.len(),
                 cells,
                 effects: chain,
+                across_frames: false,
             });
         }
         rounds += 1;
@@ -154,8 +177,7 @@ pub struct EffectsRan {
     /// which the caller schedules.
     pub pending: bool,
     /// The effects cut because they kept waking each other frame after frame:
-    /// a reactive cycle across frames. `cells` is empty; their last writes
-    /// stand.
+    /// a reactive cycle across frames. Their last writes stand.
     pub cycle: Option<ReactiveCycle>,
 }
 
@@ -178,13 +200,14 @@ pub fn run_effects(
         if !tasks.is_empty() {
             store.apply_owned_task_ops(tasks);
         }
-        let mut cut = Vec::new();
-        effects.take_cycles(&mut cut);
+        let (mut cut, mut cells) = (Vec::new(), Vec::new());
+        effects.take_cycles(&mut cut, &mut cells);
         if !cut.is_empty() {
             done.cycle = Some(ReactiveCycle {
                 dropped: 0,
-                cells: Vec::new(),
+                cells,
                 effects: cut,
+                across_frames: true,
             });
         }
     }
@@ -293,6 +316,7 @@ mod tests {
     use crate::dirty::DirtyClass;
     use crate::layout::{Axis, Inset, Length, Sizing};
     use crate::node::NodeId;
+    use crate::reactive::EffectOrigin;
     use crate::state::StateValue;
     use viso_render::Rect;
 
@@ -391,8 +415,9 @@ mod tests {
         let root = BuildCx::new(&mut stores.store)
             .leaf(LeafStyle::default())
             .id();
-        stores.store.add_effect(
+        stores.store.add_effect_from(
             root,
+            EffectOrigin(7),
             move |cx| cx.get(count).is_some(),
             move |cx| {
                 if let Some(StateValue::Int(n)) = cx.get(count) {
@@ -414,7 +439,17 @@ mod tests {
             assert!(done.pending);
         };
         assert_eq!(ReactiveCycle::CODE, "E4202");
-        assert_eq!(&*cycle.effects, &[root][..]);
+        let effect = CycleEffect {
+            node: root,
+            origin: EffectOrigin(7),
+        };
+        assert_eq!(
+            cycle.effects,
+            [effect],
+            "the cycle names the effect's origin"
+        );
+        assert!(cycle.across_frames);
+        assert_eq!(cycle.cells, [count], "the cell the effect feeds itself");
         assert!(
             cycle.to_string().contains("kept waking each other"),
             "{cycle}"
@@ -715,6 +750,7 @@ mod tests {
                 dropped: 1,
                 cells: vec![cell],
                 effects: Vec::new(),
+                across_frames: false,
             }
         );
         assert_eq!(ReactiveCycle::CODE, "E4202");

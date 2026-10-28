@@ -218,8 +218,8 @@ pub use page_dots::{PageDots, PageDotsStyle};
 pub use plot::{Plot, PlotBar, PlotGrid, PlotLayer, PlotMark};
 pub use progress::{Progress, ProgressShape};
 pub use reactive::{
-    Cleanup, ComputeCx, ComputedId, ComputedStore, DepCursor, EffectCx, EffectId, EffectStore,
-    ProjectId, SemanticProjector,
+    Cleanup, ComputeCx, ComputedId, ComputedStore, CycleEffect, DepCursor, EffectCx, EffectId,
+    EffectOrigin, EffectStore, ProjectId, SemanticProjector,
 };
 pub use refresh::RefreshStyle;
 pub use router::{BackRequest, Navigator, RouteEdit, RouterView, SharedRoutes, router_view};

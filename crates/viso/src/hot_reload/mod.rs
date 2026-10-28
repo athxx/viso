@@ -56,6 +56,7 @@
 //! nothing.
 
 mod compile;
+mod cycle;
 mod link;
 pub(crate) mod overlay;
 
@@ -214,6 +215,9 @@ pub(crate) struct HotReloadSession {
     cells: Vec<(WindowId, Vec<(StateId, StateKey)>)>,
     /// Scratch the allocation queue drains into.
     allocated: Vec<(StateId, StateKey)>,
+    /// Where each cell allocated in Rust was allocated, which a reactive
+    /// cycle names it by.
+    sites: Vec<(StateId, &'static std::panic::Location<'static>)>,
     /// Whether the launch window was adopted.
     launched: bool,
     /// Where each window is on the desktop, read for the snapshot asked for.
@@ -2164,7 +2168,7 @@ mod tests {
     };
     use viso_view::dev::wire::{
         BlobRef, HostMessage, NACK_BUILD_MISMATCH, NACK_MALFORMED, NACK_REVISION_MISMATCH,
-        ResourceAsset, ResourcePatch, UiPatch, blob_chunks, content_hash, source_hash,
+        ResourceAsset, ResourcePatch, SourceAt, UiPatch, blob_chunks, content_hash, source_hash,
     };
 
     use viso_shader::program::PackedCode;
@@ -2792,6 +2796,96 @@ mod tests {
             &mut ws.changed,
         )
         .expect("the writes settle");
+    }
+
+    #[test]
+    fn a_reactive_cycle_reaches_the_host_naming_its_state_and_effect() {
+        const FEEDBACK: &str = include_str!("../../tests/fixtures/feedback.vs");
+        let mut ws =
+            mounted(|cx| viso_ui_macros::view!("../../tests/fixtures/feedback.vs")(cx).id());
+        let (mut session, mut host, entries) = linked(Some(&mut ws));
+        let file = entries[0].file;
+        // The mount frame: the effect records what it depends on.
+        settle(&mut ws);
+        viso_ui::run_effects(&mut ws.store, &mut ws.states, &mut ws.effects);
+        let root = ws.root.expect("mounted");
+        let surface = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 400.0,
+            h: 300.0,
+        };
+        ws.store.layout(root, surface, &mut Vec::new());
+        let mut chain = Vec::new();
+        for phase in [PointerPhase::Down, PointerPhase::Up] {
+            let event = PointerEvent {
+                x: 20.0,
+                y: 20.0,
+                phase,
+                buttons: PointerButtons::PRIMARY,
+                modifiers: Default::default(),
+            };
+            PointerRouter::route(
+                &mut ws.store,
+                &mut ws.states,
+                &ws.bindings,
+                root,
+                event,
+                &mut chain,
+            );
+        }
+        // Each frame the effect writes what wakes it the next, until the
+        // chain is cut.
+        let mut frames = 0;
+        let cycle = loop {
+            frames += 1;
+            assert!(frames <= viso_ui::SETTLE_ROUNDS + 3, "the chain is bounded");
+            settle(&mut ws);
+            let done = viso_ui::run_effects(&mut ws.store, &mut ws.states, &mut ws.effects);
+            if let Some(cycle) = done.cycle {
+                break cycle;
+            }
+        };
+        assert!(cycle.across_frames);
+        assert!(session.report_cycle(&cycle, &ws));
+        let message = loop {
+            match host.read() {
+                Some(RuntimeMessage::Diagnostic(diagnostic)) => break diagnostic,
+                Some(_) => continue,
+                None => panic!("no diagnostic reached the host"),
+            }
+        };
+        assert_eq!(message.code, "E4202");
+        assert!(message.message.contains("`count`"), "{}", message.message);
+        assert!(
+            message.message.contains("`Feedback."),
+            "{}",
+            message.message
+        );
+        let key = session.views[0]
+            .cells
+            .iter()
+            .find(|&&(_, id)| id == cycle.cells[0])
+            .unwrap()
+            .0;
+        assert_eq!(message.labels[0].at, SourceAt::State { file, key });
+        assert_eq!(message.labels[0].label, "`count` is written again");
+        let SourceAt::Span {
+            file: at,
+            start,
+            end,
+        } = message.labels[1].at
+        else {
+            panic!("the effect is named by its body: {:?}", message.labels);
+        };
+        assert_eq!(at, file);
+        assert!(
+            FEEDBACK[start as usize..end as usize].contains("count += 1"),
+            "{:?}",
+            &FEEDBACK[start as usize..end as usize]
+        );
+        // Without a dev channel the cycle is left to stderr.
+        assert!(!HotReloadSession::default().report_cycle(&cycle, &ws));
     }
 
     /// The VM value of the logger's `log`, for the view `at`.

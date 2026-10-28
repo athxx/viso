@@ -47,7 +47,7 @@ use crate::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_schema::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 21;
+pub const DEV_PROTOCOL_VERSION: u16 = 22;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -889,6 +889,46 @@ pub enum HostMessage {
     },
 }
 
+/// A diagnostic the running app raised, pointing into the sources the host
+/// compiled: the host renders it as it renders a compiler's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeDiagnostic {
+    /// The stable diagnostic code, such as `E4202`.
+    pub code: String,
+    /// The one-line message.
+    pub message: String,
+    /// The places it names, the primary one first.
+    pub labels: Vec<RuntimeLabel>,
+    /// Guidance beyond the message.
+    pub notes: Vec<String>,
+}
+
+/// A place a [`RuntimeDiagnostic`] names, and what it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeLabel {
+    pub at: SourceAt,
+    pub label: String,
+}
+
+/// A place in the app's sources.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceAt {
+    /// A byte range of a mounted `.vs` file.
+    Span { file: FileId, start: u32, end: u32 },
+    /// The declaration of the state a mounted `.vs` file keys `key`, which
+    /// the host's compile of the file finds.
+    State { file: FileId, key: StateKey },
+    /// A line and column, both from 1, of a Rust source.
+    Point {
+        path: String,
+        line: u32,
+        column: u32,
+    },
+}
+
+/// The most labels a [`RuntimeDiagnostic`] carries.
+pub const MAX_LABELS: usize = 64;
+
 /// What the runtime sends.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeMessage {
@@ -941,6 +981,8 @@ pub enum RuntimeMessage {
         dropped: u32,
         done: bool,
     },
+    /// A diagnostic the app raised while it ran.
+    Diagnostic(RuntimeDiagnostic),
 }
 
 /// Why a frame or message was refused.
@@ -1236,6 +1278,7 @@ const RUNTIME_RESTORED: u8 = 10;
 const RUNTIME_INSPECT: u8 = 11;
 const RUNTIME_SCENARIO: u8 = 12;
 const RUNTIME_PROFILE: u8 = 13;
+const RUNTIME_DIAGNOSTIC: u8 = 14;
 
 const REJECT_PROTOCOL: u8 = 0;
 const REJECT_BUILD: u8 = 1;
@@ -1330,6 +1373,76 @@ pub fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, WireError> {
 /// A [`FileId`].
 pub fn read_file(dec: &mut Decoder<'_>) -> Result<FileId, WireError> {
     Ok(FileId(read_u32(dec)?))
+}
+
+fn write_diagnostic(enc: &mut Encoder, diagnostic: &RuntimeDiagnostic) {
+    write_string(enc, &diagnostic.code);
+    write_string(enc, &diagnostic.message);
+    enc.write_varint(diagnostic.labels.len() as u64);
+    for label in &diagnostic.labels {
+        match &label.at {
+            SourceAt::Span { file, start, end } => {
+                enc.write_u8(0);
+                enc.write_varint(u64::from(file.0));
+                enc.write_varint(u64::from(*start));
+                enc.write_varint(u64::from(*end));
+            }
+            SourceAt::State { file, key } => {
+                enc.write_u8(1);
+                enc.write_varint(u64::from(file.0));
+                enc.write_u64(key.hi);
+                enc.write_u64(key.lo);
+            }
+            SourceAt::Point { path, line, column } => {
+                enc.write_u8(2);
+                write_string(enc, path);
+                enc.write_varint(u64::from(*line));
+                enc.write_varint(u64::from(*column));
+            }
+        }
+        write_string(enc, &label.label);
+    }
+    write_strings(enc, &diagnostic.notes);
+}
+
+fn read_diagnostic(dec: &mut Decoder<'_>) -> Result<RuntimeDiagnostic, WireError> {
+    let code = read_string(dec, MAX_CODE, "diagnostic code")?;
+    let message = read_string(dec, MAX_LOG, "diagnostic message")?;
+    let labels = read_list(dec, MAX_LABELS, "diagnostic labels", |dec| {
+        let at = match dec.read_u8()? {
+            0 => {
+                let file = read_file(dec)?;
+                let (start, end) = (read_u32(dec)?, read_u32(dec)?);
+                if start > end {
+                    return Err(malformed(dec));
+                }
+                SourceAt::Span { file, start, end }
+            }
+            1 => SourceAt::State {
+                file: read_file(dec)?,
+                key: StateKey::from_parts(dec.read_u64()?, dec.read_u64()?),
+            },
+            2 => SourceAt::Point {
+                path: read_string(dec, MAX_PATH, "source path")?,
+                line: read_u32(dec)?,
+                column: read_u32(dec)?,
+            },
+            _ => return Err(malformed(dec)),
+        };
+        Ok(RuntimeLabel {
+            at,
+            label: read_string(dec, MAX_REPORT_LINE, "diagnostic label")?,
+        })
+    })?;
+    let notes = read_list(dec, MAX_LABELS, "diagnostic notes", |dec| {
+        read_string(dec, MAX_REPORT_LINE, "diagnostic note")
+    })?;
+    Ok(RuntimeDiagnostic {
+        code,
+        message,
+        labels,
+        notes,
+    })
 }
 
 /// A list of at most `max` items, each read by `item`.
@@ -1879,6 +1992,10 @@ impl Message for RuntimeMessage {
                 enc.write_varint(u64::from(*dropped));
                 enc.write_u8(u8::from(*done));
             }
+            RuntimeMessage::Diagnostic(diagnostic) => {
+                enc.write_u8(RUNTIME_DIAGNOSTIC);
+                write_diagnostic(enc, diagnostic);
+            }
         }
     }
 
@@ -2054,6 +2171,7 @@ impl Message for RuntimeMessage {
                     _ => return Err(malformed(dec)),
                 },
             }),
+            RUNTIME_DIAGNOSTIC => Ok(RuntimeMessage::Diagnostic(read_diagnostic(dec)?)),
             _ => Err(malformed(dec)),
         }
     }
@@ -2580,6 +2698,36 @@ mod tests {
                 dropped: 1,
                 done: true,
             },
+            RuntimeMessage::Diagnostic(RuntimeDiagnostic {
+                code: "E4202".into(),
+                message: "the writes of `count` did not settle".into(),
+                labels: vec![
+                    RuntimeLabel {
+                        at: SourceAt::State {
+                            file: FileId(1),
+                            key: StateKey::from_parts(7, u64::MAX),
+                        },
+                        label: "`count` is written again".into(),
+                    },
+                    RuntimeLabel {
+                        at: SourceAt::Span {
+                            file: FileId(1),
+                            start: 40,
+                            end: 52,
+                        },
+                        label: "this effect writes it".into(),
+                    },
+                    RuntimeLabel {
+                        at: SourceAt::Point {
+                            path: "src/main.rs".into(),
+                            line: 12,
+                            column: 9,
+                        },
+                        label: "allocated here".into(),
+                    },
+                ],
+                notes: vec!["the dropped changes stay written".into()],
+            }),
             RuntimeMessage::Restored(RestoreReport {
                 files: vec![FileCommit {
                     file: FileId(1),

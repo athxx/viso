@@ -1457,7 +1457,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         &mut ws.virtual_lists,
                         &mut ws.changed,
                     ) {
-                        eprintln!("[viso] {cycle}");
+                        report_cycle(
+                            #[cfg(feature = "hot-reload")]
+                            &mut self.hot_reload,
+                            &cycle,
+                            ws,
+                        );
                     }
                 }
                 // Serve the assets the settle offered, before layout: what
@@ -1847,7 +1852,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     }
                     let done = viso_ui::run_effects(&mut ws.store, &mut ws.states, &mut ws.effects);
                     if let Some(cycle) = done.cycle {
-                        eprintln!("[viso] {cycle}");
+                        report_cycle(
+                            #[cfg(feature = "hot-reload")]
+                            &mut self.hot_reload,
+                            &cycle,
+                            ws,
+                        );
                     }
                     if done.pending {
                         cx.request_redraw(ws.window);
@@ -2220,4 +2230,20 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             .chain(self.places.deadline())
             .min()
     }
+}
+
+/// Reports a reactive cycle `ws` raised: to the dev host as a diagnostic
+/// naming its states and effects when a dev session runs, else on stderr.
+fn report_cycle(
+    #[cfg(feature = "hot-reload")] session: &mut crate::hot_reload::HotReloadSession,
+    cycle: &viso_ui::ReactiveCycle,
+    ws: &WindowState,
+) {
+    #[cfg(feature = "hot-reload")]
+    if session.report_cycle(cycle, ws) {
+        return;
+    }
+    #[cfg(not(feature = "hot-reload"))]
+    let _ = ws;
+    eprintln!("[viso] {cycle}");
 }

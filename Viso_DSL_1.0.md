@@ -3817,7 +3817,7 @@ Commit UI Patch
 - 重入被排到下一 Microtask Epoch；
 - 一个 Epoch 的 Effect 重跑次数有上限；超限报告 ReactiveCycle。
 
-当前实现：State Flush 的每一轮只把 Effect 排入队列（§86）：先是上一轮以来挂载的 Effect，再是依赖单元被本轮写入的 Effect；整帧在 `Submit` 之后的 `RunEffects` 阶段按入队顺序运行队列，每个 Effect 每帧至多一次。Effect 先登记 `when` 读取的单元为依赖，再求值依赖列表并与上次的值按值比较（`==`），由 Run Policy 决定是否运行 Body：`mount` 只在首次，`change` 在首次之后值变化时，`mount_and_change` 在首次与值变化时；值未变的唤醒什么都不做。Body 作为一个 Transaction 运行，读取不登记依赖，写入进入下一帧的 Transaction；运行前先执行上一次运行返回的 Cleanup，节点释放时同样执行。一帧 flush 连续 16 轮仍有待处理写入即 `E4202`；一个 Effect 连续 16 帧仅因 Effect 的写入被唤醒，同样是 `E4202`（跨帧反应环），该 Effect 停止运行，直到外部写入再次唤醒它。
+当前实现：State Flush 的每一轮只把 Effect 排入队列（§86）：先是上一轮以来挂载的 Effect，再是依赖单元被本轮写入的 Effect；整帧在 `Submit` 之后的 `RunEffects` 阶段按入队顺序运行队列，每个 Effect 每帧至多一次。Effect 先登记 `when` 读取的单元为依赖，再求值依赖列表并与上次的值按值比较（`==`），由 Run Policy 决定是否运行 Body：`mount` 只在首次，`change` 在首次之后值变化时，`mount_and_change` 在首次与值变化时；值未变的唤醒什么都不做。Body 作为一个 Transaction 运行，读取不登记依赖，写入进入下一帧的 Transaction；运行前先执行上一次运行返回的 Cleanup，节点释放时同样执行。一帧 flush 连续 16 轮仍有待处理写入即 `E4202`；一个 Effect 连续 16 帧仅因 Effect 的写入被唤醒，同样是 `E4202`（跨帧反应环），该 Effect 停止运行，直到外部写入再次唤醒它。`viso run` 下该诊断在源码上标出：State 指向其声明，Effect 指向其 Body，与编译诊断同样渲染。
 
 ---
 

@@ -18,6 +18,20 @@ use crate::state::{StateId, StateKey};
 
 thread_local! {
     static ALLOCATED: RefCell<Vec<(StateId, StateKey)>> = const { RefCell::new(Vec::new()) };
+    static SITES: RefCell<Vec<(StateId, &'static Location<'static>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Queues the Rust call site that allocated the cell `id`, which a report
+/// about the cell names it by.
+pub(crate) fn allocated_at(id: StateId, site: &'static Location<'static>) {
+    SITES.with(|sites| sites.borrow_mut().push((id, site)));
+}
+
+/// Moves the call site of every cell allocated in Rust on this thread since
+/// the last call into `out`, in allocation order.
+pub fn take_sites(out: &mut Vec<(StateId, &'static Location<'static>)>) {
+    SITES.with(|sites| out.append(&mut sites.borrow_mut()));
 }
 
 /// Queues the cell `id` under `key`.
@@ -48,6 +62,7 @@ pub fn take_allocations(out: &mut Vec<(StateId, StateKey)>) {
 /// build.
 pub fn clear_allocations() {
     ALLOCATED.with(|cells| cells.borrow_mut().clear());
+    SITES.with(|sites| sites.borrow_mut().clear());
 }
 
 /// FNV-1a, 64-bit: the same in every process and build.

@@ -74,11 +74,11 @@ use std::time::{Duration, Instant};
 use viso_dev_protocol::headless::Reported;
 use viso_dev_protocol::inspect::{InspectAsk, SourceTable};
 use viso_dev_protocol::wire::{
-    BlobRef, Blobs, BuildId, CommitCounts, Domain, GameAnswer, GameAsk, GameQuery, GameRefusal,
-    GameReply, HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection, Rebuild,
-    ResourceAsset, ResourcePatch, RestoreBundle, RestoreReport, Revision, RuntimeHello,
-    RuntimeMessage, RuntimeSessionId, RuntimeTarget, ShaderLang, Stage, SystemPatch, UiPatch,
-    WindowGeometry, blob_chunks, source_hash,
+    BlobRef, Blobs, BuildId, CommitCounts, Domain, FileId, GameAnswer, GameAsk, GameQuery,
+    GameRefusal, GameReply, HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection,
+    Rebuild, ResourceAsset, ResourcePatch, RestoreBundle, RestoreReport, Revision,
+    RuntimeDiagnostic, RuntimeHello, RuntimeLabel, RuntimeMessage, RuntimeSessionId, RuntimeTarget,
+    ShaderLang, SourceAt, Stage, SystemPatch, UiPatch, WindowGeometry, blob_chunks, source_hash,
 };
 use viso_dsl::Diagnostic;
 use viso_dsl::assets::{ASSET_ERROR, ResourceId};
@@ -215,6 +215,18 @@ impl Drop for Runtime {
             ));
         }
     }
+}
+
+/// A runtime's diagnostic as the session reports it.
+enum Placed {
+    /// A compiler diagnostic in the source of a view, by index.
+    Source(usize, Diagnostic),
+    /// One the session could place in no source it holds.
+    Bare {
+        code: String,
+        message: String,
+        notes: Vec<String>,
+    },
 }
 
 /// A question of `viso game` relayed to a runtime.
@@ -889,6 +901,7 @@ impl DevSession {
                 self.finish_restart(Outcome::WarmRestarted, false, nack.diagnostic_codes, out);
             }
             RuntimeMessage::Nack(nack) => self.nacked(at, &nack, out),
+            RuntimeMessage::Diagnostic(raised) => self.diagnosed(at, raised, out),
             RuntimeMessage::Log { level, line } => out.log(level.as_str(), "app", &line),
             RuntimeMessage::Dropped { count } => out.log(
                 "warn",
@@ -1026,6 +1039,87 @@ impl DevSession {
 
     /// Takes runtime `at`'s NACK: it keeps its last good, and the candidates
     /// it refused are not sent to it again.
+    /// Reports the diagnostic runtime `at` raised as a compiler's, in the
+    /// file its first label points into.
+    fn diagnosed(&mut self, at: usize, raised: RuntimeDiagnostic, out: &mut Output) {
+        match self.place(at, raised) {
+            Placed::Source(view, diagnostic) => {
+                let mounts = &self.runtimes[at].mounts;
+                let file = mounts.views[&view].file;
+                let Some((_, text, _)) = self.sources.running(mounts, file) else {
+                    return;
+                };
+                let source = Source::new(&self.sources.views[view].path, &self.root, text);
+                out.source(Some(&source), &[], &diagnostic);
+            }
+            Placed::Bare {
+                code,
+                message,
+                notes,
+            } => out.error(&code, &message, &notes),
+        }
+    }
+
+    /// Places the labels of `raised`, which runtime `at` sent, in the sources
+    /// that runtime runs: a span as it is, a state at the declaration the
+    /// session's compile of its file holds. The first placed label is the
+    /// primary span and the others in its file related spans; the rest
+    /// become notes.
+    fn place(&self, at: usize, raised: RuntimeDiagnostic) -> Placed {
+        let mounts = &self.runtimes[at].mounts;
+        let mut placed: Vec<(FileId, usize, viso_dsl::TextRange, String)> = Vec::new();
+        let mut notes = Vec::new();
+        for RuntimeLabel { at: place, label } in raised.labels {
+            let range = match place {
+                SourceAt::Span { file, start, end } => self
+                    .sources
+                    .running(mounts, file)
+                    .filter(|&(_, text, _)| end as usize <= text.len())
+                    .map(|(view, ..)| {
+                        let range = viso_dsl::TextRange::new(start.into(), end.into());
+                        (file, view, range)
+                    }),
+                SourceAt::State { file, key } => {
+                    self.sources
+                        .running(mounts, file)
+                        .and_then(|(view, text, plan)| {
+                            let symbol = viso_dsl::resolve::SymbolId::from_parts(key.hi, key.lo);
+                            let (_, range) = plan?.declaration(symbol)?;
+                            (range.end().to_usize() <= text.len()).then_some((file, view, range))
+                        })
+                }
+                SourceAt::Point { path, line, column } => {
+                    notes.push(format!("{label}: {path}:{line}:{column}"));
+                    continue;
+                }
+            };
+            match range {
+                Some((file, view, range)) => placed.push((file, view, range, label)),
+                None => notes.push(label),
+            }
+        }
+        notes.extend(raised.notes);
+        let (Some(code), Some(&(file, view, primary, _))) =
+            (intern_code(&raised.code), placed.first())
+        else {
+            return Placed::Bare {
+                code: raised.code,
+                message: raised.message,
+                notes,
+            };
+        };
+        let mut diagnostic = Diagnostic::error(code, primary, raised.message);
+        for (other, _, range, label) in placed.into_iter().skip(1) {
+            if other == file {
+                diagnostic = diagnostic.with_related(viso_dsl::diag::Related::new(range, label));
+            } else {
+                notes.push(label);
+            }
+        }
+        diagnostic.notes = notes;
+        Placed::Source(view, diagnostic)
+    }
+
     fn nacked(&mut self, at: usize, nack: &PatchNack, out: &mut Output) {
         let Some(sent) = self.answered(at, nack.candidate_revision) else {
             return out.log(
@@ -2579,6 +2673,93 @@ mod tests {
         f.save(&good);
         let sent = f.settle();
         patches(&sent[0], (1, 3), VIEW, &good);
+    }
+
+    #[test]
+    fn a_runtime_diagnostic_is_placed_in_the_source_the_app_runs() {
+        const LOOPED: &str = "component Feedback {\n    state count = 0;\n    view {\n        \
+            Text { width: 120dp; height: 40dp; on click { count += 1; } }\n    }\n    \
+            effect echo when (count) run EffectRun::change {\n        \
+            transaction { count += 1; }\n    }\n}\n";
+        let f = Fixture::app("diagnosed", true, LOOPED, LOOPED, Domains::NONE);
+        let symbol = compiled(LOOPED).symbol_for_name("count").expect("a state");
+        let body = LOOPED.find("transaction").unwrap() as u32;
+        let label = |at, label: &str| RuntimeLabel {
+            at,
+            label: label.into(),
+        };
+        let raised = RuntimeDiagnostic {
+            code: "E4202".into(),
+            message: "effects kept waking each other".into(),
+            labels: vec![
+                label(
+                    SourceAt::State {
+                        file: FileId(0),
+                        key: viso_schema::StateKey::from_parts(symbol.hi, symbol.lo),
+                    },
+                    "`count` is written again",
+                ),
+                label(
+                    SourceAt::Span {
+                        file: FileId(0),
+                        start: body,
+                        end: body + 11,
+                    },
+                    "this effect writes what wakes it",
+                ),
+                label(
+                    SourceAt::Point {
+                        path: "src/main.rs".into(),
+                        line: 3,
+                        column: 9,
+                    },
+                    "this state is written again",
+                ),
+                label(
+                    SourceAt::Span {
+                        file: FileId(7),
+                        start: 0,
+                        end: 1,
+                    },
+                    "in a file the app does not mount",
+                ),
+            ],
+            notes: vec!["the last writes stand".into()],
+        };
+        let Placed::Source(view, diagnostic) = f.dev.place(0, raised) else {
+            panic!("the diagnostic is placed in the view");
+        };
+        assert_eq!(f.dev.sources.views[view].path, f.path);
+        assert_eq!(diagnostic.code, "E4202");
+        let text =
+            |range: viso_dsl::TextRange| &LOOPED[range.start().to_usize()..range.end().to_usize()];
+        assert!(
+            text(diagnostic.primary).contains("count"),
+            "{:?}",
+            text(diagnostic.primary)
+        );
+        assert_eq!(diagnostic.related.len(), 1);
+        assert_eq!(text(diagnostic.related[0].range), "transaction");
+        assert_eq!(
+            diagnostic.related[0].label,
+            "this effect writes what wakes it"
+        );
+        assert_eq!(
+            diagnostic.notes,
+            [
+                "this state is written again: src/main.rs:3:9",
+                "in a file the app does not mount",
+                "the last writes stand"
+            ]
+        );
+        // One the session can place nowhere is reported bare.
+        let lost = RuntimeDiagnostic {
+            code: "E4202".into(),
+            message: "lost".into(),
+            labels: Vec::new(),
+            notes: Vec::new(),
+        };
+        assert!(matches!(f.dev.place(0, lost), Placed::Bare { .. }));
     }
 
     #[test]

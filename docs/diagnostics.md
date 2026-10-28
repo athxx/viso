@@ -2230,7 +2230,7 @@ See also: `viso check`
 
 **Reactive Cycle** — error, runtime
 
-A frame's state flush keeps scheduling computed values, bindings and effects while new writes appear. If writes are still pending after a bounded number of rounds, the reactive graph is feeding itself: typically an effect writes one of its own dependencies, or a computed's evaluation reaches itself. The runtime stops that frame's flush, reports the dropped cells and the effects they would wake, and keeps the values already written without running their reactions.
+A frame's state flush keeps scheduling computed values, bindings and effects while new writes appear. If writes are still pending after a bounded number of rounds, the reactive graph is feeding itself: typically an effect writes one of its own dependencies, or a computed's evaluation reaches itself. The runtime stops that frame's flush, reports the dropped cells and the effects they would wake, and keeps the values already written without running their reactions. An effect that runs 16 frames in a row only because effects wrote what it reads is cut the same way. Under `viso run`, the report names each state at its declaration and each effect at its body, rendered like a compiler diagnostic.
 
 ```text
 Running this component and clicking the text raises E4202: the effect
