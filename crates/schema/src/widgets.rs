@@ -659,6 +659,16 @@ pub const STANDARD: &[NativeWidget] = &[
     )
     .provides(&ABSOLUTE_CHILD)
     .slots(CHILDREN),
+    // A component the GPU renderer draws where a target splits the view
+    // between the page's DOM and the renderer (`web-hybrid`); a stack of
+    // that one child everywhere else.
+    layout(
+        "Island",
+        WidgetNode::Stack,
+        &[STACK, LAYOUT, TRANSFORM, FOCUS],
+    )
+    .provides(&STACK_CHILD)
+    .slots(CONTENT),
     layout(
         "InteractiveViewer",
         WidgetNode::Stack,

@@ -211,11 +211,27 @@ pub fn has_regions(tree: &UiTree) -> bool {
 }
 
 /// The structural errors of `tree` no target mounts: a region at the root,
-/// and a `VirtualList` whose body is not its one keyed `for`.
+/// a `VirtualList` whose body is not its one keyed `for`, and an `Island`
+/// whose content is not one component, or that is in another.
 pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
-    fn walk(tree: &UiTree, item: &UiItem, errors: &mut Vec<MountError>) {
+    fn walk(tree: &UiTree, item: &UiItem, island: bool, errors: &mut Vec<MountError>) {
         match item {
             UiItem::Node(node) => {
+                let is_island = node.type_name == ISLAND;
+                if is_island && island {
+                    errors.push(MountError::new(
+                        Some(tree.own_span(node.instance, node.origin)),
+                        "an `Island` is not in another: its content is all the renderer draws",
+                    ));
+                    return;
+                }
+                if is_island && island_component(tree, node).is_none() {
+                    errors.push(MountError::new(
+                        Some(tree.own_span(node.instance, node.origin)),
+                        "an `Island`'s content is exactly one component of the view's file, whose inputs and events are all that cross into it",
+                    ));
+                    return;
+                }
                 if node.kind == NodeKind::VirtualList
                     && !matches!(node.children.as_slice(), [UiItem::For(f)] if f.key.is_some())
                 {
@@ -226,13 +242,13 @@ pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
                     return;
                 }
                 for child in &node.children {
-                    walk(tree, child, errors);
+                    walk(tree, child, island || is_island, errors);
                 }
             }
             _ => {
                 for items in arms(item) {
                     for item in items {
-                        walk(tree, item, errors);
+                        walk(tree, item, island, errors);
                     }
                 }
             }
@@ -246,9 +262,24 @@ pub fn structure_errors(tree: &UiTree) -> Vec<MountError> {
                 "a view's root must be a node, not a control-flow region",
             ));
         }
-        walk(tree, item, &mut errors);
+        walk(tree, item, false, &mut errors);
     }
     errors
+}
+
+/// The widget that marks a component the renderer draws.
+pub const ISLAND: &str = "Island";
+
+/// The instance `island`, an `Island` node, mounts as its content: its one
+/// child, the root of a component instance its own view places; `None` for
+/// any other content.
+pub fn island_component(tree: &UiTree, island: &UiNode) -> Option<u32> {
+    let [UiItem::Node(child)] = island.children.as_slice() else {
+        return None;
+    };
+    let placed = child.instance.checked_sub(1)?;
+    let instance = tree.instances.get(placed as usize)?;
+    (instance.parent == island.instance).then_some(child.instance)
 }
 
 /// Every region of `compiled`'s view as the runtime mounts it, its entries

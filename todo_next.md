@@ -957,7 +957,15 @@ Rules (as for `todo_features.md`):
   - [x] `web-dom` dev session (`viso run`/`serve web-dom`): `.vs` edits rewrite the page and
     reload it without a Rust build. Verified on a `viso new` app in headless Chrome.
   - [x] Package natives in the page lowering: values calling them are computed by the page's VM.
-  - [ ] `web-hybrid`.
+  - [ ] `web-hybrid` (ADR 0059): a DOM page with one component the renderer draws.
+    - [x] `Island` in `.vs`: one component of the file, recorded in `ViewBehavior::islands` (its
+      input and event entries); a stack of its child where nothing splits the view. Verified:
+      `view_islands` tests (record, mount errors, package mount).
+    - [ ] Hybrid page lowering: the island as a `data-viso-root` element, inputs pushed, events
+      handled.
+    - [ ] Runtime: the facade's `web-hybrid` feature mounts the island's component as the root
+      view; inputs from the page, events back to it.
+    - [ ] Target, bundle, `check`/`build`/`run`/`serve web-hybrid`.
 - [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
   dev-protocol message and asserting identical bytes.
 - [ ] Extend the VM-vs-native differential test to every DSL doc-example fixture. Verify that it

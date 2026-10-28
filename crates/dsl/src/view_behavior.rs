@@ -22,7 +22,7 @@ use crate::ir::binding_ir::NodeKey;
 use crate::ir::ui_ir::{UiItem, UiNode, UiStyled, UiWhen};
 use crate::resolve::SymbolId;
 use crate::syntax::TextRange;
-use crate::view_regions::{has_regions, structure_errors, view_regions};
+use crate::view_regions::{ISLAND, has_regions, island_component, structure_errors, view_regions};
 
 /// The diagnostic code of a handler or a region that does not mount.
 pub const UNMOUNTED_HANDLER: &str = "E3711";
@@ -84,6 +84,27 @@ pub struct ViewBehavior {
     /// The view's shader table: each shader its shader views paint with, in
     /// the order their controls index it.
     pub shaders: Vec<ViewBrush>,
+    /// Each `Island`, in view order.
+    pub islands: Vec<ViewIsland>,
+}
+
+/// An `Island` of a view: the component the renderer draws in its place
+/// where a target splits the view, and what crosses into it and back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewIsland {
+    /// The `Island` node.
+    pub node: NodeKey,
+    /// The instance its component is inlined as, as the view tree numbers
+    /// them.
+    pub instance: u32,
+    /// The component.
+    pub component: String,
+    /// The entry giving each input the view binds, by the component's input
+    /// slot; an input it does not bind takes the component's default.
+    pub inputs: Vec<(u32, u32)>,
+    /// The entry handling each event of the component the view handles, by
+    /// the event's name.
+    pub events: Vec<(String, u32)>,
 }
 
 /// A shader a view paints with: its program and its layout as a brush.
@@ -217,6 +238,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         nodes,
         roots,
         mut named,
+        islands,
         ..
     } = walk;
     named.sort_unstable();
@@ -234,6 +256,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         && !regions
         && !effects
         && !game
+        && islands.is_empty()
         && (nodes.is_empty() || compiled.component.is_none())
     {
         return Ok(None);
@@ -476,6 +499,35 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         })
         .collect();
     let bytes = module.encode();
+    let islands = islands
+        .into_iter()
+        .filter_map(|(key, node)| {
+            let instance = island_component(&compiled.tree, node)?;
+            let placed = compiled.tree.instance(instance)?;
+            let entry = |at| {
+                layout.handler(Site {
+                    instance: placed.parent,
+                    at,
+                    part: 0,
+                })
+            };
+            Some(ViewIsland {
+                node: key,
+                instance,
+                component: placed.name.clone(),
+                inputs: placed
+                    .args
+                    .iter()
+                    .filter_map(|&(slot, at)| Some((slot, entry(at)?)))
+                    .collect(),
+                events: placed
+                    .handlers
+                    .iter()
+                    .filter_map(|(event, at)| Some((event.clone(), entry(*at)?)))
+                    .collect(),
+            })
+        })
+        .collect();
     Ok(Some(ViewBehavior {
         module,
         bytes,
@@ -488,6 +540,7 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         game,
         named,
         shaders: shaders.into_iter().map(|(_, brush)| brush).collect(),
+        islands,
     }))
 }
 
@@ -622,6 +675,8 @@ struct Walk<'a> {
     roots: Vec<(u32, NodeKey)>,
     /// Each node its component reaches as a `NodeRef`, by its key.
     named: Vec<(u32, NodeKey)>,
+    /// Each `Island` node, by its key.
+    islands: Vec<(NodeKey, &'a UiNode)>,
     /// The role the next node takes as an item: a tab of a `Tabs`, a radio
     /// button of a `RadioGroup` or a `SegmentedControl`, whose direct children (in or out of a
     /// control-flow region) are its items.
@@ -668,6 +723,9 @@ impl<'a> Walk<'a> {
         }
         if let Some(key) = node.node_ref {
             self.named.push((key, own));
+        }
+        if node.type_name == ISLAND {
+            self.islands.push((own, node));
         }
         let kind = node.control;
         let item = self.item.take();

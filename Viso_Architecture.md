@@ -5512,6 +5512,7 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 | 0056 | GPU device loss：backend 报告，窗口在新 device 上重建 | Proposed |
 | 0057 | Tools share their services in `viso-tooling`（`Reporter`） | Accepted |
 | 0058 | `web-dom` 页面的行为在 app wasm 的 VM 上执行（`viso-dom`） | Accepted |
+| 0059 | `web-hybrid` 岛：DOM 页面中由 renderer 绘制的一个 Component | Accepted |
 
 ## 文内架构取舍摘要（AD-01 … AD-24）
 
