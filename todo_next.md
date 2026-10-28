@@ -965,8 +965,13 @@ Rules (as for `todo_features.md`):
       content and its instances' effects left out, each bound input pushed with `V.i`, island
       events run through `V.listen`; a second island or one in a region is a finding. Verified:
       `export_dom` hybrid tests.
-    - [ ] Runtime: the facade's `web-hybrid` feature mounts the island's component as the root
-      view; inputs from the page, events back to it.
+    - [x] Runtime: the facade's `web-hybrid` feature mounts the island's component as the root
+      view; inputs from the page, events back to it. The app and the page script share one page
+      (`viso_dom::shared`); `viso_dom::island` queues pushed values, which a task the root owns
+      lands at a frame boundary (`ViewHost::push_input`), and emitted events
+      (`ViewHost::set_event_sink`), which a microtask runs on the page. `view!` no longer
+      rejects the states of a component it inlines. Verified: `dsl_island` test (the root, a
+      pushed value landing, events running the page's handler), wasm check of both features.
     - [ ] Target, bundle, `check`/`build`/`run`/`serve web-hybrid`.
 - [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
   dev-protocol message and asserting identical bytes.

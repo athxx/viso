@@ -34,15 +34,30 @@ extern "C" {
 }
 
 /// Opens the page of component `component` on `module`, the page's own
-/// build of it, or the app's, which must be build `build`.
+/// build of it, or on the app's, which must be build `build`: the page the
+/// app shares with the script, open already where the app mounted its
+/// island.
 ///
 /// # Errors
 ///
 /// What keeps the view from running.
 #[wasm_bindgen(js_name = visoDom)]
 pub fn viso_dom(component: &str, module: Option<Vec<u8>>, build: u64) -> Result<DomPage, JsError> {
-    let mut page = Page::open(component, module.as_deref(), build).map_err(|e| JsError::new(&e))?;
-    page.services_mut()
+    let page = match module {
+        Some(module) => Page::open(component, Some(&module), build).map(|p| Rc::new(RefCell::new(p))),
+        None => crate::shared(component).and_then(|page| {
+            if page.borrow().build() == build {
+                Ok(page)
+            } else {
+                Err(format!(
+                    "the page and the app were built from different sources of `{component}`: build them again together"
+                ))
+            }
+        }),
+    }
+    .map_err(|e| JsError::new(&e))?;
+    page.borrow_mut()
+        .services_mut()
         .insert::<Box<dyn Timers>>(Box::new(PageTimers));
     let inner = Rc::new(RefCell::new(Inner {
         page,
@@ -76,7 +91,7 @@ pub struct DomPage {
 }
 
 struct Inner {
-    page: Page,
+    page: Rc<RefCell<Page>>,
     /// The closures and native objects the script holds tokens of.
     opaques: Vec<Option<Value>>,
     free: Vec<u32>,
@@ -87,14 +102,14 @@ impl DomPage {
     /// The value of entry `entry` for `args`; nothing it does is kept.
     pub fn e(&self, entry: u32, args: &Array) -> Result<JsValue, JsError> {
         let args = self.values(args);
-        let value = self.inner.borrow_mut().page.evaluate(entry, &args);
+        let value = self.inner.borrow().page.borrow_mut().evaluate(entry, &args);
         self.answer(value)
     }
 
     /// Runs entry `entry` with `args` as a transaction.
     pub fn t(&self, entry: u32, args: &Array) -> Result<JsValue, JsError> {
         let args = self.values(args);
-        let value = self.inner.borrow_mut().page.transact(entry, &args);
+        let value = self.inner.borrow().page.borrow_mut().transact(entry, &args);
         self.answer(value)
     }
 
@@ -102,19 +117,19 @@ impl DomPage {
     pub fn c(&self, callee: &JsValue, args: &Array) -> Result<JsValue, JsError> {
         let callee = self.value(callee);
         let args = self.values(args);
-        let value = self.inner.borrow_mut().page.call(&callee, &args);
+        let value = self.inner.borrow().page.borrow_mut().call(&callee, &args);
         self.answer(value)
     }
 
     /// Puts `value` in state slot `slot`.
     pub fn put(&self, slot: u32, value: &JsValue) {
         let value = self.value(value);
-        self.inner.borrow_mut().page.put(slot, value);
+        self.inner.borrow().page.borrow_mut().put(slot, value);
     }
 
     /// State slot `slot`.
     pub fn get(&self, slot: u32) -> JsValue {
-        let value = self.inner.borrow().page.state(slot);
+        let value = self.inner.borrow().page.borrow().state(slot);
         self.js(&value)
     }
 
@@ -128,19 +143,19 @@ impl DomPage {
                 Some((slot, self.value(&change.get(1))))
             })
             .collect();
-        self.inner.borrow_mut().page.write(changes);
+        self.inner.borrow().page.borrow_mut().write(changes);
     }
 
     /// Puts the default theme in each of `slots`.
     pub fn theme(&self, slots: Vec<u32>) {
-        self.inner.borrow_mut().page.theme(&slots);
+        self.inner.borrow().page.borrow_mut().theme(&slots);
     }
 
     /// What the calls since the last take did: `{c, e, s, n}`, the slots
     /// they changed, their events as `[event, args]`, their starts and
     /// their requests of named nodes as `[action, key, args]`.
     pub fn take(&self) -> JsValue {
-        let batch = self.inner.borrow_mut().page.take();
+        let batch = self.inner.borrow().page.borrow_mut().take();
         let out = Object::new();
         let changed: Array = batch.changed.iter().map(|&s| JsValue::from(s)).collect();
         let events: Array = batch
@@ -218,8 +233,9 @@ impl DomPage {
         let this = self.share();
         future_to_promise(async move {
             let mut step = inner
-                .borrow_mut()
+                .borrow()
                 .page
+                .borrow_mut()
                 .start_task(task, &args)
                 .map_err(fault)?;
             loop {
@@ -231,8 +247,9 @@ impl DomPage {
                             return Ok(JsValue::UNDEFINED);
                         }
                         step = inner
-                            .borrow_mut()
+                            .borrow()
                             .page
+                            .borrow_mut()
                             .resume_task(fiber, result)
                             .map_err(fault)?;
                     }
@@ -241,10 +258,42 @@ impl DomPage {
         })
     }
 
+    /// Pushes `value` to input slot `slot` of island `island`.
+    pub fn i(&self, island: u32, slot: u32, value: &JsValue) {
+        crate::island::push(island, slot, self.value(value));
+    }
+
+    /// Has `listener` run each event an island emits, called with its
+    /// handler entry and its record once the frame that emitted it is over.
+    pub fn listen(&self, listener: Function) {
+        let shared = self.share();
+        let deliver = Closure::<dyn FnMut()>::new(crate::island::deliver).into_js_value();
+        let queue = Reflect::get(&js_sys::global(), &"queueMicrotask".into())
+            .ok()
+            .and_then(|f| f.dyn_into::<Function>().ok());
+        crate::island::listen(
+            move |entry, payload| {
+                let payload = shared.js(&payload);
+                if let Err(e) = listener.call2(&JsValue::NULL, &JsValue::from(entry), &payload) {
+                    report(&e);
+                }
+            },
+            move || {
+                if let Some(queue) = &queue {
+                    let _ = queue.call1(&JsValue::NULL, &deliver);
+                }
+            },
+        );
+    }
+
     /// Forgets the animation `id`, which the page ended.
     pub fn ended(&self, id: &JsValue) {
         if let Ok(id) = i64::try_from(id.clone()) {
-            self.inner.borrow_mut().page.animation_ended(id as u64);
+            self.inner
+                .borrow()
+                .page
+                .borrow_mut()
+                .animation_ended(id as u64);
         }
     }
 }
@@ -305,6 +354,17 @@ impl Shared {
 
 fn fault(fault: Fault) -> JsValue {
     JsError::new(&format!("viso: {}", fault.message)).into()
+}
+
+/// Logs `error`, which a handler the script runs threw, to the console.
+fn report(error: &JsValue) {
+    let error_fn = Reflect::get(&js_sys::global(), &"console".into())
+        .and_then(|console| Reflect::get(&console, &"error".into()))
+        .ok()
+        .and_then(|f| f.dyn_into::<Function>().ok());
+    if let Some(error_fn) = error_fn {
+        let _ = error_fn.call1(&JsValue::NULL, error);
+    }
 }
 
 fn set(target: &Object, key: &str, value: &JsValue) {

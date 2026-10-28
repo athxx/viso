@@ -13,6 +13,10 @@
 //! module it embeds, its compiled code and its native libraries
 //! ([`offer`]), and the page opens the one whose component it mounts
 //! ([`Page::open`]).
+//!
+//! In a `web-hybrid` build the page has an island the renderer draws, and
+//! the app and the page script share the page ([`shared`]): what crosses
+//! between the two is in [`island`].
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,6 +30,7 @@ use viso_behavior::{
     TaskStep, Value, Vm,
 };
 
+pub mod island;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 
@@ -42,6 +47,8 @@ pub struct Boot {
 
 thread_local! {
     static OFFERED: RefCell<Vec<Boot>> = const { RefCell::new(Vec::new()) };
+    /// The page open on the app's module, by component.
+    static OPEN: RefCell<Vec<(&'static str, SharedPage)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Offers `boot` to the page: the first offer of each component is the one
@@ -54,6 +61,9 @@ pub fn offer(boot: Boot) {
         }
     });
 }
+
+/// A page the app and the page script share.
+pub type SharedPage = Rc<RefCell<Page>>;
 
 /// What the calls since the last [`Page::take`] did besides their values.
 #[derive(Debug, Default)]
@@ -72,6 +82,8 @@ pub struct Batch {
 pub struct Page {
     vm: Vm,
     instance: Instance,
+    /// The build hash of its module.
+    build: u64,
     /// The chunk of each handler-table entry.
     handlers: Box<[u32]>,
     batch: Batch,
@@ -87,6 +99,14 @@ impl Page {
     ///
     /// What keeps the view from running, described.
     pub fn open(component: &str, module: Option<&[u8]>, build: u64) -> Result<Page, String> {
+        Page::open_checked(component, module, Some(build))
+    }
+
+    fn open_checked(
+        component: &str,
+        module: Option<&[u8]>,
+        build: Option<u64>,
+    ) -> Result<Page, String> {
         let boot = OFFERED
             .with(|offered| {
                 offered
@@ -105,7 +125,8 @@ impl Page {
             None => Module::decode_static(boot.module),
         };
         let module = Rc::new(decoded.map_err(|e| format!("the view's module does not load: {e}"))?);
-        if build_hash(&module) != build {
+        let hash = build_hash(&module);
+        if build.is_some_and(|build| build != hash) {
             return Err(format!(
                 "the page and the app were built from different sources of `{component}`: build them again together"
             ));
@@ -135,9 +156,15 @@ impl Page {
         Ok(Page {
             vm,
             instance,
+            build: hash,
             handlers,
             batch: Batch::default(),
         })
+    }
+
+    /// The build hash of the module it runs.
+    pub fn build(&self) -> u64 {
+        self.build
     }
 
     /// The value handler-table entry `entry` gives `args`, against the
@@ -285,6 +312,36 @@ impl Page {
                 message: format!("the view has no entry {entry}"),
             })
     }
+}
+
+/// The page of component `component` open on the module the app embeds,
+/// opened on the first call: the one the app and the page script share.
+///
+/// # Errors
+///
+/// What keeps the view from running, described.
+pub fn shared(component: &str) -> Result<SharedPage, String> {
+    let open = OPEN.with(|open| {
+        open.borrow()
+            .iter()
+            .find(|(c, _)| *c == component)
+            .map(|(_, page)| Rc::clone(page))
+    });
+    if let Some(page) = open {
+        return Ok(page);
+    }
+    let page = Rc::new(RefCell::new(Page::open_checked(component, None, None)?));
+    let name = OFFERED.with(|offered| {
+        offered
+            .borrow()
+            .iter()
+            .find(|b| b.component == component)
+            .map(|b| b.component)
+    });
+    if let Some(name) = name {
+        OPEN.with(|open| open.borrow_mut().push((name, Rc::clone(&page))));
+    }
+    Ok(page)
 }
 
 /// Adds `slot` to the ascending `changed`, once.

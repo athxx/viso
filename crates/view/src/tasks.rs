@@ -365,7 +365,7 @@ impl ViewHost {
         self.sync(scope, &*cells);
         match self.vm.call_value(&mut self.instance, handler, args) {
             Ok(outcome) => {
-                self.events.extend(outcome.events);
+                self.emitted(outcome.events);
                 self.write_back(scope, cells);
                 self.queue_nodes(outcome.nodes, scope, cells);
                 self.launch(outcome.starts, scope, cells);

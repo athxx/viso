@@ -37,6 +37,16 @@ syncing would cost every write, and its ordering would be subtle.
    compiled at expansion time as `view!` compiles any root (AOT in release). Its inputs are
    root inputs whose values the page pushes. Its events go to a sink that hands them to the
    page's VM once the frame's dispatch is over.
+   - The app and the page script share one page instance (`viso_dom::shared`), opened by
+     whichever side comes first. The island mounts with the values the page's input entries
+     give at that moment, so a required input is never unset.
+   - Each pushed value is queued, latest per input, and wakes the frame loop. A task the
+     island's root owns lands the queued values in the root inputs at the next frame boundary:
+     the instance takes the value and the input's revision cell moves, so only the values
+     reading it are evaluated again.
+   - Each emitted event is queued with the page's handler entry for it. A microtask runs the
+     queue on the page once the frame's JS task is over. Neither side calls into the other
+     while it is running.
 6. **One island per page for now.** The web platform backend has one window. A second island,
    or an island inside a region, is a `web-hybrid` capability diagnostic, not a language rule.
 

@@ -250,6 +250,8 @@ pub struct ViewHost {
     synced: Option<(u64, u64)>,
     pub(crate) fault: Option<Fault>,
     pub(crate) events: Vec<Event>,
+    /// Where the component's events go in place of `events`, once set.
+    event_sink: Option<Box<dyn FnMut(Event)>>,
     /// The cells the view's mounted regions allocated: each region mount's
     /// pulse cell, and the region content mounts keeping instance states.
     regions: RegionCells,
@@ -463,6 +465,7 @@ impl ViewHost {
             synced: None,
             fault: None,
             events: Vec::new(),
+            event_sink: None,
             regions: RegionCells::default(),
             values: None,
             shown: Vec::new(),
@@ -717,6 +720,29 @@ impl ViewHost {
             navigator: input.navigator.clone(),
             seen: None,
         });
+        true
+    }
+
+    /// Gives root input `slot` the value `value`, as the page a split view's
+    /// island stands in pushes it: what was derived from it is forgotten and
+    /// the readers of its cell evaluate again. Returns whether it changed; a
+    /// slot no Rust input links is left alone.
+    pub fn push_input(&mut self, slot: usize, value: Value, cells: &mut dyn StateCells) -> bool {
+        let Some(link) = self
+            .inputs
+            .iter()
+            .find(|i| i.slot as usize == slot && i.navigator.is_none())
+        else {
+            return false;
+        };
+        if self.instance.inputs()[slot] == value {
+            return false;
+        }
+        let cell = link.cell;
+        self.instance.set_input(slot, value);
+        if let Some(StateValue::Int(revision)) = cells.get(cell) {
+            cells.set(cell, StateValue::Int(revision.wrapping_add(1)));
+        }
         true
     }
 
@@ -1274,7 +1300,7 @@ impl ViewHost {
         self.args.clear();
         match result {
             Ok(outcome) => {
-                self.events.extend(outcome.events);
+                self.emitted(outcome.events);
                 self.write_back(scope, cells);
                 self.queue_nodes(outcome.nodes, scope, cells);
                 self.launch(outcome.starts, scope, cells);
@@ -1549,7 +1575,7 @@ impl ViewHost {
         self.sync(scope, &*cells);
         match self.vm.call(&mut self.instance, chunk, &scope.values) {
             Ok(outcome) => {
-                self.events.extend(outcome.events);
+                self.emitted(outcome.events);
                 self.write_back(scope, cells);
                 self.queue_nodes(outcome.nodes, scope, cells);
                 self.launch(outcome.starts, scope, cells);
@@ -1581,7 +1607,7 @@ impl ViewHost {
         self.sync(scope, &*cells);
         match self.vm.call(&mut self.instance, chunk, &scope.values) {
             Ok(outcome) => {
-                self.events.extend(outcome.events);
+                self.emitted(outcome.events);
                 self.write_back(scope, cells);
                 outcome.starts.into_iter().next()
             }
@@ -1612,7 +1638,7 @@ impl ViewHost {
         let result = self.vm.call_value(&mut self.instance, cleanup, &[]);
         self.instance.clear_dirty();
         match result {
-            Ok(outcome) => self.events.extend(outcome.events),
+            Ok(outcome) => self.emitted(outcome.events),
             Err(fault) => self.fault = Some(fault),
         }
     }
@@ -1638,6 +1664,24 @@ impl ViewHost {
         self.events.drain(..)
     }
 
+    /// Hands each component event the view emits from now on to `sink`, in
+    /// emit order, as it commits, in place of keeping it for
+    /// [`drain_events`](Self::drain_events); the undrained ones go first.
+    pub fn set_event_sink(&mut self, mut sink: impl FnMut(Event) + 'static) {
+        for event in self.events.drain(..) {
+            sink(event);
+        }
+        self.event_sink = Some(Box::new(sink));
+    }
+
+    /// Keeps the events a committed call emitted, or hands them to the sink.
+    pub(crate) fn emitted(&mut self, events: Vec<Event>) {
+        match &mut self.event_sink {
+            Some(sink) => events.into_iter().for_each(sink),
+            None => self.events.extend(events),
+        }
+    }
+
     /// Replaces the instance with `next`, a host of the recompiled module into
     /// which the caller has [set](Self::set_state) each state it carries, as a
     /// hot reload does. Its mirrors start cleared: the caller mirrors the new
@@ -1651,6 +1695,7 @@ impl ViewHost {
     pub fn reload(&mut self, mut next: ViewHost) {
         *next.vm.services_mut() = std::mem::take(self.vm.services_mut());
         next.events = std::mem::take(&mut self.events);
+        next.event_sink = self.event_sink.take();
         next.regions = std::mem::take(&mut self.regions);
         next.values = self.values.take();
         next.shown = std::mem::take(&mut self.shown);

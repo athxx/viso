@@ -172,6 +172,14 @@ pub fn __mount_input<K, T: ViewInput<Kind = K>>(cx: &mut BuildCx<'_>, value: T) 
     value.mount(cx)
 }
 
+/// Mounts `value` as a root input a page pushes new values of
+/// ([`ViewHost::push_input`](crate::ViewHost::push_input)): whatever its
+/// type, its readers depend on a revision cell each push raises.
+#[doc(hidden)]
+pub fn __pushed_input(cx: &mut BuildCx<'_>, value: Value) -> MountedInput {
+    held(cx, StateValue::Int(0), value)
+}
+
 /// The route type of a `Navigator<R>` input of `view!`.
 #[doc(hidden)]
 pub trait __Route {

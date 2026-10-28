@@ -34,7 +34,9 @@ use viso_dsl::native_package::{self, NativePackage};
 use viso_dsl::resolve::SymbolId;
 use viso_dsl::schema::Natives;
 use viso_dsl::syntax::{LineIndex, TextRange, TextSize};
-use viso_dsl::view_behavior::{MountError, UNMOUNTED_HANDLER, ViewBehavior, view_behavior};
+use viso_dsl::view_behavior::{
+    MountError, UNMOUNTED_HANDLER, ViewBehavior, ViewIsland, view_behavior,
+};
 use viso_shader::program::Program;
 
 use crate::emit::{Named, aligned_bytes, aligned_file, emit_view, overlay_dependency};
@@ -52,7 +54,7 @@ pub fn ui(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             root,
             module,
             ..
-        } = mount(&compiled, &report, None, None, &[], &[])?;
+        } = mount(&compiled, &report, None, None, &[], &[], None)?;
         Ok(quote! {
             |cx: &mut ::viso::__private::viso_ui::BuildCx<'_>| -> ::viso::__private::viso_ui::Handle {
                 #module
@@ -91,6 +93,7 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             asset_dir(&profile),
             &packages,
             &[],
+            None,
         )?;
         let name = rust_ident(&component.schema.name)
             .map_err(|message| report.at(Some(component.source_origin), message))?;
@@ -220,6 +223,8 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             named,
             module,
             offer,
+            page_offer,
+            behavior,
             ..
         } = mount(
             &compiled,
@@ -228,7 +233,27 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             asset_dir(&profile),
             &packages,
             &inputs,
+            None,
         )?;
+        let island = match behavior.as_ref().map(|b| &b.islands[..]) {
+            Some([island]) => island_tokens(
+                island,
+                &behavior
+                    .as_ref()
+                    .expect("an island is of a behavior")
+                    .component,
+                page_offer,
+                &root_dir,
+                &report,
+                &text,
+                &origin,
+                &profile,
+            )?,
+            Some([_, _, ..]) => quote! {
+                ::core::compile_error!("a `web-hybrid` page has one `Island`: the renderer draws one window")
+            },
+            _ => quote! { #offer },
+        };
         let (node_fields, node_values) = named_nodes(&named, &report)?;
         let named_count = named.len();
         // The modules the file imports are compile dependencies too: editing
@@ -267,12 +292,112 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 nodes: __VisoNodes { #(#node_values,)* },
                             }
                         }
+                        island: {
+                            let __viso_root = #island;
+                            let __viso_named = [::core::option::Option::Some(__viso_root.id()); #named_count];
+                            ::viso::__private::viso_ui::MountedView {
+                                root: __viso_root,
+                                nodes: __VisoNodes { #(#node_values,)* },
+                            }
+                        }
                     }
                 }
             }
         })
     })();
     finish(expansion, true)
+}
+
+/// The root a `web-hybrid` build mounts for a view with `island`: it offers
+/// the page the view of `page_component` (`page_offer`), then mounts the
+/// island's component of the file `text` as the renderer's root, with the
+/// values the page gives the inputs it binds, and links the values the page
+/// pushes to them and the events the page's handlers run. Evaluates to the
+/// root's `Handle`.
+#[allow(clippy::too_many_arguments)]
+fn island_tokens(
+    island: &ViewIsland,
+    page_component: &str,
+    page_offer: TokenStream,
+    root_dir: &Path,
+    report: &Report<'_>,
+    text: &str,
+    origin: &Origin,
+    profile: &package::Profile,
+) -> syn::Result<TokenStream> {
+    let (compiled, packages) = compile_linked(root_dir, report, |natives| {
+        frontend::compile_mount_for(
+            text,
+            origin,
+            natives,
+            profile.target.clone(),
+            &island.component,
+        )
+    })?;
+    report.check(&compiled)?;
+    let behavior = view_behavior(&compiled).map_err(|errors| report.mount_errors(errors))?;
+    let layout = behavior.as_ref().and_then(|behavior| {
+        let index = behavior.module.component(&behavior.component)?;
+        Some(behavior.module.layout(index))
+    });
+    let input_name =
+        |slot: u32| -> Option<String> { Some(layout?.inputs.get(slot as usize)?.to_string()) };
+    let mut entries = Vec::new();
+    let mut pushed = Vec::new();
+    for &(slot, entry) in &island.inputs {
+        let Some(name) = input_name(slot) else {
+            return Err(report.at(
+                None,
+                format!(
+                    "internal: the island's `{}` has no input {slot}",
+                    island.component
+                ),
+            ));
+        };
+        let at = entries.len();
+        entries.push(entry);
+        pushed.push((name, quote! { __viso_inputs[#at].clone() }));
+    }
+    let events: Vec<TokenStream> = island
+        .events
+        .iter()
+        .filter_map(|(name, entry)| {
+            let index = layout?.events.iter().position(|e| **e == **name)? as u32;
+            Some(quote! { (#index, #entry) })
+        })
+        .collect();
+    let Mounted {
+        allocations,
+        root,
+        module,
+        behavior,
+        ..
+    } = mount(
+        &compiled,
+        report,
+        None,
+        asset_dir(profile),
+        &packages,
+        &[],
+        Some(&pushed),
+    )?;
+    let link = behavior.is_some().then(|| {
+        quote! {
+            ::viso::__private::__link_island(cx, &__viso_host, __viso_root.id(), &[#(#events),*]);
+        }
+    });
+    Ok(quote! {
+        {
+            #page_offer
+            #[allow(unused_variables)]
+            let __viso_inputs = ::viso::__private::__island_values(#page_component, &[#(#entries),*]);
+            #module
+            #allocations
+            let (__viso_root, _) = #root;
+            #link
+            __viso_root
+        }
+    })
 }
 
 /// `view!`'s arguments: the `.vs` path, then the root component's inputs as
@@ -440,6 +565,10 @@ struct Mounted<'a> {
     /// Offers the page the view in a `web-dom` build, evaluating to the
     /// `Handle` of the node standing for it.
     offer: TokenStream,
+    /// Offers the page the view, as a `web-hybrid` build does beside its
+    /// island.
+    page_offer: TokenStream,
+    behavior: Option<ViewBehavior>,
 }
 
 /// `record` is the `.vs` file a `view!` mounts and the module identity it
@@ -456,6 +585,7 @@ fn mount<'a>(
     assets: Option<&Path>,
     packages: &[NativePackage],
     inputs: &[(Ident, syn::Expr)],
+    pushed: Option<&[(String, TokenStream)]>,
 ) -> syn::Result<Mounted<'a>> {
     let Some(component) = &compiled.component else {
         return Err(report.at(None, "the frontend produced no component to mount"));
@@ -470,6 +600,7 @@ fn mount<'a>(
     let mut offer = quote! {
         cx.leaf(::viso::__private::viso_ui::LeafStyle::default())
     };
+    let mut page_offer = quote! {};
     for source in &compiled.sources {
         let SourceKind::State { initial, .. } = &source.kind else {
             continue;
@@ -501,14 +632,17 @@ fn mount<'a>(
             ));
             continue;
         };
+        // The state of a component the view inlines is the instance's, which
+        // no field names.
         let field = match rust_ident(&source.name) {
-            Ok(field) => field,
+            Err(_) if source.name.contains('#') => None,
+            Ok(field) => Some(field),
             Err(message) => {
                 errors.push(report.at(declared, message));
                 continue;
             }
         };
-        let local = format_ident!("__viso_s{}", states.len());
+        let local = format_ident!("__viso_s{}", idents.len());
         let (hi, lo) = (source.symbol.hi, source.symbol.lo);
         allocations.extend(quote! {
             let #local = cx.__macro_state(
@@ -517,15 +651,18 @@ fn mount<'a>(
             );
         });
         idents.insert(source.symbol, local.clone());
-        states.push((field, local));
+        if let Some(field) = field {
+            states.push((field, local));
+        }
     }
-    let takes_inputs = record.is_some();
+    let takes_inputs = record.is_some() || pushed.is_some();
     let given = match mount_inputs(
         compiled,
         component,
         behavior.as_ref(),
         report,
         inputs,
+        pushed.unwrap_or_default(),
         takes_inputs,
     ) {
         Ok(given) => given,
@@ -609,14 +746,20 @@ fn mount<'a>(
             .map_err(|message| report.at(component.schema.view, message))?;
         module = module_tokens(behavior);
         let name = &behavior.component;
-        offer = if inputs.is_empty() {
-            quote! {
-                ::viso::__private::__offer_view(cx, __viso_module, #name, __viso_native, #libraries)
-            }
+        (offer, page_offer) = if inputs.is_empty() {
+            (
+                quote! {
+                    ::viso::__private::__offer_view(cx, __viso_module, #name, __viso_native, #libraries)
+                },
+                quote! {
+                    ::viso::__private::__offer_page(__viso_module, #name, __viso_native, #libraries);
+                },
+            )
         } else {
-            quote! {
+            let error = quote! {
                 ::core::compile_error!("a `web-dom` page mounts its root view with its inputs' defaults: give the inputs no value here")
-            }
+            };
+            (error.clone(), error)
         };
         allocations.extend(host_tokens(
             behavior, &idents, &tracked, embedded, libraries, widgets, &given,
@@ -650,6 +793,8 @@ fn mount<'a>(
         named,
         module,
         offer,
+        page_offer,
+        behavior,
     })
 }
 
@@ -1047,6 +1192,11 @@ fn state_value(initial: &ConstValue) -> Option<TokenStream> {
 
 /// A DSL name as a Rust identifier, raw when it is a Rust keyword.
 fn rust_ident(name: &str) -> Result<Ident, String> {
+    // The compiler's lexer reports what it cannot lex as it lexes, even where
+    // the parse only fails: a name with a `#` is never lexed.
+    if name.contains('#') {
+        return Err(format!("`{name}` is not usable as a Rust identifier"));
+    }
     syn::parse_str::<Ident>(name)
         .or_else(|_| syn::parse_str::<Ident>(&format!("r#{name}")))
         .map_err(|_| format!("`{name}` is not usable as a Rust identifier"))
@@ -1104,10 +1254,36 @@ fn mount_inputs(
     behavior: Option<&ViewBehavior>,
     report: &Report<'_>,
     inputs: &[(Ident, syn::Expr)],
+    pushed: &[(String, TokenStream)],
     takes_inputs: bool,
 ) -> syn::Result<Vec<GivenInput>> {
     let mut errors = Vec::new();
     let mut given = Vec::new();
+    for (at, (name, value)) in pushed.iter().enumerate() {
+        let Some(symbol) = component
+            .schema
+            .inputs
+            .iter()
+            .find(|i| *i.name == **name)
+            .and_then(|i| i.meta.resolved_symbol)
+        else {
+            continue;
+        };
+        let (local, cell) = (
+            format_ident!("__viso_pi{at}"),
+            format_ident!("__viso_pc{at}"),
+        );
+        given.push(GivenInput {
+            symbol,
+            name: name.clone(),
+            tokens: quote! {
+                let #local = ::viso::__private::viso_view::__pushed_input(cx, #value);
+                let #cell = #local.__cell();
+            },
+            cell,
+            value: local,
+        });
+    }
     for (at, (name, value)) in inputs.iter().enumerate() {
         let text = name.to_string();
         let Some(input) = component.schema.inputs.iter().find(|i| i.name == text) else {

@@ -102,6 +102,11 @@ hot-reload = [
 # page's DOM, laid out by the browser, and its behavior runs on the VM in the
 # page. `view!` builds no node: it offers the page its view.
 web-dom = ["dep:viso-dom"]
+# The `web-hybrid` build `viso build web-hybrid` makes: the app's root view is
+# a `web-dom` page, and the renderer draws the component of its `Island` in
+# the page as the window's root view, its inputs pushed from the page and its
+# events run by the page's handlers.
+web-hybrid = ["dep:viso-dom"]
 # Text runtime explanations — every fallback walk, cache miss and eviction —
 # for the Inspector; compiled out otherwise.
 inspector = ["viso-text/inspector"]
@@ -249,6 +254,10 @@ harness = false
 [[test]]
 name = "dsl_todo_app"
 required-features = ["hot-reload"]
+
+[[test]]
+name = "dsl_island"
+required-features = ["web-hybrid"]
 
 [lints]
 workspace = true

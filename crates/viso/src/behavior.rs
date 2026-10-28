@@ -25,22 +25,32 @@ macro_rules! __behavior {
 }
 
 /// The mount a `view!` expansion keeps: in a `web-dom` build its offer of
-/// the view to the page, which builds no node; everywhere else the nodes it
-/// builds.
+/// the view to the page, which builds no node; in a `web-hybrid` build that
+/// offer and the nodes of the component of its island; everywhere else the
+/// nodes it builds.
 #[doc(hidden)]
 #[macro_export]
 #[cfg(feature = "web-dom")]
 macro_rules! __view_mount {
-    (page: { $($page:tt)* } nodes: { $($nodes:tt)* } $(,)?) => {
+    (page: { $($page:tt)* } nodes: { $($nodes:tt)* } island: { $($island:tt)* } $(,)?) => {
         { $($page)* }
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
-#[cfg(not(feature = "web-dom"))]
+#[cfg(feature = "web-hybrid")]
 macro_rules! __view_mount {
-    (page: { $($page:tt)* } nodes: { $($nodes:tt)* } $(,)?) => {
+    (page: { $($page:tt)* } nodes: { $($nodes:tt)* } island: { $($island:tt)* } $(,)?) => {
+        { $($island)* }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+#[cfg(not(any(feature = "web-dom", feature = "web-hybrid")))]
+macro_rules! __view_mount {
+    (page: { $($page:tt)* } nodes: { $($nodes:tt)* } island: { $($island:tt)* } $(,)?) => {
         { $($nodes)* }
     };
 }

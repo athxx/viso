@@ -975,6 +975,8 @@ Release lowering（ADR 0041）：
 
 facade 的 `web-dom` feature 下 `viso::run` 照常调用 `Application::new` 与 `build`，但 `view!` 不建节点，只把它嵌入的模块、编译代码与 native library 交给 `viso_dom::offer`；没有窗口、没有帧，renderer、layout 与 text runtime 不可达，release wasm 不含它们。dev 页面带自己的模块（`view.<hash>.vsb`），在解释器上运行，`.vs` 修改无需重编 app；release 页面用 app 内嵌的模块，并以 build hash 校验二者出自同一源码。只依赖 `viso-behavior`；wasm 上另依赖 `wasm-bindgen`/`js-sys`。
 
+`web-hybrid`（ADR 0059）下页面同样由 `view!` offer，但 app 照常开窗跑帧：窗口是页面的 `Island` 元素，`view!` 把 island 的组件作为 root view 挂载。app 与页面脚本共享同一个页面实例（`viso_dom::shared`），island 以页面此刻给出的输入值挂载。`viso_dom::island` 负责双向排队：页面 `V.i` 推送的值排队并唤醒帧循环，由 island root 拥有的 task 在下一帧边界写入 root input（推进其 revision cell）；island 发出的 event 排队，在帧的 JS task 结束后由 microtask 交给页面的 handler entry 执行。
+
 ### `viso-schema`（ADR 0042）
 
 DSL compiler 与 runtime 之间交换的**纯数据合同**：widget / property / event / slot 描述与标准 widget 表、`DirtyClass`、state 身份与值（`StateKey`、`StateValue`）、role / interaction / layout / env 词汇、length 项、resource 身份与 asset 格式（`ResourceId`、`ResourceRevision`）、`StableId`、值类型 schema 与 `Retyping`、AOT package 与 view package（control / route / region 表）格式。`no_std + alloc`，只依赖 `viso-ende`。`viso-ui` / `viso-view` / `viso-behavior` 在原路径 re-export，`viso-dsl` 消费它。它不是 `core/common`：只放跨编译边界的数据类型及其 codec 与定义其含义的小纯函数，不放运行时逻辑。
@@ -5218,7 +5220,7 @@ Tier 6: Markdown, PDF, Browser, Charts, Map, Video
 
 ## 73. Phase 9 — CLI / Studio / Inspector / Web Delivery
 
-**状态**：CLI 已覆盖 new、doctor、android、ios、run（多 target lane，ADR 0046）、build、serve、package、export html|solid、fmt、check、schema、explain、dump、test、snapshot、inspect、profile、game、config、lsp、clean、completion；`--json` 为 Ende JSON event stream。`viso inspect` / `viso profile` 与 UI Scenario 共用 `viso_view::inspect` / `viso_view::profile`。`web-dom` 由 `viso build`/`check`/`package`/`run`/`serve` 覆盖（`viso-dom`，capability 诊断为 `WEB_*`；dev 下 `.vs` 修改重写页面并 reload）。未实现：`web-hybrid`（报 `C0011`）。
+**状态**：CLI 已覆盖 new、doctor、android、ios、run（多 target lane，ADR 0046）、build、serve、package、export html|solid、fmt、check、schema、explain、dump、test、snapshot、inspect、profile、game、config、lsp、clean、completion；`--json` 为 Ende JSON event stream。`viso inspect` / `viso profile` 与 UI Scenario 共用 `viso_view::inspect` / `viso_view::profile`。`web-dom` 由 `viso build`/`check`/`package`/`run`/`serve` 覆盖（`viso-dom`，capability 诊断为 `WEB_*`；dev 下 `.vs` 修改重写页面并 reload）。`web-hybrid` 的运行时（facade `web-hybrid` feature）已实现，CLI target 未接入（报 `C0011`）。
 
 ### 原则
 

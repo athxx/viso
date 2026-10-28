@@ -108,9 +108,13 @@ pub use viso_ui_macros::{asset, component, ui, view};
 /// builds with. Not an API: its paths change with the macros.
 #[doc(hidden)]
 pub mod __private {
-    #[cfg(feature = "web-dom")]
-    pub use crate::dom::__offer_view;
+    #[cfg(feature = "web-hybrid")]
+    pub use crate::dom::{__island_values, __link_island};
+    #[cfg(any(feature = "web-dom", feature = "web-hybrid"))]
+    pub use crate::dom::{__offer_page, __offer_view};
     pub use viso_behavior;
+    #[cfg(any(feature = "web-dom", feature = "web-hybrid"))]
+    pub use viso_dom;
     pub use viso_ende;
     pub use viso_platform;
     pub use viso_shader;
@@ -119,8 +123,10 @@ pub mod __private {
 }
 
 mod behavior;
-#[cfg(feature = "web-dom")]
+#[cfg(any(feature = "web-dom", feature = "web-hybrid"))]
 mod dom;
+#[cfg(all(feature = "web-dom", feature = "web-hybrid"))]
+compile_error!("`web-dom` and `web-hybrid` are two builds: turn one on");
 mod stdio;
 
 /// Prints to the standard error, as [`std::eprint!`] does; on the web, to the
