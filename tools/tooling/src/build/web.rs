@@ -177,9 +177,15 @@ fn fingerprint(
 }
 
 /// Writes the DOM page of `page` in `dir`, its app the glue `glue` loading
-/// the module `module`. A dev page carries the view's module, which the app
-/// runs in place of its own: a `.vs` edit then needs no new app.
-fn write_dom_page(
+/// the module `module`, in place of the page written there before, whose
+/// files go once the new `index.html` is in place. A dev page carries the
+/// view's module, which the app runs in place of its own: a `.vs` edit then
+/// needs no new app.
+///
+/// # Errors
+///
+/// A file that cannot be written.
+pub fn write_dom_page(
     dir: &Path,
     glue: &str,
     module: &str,
@@ -204,13 +210,14 @@ fn write_dom_page(
     let dom = &page.page;
     let styles = named("styles", "css", dom.styles.as_bytes())?;
     let script = named("page", "js", dom.script.as_bytes())?;
-    let view = match profile {
-        Profile::Dev => format!(
-            "new Uint8Array(await (await fetch(\"./{}\")).arrayBuffer())",
-            named("view", "vsb", &dom.module)?
-        ),
-        Profile::Release | Profile::Shipping => "undefined".to_owned(),
+    let view_name = match profile {
+        Profile::Dev => Some(named("view", "vsb", &dom.module)?),
+        Profile::Release | Profile::Shipping => None,
     };
+    let view = view_name.as_ref().map_or_else(
+        || "undefined".to_owned(),
+        |name| format!("new Uint8Array(await (await fetch(\"./{name}\")).arrayBuffer())"),
+    );
     for asset in &dom.assets {
         let (from, to) = (page.assets.join(asset), dir.join("assets").join(asset));
         if let Some(parent) = to.parent() {
@@ -218,6 +225,14 @@ fn write_dom_page(
         }
         std::fs::copy(&from, &to).map_err(|e| failed(&to, e))?;
     }
+    // The glue too, which an app named `page` names as a page script.
+    let glue_name = glue.to_owned();
+    let written = [
+        Some(&styles),
+        Some(&script),
+        view_name.as_ref(),
+        Some(&glue_name),
+    ];
     let mut boot = String::new();
     if let Some(worker) = worker {
         let path = dir.join(bundle::WORKER);
@@ -231,8 +246,22 @@ fn write_dom_page(
         "<script type=\"module\">import init, {{ visoDom }} from \"./{glue}\"; await init({{ module_or_path: \"./{module}\" }}); visoPage(visoDom(\"{}\", {view}, {}n));</script>\n",
         dom.component, dom.build
     ));
-    let index = dir.join("index.html");
-    std::fs::write(&index, dom.index(&styles, &script, &boot)).map_err(|e| failed(&index, e))
+    // A page loading now reads the old `index.html` or the new one whole.
+    let (index, next) = (dir.join("index.html"), dir.join("index.html.next"));
+    std::fs::write(&next, dom.index(&styles, &script, &boot)).map_err(|e| failed(&next, e))?;
+    std::fs::rename(&next, &index).map_err(|e| failed(&index, e))?;
+    let stale = |name: &str| {
+        [("styles.", ".css"), ("page.", ".js"), ("view.", ".vsb")]
+            .iter()
+            .any(|(stem, extension)| name.starts_with(stem) && name.ends_with(extension))
+            && !written.iter().flatten().any(|w| *w == name)
+    };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(stale) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 /// The bundle files in `dir`, each with its kind, by name.
@@ -429,6 +458,76 @@ mod tests {
         let second = write("\0asm two");
         assert_eq!(second[0], first[0]);
         assert_ne!(second[1], first[1]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The `web-dom` page of a component showing `text`.
+    fn dom_page(text: &str) -> WebPage {
+        let source = format!(
+            "export component App {{ state n = 0; view {{ Column {{ Text {{ text: \"{text}\"; }} Button {{ text: \"+\"; on click {{ n += 1; }} }} }} }} }}"
+        );
+        let origin = viso_dsl::frontend::Origin {
+            package: "app".into(),
+            module: vec!["app".into()],
+            ..Default::default()
+        };
+        let compiled = viso_dsl::frontend::compile_file(&source, &origin);
+        let options = viso_dsl::export::DomOptions {
+            title: "app".into(),
+            lang: "en".into(),
+        };
+        WebPage {
+            page: viso_dsl::export::dom(&compiled, &options).unwrap(),
+            assets: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn a_dom_page_written_again_replaces_the_one_before() {
+        let dir = std::env::temp_dir().join(format!("viso-web-repage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let names = || {
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        std::fs::write(dir.join("page.js"), "glue").unwrap();
+        let write = |text: &str| {
+            write_dom_page(
+                &dir,
+                "page.js",
+                "page_bg.wasm",
+                None,
+                &dom_page(text),
+                Profile::Dev,
+            )
+            .unwrap();
+            std::fs::read_to_string(dir.join("index.html")).unwrap()
+        };
+        let first = write("one");
+        assert!(first.contains(">one<"), "{first}");
+        let before = names();
+        let second = write("two");
+        assert!(
+            second.contains(">two<") && !second.contains(">one<"),
+            "{second}"
+        );
+        let after = names();
+        // Each file the page loads is in place, and none the first one did;
+        // the glue, named as a page script, stays.
+        assert_eq!(after.len(), before.len(), "{after:?}");
+        for name in &after {
+            assert!(name == "index.html" || name == "page.js" || second.contains(name.as_str()));
+        }
+        assert!(
+            before
+                .iter()
+                .any(|name| name.starts_with("view.") && !after.contains(name))
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

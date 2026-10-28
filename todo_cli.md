@@ -655,8 +655,8 @@ alternative.
         memory (`viso_package::web::shares_memory`).
   - [x] One human line and one `server` event (`target` added; `url` with the lane's
         path) per lane; the LAN warning once; `--open` opens every lane's page.
-  - [ ] End to end with `web-dom`/`web-hybrid` lanes: waits on the `web-dom` dev session
-        and on `web-hybrid` (C4.3).
+  - [ ] End to end with a `web-hybrid` lane: waits on `web-hybrid` (C4.3); `web-dom`
+        lanes run.
 
 ### C4.2 — web-gpu remaining
 
@@ -696,8 +696,14 @@ alternative.
       script, `__view_mount!`, `WebPage` staging; initial texts prerendered.
     - Verified: `viso new` app → `viso check web-dom` clean, `viso build web-dom` dev
       page clicked in headless Chrome (0 → 1 → 3 clicks); release wasm 912 KiB.
-  - [ ] `run`/`serve web-dom`: a dev session lane (page rebuilt on `.vs` edits, reload).
-        Until then `viso run web-dom` exits with `TargetUnavailable`.
+  - [x] `run`/`serve web-dom`: a dev session lane; a `.vs`, catalog or asset edit lowers
+        the page again and, when it changed, writes it into the served bundle and reloads
+        the lane's pages; a Rust edit rebuilds and serves the new bundle.
+    - Built: `Deploy::Browser.page` (`PageSource`), `Deploy::repage`, `write_dom_page`
+      replacing the page before it; the lane checks its sources at start as `build` does.
+    - Verified: `viso run web-dom --browser none` on a `viso new` app: an added `Text`
+      showed after reload with no Rust build, a broken edit kept the page and reported
+      its error, a `main.rs` edit rebuilt and restarted; `write_dom_page` test.
   - [ ] Package natives in the page lowering (the export links only the standard
         natives).
 - [ ] `web-hybrid` (§32): DOM shell with GPU islands; the bundle carries both runtimes
@@ -1079,8 +1085,7 @@ and traced from the CLI and from Studio over the same services.
       their environments alone; no signing, provisioning or physical device in the dev
       loop; no `sdkmanager`/`avdmanager`/`simctl` in ordinary workflows.
 - [ ] Web: `web-gpu`, `web-dom`, `web-hybrid`, `serve`, capability diagnostics.
-      (`web-gpu` and `serve` done; `web-dom` builds and checks, its dev session and
-      `web-hybrid` remain, C4.3.)
+      (`web-gpu`, `web-dom` and `serve` done; `web-hybrid` remains, C4.3.)
 - [x] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
 - [ ] Test/Debug: `test`, `snapshot`, `inspect`, `profile`, `studio`.
       (All but `studio`, which waits for Studio itself.)

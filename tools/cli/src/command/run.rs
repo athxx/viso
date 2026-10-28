@@ -42,19 +42,20 @@ use viso_dev_protocol::wire::{
 };
 use viso_package::android::Sdk;
 use viso_project::{
-    ConfigCode, ConfigDiagnostic, DeployAddress, DeviceProfile, DeviceTarget, Footprint, LockKind,
-    Platform, Profile, ProjectFingerprint, Target,
+    DeployAddress, DeviceProfile, DeviceTarget, Footprint, LockKind, Platform, Profile,
+    ProjectFingerprint, Target,
 };
 
-use super::inspect;
+use super::{check, inspect};
 use crate::args::{RunArgs, RunTarget, TargetArg};
 use crate::build::{
     self,
     cargo::{self, BuildCommand, BuildFailure, CargoEvent},
+    web::WebPage,
 };
 use crate::context::{Context, Loaded, in_its_file};
 use crate::delivery::fragments::{self, Fragments};
-use crate::deploy::{self, App, Deploy, Ended, Lines, Vars, board::Board, web};
+use crate::deploy::{self, App, Deploy, Ended, Lines, PageSource, Vars, board::Board, web};
 use crate::dev::build::{Build, BuildEvent, RustBuild};
 use crate::dev::cargo::RustScope;
 use crate::dev::{
@@ -63,9 +64,9 @@ use crate::dev::{
 };
 use crate::device::{self as devices, emulator, simulator};
 use crate::error::{
-    BUILD_FAILED, CLI_USAGE, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST, ENV_DEPLOY,
-    ENV_DEV_CHANNEL, ENV_DEVICE, ENV_DEVICE_TARGET, ENV_EMULATE, ENV_LOCK_HELD, ENV_NO_EXECUTABLE,
-    INTERRUPTED, RUN_APP_FAILED, SUCCESS,
+    BUILD_FAILED, CLI_USAGE, DIAGNOSTICS, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST,
+    ENV_DEPLOY, ENV_DEV_CHANNEL, ENV_DEVICE, ENV_DEVICE_TARGET, ENV_EMULATE, ENV_LOCK_HELD,
+    ENV_NO_EXECUTABLE, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
 };
 use crate::interrupt;
 use crate::output::Output;
@@ -82,6 +83,10 @@ const CLOSING_POLL: Duration = Duration::from_millis(1);
 /// close before it is killed.
 const SNAPSHOT_WAIT: Duration = Duration::from_secs(3);
 const CLOSE_WAIT: Duration = Duration::from_secs(3);
+
+/// How long the changes of one edit may keep arriving before a `web-dom`
+/// lane lowers its page again: a save that writes several files lowers once.
+const PAGE_SETTLE: Duration = Duration::from_millis(80);
 
 /// Where a warm restart onto `exe` is.
 enum Restart {
@@ -184,6 +189,8 @@ struct Lane {
     restart: Option<Restart>,
     /// A build whose restart waits for another lane's to land.
     waiting: Option<Build>,
+    /// When a `web-dom` lane lowers its page again, after an edit.
+    page_due: Option<Instant>,
 }
 
 impl Lane {
@@ -420,15 +427,6 @@ pub(super) fn session(
             out.config(None, &diagnostic);
             return diagnostic.code.exit_code();
         }
-        if *target == Target::WebDom {
-            let diagnostic = ConfigDiagnostic::error(
-                ConfigCode::TargetUnavailable,
-                "`viso run` has no `web-dom` session yet",
-            )
-            .note("`viso build web-dom` builds its page into `dist/web`");
-            out.config(None, &diagnostic);
-            return diagnostic.code.exit_code();
-        }
         if *platform == Some(Platform::Ios) && !cfg!(target_os = "macos") {
             return out.failure(ENV_DEVICE, "the iOS Simulator runs on macOS only", &[]);
         }
@@ -654,6 +652,19 @@ pub(super) fn session(
                 }
             };
         }
+        // A `web-dom` lane serves its view's page, which its sources check
+        // for, as `viso build web-dom` does.
+        let page = match target {
+            Target::WebDom => match dom_page(ctx, out) {
+                Ok(Some(page)) => Some(Arc::new(Mutex::new(PageSource {
+                    page,
+                    worker: viso_package::fragment::worker(&declared.fragments.worker),
+                }))),
+                Ok(None) => return DIAGNOSTICS,
+                Err(code) => return code,
+            },
+            _ => None,
+        };
         let deploy = match (&profile, sdk, board) {
             (_, _, Some(board)) => Deploy::Board(Box::new(board)),
             (None, _, None) if target.is_web() => {
@@ -708,6 +719,8 @@ pub(super) fn session(
                                 && (!ctx.global.json || args.browser.is_some()))
                     }),
                     launched: false,
+                    page,
+                    bundle: None,
                 }
             }
             (None, _, None) => Deploy::Host {
@@ -871,6 +884,7 @@ pub(super) fn session(
             ended: None,
             restart: None,
             waiting: None,
+            page_due: None,
         });
     }
     // The watcher starts before the builds, so an edit saved while the apps
@@ -1105,6 +1119,7 @@ pub(super) fn session(
         let poll = if closing { CLOSING_POLL } else { POLL };
         let wait = std::iter::once(dev.deadline())
             .chain(lanes.iter().map(|lane| lane.builds.deadline()))
+            .chain(lanes.iter().map(|lane| lane.page_due))
             .flatten()
             .min()
             .map_or(poll, |due| {
@@ -1127,6 +1142,10 @@ pub(super) fn session(
             let now = Instant::now();
             for lane in &mut lanes {
                 lane.builds.tick(now);
+                if lane.live() && lane.page_due.is_some_and(|due| due <= now) {
+                    lane.page_due = None;
+                    repage(ctx, out, lane);
+                }
             }
             schedule(out, &mut dev, &mut lanes, &args.app_args);
         }
@@ -1263,6 +1282,33 @@ pub(super) fn session(
         .ended
         .expect("the session ends once every app has");
     exit_code(out, status)
+}
+
+/// The project's `web-dom` page, its sources checked for it and each
+/// diagnostic reported; `None` when they did not lower to one.
+fn dom_page(ctx: &Context<'_>, out: &mut Output) -> Result<Option<WebPage>, u8> {
+    let project = ctx.project(out)?;
+    let assets = project.root.join(viso_dsl::assets::ASSET_DIR);
+    let checked = check::package_for(project, &check::Options::target(Target::WebDom), out)?;
+    Ok(checked.page.map(|page| WebPage { page, assets }))
+}
+
+/// Lowers `lane`'s page again after an edit and has its open pages load it;
+/// sources that do not lower keep the page as it was.
+fn repage(ctx: &Context<'_>, out: &mut Output, lane: &mut Lane) {
+    let Ok(Some(page)) = dom_page(ctx, out) else {
+        out.log(
+            "warn",
+            "tool",
+            "the `web-dom` page keeps its last version until its sources check",
+        );
+        return;
+    };
+    match lane.deploy.repage(page) {
+        Ok(true) => out.log("info", "tool", "the `web-dom` page was written again"),
+        Ok(false) => {}
+        Err(why) => out.log("warn", "tool", &format!("the `web-dom` page stays: {why}")),
+    }
 }
 
 /// Lane `lane`'s app ended with `status`: the lane builds no more, and, while
@@ -1577,7 +1623,18 @@ fn relay(
                 dev.rust_changed(out);
             }
         }
-        Incoming::Change(change) => dev.change(change, out),
+        Incoming::Change(change) => {
+            // A `web-dom` page is its sources' lowering, which any of them
+            // can change.
+            let due = Instant::now() + PAGE_SETTLE;
+            for lane in lanes
+                .iter_mut()
+                .filter(|lane| lane.target == Target::WebDom)
+            {
+                lane.page_due = Some(due);
+            }
+            dev.change(change, out);
+        }
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
         Incoming::Booted(_) => {}

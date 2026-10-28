@@ -663,7 +663,7 @@ mod tests {
                 "PACKAGE" => &[PACKAGE],
                 "EXPORT" => &[DIAGNOSTICS, PACKAGE],
                 "RUN" => &[RUNTIME],
-                "TEST" | "EXPLAIN" => &[DIAGNOSTICS],
+                "TEST" | "EXPLAIN" | "WEB" => &[DIAGNOSTICS],
                 "DUMP" => &[USAGE],
                 // Device and game codes are about one subject and fail in
                 // more than one way.

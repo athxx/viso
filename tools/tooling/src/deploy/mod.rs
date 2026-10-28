@@ -17,7 +17,9 @@
 //! - A browser: the executable is built for `wasm32-unknown-unknown` with
 //!   its glue, and the web dev server ([`web`]) serves it with the dev
 //!   variables in the page and carries its dev channel; a restart serves the
-//!   new bundle and has the open pages load it.
+//!   new bundle and has the open pages load it. A `web-dom` lane's page is
+//!   its view's DOM ([`PageSource`]): a `.vs` edit writes the page again
+//!   beside the app it runs on and has the open pages load it.
 //! - A device target's board ([`board`]): the executable is copied to it and
 //!   started over SSH with the dev variables in its environment; its output
 //!   and its exit status come back over the connection.
@@ -53,6 +55,7 @@ use viso_package::{Fragment, apple, web as bundle};
 use viso_project::{DeviceProfile, Profile, Target};
 
 use crate::build::cargo::Package;
+use crate::build::web::{WebPage, write_dom_page};
 use crate::build::{RustPlan, rust_plan};
 use crate::delivery::metadata::Declared;
 use crate::dev::build::{Stamp, stamp};
@@ -122,13 +125,25 @@ pub enum Deploy {
     /// The pages of `lane` of `server`, which the session's web lanes share;
     /// the first launch opens `browser` (the default one when `None`) unless
     /// it is not to `open` one.
+    ///
+    /// A `web-dom` lane serves its view's `page`, and keeps the `bundle` it
+    /// serves to write the page again.
     Browser {
         server: Arc<web::WebServer>,
         lane: web::PageLane,
         browser: Option<String>,
         open: bool,
         launched: bool,
+        page: Option<Arc<Mutex<PageSource>>>,
+        bundle: Option<PathBuf>,
     },
+}
+
+/// A `web-dom` lane's page: the latest lowering of its view, and the
+/// service worker the page registers.
+pub struct PageSource {
+    pub page: WebPage,
+    pub worker: Option<String>,
 }
 
 /// How the lines of one of the app's outputs become log lines.
@@ -424,13 +439,19 @@ impl Deploy {
                     })),
                 }
             }
-            Deploy::Browser { .. } => {
+            Deploy::Browser { page, .. } => {
                 // Two bundles in turn: the one the open pages run stays whole
                 // while the next is written.
                 let turn = std::sync::atomic::AtomicBool::new(false);
                 let worker = viso_package::fragment::worker(&declared.fragments.worker);
+                let page = page.clone();
+                let target = if page.is_some() {
+                    Target::WebDom
+                } else {
+                    Target::WebGpu
+                };
                 BuildPlan {
-                    rust: rust_plan(Target::WebGpu, None, Profile::Dev, None),
+                    rust: rust_plan(target, None, Profile::Dev, None),
                     package: Some(once_per_executable(move |exe, bin, dir| {
                         let slot = if turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed) {
                             "web-b"
@@ -439,7 +460,10 @@ impl Deploy {
                         };
                         let out = dir.join(slot).join(bin);
                         bundle::bindgen(exe, &out, bin)?;
-                        bundle::write_index(&out, bin, worker.as_deref())?;
+                        match &page {
+                            Some(page) => write_page(&out, bin, &lock(page))?,
+                            None => drop(bundle::write_index(&out, bin, worker.as_deref())?),
+                        }
                         Ok(out)
                     })),
                 }
@@ -567,6 +591,8 @@ impl Deploy {
                 browser,
                 open,
                 launched,
+                bundle,
+                ..
             } => {
                 let page = vars
                     .of(false, None)
@@ -574,6 +600,7 @@ impl Deploy {
                     .map(|(name, value)| (name.to_owned(), value))
                     .collect();
                 server.serve(*lane, artifact.to_owned(), page, restore);
+                *bundle = Some(artifact.to_owned());
                 if std::mem::replace(launched, true) {
                     // The open pages load the new build.
                     server.reload_pages(*lane);
@@ -588,6 +615,43 @@ impl Deploy {
                 })
             }
         }
+    }
+
+    /// Takes `page`, the view's page lowered again: a `web-dom` lane writes it
+    /// beside the app it serves and has the open pages load it. Whether it
+    /// did: not for a page as it was, nor for any other deploy.
+    ///
+    /// # Errors
+    ///
+    /// The page could not be written; the pages keep the one before.
+    pub fn repage(&mut self, page: WebPage) -> Result<bool, String> {
+        let Deploy::Browser {
+            server,
+            lane,
+            page: Some(source),
+            bundle,
+            ..
+        } = self
+        else {
+            return Ok(false);
+        };
+        {
+            let mut source = lock(source);
+            if source.page.page == page.page {
+                return Ok(false);
+            }
+            source.page = page;
+        }
+        let Some(dir) = bundle else {
+            return Ok(false);
+        };
+        let bin = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("`{}` has no name", dir.display()))?;
+        write_page(dir, bin, &lock(source))?;
+        server.reload_pages(*lane);
+        Ok(true)
     }
 
     /// Undoes what the session set up on the device: the forwarded port.
@@ -615,6 +679,25 @@ fn artifact_name(path: &Path, suffix: &str) -> Result<String, String> {
 /// A [`Package`] that wraps an executable with `wrap(exe, bin, dir)` into
 /// `dir`, beside it, and leaves the artifact of an executable it already
 /// wrapped as it is, so an unchanged build launches nothing new.
+/// Writes the dev page of `source` in the bundle `dir` of the app `bin`.
+fn write_page(dir: &Path, bin: &str, source: &PageSource) -> Result<(), String> {
+    write_dom_page(
+        dir,
+        &format!("{bin}.js"),
+        &format!("{bin}_bg.wasm"),
+        source.worker.as_deref(),
+        &source.page,
+        Profile::Dev,
+    )
+    .map_err(|failure| failure.message())
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn once_per_executable(
     wrap: impl Fn(&Path, &str, &Path) -> Result<PathBuf, String> + Send + Sync + 'static,
 ) -> Package {

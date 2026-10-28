@@ -1480,7 +1480,8 @@ Global options:
 Notes:
   Counters are those of the window's last frame; batches are its draw calls in
   submission order; resources are the GPU memory, caches and assets the window
-  holds, with their budget where one bounds them.
+  holds, with their budget where one bounds them, and its nodes' hot, warm and
+  cold bytes with what each node takes.
 
 $ viso inspect events --help
 Follow what happens in a window: each input event and the nodes it reached, focus moving, and each node marked dirty with why

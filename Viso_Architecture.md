@@ -4869,7 +4869,7 @@ Viso 在这条路径上的差异：GLES3（GBM/EGL）与 CpuRaster（dumb buffer
 
 # Part XXV — Viso 1.0 实施路线图
 
-> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-vscode`），`web-dom` 可构建（dev session 未接），`web-hybrid` 未实现；Phase 10（§73A）除板卡实测与 KMS overlay plane 外已完成。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
+> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-vscode`），`web-dom` 可构建与运行，`web-hybrid` 未实现；Phase 10（§73A）除板卡实测与 KMS overlay plane 外已完成。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
 
 ## 64. Phase 0 — 固定 Architecture Contract
 
@@ -5218,7 +5218,7 @@ Tier 6: Markdown, PDF, Browser, Charts, Map, Video
 
 ## 73. Phase 9 — CLI / Studio / Inspector / Web Delivery
 
-**状态**：CLI 已覆盖 new、doctor、android、ios、run（多 target lane，ADR 0046）、build、serve、package、export html|solid、fmt、check、schema、explain、dump、test、snapshot、inspect、profile、game、config、lsp、clean、completion；`--json` 为 Ende JSON event stream。`viso inspect` / `viso profile` 与 UI Scenario 共用 `viso_view::inspect` / `viso_view::profile`。`web-dom` 由 `viso build`/`check`/`package` 覆盖（`viso-dom`，capability 诊断为 `WEB_*`），`viso run`/`serve web-dom` 的 dev session 未接。未实现：`web-hybrid`（报 `C0011`）。
+**状态**：CLI 已覆盖 new、doctor、android、ios、run（多 target lane，ADR 0046）、build、serve、package、export html|solid、fmt、check、schema、explain、dump、test、snapshot、inspect、profile、game、config、lsp、clean、completion；`--json` 为 Ende JSON event stream。`viso inspect` / `viso profile` 与 UI Scenario 共用 `viso_view::inspect` / `viso_view::profile`。`web-dom` 由 `viso build`/`check`/`package`/`run`/`serve` 覆盖（`viso-dom`，capability 诊断为 `WEB_*`；dev 下 `.vs` 修改重写页面并 reload）。未实现：`web-hybrid`（报 `C0011`）。
 
 ### 原则
 
@@ -5928,7 +5928,7 @@ fn main() {
 ### 尚未满足
 
 - Engineering：CI 中唯一的性能 gate 是 `check-frame-tax`（dev 层的帧开销），没有通用 benchmark 回归 gate；Studio 不存在；
-- Tooling：`web-hybrid` 不可构建，`web-dom` 没有 dev session；
+- Tooling：`web-hybrid` 不可构建；
 - Footprint：`cargo xtask footprint` 的基线手动记录，不在 CI 中；没有板卡实测。
 
 ---

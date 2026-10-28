@@ -236,6 +236,8 @@ C0009                         unknown build profile
 C0010                         VISO_* environment variable could not be parsed
 C0011                         target is not available in this build
 C0012                         workspace member has no Viso.toml
+C0013                         a package's platform fragment does not read
+C0014                         platform fragments declare one thing differently
 CLI_USAGE                     The command line did not parse or asks for something the command does not do.
 INTERNAL_PANIC                The CLI failed on its own; this is a bug in Viso.
 ENV_CURRENT_DIR               The current directory could not be read.
@@ -286,6 +288,9 @@ EXPORT_UNSUPPORTED            Part of the view has no form the exporter writes.
 EXPORT_NO_VIEW                The project has no view to export.
 EXPORT_CONFLICT               The export directory holds files the export did not write, or that were edited since.
 EXPORT_WRITE                  The export could not be written.
+WEB_GPU_ONLY_NODE             A node only the Viso renderer can draw is in a `web-dom` page.
+WEB_DOM_UNSUPPORTED           Part of the view has no form in a `web-dom` page.
+WEB_DOM_NO_VIEW               The project has no view for its `web-dom` page.
 RUN_APP_FAILED                The app could not be launched, crashed, or exited with a failure.
 RUN_TEST_CRASHED              A test case's runner could not start, crashed, or ended without its report.
 RUN_SNAPSHOT_FAILED           A scenario's snapshot could not be taken.

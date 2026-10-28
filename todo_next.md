@@ -954,7 +954,8 @@ Rules (as for `todo_features.md`):
     - Verified: `viso build web-dom` builds a `viso new` app and its page counts clicks in
       headless Chrome; `viso check web-dom` reports `WEB_GPU_ONLY_NODE` for a `ShaderView`
       (`export_dom` test); release wasm 912 KiB.
-  - [ ] `web-dom` dev session (`viso run`/`serve web-dom`).
+  - [x] `web-dom` dev session (`viso run`/`serve web-dom`): `.vs` edits rewrite the page and
+    reload it without a Rust build. Verified on a `viso new` app in headless Chrome.
   - [ ] Package natives in the page lowering.
   - [ ] `web-hybrid`.
 - [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
