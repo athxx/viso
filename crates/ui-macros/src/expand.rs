@@ -572,8 +572,10 @@ fn mount<'a>(
         );
         let libraries = package_libraries(behavior, packages)
             .map_err(|message| report.at(component.schema.view, message))?;
+        let widgets = package_widgets(behavior, packages)
+            .map_err(|message| report.at(component.schema.view, message))?;
         allocations.extend(host_tokens(
-            behavior, &idents, &tracked, embedded, libraries, &given,
+            behavior, &idents, &tracked, embedded, libraries, widgets, &given,
         ));
     }
     let record = record.map(|(file, origin, build)| {
@@ -651,6 +653,7 @@ fn host_tokens(
     tracked: &BTreeSet<SymbolId>,
     assets: TokenStream,
     libraries: TokenStream,
+    widgets: TokenStream,
     inputs: &[GivenInput],
 ) -> TokenStream {
     let given = inputs.iter().map(|input| {
@@ -687,6 +690,7 @@ fn host_tokens(
             #component,
             __viso_native,
             #libraries,
+            #widgets,
             ::std::vec![#(#given),*],
         );
         {
@@ -739,6 +743,40 @@ fn package_libraries(
         }
     }
     Ok(quote! { &[#(#libraries),*] })
+}
+
+/// The Rust widget implementations of each of `packages` whose widgets the
+/// view's nodes name, as the crate names them: `&[::gauge::WIDGETS]`.
+fn package_widgets(
+    behavior: &ViewBehavior,
+    packages: &[NativePackage],
+) -> Result<TokenStream, String> {
+    let krate = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let named: BTreeSet<Box<str>> = behavior
+        .controls()
+        .filter_map(|(_, control)| Some(control.rust?.widget))
+        .collect();
+    let mut widgets = Vec::new();
+    for package in packages {
+        let Some(widget) = named.iter().find(|name| package.holds_widget(name)) else {
+            continue;
+        };
+        let Some(path) = package.widgets_in(&krate) else {
+            return Err(format!(
+                "`{}` declares the Rust widget `{widget}` but its manifest names no \
+                 `widgets` implementing it",
+                package.name
+            ));
+        };
+        let tokens: TokenStream = path.parse().map_err(|_| {
+            format!(
+                "the widgets of `{}` are not a Rust path: `{path}`",
+                package.name
+            )
+        })?;
+        widgets.push(tokens);
+    }
+    Ok(quote! { &[#(#widgets),*] })
 }
 
 /// The package's asset directory a form's profile indexes.

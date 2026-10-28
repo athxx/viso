@@ -538,6 +538,14 @@ fn strict_makes_accessibility_and_localization_findings_errors() {
 }
 
 #[test]
+fn a_native_packages_rust_widget_checks_from_its_schema() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/11-native-widget");
+    let out = viso(&example, &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(stdout(&out).contains("no problems"), "{}", stdout(&out));
+}
+
+#[test]
 fn cargo_checks_the_rust_code_too() {
     let root = stand_in::project("check-cargo");
     fs::write(root.join("Viso.toml"), MANIFEST).unwrap();

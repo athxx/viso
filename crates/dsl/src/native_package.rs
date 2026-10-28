@@ -8,6 +8,7 @@
 //! schema = "natives.json"   # the libraries' schema, beside the manifest
 //! library = "NATIVES"       # the `&'static [&'static NativeLibrary]` they are, in the crate
 //! feature = "dsl"           # the feature that builds them, where one does
+//! widgets = "WIDGETS"       # the `&'static [WidgetImpl]` of its Rust widgets, where it has any
 //! ```
 //!
 //! The schema is the libraries as [`schema::write`] writes them, lossless
@@ -52,6 +53,9 @@ pub struct NativePackage {
     pub own: Option<OwnLibraries>,
     /// Their schemas.
     pub libraries: Vec<&'static NativeLibrary>,
+    /// The item beside them implementing their Rust widgets, `WIDGETS`,
+    /// where they declare any.
+    pub widgets: Option<String>,
 }
 
 /// The native libraries of the app's own package.
@@ -74,6 +78,23 @@ impl NativePackage {
             }
             _ => self.library.clone(),
         }
+    }
+
+    /// The Rust path of its Rust widget implementations as crate `krate`
+    /// names them, beside its libraries: `::gauge::WIDGETS`.
+    pub fn widgets_in(&self, krate: &str) -> Option<String> {
+        let widgets = self.widgets.as_deref()?;
+        let library = self.library_in(krate);
+        let module = library.rsplit_once("::").map_or("crate", |(m, _)| m);
+        Some(format!("{module}::{widgets}"))
+    }
+
+    /// Whether one of its libraries declares the Rust widget `name`.
+    pub fn holds_widget(&self, name: &str) -> bool {
+        self.libraries
+            .iter()
+            .flat_map(|library| library.widgets)
+            .any(|widget| widget.is_rust() && widget.name == name)
     }
 
     /// Whether one of its libraries holds the native at `path`.
@@ -254,8 +275,9 @@ pub fn link_with<T>(
     }
 }
 
-/// A package's declared libraries: its name, their item, their schemas.
-type Declared = (String, String, Vec<&'static NativeLibrary>);
+/// A package's declared libraries: its name, their item, their schemas, and
+/// the item of its Rust widgets.
+type Declared = (String, String, Vec<&'static NativeLibrary>, Option<String>);
 
 /// The native packages of `metadata`: the root package itself when it
 /// declares libraries, then those it depends on directly, each schema read
@@ -326,10 +348,14 @@ fn packages(
         let library = member("library")?.to_owned();
         let libraries =
             schema::read(&read_file(&file)?).map_err(|e| format!("`{}`: {e}", file.display()))?;
-        Ok(Some((name, library, libraries)))
+        let widgets = match declared.get("widgets") {
+            Some(_) => Some(member("widgets")?.to_owned()),
+            None => None,
+        };
+        Ok(Some((name, library, libraries, widgets)))
     };
     let mut found = Vec::new();
-    if let Some((name, item, libraries)) = declared(root)? {
+    if let Some((name, item, libraries, widgets)) = declared(root)? {
         // The crate of its library target, which its other targets name.
         let krate = package(root)
             .and_then(|p| p.get("targets"))
@@ -352,6 +378,7 @@ fn packages(
             },
             own: Some(OwnLibraries { krate, item }),
             libraries,
+            widgets,
         });
     }
     let deps = node(root)
@@ -377,7 +404,7 @@ fn packages(
         if !normal {
             continue;
         }
-        let Some((name, item, libraries)) = declared(id)? else {
+        let Some((name, item, libraries, widgets)) = declared(id)? else {
             continue;
         };
         found.push(NativePackage {
@@ -385,6 +412,7 @@ fn packages(
             library: format!("::{extern_name}::{item}"),
             own: None,
             libraries,
+            widgets,
         });
     }
     found.sort_by(|a, b| a.name.cmp(&b.name));
@@ -461,6 +489,7 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "viso-net");
         assert_eq!(found[0].library, "::net2::NATIVES");
+        assert_eq!(found[0].widgets_in("app"), None);
         assert!(found[0].holds("net::get") && !found[0].holds("network::get"));
         let natives = registry(&found).unwrap();
         assert!(
@@ -487,7 +516,7 @@ mod tests {
               "packages": [
                 {{"id": "app", "name": "my-app", "manifest_path": "/w/app/Cargo.toml",
                   "targets": {targets},
-                  "metadata": {{"viso": {{"natives": {{"schema": "natives.json", "library": "NATIVES"}}}}}}}}
+                  "metadata": {{"viso": {{"natives": {{"schema": "natives.json", "library": "NATIVES", "widgets": "WIDGETS"}}}}}}}}
               ],
               "resolve": {{"root": "app", "nodes": [{{"id": "app", "deps": [], "features": []}}]}}
             }}"#
@@ -514,6 +543,14 @@ mod tests {
         assert!(found[0].holds("mail::Route"));
         assert_eq!(found[0].library_in("my_app"), "crate::NATIVES");
         assert_eq!(found[0].library_in("routes"), "::my_app::NATIVES");
+        assert_eq!(
+            found[0].widgets_in("my_app").as_deref(),
+            Some("crate::WIDGETS")
+        );
+        assert_eq!(
+            found[0].widgets_in("routes").as_deref(),
+            Some("::my_app::WIDGETS")
+        );
         let bins = packages(&own(r#"[{"name": "my-app", "kind": ["bin"]}]"#), read).unwrap();
         assert_eq!(bins[0].library_in("my_app"), "crate::NATIVES");
     }

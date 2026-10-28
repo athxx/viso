@@ -1332,8 +1332,10 @@ pub(crate) fn lower_region_entry(
 
 /// Lowers the write-back of a `bind` to a two-way component input: a handler
 /// of the event the input is paired with, writing the event's first parameter
-/// to `source`. The payload arrives in `r0`, the enclosing regions' values
-/// `scope` after it.
+/// to `source` — or, when `whole`, the payload itself, as a Rust widget's
+/// change event carries its value. The payload arrives in `r0`, the
+/// enclosing regions' values `scope` after it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_write_back(
     b: &mut ProgramBuilder,
     cx: &InferCx<'_>,
@@ -1341,6 +1343,7 @@ pub(crate) fn lower_write_back(
     scope: &[(SyntaxNode, Ty)],
     source: &AssignablePath,
     convert: Option<&crate::hir::generic::CallTarget>,
+    whole: bool,
     at: TextRange,
 ) -> FuncId {
     let mut l = Lowerer::new(cx, b, &def, at);
@@ -1351,12 +1354,15 @@ pub(crate) fn lower_write_back(
             l.bind_matched(pattern, src, ty)?;
         }
         let (slot, path) = l.lens(source)?;
-        let mut value = l.reg();
-        l.emit(Inst::Field {
-            dst: value,
-            src: event,
-            index: 0,
-        });
+        let mut value = event;
+        if !whole {
+            value = l.reg();
+            l.emit(Inst::Field {
+                dst: value,
+                src: event,
+                index: 0,
+            });
+        }
         // A converter's `None` rejects the update: the state keeps its value.
         let mut rejected = None;
         if let Some(to_model) = convert {

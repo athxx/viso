@@ -1,5 +1,5 @@
 //! The schema of a native package: its libraries as JSON, every field of
-//! every function and type but the implementation.
+//! every function, type, scheduler trait and widget but the implementation.
 //!
 //! A tool that compiles `.vs` without building the package's Rust reads it
 //! ([`read`]) to resolve and check calls; the package's own tests write it
@@ -18,8 +18,9 @@ use std::vec::Vec;
 use viso_ende::{JsonValue, JsonWriter};
 
 use super::{
-    Determinism, NativeCx, NativeError, NativeFunction, NativeKind, NativeLibrary, NativeType,
-    Natives, Ownership, Param, SchemaTy, ThreadDomain, VariantFields,
+    Determinism, HookDomain, NativeCx, NativeError, NativeFunction, NativeHook, NativeKind,
+    NativeLibrary, NativeTrait, NativeType, NativeWidget, Natives, Ownership, Param, SchemaTy,
+    ThreadDomain, VariantFields, WidgetEvent, WidgetProperty,
 };
 use crate::value::Value;
 
@@ -31,17 +32,15 @@ const VERSION: u32 = 1;
 ///
 /// # Errors
 ///
-/// A library declaring scheduler traits or widgets, which a native package
-/// does not carry.
+/// A library declaring a widget a package cannot carry: one that is not a
+/// Rust widget ([`NativeWidget::rust`]), or one with slots, groups of its own,
+/// a group it provides or an event that bubbles.
 pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
     let mut out =
         format!("{{\n  \"format\": \"{FORMAT}\",\n  \"version\": {VERSION},\n  \"libraries\": [");
     for (i, library) in libraries.iter().enumerate() {
-        if !library.traits.is_empty() || !library.widgets.is_empty() {
-            return Err(format!(
-                "`{}`: a native package carries functions and types, not traits or widgets",
-                library.path
-            ));
+        for widget in library.widgets {
+            carried(library, widget)?;
         }
         let mut head = JsonWriter::new();
         head.begin_object();
@@ -114,7 +113,22 @@ pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
         if !library.types.is_empty() {
             out.push_str("\n      ");
         }
-        out.push_str("]\n    }");
+        out.push(']');
+        if !library.traits.is_empty() {
+            out.push_str(",\n      \"traits\": [");
+            lines(
+                &mut out,
+                library.traits.iter().map(native_trait),
+                "        ",
+            );
+            out.push(']');
+        }
+        if !library.widgets.is_empty() {
+            out.push_str(",\n      \"widgets\": [");
+            lines(&mut out, library.widgets.iter().map(widget), "        ");
+            out.push(']');
+        }
+        out.push_str("\n    }");
     }
     if !libraries.is_empty() {
         out.push_str("\n  ");
@@ -173,6 +187,102 @@ fn function(f: &NativeFunction) -> String {
     w.bool(f.presentation);
     w.name("debug_draw");
     w.bool(f.debug_draw);
+    w.end_object();
+    w.into_string()
+}
+
+/// Whether a package may carry `widget` of `library`: a Rust widget with no
+/// slots, groups or provided group of its own and no event that bubbles.
+fn carried(library: &NativeLibrary, widget: &NativeWidget) -> Result<(), String> {
+    let path = format!("{}::{}", library.path, widget.name);
+    if !widget.is_rust() {
+        return Err(format!(
+            "`{path}`: a native package's widget is a Rust widget (`NativeWidget::rust`)"
+        ));
+    }
+    if !widget.slots.is_empty() || !widget.groups.is_empty() || widget.provides.is_some() {
+        return Err(format!(
+            "`{path}`: a Rust widget builds its own content, so it has no slots, and takes the box's groups"
+        ));
+    }
+    if let Some(event) = widget.own_events().find(|e| e.bubbles) {
+        return Err(format!(
+            "`{path}`: its event `{}` bubbles; a Rust widget's events reach its own node",
+            event.name
+        ));
+    }
+    Ok(())
+}
+
+fn native_trait(t: &NativeTrait) -> String {
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.name("name");
+    w.string(t.name);
+    w.name("hooks");
+    w.begin_array();
+    for hook in t.hooks {
+        w.begin_object();
+        w.name("name");
+        w.string(hook.name);
+        w.name("params");
+        params(&mut w, hook.params);
+        w.name("domain");
+        w.string(domain_name(hook.domain));
+        w.end_object();
+    }
+    w.end_array();
+    w.end_object();
+    w.into_string()
+}
+
+fn domain_name(domain: HookDomain) -> &'static str {
+    match domain {
+        HookDomain::Simulation => "simulation",
+        HookDomain::Presentation => "presentation",
+        HookDomain::Realtime => "realtime",
+    }
+}
+
+fn widget(widget: &NativeWidget) -> String {
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.name("name");
+    w.string(widget.name);
+    w.name("properties");
+    w.begin_array();
+    for p in widget.own_properties() {
+        w.begin_object();
+        w.name("name");
+        w.string(p.name);
+        w.name("ty");
+        w.string(p.ty);
+        w.name("two_way");
+        w.bool(p.two_way);
+        w.name("percent_basis");
+        w.bool(p.percent_basis);
+        w.name("styleable");
+        w.bool(p.styleable);
+        w.name("localizable");
+        w.bool(p.localizable);
+        w.end_object();
+    }
+    w.end_array();
+    w.name("events");
+    w.begin_array();
+    for e in widget.own_events() {
+        w.begin_object();
+        w.name("name");
+        w.string(e.name);
+        if let Some(payload) = e.payload {
+            w.name("payload");
+            w.string(payload);
+        }
+        w.end_object();
+    }
+    w.end_array();
+    w.name("interactive");
+    w.bool(widget.interactive);
     w.end_object();
     w.into_string()
 }
@@ -302,17 +412,95 @@ fn parse(text: &str) -> Result<Vec<&'static NativeLibrary>, String> {
                 .iter()
                 .map(|d| d.as_str().map(leak).ok_or("a derive is not a string"))
                 .collect::<Result<Vec<_>, _>>()?;
+            let traits = match library.get("traits") {
+                None => Vec::new(),
+                Some(_) => array(library, "traits")?
+                    .iter()
+                    .map(read_trait)
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
+            let widgets = match library.get("widgets") {
+                None => Vec::new(),
+                Some(_) => array(library, "widgets")?
+                    .iter()
+                    .map(read_widget)
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
             Ok(&*Box::leak(Box::new(NativeLibrary {
                 path,
                 version: number(library, "version")?,
                 functions: Box::leak(functions.into_boxed_slice()),
                 types: Box::leak(types.into_boxed_slice()),
-                traits: &[],
+                traits: Box::leak(traits.into_boxed_slice()),
                 derives: Box::leak(derives.into_boxed_slice()),
-                widgets: &[],
+                widgets: Box::leak(widgets.into_boxed_slice()),
             })))
         })
         .collect()
+}
+
+fn read_trait(json: &JsonValue) -> Result<NativeTrait, String> {
+    let hooks = array(json, "hooks")?
+        .iter()
+        .map(|hook| {
+            let domain = string(hook, "domain")?;
+            Ok(NativeHook {
+                name: leak(string(hook, "name")?),
+                params: read_params(hook, "params")?,
+                domain: [
+                    HookDomain::Simulation,
+                    HookDomain::Presentation,
+                    HookDomain::Realtime,
+                ]
+                .into_iter()
+                .find(|d| domain_name(*d) == domain)
+                .ok_or_else(|| format!("`{domain}` is not a hook domain"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(NativeTrait {
+        name: leak(string(json, "name")?),
+        hooks: Box::leak(hooks.into_boxed_slice()),
+    })
+}
+
+fn read_widget(json: &JsonValue) -> Result<NativeWidget, String> {
+    let properties = array(json, "properties")?
+        .iter()
+        .map(|p| {
+            Ok(WidgetProperty {
+                name: leak(string(p, "name")?),
+                ty: leak(string(p, "ty")?),
+                two_way: flag(p, "two_way")?,
+                percent_basis: flag(p, "percent_basis")?,
+                styleable: flag(p, "styleable")?,
+                localizable: flag(p, "localizable")?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let events = array(json, "events")?
+        .iter()
+        .map(|e| {
+            Ok(WidgetEvent {
+                name: leak(string(e, "name")?),
+                payload: match e.get("payload") {
+                    None => None,
+                    Some(_) => Some(leak(string(e, "payload")?)),
+                },
+                bubbles: false,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let properties: &'static [WidgetProperty] = Box::leak(properties.into_boxed_slice());
+    let events: &'static [WidgetEvent] = Box::leak(events.into_boxed_slice());
+    let widget = NativeWidget::rust(leak(string(json, "name")?))
+        .properties(Box::leak(Box::new([properties])))
+        .events(Box::leak(Box::new([events])));
+    Ok(if flag(json, "interactive")? {
+        widget.interactive()
+    } else {
+        widget
+    })
 }
 
 fn leak(text: &str) -> &'static str {
@@ -538,7 +726,8 @@ fn unlinked(_: &mut NativeCx<'_>, _: &[Value]) -> Result<Value, NativeError> {
 /// # Panics
 ///
 /// When the schema is missing or differs, when `libraries` conflict with
-/// the standard ones (`E6101`), or when they declare traits or widgets.
+/// the standard ones (`E6101`), or when they declare a widget a package
+/// cannot carry ([`write`]).
 #[track_caller]
 pub fn check(libraries: &[&'static NativeLibrary], path: impl AsRef<Path>) {
     let path = match std::env::var_os("CARGO_MANIFEST_DIR") {
@@ -652,5 +841,64 @@ mod tests {
         // Read again, the same libraries.
         assert!(core::ptr::eq(back[0], read(&text).unwrap()[0]));
         assert!(read("{\"format\":\"viso-natives\",\"version\":2,\"libraries\":[]}").is_err());
+    }
+
+    static GAUGE_PROPS: [WidgetProperty; 2] = [
+        WidgetProperty::new("value", "F32"),
+        WidgetProperty::new("label", "String").localizable(),
+    ];
+    static GAUGE_EVENTS: [WidgetEvent; 1] = [WidgetEvent::new("picked", "F32")];
+    static TICK: [NativeHook; 1] = [NativeHook {
+        name: "tick",
+        params: &[Param {
+            name: "dt",
+            ty: SchemaTy::F32,
+        }],
+        domain: HookDomain::Presentation,
+    }];
+
+    static DIALS: NativeLibrary = NativeLibrary {
+        path: "dials",
+        version: 1,
+        functions: &[],
+        types: &[],
+        traits: &[NativeTrait {
+            name: "Ticking",
+            hooks: &TICK,
+        }],
+        derives: &[],
+        widgets: &[NativeWidget::rust("Gauge")
+            .properties(&[&GAUGE_PROPS])
+            .events(&[&GAUGE_EVENTS])
+            .interactive()],
+    };
+
+    #[test]
+    fn traits_and_rust_widgets_read_back_as_written() {
+        let text = write(&[&DIALS]).unwrap();
+        let back = read(&text).unwrap();
+        assert_eq!(write(&back).unwrap(), text);
+        assert_eq!(back[0].traits, DIALS.traits);
+        assert_eq!(back[0].widgets, DIALS.widgets);
+        let natives = Natives::with(&back).unwrap();
+        let gauge = natives.widget("Gauge").unwrap();
+        assert_eq!(gauge.own_property("label"), Some(1));
+        // The box comes with it.
+        assert!(gauge.property("width").is_some() && gauge.event("click").is_some());
+    }
+
+    #[test]
+    fn a_package_carries_only_rust_widgets() {
+        static STACKED: NativeLibrary = NativeLibrary {
+            path: "stacked",
+            version: 1,
+            functions: &[],
+            types: &[],
+            traits: &[],
+            derives: &[],
+            widgets: &[NativeWidget::new("Pile", super::super::WidgetNode::Stack)],
+        };
+        let error = write(&[&STACKED]).unwrap_err();
+        assert!(error.contains("`stacked::Pile`"), "{error}");
     }
 }

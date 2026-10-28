@@ -1,0 +1,19 @@
+[package]
+name = "viso-example-11-native-widget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A `.vs` view naming a Rust widget from a native package: the gauge takes
+# its own properties, its box's layout and look, and a two-way `level` the
+# view binds to a state.
+[dependencies]
+viso = { workspace = true }
+viso-example-gauge = { path = "gauge" }
+
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }
+
+[lints]
+workspace = true

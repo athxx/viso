@@ -1,0 +1,13 @@
+{
+  "format": "viso-natives",
+  "version": 1,
+  "libraries": [
+    {"path":"dials","version":1,"derives":[],
+      "functions": [],
+      "types": [],
+      "widgets": [
+        {"name":"Gauge","properties":[{"name":"level","ty":"F32","two_way":true,"percent_basis":false,"styleable":false,"localizable":false},{"name":"label","ty":"String","two_way":false,"percent_basis":false,"styleable":false,"localizable":true}],"events":[{"name":"level_changed","payload":"F32"},{"name":"pressed","payload":"F32"}],"interactive":false}
+      ]
+    }
+  ]
+}

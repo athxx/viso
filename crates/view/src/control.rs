@@ -27,9 +27,9 @@ use crate::route::EventRoute;
 use crate::scope::Scope;
 
 pub use viso_schema::view::control::{
-    Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, SOURCE_ROLES,
-    SemanticEntries, Switched, TextEntries, When, source_live, source_name, source_role,
-    widget_role,
+    Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, RustEntries,
+    SOURCE_ROLES, SemanticEntries, Switched, TextEntries, When, source_live, source_name,
+    source_role, widget_role,
 };
 
 /// The deepest condition a [`LookArm`] evaluates.
@@ -73,7 +73,8 @@ impl Drive for Control {
             ControlKind::ColorPicker
             | ControlKind::ComboBox
             | ControlKind::SearchField
-            | ControlKind::Router => None,
+            | ControlKind::Router
+            | ControlKind::Rust => None,
             ControlKind::Select | ControlKind::Segmented => select(self, host, scope, cx),
             ControlKind::Pages => pages(self, host, scope, cx),
             ControlKind::TextInput => text_input(self, host, scope, cx),

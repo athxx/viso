@@ -3160,11 +3160,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-11-native-widget"
+version = "0.0.0"
+dependencies = [
+ "viso",
+ "viso-example-gauge",
+]
+
+[[package]]
 name = "viso-example-code-editor"
 version = "0.0.0"
 dependencies = [
  "viso",
  "viso-code-editor",
+]
+
+[[package]]
+name = "viso-example-gauge"
+version = "0.0.0"
+dependencies = [
+ "viso",
 ]
 
 [[package]]

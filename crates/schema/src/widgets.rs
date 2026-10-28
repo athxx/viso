@@ -589,6 +589,11 @@ const fn layout(
         .migratable(MigratableState::FOCUS.with(MigratableState::ANIMATION))
 }
 
+/// The box a Rust widget is besides its own properties and events: a node's
+/// layout, transform, focus and drag properties, its `semantics.*` and
+/// `transition.*` groups and the standard events.
+pub static RUST_BOX: NativeWidget = layout("", WidgetNode::Stack, &[LAYOUT, TRANSFORM, FOCUS]);
+
 const ROW: WidgetNode = WidgetNode::Flex(FlexAxis::Row);
 const COLUMN: WidgetNode = WidgetNode::Flex(FlexAxis::Column);
 const FLEX_NODE: WidgetNode = WidgetNode::Flex(FlexAxis::Property);

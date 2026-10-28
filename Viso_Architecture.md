@@ -3639,7 +3639,7 @@ Viso DSL compiler 只读纯数据的 schema，不直接操作 Rust 对象内存�
 - **Native 函数与类型**：`viso_behavior::native` 的 `NativeLibrary` / `NativeFunction` / `NativeType`（effect kind、thread domain、capability、ownership）与 `Natives` 注册表（ADR 0036）。框架外的 native package 在 manifest 旁携带同一 schema 的 JSON（`natives.json`），compiler 经 `cargo metadata` 发现，不构建 app 的 Rust（ADR 0051）；app 自己的包也可以这样声明 native library（例如它的路由 enum），库 target 中称为 `crate::NATIVES`，其余 target 经库 crate 引用；native 数据类型由 `#[derive(NativeData)]` 生成。
 - **Component**：`.vs` 组件的 input/state/event/slot 由 compiler 从源码得到（HIR 的 `ComponentSchema`）；`viso schema <symbol>` 输出上述任一对象（DSL 规范 §139）。
 
-不做 `#[derive(Component, Reflect)]` 式从 Rust 类型反射 schema：Rust 能力以 native schema 数据进入 DSL。目标（尚未实现）：native package 携带 widget（与 trait）schema，使 app 或扩展的 Rust widget 可在 `.vs` 中使用（ADR 0051 目前只携带函数与类型）。
+不做 `#[derive(Component, Reflect)]` 式从 Rust 类型反射 schema：Rust 能力以 native schema 数据进入 DSL。native package 的 schema 也携带 trait 与 Rust widget（`NativeWidget::rust`，`WidgetNode::Rust`）：Rust widget 只声明自己的属性与事件，盒的布局、变换、焦点、`semantics.*`、`transition.*` 与标准事件来自隐式的 `viso_schema::widgets::RUST_BOX`。节点 lower 为 Stack，control 为 `ControlKind::Rust`，`Control.rust` 的 `RustEntries` 记着 widget 名、每个自有属性的位置与求值入口、每个自有事件的位置与处理器下标。运行时的实现是 `viso_view::RustWidget`（`build` 在节点内建内容，`set` 收自有属性的新值），由包的 `&'static [WidgetImpl]` 经 `__embedded` 或 `ViewLoad::widgets` 链接进 `ViewHost`；视图在首次交付值时用 `BuildCx::with_parent` 建出它（`Parts::Rust`），之后只交付变化的值；自有事件经 `WidgetEvents::fire` 直接 `dispatch` 到处理器下标，不经 `EventRoute`，双向属性的写回处理器读整个载荷而不是第一个字段。
 
 IR/runtime 使用 `NodeId`、`NodeKey`、`StateId`、`SymbolId` / `StableId`、`ResourceId`、`NativeId` 等数值 ID；属性在 lowering 时成为 AOT 节点的 style mask 与 payload 字段；开发模式保留字符串用于 diagnostics 与 Inspector；**release hot path 不做字符串属性查找**。
 

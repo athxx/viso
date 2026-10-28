@@ -162,11 +162,15 @@ pub enum ControlKind {
     /// parts the framework builds inside it, once — and reports
     /// `back_requested` before a system back action pops a page.
     Router = 37,
+    /// A widget its library builds in Rust: its implementation builds the
+    /// node's content once, takes the values of the widget's own properties
+    /// the view binds ([`RustEntries`]) and raises the widget's own events.
+    Rust = 38,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 38] = [
+    pub const ALL: [ControlKind; 39] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -205,9 +209,11 @@ impl ControlKind {
         ControlKind::Camera,
         ControlKind::Glass,
         ControlKind::Router,
+        ControlKind::Rust,
     ];
 
-    /// The kind native widget `widget` is.
+    /// The kind native widget `widget` is; a Rust widget is
+    /// [`Rust`](Self::Rust) whatever its name.
     pub fn of(widget: &str) -> ControlKind {
         match widget {
             "CheckBox" => ControlKind::Check,
@@ -291,6 +297,7 @@ impl ControlKind {
                 | ControlKind::ComboBox
                 | ControlKind::SearchField
                 | ControlKind::Router
+                | ControlKind::Rust
         )
     }
 
@@ -325,6 +332,7 @@ impl ControlKind {
                     | ControlKind::SearchField
                     | ControlKind::Glass
                     | ControlKind::Router
+                    | ControlKind::Rust
             )
     }
 
@@ -647,6 +655,7 @@ impl ControlKind {
             ControlKind::Camera => "Camera",
             ControlKind::Glass => "Glass",
             ControlKind::Router => "Router",
+            ControlKind::Rust => "Rust",
         }
     }
 
@@ -1291,6 +1300,22 @@ pub struct Control {
     pub semantics: SemanticEntries,
     /// The entries of the layout properties it reads, by ascending slot.
     pub layout: Box<[(LayoutSlot, u32)]>,
+    /// What a Rust widget's node reads and reports; `None` for any other
+    /// node.
+    pub rust: Option<Box<RustEntries>>,
+}
+
+/// What the node of a Rust widget reads and reports: the widget, the entry of
+/// each of its own properties the view binds and the handler of each of its
+/// own events the view handles, both by their place among the widget's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustEntries {
+    /// The widget's type name, the one its implementation is linked under.
+    pub widget: Box<str>,
+    /// Each bound property's place and entry, ascending by place.
+    pub properties: Box<[(u16, u32)]>,
+    /// Each handled event's place and handler, in the order they run.
+    pub events: Box<[(u16, u32)]>,
 }
 
 /// The handler-table entries of whether a node shows, takes input and takes
@@ -1678,6 +1703,7 @@ impl Control {
             text: TextEntries::default(),
             semantics: SemanticEntries::default(),
             layout: Box::new([]),
+            rust: None,
         }
     }
 
@@ -2013,6 +2039,20 @@ impl Encode for Control {
             enc.write_u8(slot as u8);
             enc.write_varint(u64::from(entry));
         }
+        match &self.rust {
+            None => enc.write_u8(0),
+            Some(rust) => {
+                enc.write_u8(1);
+                enc.write_str(&rust.widget);
+                for list in [&rust.properties, &rust.events] {
+                    enc.write_varint(list.len() as u64);
+                    for &(place, entry) in list.iter() {
+                        enc.write_varint(u64::from(place));
+                        enc.write_varint(u64::from(entry));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2117,6 +2157,7 @@ impl Decode for Control {
             node: NodeEntries::default(),
             text: TextEntries::default(),
             layout: Box::new([]),
+            rust: None,
         };
         control.node = NodeEntries {
             visible: entry()?,
@@ -2201,6 +2242,32 @@ impl Decode for Control {
             layout.push((slot, index(dec)?));
         }
         control.layout = layout.into();
+        let offset = dec.position();
+        control.rust = match dec.read_u8()? {
+            0 => None,
+            1 => {
+                let widget = dec.read_str()?.into();
+                let list = |dec: &mut Decoder<'_>| -> Result<Box<[(u16, u32)]>, DecodeError> {
+                    let count = index(dec)?;
+                    let mut out = Vec::with_capacity((count as usize).min(256));
+                    for _ in 0..count {
+                        let offset = dec.position();
+                        let place = u16::try_from(index(dec)?)
+                            .map_err(|_| DecodeError::Malformed { offset })?;
+                        out.push((place, index(dec)?));
+                    }
+                    Ok(out.into())
+                };
+                let properties = list(dec)?;
+                let events = list(dec)?;
+                Some(Box::new(RustEntries {
+                    widget,
+                    properties,
+                    events,
+                }))
+            }
+            _ => return Err(DecodeError::Malformed { offset }),
+        };
         Ok(control)
     }
 }
@@ -2464,11 +2531,22 @@ mod tests {
                 ..TextEntries::default()
             },
             layout: Box::new([(LayoutSlot::Width, 14), (LayoutSlot::AbsoluteStart, 15)]),
+            rust: Some(Box::new(RustEntries {
+                widget: "Gauge".into(),
+                properties: Box::new([(0, 56), (2, 57)]),
+                events: Box::new([(1, 3)]),
+            })),
         };
         let bytes = control.encode_to_vec();
-        assert_eq!(Control::decode_from_slice(&bytes), Ok(control));
-        let mut unordered = bytes.clone();
-        let at = unordered.len() - 4;
+        assert_eq!(Control::decode_from_slice(&bytes), Ok(control.clone()));
+        // The layout slots come last but for the absent Rust entries' tag.
+        let plain = Control {
+            rust: None,
+            ..control
+        };
+        let plain = plain.encode_to_vec();
+        let mut unordered = plain.clone();
+        let at = unordered.len() - 5;
         assert_eq!(unordered[at], LayoutSlot::Width as u8);
         unordered[at] = LayoutSlot::AbsoluteStart as u8;
         assert!(
@@ -2487,8 +2565,8 @@ mod tests {
             Control::decode_from_slice(&bad).is_err(),
             "no such live setting"
         );
-        let mut bad = bytes;
-        let state = bad.len() - 11;
+        let mut bad = plain;
+        let state = bad.len() - 12;
         bad[state] = 9;
         assert!(
             Control::decode_from_slice(&bad).is_err(),

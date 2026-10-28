@@ -1929,12 +1929,14 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 schema = "natives.json"   # Library 的 Schema，与 manifest 同目录
 library = "NATIVES"       # crate 中的 `&'static [&'static NativeLibrary]`
 feature = "dsl"           # 构建它们的 feature，可省略
+widgets = "WIDGETS"       # crate 中 Rust Widget 的 `&'static [WidgetImpl]`，没有 Rust Widget 时省略
 ```
 
-- Schema 文件是 `viso-natives` JSON（版本 1）：除实现外的每个函数与类型字段；包自身的测试以 `viso::native::check(NATIVES, "natives.json")` 比较，不一致即失败，设 `VISO_WRITE_NATIVES` 时改为写出；Trait 与 Widget 暂不携带；
+- Schema 文件是 `viso-natives` JSON（版本 1）：除实现外的每个函数与类型字段；包自身的测试以 `viso::native::check(NATIVES, "natives.json")` 比较，不一致即失败，设 `VISO_WRITE_NATIVES` 时改为写出；Library 的 Trait 与 Rust Widget 同样写入（`traits`、`widgets` 两个键，没有时省略）；
 - 只发现 App crate 的直接 normal 依赖（`cargo metadata`；声明了 `feature` 的须已启用），每个 manifest 与 lock 文件在进程内只发现一次；两个 Library 声明同一路径为 `E6101`；
 - `view!` 与 `component!` 先按标准 Registry 编译，出现 `E2001` 时才发现并按标准 Library 加上这些包的 Library 重新编译，不依赖 Native Package 的 App 不运行 `cargo metadata`；展开把模块调用到的包的 Rust Library（如 `::app_api::NATIVES`）交给 View 的 Host 链接，View 启动的 Game 同样链接，Release View Package 以 `ViewLoad::libraries` 交入；
 - `viso check`、`viso export`、`viso run` 的 dev 编译与 LSP 用同一规则（源文件所属 crate 为 `Viso.toml` 旁或文件之上最近的 `Cargo.toml`）；`viso schema` 预先发现，列出项目可调用的全部 Native；发现失败时作为 note 附在每个保留的 `E2001` 上；
+- **Rust Widget**：Library 的 `widgets` 中的 `NativeWidget::rust(name)` 是一个用 Rust 实现的 Widget，Schema 只有它自己的属性与事件，Native Package 只能携带这种 Widget（没有 Slot、属性组与冒泡事件）。`.vs` 像写其他节点一样写它：自己的属性按 Schema 定型（`E2103`），此外接受所有节点都有的布局、变换、焦点、`semantics.*`、`transition.*`、外观与标准事件，不接受子节点。它 Lower 为一个盒节点（Stack），自己的属性成为求值入口，自己事件的处理器按事件在 Schema 中的位置登记，不经事件路由，因此不能写 `capture`。实现是 `viso::native::RustWidget`：节点第一次显示时 `build` 在盒内建出内容，之后每个自有属性的值变化时 `set` 收到新值（相等的值不重复交付，热重载保留已交付的值与 Widget 实例）；它从自己挂上的处理器里以 `WidgetEvents::fire(cells, event, payload)` 报告事件，运行 View 对该事件的处理器。双向属性 `p` 由事件 `p_changed`（主属性也可以是 `changed`）写回，载荷就是新值，`bind p <=> state` 直接写入；包以 `pub static WIDGETS: &[WidgetImpl]` 提供实现，测试以 `viso::native::check_widgets(NATIVES, WIDGETS)` 核对与声明一一对应。展开把 View 用到的 Rust Widget 所在包的 `WIDGETS` 交给 Host，Release View Package 以 `ViewLoad::widgets` 交入；Host 没有链接到某个 Widget 的实现时，该节点不建内容并记录一次 Fault。HTML 导出不支持 Rust Widget；
 - Dev Session 的 Patch 只能链接 Live View 的 Host 已链接的 Library：首次调用构建未链接的包需要重新构建；
 - Capability 照旧：函数声明自己的 Capability，`Viso.toml` 的 `[package] capabilities` 授予，授权随模块到达 Host，授权之外的调用为 `E6103` Fault；`view!` 与 `component!` 以 `Viso.toml` 为编译依赖，改动授权即重新编译。
 

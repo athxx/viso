@@ -1739,10 +1739,11 @@ Maintain a progression such as:
 08-adaptive
 09-accessibility
 10-custom-shader
+11-native-widget
 99-full-app
 ```
 
-Today only `01-counter`, `04-navigation` and `10-custom-shader` exist from this list, beside `hello_world` and named feature examples (`i18n`, `images`, `links`, `persist`, `pointer`, `shell`, `video`, `code-editor`, `map`); fill the numbered steps as they land.
+Today only `01-counter`, `04-navigation`, `10-custom-shader` and `11-native-widget` (a native package's Rust widget in a `view!`) exist from this list, beside `hello_world` and named feature examples (`i18n`, `images`, `links`, `persist`, `pointer`, `shell`, `video`, `code-editor`, `map`); fill the numbered steps as they land.
 
 New examples should demonstrate the Viso 1.0 architecture, not Makepad compatibility patterns.
 

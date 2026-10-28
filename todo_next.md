@@ -892,9 +892,36 @@ Rules (as for `todo_features.md`):
 
 ## N6 — DSL and tooling
 
-- [ ] Native widgets and traits in native package schemas, so an app's or an extension's Rust
+- [x] Native widgets and traits in native package schemas, so an app's or an extension's Rust
   widget is usable from `.vs`. Verify with a fixture package widget that passes `viso check` and
   mounts in a `view!`.
+  - Built:
+    - `natives.json` carries a library's traits and its Rust widgets under two optional keys, so
+      existing schemas read unchanged. A package carries only Rust widgets: no slots, groups or
+      bubbling events.
+    - `NativeWidget::rust` declares a widget's own properties and events. Every node's layout,
+      transform, focus, `semantics.*`, `transition.*`, look and standard events come from an
+      implicit box.
+    - A Rust widget node lowers as a Stack with `ControlKind::Rust`. Its own properties become
+      entries, and its own events become handler indices in `RustEntries`, outside the event
+      routes.
+    - The write-back of a two-way property reads the whole payload, as the widget's change event
+      carries the value itself.
+    - At run time a `RustWidget` builds inside the node on its first delivery and takes each own
+      property's value as it changes. It keeps its instance across a hot reload and fires its own
+      events through `WidgetEvents`.
+    - A package names its `&'static [WidgetImpl]` with the manifest key `widgets`. `view!` links
+      those of the widgets the view names, and a release load takes them as `ViewLoad::widgets`.
+      `check_widgets` keeps them in step with the schema.
+    - `examples/11-native-widget` is an app whose panel binds the gauge of its `gauge` package.
+  - Verified:
+    - The fixture passes `viso check` from the package's schema; a CLI test covers this.
+    - In a `view!` the gauge shows the bound level. A press on it writes the level back, it shows
+      the new level, and the view's handler of its own event runs.
+    - The DSL suite for Rust widgets passes: entries, events, the box's look and routes, type
+      errors, unknown properties and children. The schema round-trip, native package and package
+      schema tests also pass.
+    - Clippy passes on the touched crates, including wasm32 for viso-view, and `check-deps` passes.
 - [ ] Move the CLI's `build/`, `dev/`, `device/`, `toolchain/` and inspect client into a shared
   tooling crate. Verify with `check-deps` that `viso-cli` is a thin consumer.
 - [ ] Studio on the shared inspect and profile services, launched by `viso studio [--target]`.

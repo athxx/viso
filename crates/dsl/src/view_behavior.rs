@@ -9,6 +9,7 @@
 use std::rc::Rc;
 
 use viso_behavior::{Budget, Module, Vm};
+use viso_schema::view::control::RustEntries;
 pub use viso_schema::view::{Control, ControlInput, GameQuery, LookArm, Switched, When};
 use viso_schema::view::{ControlKind, EventRoute, LayoutSlot, Route, ViewRegions};
 use viso_schema::{EnvField, StateValue};
@@ -249,8 +250,34 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         )]);
     };
     let mut routes: Vec<(NodeKey, Vec<Route>)> = Vec::new();
-    for (node, kind, event, capture, site) in sites {
+    // Each Rust widget node's handled own events: the event's place among
+    // the widget's own and the handler.
+    let mut rust_events: Vec<(NodeKey, u16, u32)> = Vec::new();
+    for (node, ui, event, capture, site) in sites {
         let at = compiled.tree.own_span(site.instance, site.at);
+        let kind = ui.control;
+        let own = (kind == ControlKind::Rust)
+            .then(|| compiled.natives.widget(&ui.type_name)?.own_event(event))
+            .flatten();
+        if let Some(place) = own {
+            if capture {
+                errors.push(MountError::new(
+                    Some(at),
+                    format!(
+                        "`{event}` reaches only its widget's node, so no capture handler runs on it"
+                    ),
+                ));
+                continue;
+            }
+            match layout.handler(site) {
+                Some(index) => rust_events.push((node, place as u16, index)),
+                None => errors.push(MountError::new(
+                    Some(at),
+                    "internal: the handler was not lowered",
+                )),
+            }
+            continue;
+        }
         let route = EventRoute::of(event).or_else(|| kind.route(event));
         let Some(route) = route else {
             errors.push(MountError::new(
@@ -293,10 +320,15 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
         control.semantics.role = node_role(node, item);
         control.semantics.live = node.live.unwrap_or_default();
         control.semantics.merged = node.merged;
+        let widget = (kind == ControlKind::Rust)
+            .then(|| compiled.natives.widget(&node.type_name))
+            .flatten();
+        let mut rust_properties: Vec<(u16, u32)> = Vec::new();
         for (property, at, instance) in &node.control_reads {
-            let input = kind.input(property);
-            let slot = LayoutSlot::of(property).filter(|_| input.is_none());
-            if input.is_none() && slot.is_none() {
+            let own = widget.and_then(|w| w.own_property(property));
+            let input = kind.input(property).filter(|_| own.is_none());
+            let slot = LayoutSlot::of(property).filter(|_| input.is_none() && own.is_none());
+            if input.is_none() && slot.is_none() && own.is_none() {
                 continue;
             }
             if kind == ControlKind::Shader && input == Some(ControlInput::Value) {
@@ -344,11 +376,26 @@ pub fn view_behavior(compiled: &Compiled) -> Result<Option<ViewBehavior>, Vec<Mo
                 ));
                 continue;
             }
-            match (input, slot) {
-                (Some(input), _) => control.set_entry(input, index),
-                (None, Some(slot)) => control.set_layout(slot, index),
-                (None, None) => {}
+            match (input, slot, own) {
+                (Some(input), _, _) => control.set_entry(input, index),
+                (None, Some(slot), _) => control.set_layout(slot, index),
+                (None, None, Some(place)) => rust_properties.push((place as u16, index)),
+                (None, None, None) => {}
             }
+        }
+        if kind == ControlKind::Rust {
+            rust_properties.sort_unstable_by_key(|&(place, _)| place);
+            rust_properties.dedup_by_key(|&mut (place, _)| place);
+            let events: Vec<(u16, u32)> = rust_events
+                .iter()
+                .filter(|(node, _, _)| *node == key)
+                .map(|&(_, place, handler)| (place, handler))
+                .collect();
+            control.rust = Some(Box::new(RustEntries {
+                widget: node.type_name.as_str().into(),
+                properties: rust_properties.into(),
+                events: events.into(),
+            }));
         }
         if let Some(styled) = &node.styled {
             styled_look(
@@ -565,8 +612,9 @@ fn styled_look(
 struct Walk<'a> {
     /// The next node key.
     key: u32,
-    /// Each handler: its node, the node's control kind, its event and its site.
-    sites: Vec<(NodeKey, ControlKind, &'a str, bool, Site)>,
+    /// Each handler: its node, the node, its event, whether it captures and
+    /// its site.
+    sites: Vec<(NodeKey, &'a UiNode, &'a str, bool, Site)>,
     /// Each view-driven native node: a control, or a label showing a text,
     /// with the role it takes as an item of the selection it is in.
     nodes: Vec<(NodeKey, ControlKind, &'a UiNode, Option<viso_schema::Role>)>,
@@ -621,7 +669,7 @@ impl<'a> Walk<'a> {
         if let Some(key) = node.node_ref {
             self.named.push((key, own));
         }
-        let kind = ControlKind::of(&node.type_name);
+        let kind = node.control;
         let item = self.item.take();
         if kind.stands_alone()
             || !node.control_reads.is_empty()
@@ -636,7 +684,7 @@ impl<'a> Walk<'a> {
             let event = handler.event.trim_start_matches("r#");
             self.sites.push((
                 own,
-                kind,
+                node,
                 event,
                 handler.capture,
                 Site {

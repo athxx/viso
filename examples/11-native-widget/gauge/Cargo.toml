@@ -1,0 +1,23 @@
+[package]
+name = "viso-example-gauge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A native package carrying a Rust widget: its library declares the gauge's
+# schema, `natives.json` describes it to tools that compile `.vs` without
+# building Rust, and `WIDGETS` implements it for the views that name it.
+[dependencies]
+viso = { workspace = true, default-features = false }
+
+[dev-dependencies]
+viso = { workspace = true }
+
+[package.metadata.viso.natives]
+schema = "natives.json"
+library = "NATIVES"
+widgets = "WIDGETS"
+
+[lints]
+workspace = true

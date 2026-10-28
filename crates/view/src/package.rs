@@ -86,6 +86,9 @@ pub struct ViewLoad<'a> {
     /// The native libraries of the packages the view calls, such as
     /// `viso_net::NATIVES`, linked beside the standard ones.
     pub libraries: &'a [&'static [&'static NativeLibrary]],
+    /// The Rust widget implementations of those packages, such as
+    /// `gauge::WIDGETS`, which the view's nodes naming them build.
+    pub widgets: &'a [&'static [crate::widget::WidgetImpl]],
     /// Given the host before the view mounts, to install the services its
     /// natives and `@persist` states use.
     pub setup: Option<&'a mut dyn FnMut(&mut ViewHost)>,
@@ -96,6 +99,7 @@ impl fmt::Debug for ViewLoad<'_> {
         f.debug_struct("ViewLoad")
             .field("native", &self.native.map(|code| code.build))
             .field("libraries", &self.libraries.len())
+            .field("widgets", &self.widgets.len())
             .field("setup", &self.setup.is_some())
             .finish()
     }
@@ -210,6 +214,7 @@ fn mount<'a>(
             load.native,
         )
         .map_err(ViewLoadError::Host)?;
+        host.link_widgets(load.widgets);
         host.set_assets(view.assets().map(|(id, bytes)| (id, (keep.asset)(bytes))));
         let shaders = view
             .shaders()

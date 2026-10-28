@@ -67,6 +67,7 @@ use crate::layout_values::{alignment, layout_value, length};
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
 use crate::text_style::text_style;
+use crate::widget::{Built, WidgetEvents};
 
 /// The font size of a text whose node resolves none, in logical pixels.
 const FONT_SIZE: f32 = 14.0;
@@ -294,7 +295,12 @@ pub(crate) fn control_cells(
     .flatten()
     .chain(arms)
     .chain(control.layout.iter().map(|&(_, entry)| entry))
-    {
+    .chain(
+        control
+            .rust
+            .iter()
+            .flat_map(|r| r.properties.iter().map(|&(_, e)| e)),
+    ) {
         host.entry_cells(entry, scope, out);
     }
 }
@@ -559,6 +565,11 @@ impl Shown {
         deps.extend(self.interaction);
         deps.sort_unstable_by_key(|id| (id.index(), id.generation()));
         deps.dedup();
+        if let Some(Parts::Rust(built)) = &self.parts
+            && let Some(rust) = &self.control.rust
+        {
+            built.borrow().events.route(&rust.events, &scope);
+        }
         self.scope = scope;
         self.deps = deps.into();
     }
@@ -578,11 +589,15 @@ impl Shown {
     /// them unless the node already shows them. A fault is kept as the host's
     /// [`last_fault`](ViewHost::last_fault) and leaves the node as it is.
     pub(crate) fn deliver(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost) {
+        let reload = self.seeded;
         if self.seeded {
             self.laid = None;
         }
         if !self.lay_out(cx, host) {
             return;
+        }
+        if self.control.kind == ControlKind::Rust {
+            self.show_rust(cx, host, reload);
         }
         let mut entries = SHOWN_INPUTS.map(|input| self.control.entry(input));
         if !self.control.arms.is_empty() {
@@ -1083,7 +1098,8 @@ impl Shown {
             | ControlKind::ColorPicker
             | ControlKind::ComboBox
             | ControlKind::SearchField
-            | ControlKind::Router => {}
+            | ControlKind::Router
+            | ControlKind::Rust => {}
             // A viewer clips its content unless its `clip` says, and keeps
             // the content within its limits as they change.
             ControlKind::Viewer => {
@@ -1656,6 +1672,69 @@ impl Shown {
         true
     }
 
+    /// A Rust widget builds inside the node the first time it shows, or
+    /// again once a reload names another widget, and is given each own
+    /// property's value it does not hold. After a `reload` its events run
+    /// the handlers the reload lowered.
+    fn show_rust(&mut self, cx: &mut StructureCx<'_>, host: &mut ViewHost, reload: bool) {
+        let Some(rust) = self.control.rust.as_deref() else {
+            return;
+        };
+        let built = match &self.parts {
+            Some(Parts::Rust(built)) if built.borrow().name == &*rust.widget => {
+                if reload {
+                    built.borrow().events.route(&rust.events, &self.scope);
+                }
+                Rc::clone(built)
+            }
+            _ => {
+                let Some(made) = host.widget(&rust.widget) else {
+                    host.record_fault(Fault {
+                        kind: FaultKind::Unsupported,
+                        at: None,
+                        message: format!(
+                            "the Rust widget `{}` is not linked: the view is not given its package's widgets",
+                            rust.widget
+                        ),
+                    });
+                    return;
+                };
+                // A widget a reload replaced leaves its content behind.
+                unbuild(&mut self.parts, self.node, cx);
+                let events = WidgetEvents::new(host.this.clone());
+                events.route(&rust.events, &self.scope);
+                let mut widget = (made.new)();
+                let mut build = BuildCx::with_parent(cx.store, cx.states, cx.bindings, self.node);
+                widget.build(&mut build, self.node, &events);
+                let built = Rc::new(RefCell::new(Built {
+                    name: made.name,
+                    widget,
+                    events,
+                    shows: Vec::with_capacity(rust.properties.len()),
+                }));
+                self.parts = Some(Parts::Rust(Rc::clone(&built)));
+                built
+            }
+        };
+        let mut built = built.borrow_mut();
+        let built = &mut *built;
+        for &(place, entry) in &rust.properties {
+            let value = match host.evaluate(entry, &self.scope, None, &*cx.states) {
+                Ok(value) => value,
+                Err(fault) => {
+                    host.record_fault(fault);
+                    continue;
+                }
+            };
+            match built.shows.iter_mut().find(|(at, _)| *at == place) {
+                Some((_, held)) if *held == value => continue,
+                Some((_, held)) => *held = value.clone(),
+                None => built.shows.push((place, value.clone())),
+            }
+            built.widget.set(cx, usize::from(place), &value);
+        }
+    }
+
     /// The entry `input` shows now: that of the first of its arms whose
     /// condition holds, else `base`. `Err` after a fault, which the host
     /// keeps.
@@ -1885,24 +1964,30 @@ enum Parts {
     Video(VideoControls),
     /// The root of a placed router view.
     Router(NodeId),
+    /// A Rust widget, its content the node's children.
+    Rust(Rc<RefCell<Built>>),
 }
 
 impl Parts {
-    /// Their column.
-    fn root(&self) -> NodeId {
+    /// Their column; none for a Rust widget, whose content is the node's
+    /// children.
+    fn root(&self) -> Option<NodeId> {
         match self {
-            Parts::Picker(parts) => parts.column().id(),
-            Parts::Combo(parts) => parts.root().id(),
-            Parts::Search(parts) => parts.root().id(),
-            Parts::Video(parts) => parts.root(),
-            Parts::Router(root) => *root,
+            Parts::Picker(parts) => Some(parts.column().id()),
+            Parts::Combo(parts) => Some(parts.root().id()),
+            Parts::Search(parts) => Some(parts.root().id()),
+            Parts::Video(parts) => Some(parts.root()),
+            Parts::Router(root) => Some(*root),
+            Parts::Rust(_) => None,
         }
     }
 
     /// Whether they still stand inside node `node`.
     fn live(&self, node: NodeId, store: &NodeStore) -> bool {
-        let root = self.root();
-        store.arena().is_live(root) && store.parent(root) == Some(node)
+        match self.root() {
+            Some(root) => store.arena().is_live(root) && store.parent(root) == Some(node),
+            None => store.arena().is_live(node),
+        }
     }
 }
 
@@ -1933,8 +2018,20 @@ fn parts_size(store: &NodeStore, node: NodeId) -> viso_ui::Sizing {
 /// Drops the parts inside node `node` so they are built again: their column
 /// and what it holds go, and the routes their reports ran.
 fn unbuild(parts: &mut Option<Parts>, node: NodeId, cx: &mut StructureCx<'_>) {
-    if let Some(old) = parts.take().filter(|p| p.live(node, cx.store)) {
-        cx.store.free_tree(old.root(), cx.effects, &mut Vec::new());
+    let Some(old) = parts.take().filter(|p| p.live(node, cx.store)) else {
+        return;
+    };
+    let mut scratch = Vec::new();
+    match old.root() {
+        Some(root) => {
+            cx.store.free_tree(root, cx.effects, &mut scratch);
+        }
+        None => {
+            let children: Vec<NodeId> = cx.store.arena().children(node).collect();
+            for child in children {
+                cx.store.free_tree(child, cx.effects, &mut scratch);
+            }
+        }
     }
 }
 

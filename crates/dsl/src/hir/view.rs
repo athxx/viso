@@ -374,12 +374,16 @@ impl Owner<'_> {
     }
 
     /// Whether `path` is a property a view-driven native node reads: a
-    /// control's value or range, a label's text, or its look; or one its
-    /// list reads of it as a row, its `list.full_line`.
+    /// control's value or range, a label's text, or its look; one its
+    /// list reads of it as a row, its `list.full_line`; or a Rust widget's
+    /// own property, which its implementation takes.
     fn reads_control(&self, path: &PropertyPath) -> bool {
         let name = path_text(path);
+        let widget = self.schema.native();
         self.component.is_none()
-            && (ControlKind::of(&self.name).input(&name).is_some() || name == "list.full_line")
+            && (ControlKind::of(&self.name).input(&name).is_some()
+                || name == "list.full_line"
+                || (widget.is_rust() && widget.own_property(&name).is_some()))
     }
 
     /// Whether `path` is a layout property a native node sets from its value
@@ -1631,11 +1635,15 @@ impl<'a> ViewWalk<'a> {
         let text = event.text();
         let name = text.trim_start_matches("r#");
         if let Some(spec) = owner.schema.event(name) {
+            // A prelude record, else a value type a Rust widget's library
+            // names by its path or a scalar.
             return match spec.payload {
                 Some(payload) => self
                     .env
                     .standard_type(payload)
-                    .map_or(Ty::Unknown, Ty::named),
+                    .map(Ty::named)
+                    .or_else(|| self.schema_value_ty(payload))
+                    .unwrap_or(Ty::Unknown),
                 None => Ty::Unit,
             };
         }
@@ -1851,7 +1859,7 @@ impl<'a> ViewWalk<'a> {
             binding.source(),
             binding.using_ty(),
         ) {
-            self.write_back(errors, binding, &lens, true, None);
+            self.write_back(errors, binding, &lens, true, None, false);
         }
         // `using C` converts through `C: TwoWayConverter<Model, View>`.
         let converter = match (binding.using_ty(), &declared.ty, &source) {
@@ -1873,7 +1881,8 @@ impl<'a> ViewWalk<'a> {
             // The native widget's change event writes the source; a control
             // reads the source as its current value.
             let reads = owner.reads_control(&path);
-            self.write_back(errors, binding, &lens, reads, converter.as_ref());
+            let whole = owner.schema.native().is_rust();
+            self.write_back(errors, binding, &lens, reads, converter.as_ref(), whole);
         }
         if let (Some(want), Some(have), None) = (&declared.ty, &source, binding.using_ty())
             && !want.has_unknown()
@@ -2243,7 +2252,8 @@ impl<'a> ViewWalk<'a> {
     /// The functions a `bind` to a two-way property lowers to: when `reads`,
     /// the value the component input or native control reads (the source's
     /// current value, at the source), and the handler of the paired event
-    /// writing the event's value back to the source (at the binding).
+    /// writing the event's value back to the source (at the binding): its
+    /// first parameter, or the `whole` payload.
     fn write_back(
         &mut self,
         errors: usize,
@@ -2251,6 +2261,7 @@ impl<'a> ViewWalk<'a> {
         source: &AssignablePath,
         reads: bool,
         converter: Option<&Converter>,
+        whole: bool,
     ) {
         if reads {
             let at = source.syntax().text_range();
@@ -2274,7 +2285,16 @@ impl<'a> ViewWalk<'a> {
             unsupported_with(&mut b, def, params, "has type errors", at)
         } else {
             let to_model = converter.map(|c| &c.to_model);
-            lower_write_back(&mut b, &self.cx, def, &self.regions, source, to_model, at)
+            lower_write_back(
+                &mut b,
+                &self.cx,
+                def,
+                &self.regions,
+                source,
+                to_model,
+                whole,
+                at,
+            )
         };
         b.handler(at, func);
     }

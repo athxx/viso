@@ -853,6 +853,28 @@ fn control_tokens(control: Control) -> TokenStream {
     let shadow = entry(look.shadow);
     let backdrop = entry(look.backdrop);
     let ripple = entry(look.ripple);
+    let rust = match control.rust.as_deref() {
+        Some(rust) => {
+            let widget = &*rust.widget;
+            let pairs = |list: &[(u16, u32)]| {
+                let pairs = list
+                    .iter()
+                    .map(|&(place, entry)| quote! { (#place, #entry) });
+                quote! { ::std::boxed::Box::new([#(#pairs),*]) }
+            };
+            let (properties, events) = (pairs(&rust.properties), pairs(&rust.events));
+            quote! {
+                ::core::option::Option::Some(::std::boxed::Box::new(
+                    ::viso::__private::viso_view::RustEntries {
+                        widget: ::std::boxed::Box::from(#widget),
+                        properties: #properties,
+                        events: #events,
+                    },
+                ))
+            }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
     let layout = control.layout.iter().map(|&(slot, entry)| {
         let slot = Ident::new(slot.variant(), Span::call_site());
         quote! { (::viso::__private::viso_view::LayoutSlot::#slot, #entry) }
@@ -1001,6 +1023,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 heading_level: #heading_level,
             },
             layout: ::std::boxed::Box::new([#(#layout),*]),
+            rust: #rust,
         }
     }
 }

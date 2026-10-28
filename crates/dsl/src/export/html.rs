@@ -493,7 +493,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             .vb
             .map(|vb| vb.routes(NodeKey(key)).to_vec())
             .unwrap_or_default();
-        let kind = ControlKind::of(&node.type_name);
+        let kind = node.control;
         match (node.kind, kind) {
             (_, ControlKind::Shader | ControlKind::Viewport) => {
                 let what = if kind == ControlKind::Shader {
@@ -518,13 +518,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
                 return;
             }
-            (NodeKind::Component, _) | (_, ControlKind::Router) => {
+            (NodeKind::Component, _) | (_, ControlKind::Router | ControlKind::Rust) => {
                 self.need(
                     Need::Unsupported,
                     self.own(node.instance, node.origin),
                     if kind == ControlKind::Router {
                         format!(
                             "a `{}` shows pages a Rust router builds, which only the Viso runtime mounts",
+                            node.type_name
+                        )
+                    } else if kind == ControlKind::Rust {
+                        format!(
+                            "`{}` is a Rust widget, which only the Viso runtime mounts",
                             node.type_name
                         )
                     } else {
@@ -2426,7 +2431,8 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             | ControlKind::Glass
             | ControlKind::Shader
             | ControlKind::Viewport
-            | ControlKind::Router => {}
+            | ControlKind::Router
+            | ControlKind::Rust => {}
         }
 
         if let Some(fixed) = self.bind(

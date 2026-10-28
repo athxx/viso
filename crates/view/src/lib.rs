@@ -46,13 +46,14 @@ mod tasks;
 mod text_style;
 mod theme;
 mod values;
+mod widget;
 mod world_scene;
 
 pub use attach::{Route, attach, attach_node};
 pub use control::{
-    Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, SOURCE_ROLES,
-    SemanticEntries, Switched, TextEntries, When, source_live, source_name, source_role,
-    widget_role,
+    Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, RustEntries,
+    SOURCE_ROLES, SemanticEntries, Switched, TextEntries, When, source_live, source_name,
+    source_role, widget_role,
 };
 pub use effects::{__mount_effects, mount_effects, release_effects};
 pub use env::{__link_env, env_value};
@@ -88,6 +89,7 @@ pub use theme::{default_dark_theme, default_theme, palette, set_theme};
 pub use values::{__mount_values, mount_values};
 pub use viso_behavior::{Fault, Module, Value};
 pub use viso_ui::shader::__per_backend;
+pub use widget::{RustWidget, WidgetEvents, WidgetImpl, check_widgets};
 pub use world_scene::{WorldScene, game_viewport};
 /// The stores a view's `@persist` states persist through.
 pub mod persist {

@@ -620,6 +620,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.outlet(body.as_ref(), origin, out);
                 return;
             }
+            // A box its implementation builds the content of.
+            WidgetNode::Rust => NodeKind::Stack,
         };
 
         if type_name == "Sheet" {
@@ -627,7 +629,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
         }
         let node_ref = self.naming.take();
         let instance = self.instance();
-        let control = ControlKind::of(&type_name);
+        let control = if widget.is_rust() {
+            ControlKind::Rust
+        } else {
+            ControlKind::of(&type_name)
+        };
         let mut pending = Vec::new();
         let mut handlers = Vec::new();
         // Write-backs lead the node's handlers, so an author's handler for the
@@ -699,6 +705,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             )),
                         }
                     }
+                    if widget.is_rust() && widget.own_property(&name).is_some() {
+                        // The implementation takes it, whatever its value.
+                        control_reads.push((name, at, instance));
+                        continue;
+                    }
                     if control.input(&name).is_some() || name == "list.full_line" {
                         control_reads.push((name.clone(), at, instance));
                     } else if let Some(member) = name.strip_prefix("transition.")
@@ -742,7 +753,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     let Some(event) = widget.write_back(&name) else {
                         continue;
                     };
-                    if control.input(&name).is_some() {
+                    if control.input(&name).is_some()
+                        || (widget.is_rust() && widget.own_property(&name).is_some())
+                    {
                         control_reads.push((name, source.syntax().text_range(), instance));
                     }
                     handlers.insert(
@@ -903,6 +916,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             local_name,
             node_ref,
             kind,
+            control,
             style,
             pending,
             handlers,
@@ -1138,6 +1152,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             local_name,
             node_ref: self.naming.take(),
             kind: NodeKind::Component,
+            control: ControlKind::Plain,
             style: StyleIr::default(),
             pending: Vec::new(),
             handlers: Vec::new(),

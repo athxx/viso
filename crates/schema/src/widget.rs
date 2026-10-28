@@ -47,6 +47,11 @@ pub enum WidgetNode {
     /// Where a component's view places one of its slots: the nodes its caller
     /// fills the slot with, or none when the caller leaves it empty.
     Outlet,
+    /// A box whose content its library builds in Rust ([`NativeWidget::rust`]):
+    /// laid out, styled and given the standard events as any box is, while its
+    /// own properties go to its implementation and its own events come from
+    /// it. It takes no authored children.
+    Rust,
 }
 
 /// The main axis of a [`WidgetNode::Flex`].
@@ -266,6 +271,48 @@ impl NativeWidget {
         }
     }
 
+    /// A widget its library builds in Rust ([`WidgetNode::Rust`]). Its
+    /// properties and events are its own; the box properties, groups and
+    /// standard events every box takes come with it
+    /// ([`RUST_BOX`](crate::widgets::RUST_BOX)).
+    pub const fn rust(name: &'static str) -> NativeWidget {
+        NativeWidget::new(name, WidgetNode::Rust)
+            .migratable(MigratableState::FOCUS.with(MigratableState::ANIMATION))
+    }
+
+    /// Whether its library builds it in Rust.
+    pub const fn is_rust(&self) -> bool {
+        matches!(self.node, WidgetNode::Rust)
+    }
+
+    /// The box a Rust widget is besides its own properties and events, `None`
+    /// for any other widget.
+    pub fn base(&self) -> Option<&'static NativeWidget> {
+        self.is_rust().then_some(&crate::widgets::RUST_BOX)
+    }
+
+    /// Its own properties, table by table in order; a Rust widget's
+    /// implementation numbers them so.
+    pub fn own_properties(&self) -> impl Iterator<Item = &'static WidgetProperty> {
+        self.properties.iter().flat_map(|t| t.iter())
+    }
+
+    /// Its own events, in order; a Rust widget's implementation numbers them
+    /// so.
+    pub fn own_events(&self) -> impl Iterator<Item = &'static WidgetEvent> {
+        self.events.iter().flat_map(|t| t.iter())
+    }
+
+    /// The place of its own property `name` among [`own_properties`](Self::own_properties).
+    pub fn own_property(&self, name: &str) -> Option<usize> {
+        self.own_properties().position(|p| p.name == name)
+    }
+
+    /// The place of its own event `name` among [`own_events`](Self::own_events).
+    pub fn own_event(&self, name: &str) -> Option<usize> {
+        self.own_events().position(|e| e.name == name)
+    }
+
     /// A standard interactive widget.
     pub const fn interactive(mut self) -> Self {
         self.interactive = true;
@@ -308,25 +355,27 @@ impl NativeWidget {
         self
     }
 
-    /// The property `name`.
+    /// The property `name`: its own, else its box's.
     pub fn property(&self, name: &str) -> Option<&'static WidgetProperty> {
-        self.properties
-            .iter()
-            .flat_map(|t| t.iter())
+        self.own_properties()
             .find(|p| p.name == name)
+            .or_else(|| self.base()?.property(name))
     }
 
-    /// The group written with `prefix`.
+    /// The group written with `prefix`: its own, else its box's.
     pub fn group(&self, prefix: &str) -> Option<&'static PropertyGroup> {
-        self.groups.iter().copied().find(|g| g.prefix == prefix)
+        self.groups
+            .iter()
+            .copied()
+            .find(|g| g.prefix == prefix)
+            .or_else(|| self.base()?.group(prefix))
     }
 
-    /// The event `name`.
+    /// The event `name`: its own, else its box's.
     pub fn event(&self, name: &str) -> Option<&'static WidgetEvent> {
-        self.events
-            .iter()
-            .flat_map(|t| t.iter())
+        self.own_events()
             .find(|e| e.name == name)
+            .or_else(|| self.base()?.event(name))
     }
 
     /// The slot `name`.

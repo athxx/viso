@@ -148,9 +148,12 @@ impl WidgetSchema {
         self.event_specs().map(|e| e.name)
     }
 
-    /// Every event this node takes, table by table.
+    /// Every event this node takes, table by table: its own, then a Rust
+    /// widget's box's.
     pub(crate) fn event_specs(&self) -> impl Iterator<Item = EventSpec> + '_ {
-        self.widget.events.iter().flat_map(|t| t.iter())
+        self.widget
+            .own_events()
+            .chain(self.widget.base().into_iter().flat_map(|b| b.own_events()))
     }
 
     /// The group this node provides to its direct children, if any.
@@ -200,15 +203,30 @@ impl WidgetSchema {
     pub(crate) fn properties(&self) -> impl Iterator<Item = (String, PropSpec)> + '_ {
         self.flat()
             .map(|p| (p.name.to_owned(), p))
-            .chain(self.widget.groups.iter().flat_map(|g| {
+            .chain(self.groups().flat_map(|g| {
                 g.members
                     .iter()
                     .map(move |p| (format!("{}.{}", g.prefix, p.name), p))
             }))
     }
 
+    /// Its properties' tables flattened: its own, then a Rust widget's box's.
     fn flat(&self) -> impl Iterator<Item = PropSpec> + '_ {
-        self.widget.properties.iter().flat_map(|t| t.iter())
+        self.widget.own_properties().chain(
+            self.widget
+                .base()
+                .into_iter()
+                .flat_map(|b| b.own_properties()),
+        )
+    }
+
+    /// Its groups: its own, then a Rust widget's box's.
+    fn groups(&self) -> impl Iterator<Item = &'static PropertyGroup> + '_ {
+        self.widget
+            .groups
+            .iter()
+            .chain(self.widget.base().into_iter().flat_map(|b| b.groups.iter()))
+            .copied()
     }
 }
 

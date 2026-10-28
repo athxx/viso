@@ -27,6 +27,7 @@ pub use viso_schema::layout::{
     Inset, Placement, Span, SpanInset, StackPlacement, TrackMax, TrackSizing,
 };
 pub use viso_schema::layout::{SheetDetent, SheetEdge};
+use viso_schema::view::control::ControlKind;
 pub use viso_schema::{Align, Justify};
 pub use viso_schema::{Avoid, LayoutDirection};
 
@@ -178,6 +179,8 @@ pub struct UiNode {
     pub node_ref: Option<u32>,
     /// Which builder call this node maps to.
     pub kind: NodeKind,
+    /// Which view-driven native node it is.
+    pub control: ControlKind,
     /// The style folded from the node's compile-time-constant properties.
     pub style: StyleIr,
     /// Properties whose value is not a compile-time constant: each is a binding

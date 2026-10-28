@@ -47,7 +47,7 @@ use crate::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_schema::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 22;
+pub const DEV_PROTOCOL_VERSION: u16 = 23;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.

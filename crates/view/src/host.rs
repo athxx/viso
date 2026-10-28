@@ -297,6 +297,8 @@ pub struct ViewHost {
     sinks: Vec<Sink>,
     /// The root inputs Rust gave the view, each read through its cell.
     inputs: Vec<InputLink>,
+    /// The implementations of the Rust widgets its nodes name.
+    widgets: Vec<&'static crate::widget::WidgetImpl>,
 }
 
 /// A root input: the cell its readers depend on and, for a navigator, the
@@ -478,6 +480,7 @@ impl ViewHost {
             persist_reports: Vec::new(),
             assets: Vec::new(),
             shaders: Vec::new(),
+            widgets: Vec::new(),
             nodes: crate::nodes::NodeRefs::default(),
             sinks: Vec::new(),
             inputs: Vec::new(),
@@ -1211,6 +1214,18 @@ impl ViewHost {
         }
     }
 
+    /// Links `packages`, each the Rust widget implementations of a native
+    /// package, such as `gauge::WIDGETS`: its nodes naming one of them build
+    /// it.
+    pub fn link_widgets(&mut self, packages: &[&'static [crate::widget::WidgetImpl]]) {
+        self.widgets.extend(packages.iter().flat_map(|p| p.iter()));
+    }
+
+    /// The linked implementation of the Rust widget `name`.
+    pub(crate) fn widget(&self, name: &str) -> Option<&'static crate::widget::WidgetImpl> {
+        self.widgets.iter().copied().find(|w| w.name == name)
+    }
+
     /// Drops the routes of the nodes `live` no longer holds.
     pub(crate) fn prune_sinks(&mut self, live: impl Fn(NodeId) -> bool) {
         self.sinks.retain(|sink| live(sink.node));
@@ -1694,7 +1709,8 @@ pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
 /// the module compiled to Rust beside it, when the build carries it, and
 /// linked against the standard libraries and `libraries`, those of the native
 /// packages it calls. The module borrows `bytes` ([`Module::decode_static`]):
-/// its names and string constants stay in the binary.
+/// its names and string constants stay in the binary. Its nodes naming a
+/// Rust widget build it from `widgets`, those packages' implementations.
 ///
 /// # Panics
 ///
@@ -1707,6 +1723,7 @@ pub fn __embedded(
     component: &str,
     native: Option<&'static NativeCode>,
     libraries: &[&'static [&'static NativeLibrary]],
+    widgets: &[&'static [crate::widget::WidgetImpl]],
     inputs: Vec<(&'static str, MountedInput)>,
 ) -> Rc<RefCell<ViewHost>> {
     thread_local! {
@@ -1752,6 +1769,7 @@ pub fn __embedded(
         });
     match host {
         Ok(mut host) => {
+            host.link_widgets(widgets);
             for (slot, (_, input)) in slots.iter().zip(&inputs) {
                 if let Some(slot) = *slot {
                     host.link_input(slot, input);
