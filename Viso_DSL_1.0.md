@@ -919,7 +919,7 @@ Advanced  user-defined trait/impl/general generics/const generics/dyn trait
           fine-grained capability annotations
 ```
 
-`Advanced` 可以存在于规范中，但不能成为 UI、Reactive、Game、Shader vertical slice 的前置条件。Rust Native Schema 是默认扩展路径。
+`Advanced` 可以存在于规范中，但不能成为 UI、Reactive、Game、Shader vertical slice 的前置条件。Rust Native Schema 是默认扩展路径。每个 Production 的成熟度（`stable` / `preview` / `reserved`）见附录 A.14。
 
 ---
 
@@ -8965,6 +8965,234 @@ RecordPatternField
 ```
 
 裸单段 `IDENT` 一律是 Binding Pattern。无 Payload Enum Variant 必须写限定 Path，例如 `State::idle`；带 Payload 的 Constructor 由紧随其后的 `(...)` 或 `{...}` 消除歧义。
+
+---
+
+## A.14 Production 成熟度
+
+本附录的每个 Production 恰有一个成熟度：
+
+- `stable`：Core 与 Standard Surface（§25.1）的语法。语法与语义随 Viso 1.0 冻结，由 Parser Golden、Formatter 与语义测试锁定；改变它须提升 Package 固定的语言版本（§22）并提供迁移诊断。
+- `preview`：Advanced Surface（§25.1）的语法：用户定义 Trait/Impl、一般泛型与 Const Generic、`dyn` Trait、Template/Part、手写 Native 声明与细粒度 Capability 标注。已实现、可以使用，Parser、Formatter 与诊断码同样稳定；但 1.x 的次版本可以调整其语法或语义，调整随发布说明与迁移诊断一同给出。
+- `reserved`：Parser 接受并保留在 Lossless CST 中、Formatter 可以格式化，但 1.0 没有任何 Profile 接受其语义：编译报对应的稳定诊断（`ComputeEntry` 报 `E8106`）。保留给后续版本，届时成为 `preview` 或 `stable`。
+
+`crates/dsl/tests/ebnf_golden.rs` 要求下表与本附录的 Production 集合一一对应，每行的成熟度取上述三者之一。
+
+| Production                  | 章节   | 成熟度     |
+| --------------------------- | ----- | ---------- |
+| `Label`                     | A.1   | `stable`   |
+| `CompilationUnit`           | A.2   | `stable`   |
+| `ViewFragment`              | A.2   | `stable`   |
+| `ComponentEntry`            | A.2   | `stable`   |
+| `ModulePath`                | A.2   | `stable`   |
+| `ImportDecl`                | A.2   | `stable`   |
+| `ImportSuffix`              | A.2   | `stable`   |
+| `ImportItem`                | A.2   | `stable`   |
+| `TopLevelDecl`              | A.2   | `stable`   |
+| `DeclCore`                  | A.2   | `stable`   |
+| `Attribute`                 | A.2   | `stable`   |
+| `AttributeArgs`             | A.2   | `stable`   |
+| `AttributeArg`              | A.2   | `stable`   |
+| `Path`                      | A.3   | `stable`   |
+| `TypePath`                  | A.3   | `stable`   |
+| `GenericArgs`               | A.3   | `stable`   |
+| `GenericArg`                | A.3   | `stable`   |
+| `GenericParams`             | A.3   | `preview`  |
+| `GenericParam`              | A.3   | `preview`  |
+| `TypeGenericParam`          | A.3   | `preview`  |
+| `ConstGenericParam`         | A.3   | `preview`  |
+| `TraitBounds`               | A.3   | `preview`  |
+| `ImplementsClause`          | A.3   | `stable`   |
+| `TraitBound`                | A.3   | `stable`   |
+| `WhereClause`               | A.3   | `preview`  |
+| `WherePredicate`            | A.3   | `preview`  |
+| `Type`                      | A.3   | `stable`   |
+| `FunctionType`              | A.3   | `stable`   |
+| `TupleType`                 | A.3   | `stable`   |
+| `ArrayType`                 | A.3   | `stable`   |
+| `SliceType`                 | A.3   | `stable`   |
+| `TraitObjectType`           | A.3   | `preview`  |
+| `TypeList`                  | A.3   | `stable`   |
+| `ConstExpression`           | A.3   | `stable`   |
+| `DefaultExpression`         | A.3   | `stable`   |
+| `InitExpression`            | A.3   | `stable`   |
+| `RecordDecl`                | A.4   | `stable`   |
+| `RecordField`               | A.4   | `stable`   |
+| `EnumDecl`                  | A.4   | `stable`   |
+| `EnumVariant`               | A.4   | `stable`   |
+| `VariantPayload`            | A.4   | `stable`   |
+| `TraitDecl`                 | A.4   | `preview`  |
+| `TraitMember`               | A.4   | `preview`  |
+| `AssociatedTypeDecl`        | A.4   | `preview`  |
+| `AssociatedConstDecl`       | A.4   | `preview`  |
+| `ImplDecl`                  | A.4   | `preview`  |
+| `ImplTarget`                | A.4   | `preview`  |
+| `ImplMember`                | A.4   | `preview`  |
+| `AssociatedTypeImpl`        | A.4   | `preview`  |
+| `AssociatedConstImpl`       | A.4   | `preview`  |
+| `TypeAliasDecl`             | A.4   | `stable`   |
+| `ConstDecl`                 | A.4   | `stable`   |
+| `ParameterList`             | A.5   | `stable`   |
+| `SelfParam`                 | A.5   | `preview`  |
+| `Parameter`                 | A.5   | `stable`   |
+| `ReturnType`                | A.5   | `stable`   |
+| `CapabilityClause`          | A.5   | `preview`  |
+| `CapabilityPath`            | A.5   | `preview`  |
+| `FunctionDecl`              | A.5   | `stable`   |
+| `FunctionSignature`         | A.5   | `stable`   |
+| `ActionDecl`                | A.5   | `stable`   |
+| `ActionSignature`           | A.5   | `stable`   |
+| `TaskDecl`                  | A.5   | `stable`   |
+| `TaskSignature`             | A.5   | `stable`   |
+| `ComponentDecl`             | A.6   | `stable`   |
+| `ComponentDeclBody`         | A.6   | `stable`   |
+| `ComponentMember`           | A.6   | `stable`   |
+| `SystemDecl`                | A.6   | `stable`   |
+| `SystemMember`              | A.6   | `stable`   |
+| `InputDecl`                 | A.6   | `stable`   |
+| `StateDecl`                 | A.6   | `stable`   |
+| `ComputedDecl`              | A.6   | `stable`   |
+| `EventDecl`                 | A.6   | `stable`   |
+| `EventParameterList`        | A.6   | `stable`   |
+| `EventParameter`            | A.6   | `stable`   |
+| `SlotDecl`                  | A.6   | `stable`   |
+| `SlotDefault`               | A.6   | `stable`   |
+| `EffectDecl`                | A.7   | `stable`   |
+| `EffectDependencies`        | A.7   | `stable`   |
+| `EffectRunPolicy`           | A.7   | `stable`   |
+| `CleanupClause`             | A.7   | `stable`   |
+| `ResourceDecl`              | A.7   | `stable`   |
+| `ResourceItem`              | A.7   | `stable`   |
+| `PolicyList`                | A.7   | `stable`   |
+| `StartStatement`            | A.7   | `stable`   |
+| `StartHandlerBlock`         | A.7   | `stable`   |
+| `StartHandler`              | A.7   | `stable`   |
+| `ViewDecl`                  | A.8   | `stable`   |
+| `ViewBlock`                 | A.8   | `stable`   |
+| `ViewStructureItem`         | A.8   | `stable`   |
+| `NamedNode`                 | A.8   | `stable`   |
+| `AnonymousNode`             | A.8   | `stable`   |
+| `PartNode`                  | A.8   | `preview`  |
+| `ComponentType`             | A.8   | `stable`   |
+| `NodeBody`                  | A.8   | `stable`   |
+| `NodeMember`                | A.8   | `stable`   |
+| `PropertyBinding`           | A.8   | `stable`   |
+| `PropertyPath`              | A.8   | `stable`   |
+| `TwoWayBinding`             | A.8   | `stable`   |
+| `EventHandler`              | A.8   | `stable`   |
+| `EventPhase`                | A.8   | `stable`   |
+| `FillClause`                | A.8   | `stable`   |
+| `ViewIf`                    | A.8   | `stable`   |
+| `ViewFor`                   | A.8   | `stable`   |
+| `ViewMatch`                 | A.8   | `stable`   |
+| `ViewMatchArm`              | A.8   | `stable`   |
+| `PartOverride`              | A.8   | `preview`  |
+| `PartOverrideItem`          | A.8   | `preview`  |
+| `PartReplace`               | A.8   | `preview`  |
+| `TemplateDecl`              | A.9   | `preview`  |
+| `TemplateMember`            | A.9   | `preview`  |
+| `TemplateUse`               | A.9   | `preview`  |
+| `TemplateUseBody`           | A.9   | `preview`  |
+| `StyleDecl`                 | A.9   | `stable`   |
+| `StyleBaseClause`           | A.9   | `stable`   |
+| `StyleItem`                 | A.9   | `stable`   |
+| `StyleWhen`                 | A.9   | `stable`   |
+| `StateSelector`             | A.9   | `stable`   |
+| `SelectorOr`                | A.9   | `stable`   |
+| `SelectorAnd`               | A.9   | `stable`   |
+| `SelectorUnary`             | A.9   | `stable`   |
+| `ThemeDecl`                 | A.9   | `stable`   |
+| `ThemeItem`                 | A.9   | `stable`   |
+| `NativeDecl`                | A.10  | `preview`  |
+| `NativeMemberDecl`          | A.10  | `preview`  |
+| `NativeItem`                | A.10  | `preview`  |
+| `NativeFunction`            | A.10  | `preview`  |
+| `NativeAction`              | A.10  | `preview`  |
+| `NativeTask`                | A.10  | `preview`  |
+| `NativeTypeDecl`            | A.10  | `preview`  |
+| `ShaderDecl`                | A.10  | `stable`   |
+| `ShaderMember`              | A.10  | `stable`   |
+| `ShaderUniform`             | A.10  | `stable`   |
+| `ShaderInstance`            | A.10  | `stable`   |
+| `ShaderVarying`             | A.10  | `stable`   |
+| `ShaderTexture`             | A.10  | `stable`   |
+| `ShaderSampler`             | A.10  | `stable`   |
+| `ShaderFunction`            | A.10  | `stable`   |
+| `VertexEntry`               | A.10  | `stable`   |
+| `FragmentEntry`             | A.10  | `stable`   |
+| `ComputeEntry`              | A.10  | `reserved` |
+| `ShaderParameterList`       | A.10  | `stable`   |
+| `ShaderParameter`           | A.10  | `stable`   |
+| `ShaderType`                | A.10  | `stable`   |
+| `Block`                     | A.11  | `stable`   |
+| `TailExpression`            | A.11  | `stable`   |
+| `Statement`                 | A.11  | `stable`   |
+| `StatementCore`             | A.11  | `stable`   |
+| `LetStatement`              | A.11  | `stable`   |
+| `AssignmentStatement`       | A.11  | `stable`   |
+| `AssignmentOperator`        | A.11  | `stable`   |
+| `AssignablePath`            | A.11  | `stable`   |
+| `AssignableSuffix`          | A.11  | `stable`   |
+| `ExpressionStatement`       | A.11  | `stable`   |
+| `ReturnStatement`           | A.11  | `stable`   |
+| `BreakStatement`            | A.11  | `stable`   |
+| `ContinueStatement`         | A.11  | `stable`   |
+| `EmitStatement`             | A.11  | `stable`   |
+| `TransactionStatement`      | A.11  | `stable`   |
+| `IfStatement`               | A.11  | `stable`   |
+| `MatchStatement`            | A.11  | `stable`   |
+| `WhileStatement`            | A.11  | `stable`   |
+| `ForStatement`              | A.11  | `stable`   |
+| `LoopStatement`             | A.11  | `stable`   |
+| `Expression`                | A.12  | `stable`   |
+| `HeadExpression`            | A.12  | `stable`   |
+| `RangeExpression`           | A.12  | `stable`   |
+| `CoalesceExpression`        | A.12  | `stable`   |
+| `LogicalOrExpression`       | A.12  | `stable`   |
+| `LogicalAndExpression`      | A.12  | `stable`   |
+| `ComparisonExpression`      | A.12  | `stable`   |
+| `ComparisonOperator`        | A.12  | `stable`   |
+| `BitOrExpression`           | A.12  | `stable`   |
+| `BitXorExpression`          | A.12  | `stable`   |
+| `BitAndExpression`          | A.12  | `stable`   |
+| `ShiftExpression`           | A.12  | `stable`   |
+| `AdditiveExpression`        | A.12  | `stable`   |
+| `MultiplicativeExpression`  | A.12  | `stable`   |
+| `CastExpression`            | A.12  | `stable`   |
+| `UnaryExpression`           | A.12  | `stable`   |
+| `PostfixExpression`         | A.12  | `stable`   |
+| `PostfixSuffix`             | A.12  | `stable`   |
+| `GenericCallArgs`           | A.12  | `stable`   |
+| `PrimaryExpression`         | A.12  | `stable`   |
+| `Literal`                   | A.12  | `stable`   |
+| `TupleExpression`           | A.12  | `stable`   |
+| `ListExpression`            | A.12  | `stable`   |
+| `RecordExpression`          | A.12  | `stable`   |
+| `RecordInitializerList`     | A.12  | `stable`   |
+| `RecordInitializer`         | A.12  | `stable`   |
+| `IfExpression`              | A.12  | `stable`   |
+| `MatchExpression`           | A.12  | `stable`   |
+| `MatchArm`                  | A.12  | `stable`   |
+| `ClosureExpression`         | A.12  | `stable`   |
+| `ClosureParams`             | A.12  | `stable`   |
+| `ClosureParameter`          | A.12  | `stable`   |
+| `ExpressionList`            | A.12  | `stable`   |
+| `ArgumentList`              | A.12  | `stable`   |
+| `Argument`                  | A.12  | `stable`   |
+| `Pattern`                   | A.13  | `stable`   |
+| `OrPattern`                 | A.13  | `stable`   |
+| `BindingPattern`            | A.13  | `stable`   |
+| `RangePattern`              | A.13  | `stable`   |
+| `PrimaryPattern`            | A.13  | `stable`   |
+| `LiteralPattern`            | A.13  | `stable`   |
+| `IdentifierPattern`         | A.13  | `stable`   |
+| `TuplePattern`              | A.13  | `stable`   |
+| `ListPattern`               | A.13  | `stable`   |
+| `ListPatternItem`           | A.13  | `stable`   |
+| `ConstructorPattern`        | A.13  | `stable`   |
+| `ConstructorPatternPayload` | A.13  | `stable`   |
+| `QualifiedVariantPattern`   | A.13  | `stable`   |
+| `RecordPatternField`        | A.13  | `stable`   |
 
 ---
 

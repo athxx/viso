@@ -997,8 +997,16 @@ Rules (as for `todo_features.md`):
     sides with each value of a pool of every shape, twice over, a required input taking several
     shapes in turn, tasks driven to their end. The doc-block reader is shared with `doc_examples`.
   - Verified: 13 examples, 1176 runs, both forms (bytecode and compiled module), no mismatch.
-- [ ] A `stable / preview / reserved` matrix per grammar production in `Viso_DSL_1.0.md`. Verify
+- [x] A `stable / preview / reserved` matrix per grammar production in `Viso_DSL_1.0.md`. Verify
   with a doc test that every production is listed.
+  - Built: Appendix A.14 gives each of the 213 productions a maturity: Core and Standard
+    surface `stable`, the Advanced surface of §25.1 (traits/impls, general and const generics,
+    `dyn`, template/part, handwritten native declarations, capability clauses) `preview`,
+    `ComputeEntry` (no 1.0 profile has a compute stage, `E8106`) `reserved`; §25.1 and the
+    Architecture's surface rules point at it.
+  - Verified: `ebnf_golden` requires the table and the appendix's productions to match one to one
+    with a known maturity each, and every reserved production's positive source to parse but not
+    compile.
 
 ## N7 — Widgets and extras
 

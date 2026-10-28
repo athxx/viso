@@ -7,6 +7,10 @@
 //! exactly the pinned stable codes, lexer codes included. Both round-trip
 //! byte for byte.
 //!
+//! Appendix A.14 gives every production exactly one maturity, `stable`,
+//! `preview` or `reserved`, and a reserved production's positive source
+//! parses but does not compile.
+//!
 //! Member sets a body shares with a component (a template's, a system's, a
 //! `use` body's) and the shape of a style selector are restricted after
 //! parsing, with the targeted codes the checker gives (`E3601`, `E2103`); their
@@ -322,6 +326,74 @@ fn every_appendix_production_has_exactly_one_row() {
         missing.is_empty() && extra.is_empty(),
         "missing rows: {missing:?}\nrows the appendix lacks: {extra:?}"
     );
+}
+
+/// Each production's maturity, as the table of Appendix A.14 gives it.
+fn maturities() -> Vec<(&'static str, &'static str)> {
+    let start = SPEC.find("## A.14").expect("Appendix A.14");
+    let end = SPEC[start..]
+        .find("\n---")
+        .map_or(SPEC.len(), |at| start + at);
+    SPEC[start..end]
+        .lines()
+        .filter_map(|line| {
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            let production = cells.get(1)?.strip_prefix('`')?.strip_suffix('`')?;
+            let maturity = cells.get(3)?.trim_matches('`');
+            Some((production, maturity))
+        })
+        .collect()
+}
+
+#[test]
+fn every_appendix_production_has_one_maturity() {
+    let mut listed = BTreeSet::new();
+    let mut failures = Vec::new();
+    for (production, maturity) in maturities() {
+        if !listed.insert(production) {
+            failures.push(format!("{production} listed twice"));
+        }
+        if !["stable", "preview", "reserved"].contains(&maturity) {
+            failures.push(format!("{production}: unknown maturity {maturity:?}"));
+        }
+    }
+    let spec = appendix_productions();
+    let missing: Vec<_> = spec.difference(&listed).collect();
+    let extra: Vec<_> = listed.difference(&spec).collect();
+    assert!(
+        failures.is_empty() && missing.is_empty() && extra.is_empty(),
+        "{}\nwithout a maturity: {missing:?}\nnot in the appendix: {extra:?}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn a_reserved_production_parses_but_does_not_compile() {
+    use viso_dsl::frontend::{Origin, compile_file};
+    let origin = Origin {
+        package: "app".to_owned(),
+        module: vec!["main".to_owned()],
+        ..Default::default()
+    };
+    let reserved: Vec<_> = (maturities().into_iter())
+        .filter(|(_, maturity)| *maturity == "reserved")
+        .map(|(production, _)| production)
+        .collect();
+    assert!(!reserved.is_empty());
+    for production in reserved {
+        let row = ROWS.iter().find(|r| r.production == production).unwrap();
+        assert_eq!(row.entry, U, "{production}: a compilation unit");
+        let source = format!(
+            "{}\ncomponent Main {{ view {{ Text {{ text: \"\"; }} }} }}\n",
+            row.positive
+        );
+        let compiled = compile_file(&source, &origin);
+        assert!(
+            compiled.errors().next().is_some(),
+            "{production}: {:?} compiles",
+            row.positive
+        );
+    }
 }
 
 /// The sorted, deduplicated codes `src` parses to through `entry`, or why it
