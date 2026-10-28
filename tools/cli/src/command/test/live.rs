@@ -327,16 +327,7 @@ impl Session {
             let _ = page.wait();
             let _ = std::fs::remove_dir_all(profile);
         }
-        #[cfg(unix)]
-        {
-            // SAFETY: `kill` sends a signal to the child's pid, which this
-            // session owns and has not reaped.
-            unsafe {
-                libc::kill(self.child.id() as libc::pid_t, libc::SIGINT);
-            }
-        }
-        #[cfg(not(unix))]
-        let _ = self.child.kill();
+        crate::process::interrupt(&mut self.child);
         let deadline = Instant::now() + END_WAIT;
         while Instant::now() < deadline {
             if let Ok(Some(_)) = self.child.try_wait() {

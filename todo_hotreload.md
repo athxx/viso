@@ -20,8 +20,9 @@ Landing points follow the dependency rules:
   domain) with thin domain hooks in `viso-behavior` (game), `viso-shader`/`viso-render`
   (pipelines) and the facade (frame boundary, transport, overlay), all behind the
   `hot-reload` feature. `runtime` never depends on `dsl`.
-- The host dev session (§4, §54) is a module tree in `tools/cli/src/dev/`; it moves to
-  a shared tooling crate only when Studio needs it.
+- The host dev session (§4, §54) is a module tree in `tools/tooling/src/dev/`, in the
+  `viso-tooling` crate the CLI and Studio share; it reports through the front end's
+  `Reporter`.
 
 Reference read first (memory rule): makepad `platform/src/live_reload.rs`,
 `libs/live_reload_core`, `libs/filesystem_watcher`, `platform/studio/src/studio.rs`,
@@ -194,7 +195,7 @@ app parses no `.vs` source (anti-pattern B.2).
       settle window and could read a save in flight half written (the session tests
       failed 6/15 runs at HEAD); it now settles like any other read (0/30).
 
-### H1.3 — Host dev session (`tools/cli/src/dev/`, §4, §6, §7)
+### H1.3 — Host dev session (`tools/tooling/src/dev/`, §4, §6, §7)
 
 - [x] `DevSession` owning the session identity (`DevSessionId`, `BuildId`,
       `ProjectFingerprint`, schema), the session lock (`LockKind::DevSession`, taken
@@ -371,7 +372,7 @@ resets only its own scope.
       the one-file compile reads the file's imports into one module graph, each
       mount keeps which views those are and the content the version it runs
       compiled against, and a refused edit of one is not resent
-      (`tools/cli/src/dev/sources.rs`).
+      (`tools/tooling/src/dev/sources.rs`).
 - [x] Component instances inlined from another file: each inlined item carries the
       unit of its instance, a span of another file is reported at the node of this
       file that places it (`UiTree::own_span`); hot reload, release package and
@@ -932,7 +933,7 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       `build.rs`, the files above) are tracked by content hash without being
       delivered at the first scan, so the build's own state is the baseline and a
       touch or a save that changed nothing builds nothing.
-- [x] `RustBuild` (`tools/cli/src/dev/build.rs`): the launch build and every
+- [x] `RustBuild` (`tools/tooling/src/dev/build.rs`): the launch build and every
       rebuild run `cargo build` of the dev artifact on a thread, its rendered
       diagnostics as log lines and its artifact messages read; the old app is never
       stopped before a build succeeds (§25, B.5). A Rust change while idle starts a

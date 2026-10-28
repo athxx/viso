@@ -471,16 +471,17 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                 dev: &[],
             },
         ),
-        // The `viso` command: argument parsing, output and exit codes over the
-        // project model and the compiler it orchestrates (CLI sections 39-41).
-        // It talks to a dev runtime over `viso-dev-protocol`, and decodes each
-        // changed asset as the app would before it sends it: a raster through
-        // `viso-image`, an SVG through its parser, a font through the text
-        // runtime's sfnt parser. It links no runtime.
+        // The services the tools share: build orchestration, the dev session
+        // and its control endpoint, the inspector client, devices and
+        // toolchains, delivery and deployment. The dev session talks to a dev
+        // runtime over `viso-dev-protocol`, and decodes each changed asset as
+        // the app would before it sends it: a raster through `viso-image`, an
+        // SVG through its parser, a font through the text runtime's sfnt
+        // parser. It links no runtime.
         (
-            "viso-cli",
+            "viso-tooling",
             Allowed {
-                dir: "tools/cli",
+                dir: "tools/tooling",
                 deps: &[
                     "viso-project",
                     "viso-package",
@@ -491,6 +492,28 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
                     "viso-image",
                     "viso-svg",
                     "viso-text",
+                ],
+                dev: &[],
+            },
+        ),
+        // The `viso` command, a thin consumer of the services: argument
+        // parsing, output and exit codes over `viso-tooling`, the project
+        // model and the compiler. It renders the data a running app reports
+        // and compares a snapshot with its golden image, and decodes no asset
+        // itself.
+        (
+            "viso-cli",
+            Allowed {
+                dir: "tools/cli",
+                deps: &[
+                    "viso-tooling",
+                    "viso-project",
+                    "viso-package",
+                    "viso-dsl",
+                    "viso-dev-protocol",
+                    "viso-schema",
+                    "viso-ende",
+                    "viso-image",
                 ],
                 dev: &[],
             },
@@ -522,6 +545,11 @@ const NEVER: &[(&str, &str)] = &[
     ("viso-dsl", "viso-ui"),
     ("viso-dsl", "viso-view"),
     ("viso-cli", "viso-view"),
+    ("viso-tooling", "viso-view"),
+    // The command leaves decoding a changed asset to `viso-tooling`: it
+    // parses no SVG or font itself.
+    ("viso-cli", "viso-svg"),
+    ("viso-cli", "viso-text"),
     ("viso-schema", "viso-ui"),
     ("viso-dev-protocol", "viso-ui"),
 ];
@@ -529,7 +557,13 @@ const NEVER: &[(&str, &str)] = &[
 /// Crates on the compiler and tooling side whose dependency
 /// closure holds no runtime, platform or GPU backend, so the compiler, the
 /// language server and `viso check` build without any GPU or windowing code.
-const COMPILER_SIDE: &[&str] = &["viso-dsl", "viso-lsp", "viso-ui-macros", "viso-cli"];
+const COMPILER_SIDE: &[&str] = &[
+    "viso-dsl",
+    "viso-lsp",
+    "viso-ui-macros",
+    "viso-tooling",
+    "viso-cli",
+];
 
 /// What [`COMPILER_SIDE`] closures must not reach: the runtime stack below
 /// `viso-ui`. Everything else of the runtime (`viso-ui`, `viso-render`,

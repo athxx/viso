@@ -3388,7 +3388,7 @@ JSON for CLI/AI/external tooling
 
 ### 48.1 当前实现
 
-CLI 启动的每个外部程序都经过同一个 runner（`tools/cli/src/process.rs`）：
+CLI 启动的每个外部程序都经过同一个 runner（`tools/tooling/src/process.rs`）：
 
 - 程序与参数以列表给出，从不经 shell；
 - `--verbose` 在 stderr 打出 `[viso] running <env> <program> <args> (in <dir>)`；`--json` 下改为 `log` 事件（`source:"tool"`，`level:"debug"`）。按名字是 secret 的变量与 `name=value` 参数显示为 `<hidden>`，紧跟在 secret 名字之后的参数也一样（`--token <hidden>`、`--es VISO_DEV_TOKEN <hidden>`）；
@@ -3440,7 +3440,7 @@ platform signing store
 
 ### 50.1 当前实现
 
-`viso android use` 的组件下载（`tools/cli/src/toolchain/download.rs`）：
+`viso android use` 的组件下载（`tools/tooling/src/toolchain/download.rs`）：
 
 - 只走 HTTPS（`curl --proto =https --proto-redir =https --tlsv1.2`），代理按环境变量（`HTTPS_PROXY`、`NO_PROXY`）；
 - 每个 archive 的大小与 SHA-1 编译进 CLI，取自 SDK repository manifest，也就是发布方签发的那份 digest。传输时不超过 pin 住的大小（`--max-filesize`，并持续盯着 `.part` 的长度），超过即删除；

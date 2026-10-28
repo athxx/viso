@@ -4438,7 +4438,7 @@ summary
 
 ### 54.4 CLI 不复制业务实现
 
-CLI、IDE/LSP、CI 与将来的 Studio 共享同一组领域实现：compiler 与 schema 在 `viso-dsl`，LSP 在 `viso-lsp`，项目发现、配置与 build identity 在 `viso-project`，打包在 `viso-package`，dev channel 的消息在 `viso-dev-protocol`，Inspector 的采集在 `viso-view`。CLI command handler 只负责参数解析、project/config resolution、调用 domain service、人类/JSON 输出与 exit code；不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager 或 Inspector runtime。build 编排、dev session、Simulator/Emulator 控制与 inspector 客户端目前在 `tools/cli` 的 `build/`、`dev/`、`device/`、`toolchain/`、`command/inspect/` 中；出现第二个使用者（Studio）之前须移入共享的 tooling crate。
+CLI、IDE/LSP、CI 与将来的 Studio 共享同一组领域实现：compiler 与 schema 在 `viso-dsl`，LSP 在 `viso-lsp`，项目发现、配置与 build identity 在 `viso-project`，打包在 `viso-package`，dev channel 的消息在 `viso-dev-protocol`，Inspector 的采集在 `viso-view`。CLI command handler 只负责参数解析、project/config resolution、调用 domain service、人类/JSON 输出与 exit code；不得在 `tools/cli` 内重新实现 DSL compiler、GPU compiler、packager 或 Inspector runtime。build 编排、dev session 与其 control endpoint、inspector 客户端（`inspect`：经 session 的 control endpoint 询问 census、节点、帧与事件日志，跟随窗口的日志）、Simulator/Emulator 控制、平台 toolchain、delivery 与 deploy，以及运行外部程序、原子写文件、中断与 secret 的工具和错误码表，在共享的 tooling crate `viso-tooling`（`tools/tooling`）中。它们经前端实现的 `viso_tooling::Reporter` 报告诊断、失败、日志、设备、dev 与 profile 事件，自己不解析参数也不渲染；CLI 的 `Output` 实现它，渲染为人类文本或 JSON event stream，Studio 以自己的方式实现。`viso-cli` 是薄的使用者：`cargo xtask check-deps` 的 allowlist 只允许它依赖 `viso-tooling`、`viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、`viso-schema`、`viso-ende` 与比较 golden 的 `viso-image`，`NEVER` 表禁止它依赖 `viso-svg`、`viso-text`（解码变更的资源是 tooling 的事）。
 
 ### 54.5 CLI 非目标
 

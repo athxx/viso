@@ -35,6 +35,7 @@ members = [
     "extras/code-editor",
     "tools/project",
     "tools/package",
+    "tools/tooling",
     "tools/cli",
     "xtask",
     "libs/woff2",
@@ -116,6 +117,7 @@ viso-pdf = { path = "crates/pdf", version = "0.0.0" }
 # both halves of that.
 viso-project = { path = "tools/project", version = "0.0.0" }
 viso-package = { path = "tools/package", version = "0.0.0" }
+viso-tooling = { path = "tools/tooling", version = "0.0.0" }
 
 # ---------------------------------------------------------------------------
 # Third-party crates. These are not viso* edges, so `cargo xtask check-deps`

@@ -3060,12 +3060,9 @@ dependencies = [
 name = "viso-cli"
 version = "0.0.0"
 dependencies = [
- "brotli",
  "clap",
  "clap_complete",
- "flate2",
  "libc",
- "sha1",
  "sha2",
  "toml_edit",
  "viso-dev-protocol",
@@ -3075,10 +3072,7 @@ dependencies = [
  "viso-package",
  "viso-project",
  "viso-schema",
- "viso-svg",
- "viso-text",
- "windows",
- "windows-core",
+ "viso-tooling",
 ]
 
 [[package]]
@@ -3533,6 +3527,29 @@ dependencies = [
  "viso-glyph-a8",
  "zune-core",
  "zune-png",
+]
+
+[[package]]
+name = "viso-tooling"
+version = "0.0.0"
+dependencies = [
+ "brotli",
+ "flate2",
+ "libc",
+ "sha1",
+ "sha2",
+ "toml_edit",
+ "viso-dev-protocol",
+ "viso-dsl",
+ "viso-ende",
+ "viso-image",
+ "viso-package",
+ "viso-project",
+ "viso-schema",
+ "viso-svg",
+ "viso-text",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

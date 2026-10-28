@@ -133,7 +133,7 @@ enum Incoming {
     /// or why it did not.
     Booted(Result<String, String>),
     /// What happened in the app's first window, for `--inspect`.
-    Inspected(inspect::Streamed),
+    Inspected(viso_tooling::inspect::Streamed),
 }
 
 /// Where one target of the command line runs: the target, and the device
@@ -894,7 +894,7 @@ pub(super) fn session(
         && let Ok(endpoint) = control.endpoint()
     {
         let tx = tx.clone();
-        inspect::stream(endpoint, move |streamed| {
+        viso_tooling::inspect::stream(endpoint, move |streamed| {
             tx.send(Incoming::Inspected(streamed)).is_ok()
         });
     }
@@ -1572,7 +1572,7 @@ fn relay(
         Incoming::Link(event) => dev.link(event, out),
         Incoming::Control(call) => dev.control(call, out),
         Incoming::Booted(_) => {}
-        Incoming::Inspected(streamed) => streamed.report(out),
+        Incoming::Inspected(streamed) => inspect::report_streamed(out, &streamed),
         Incoming::Build(_, BuildEvent::Cargo(CargoEvent::Log { level, line })) => {
             out.log(level, "tool", &line)
         }

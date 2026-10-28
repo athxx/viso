@@ -6,27 +6,26 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
-# The `viso` command. Command handlers only orchestrate: the project model comes
-# from `viso-project`, the compiler from `viso-dsl`, and this crate owns argument
-# parsing, output and exit codes. The JSON
-# event stream is written with `viso-ende`'s writer, the one JSON emitter.
+# The `viso` command. Command handlers only orchestrate: the services come from
+# `viso-tooling`, the project model from `viso-project`, the compiler from
+# `viso-dsl`, and this crate owns argument parsing, output and exit codes. The
+# JSON event stream is written with `viso-ende`'s writer, the one JSON emitter.
 [dependencies]
+# The services it orchestrates: build, the dev session, the inspector
+# client, devices and toolchains, delivery and deployment.
+viso-tooling = { workspace = true }
 viso-dsl = { workspace = true }
 # The dev channel's wire protocol and the inspection, profile and scenario
-# data a running app reports, shared with it.
+# data a running app reports, which it renders.
 viso-dev-protocol = { workspace = true }
-# The asset formats a changed asset is sniffed as.
+# The names of semantic roles an inspection shows.
 viso-schema = { workspace = true }
-# A changed asset is decoded as the app would before it is sent: a raster
-# through the image decoder, an SVG through its parser, a font through the
-# text runtime's. Snapshots and icons are images too.
-viso-image = { workspace = true, features = ["avif"] }
-viso-svg = { workspace = true }
-viso-text = { workspace = true }
+# A snapshot is compared with its golden image.
+viso-image = { workspace = true }
 viso-ende = { workspace = true }
 viso-project = { workspace = true }
-# A dev build for a simulator, an emulator or a browser is packaged as the
-# release build is.
+# The platforms' SDK, app metadata and ABI types the commands hand the
+# services.
 viso-package = { workspace = true }
 # `viso new --framework` reads the named crate's manifest to tell it is `viso`.
 toml_edit = { workspace = true }
@@ -41,37 +40,16 @@ clap = { version = "4.6", default-features = false, features = [
     "suggestions",
     "derive",
 ] }
-# What `viso build` writes: each artifact's SHA-256, and the Brotli and gzip
-# copies a web bundle is served precompressed from.
+# The hashes of generated files and of a profile's captures.
 sha2 = "0.10"
-# What `viso android use` checks each SDK archive against: the SHA-1 the
-# Android repository publishes for it.
-sha1 = "0.10"
-brotli = { version = "8", default-features = false, features = ["std"] }
-flate2 = "1"
 # Shell completion from the same grammar: `viso completion <shell>` writes a
 # script that asks `viso` itself for candidates, so targets, profiles,
 # configuration keys and device profile IDs complete as they are now.
 clap_complete = { version = "4.6", default-features = false, features = ["unstable-dynamic"] }
 
-# The dev session's project watcher: kqueue (macOS, FreeBSD) and inotify
-# (Linux) file events, and `ReadDirectoryChangesW` on Windows. A build is
-# killed with every process under it: its process group, or a job object on
-# Windows; `viso run` catches Ctrl-C to do so.
-[target.'cfg(unix)'.dependencies]
+# The tests interrupt the `viso` they start as a user would.
+[target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_Console",
-    "Win32_System_IO",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
-] }
-windows-core = "0.62"
 
 [[bin]]
 name = "viso"

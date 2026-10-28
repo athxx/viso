@@ -922,8 +922,30 @@ Rules (as for `todo_features.md`):
       errors, unknown properties and children. The schema round-trip, native package and package
       schema tests also pass.
     - Clippy passes on the touched crates, including wasm32 for viso-view, and `check-deps` passes.
-- [ ] Move the CLI's `build/`, `dev/`, `device/`, `toolchain/` and inspect client into a shared
+- [x] Move the CLI's `build/`, `dev/`, `device/`, `toolchain/` and inspect client into a shared
   tooling crate. Verify with `check-deps` that `viso-cli` is a thin consumer.
+  - Built:
+    - `viso-tooling` (`tools/tooling`) holds build, the dev session and its control endpoint,
+      devices, toolchains, delivery and deploy. It also holds the program runner, atomic
+      writes, interrupts, secrets and the error code table.
+    - The services report through an object-safe `Reporter`: diagnostics in a `Source`,
+      failures under a `Code`, logs, device states, and dev, rebuild, runtime and profile
+      events. The CLI's `Output` implements it.
+    - The inspector client is `viso_tooling::inspect`. It covers census, nodes, frame and
+      events, typed `AskError`/`NoSession`, a project's session found by its lock, node
+      labels, and a window's journal followed or streamed. The `viso inspect` command
+      renders what it returns.
+    - A child is interrupted through `process::interrupt`, so the CLI needs no `libc` or
+      `windows` crate.
+    - ADR 0057 records the boundary.
+  - Verified:
+    - `check-deps` passes with `viso-cli` limited to the tooling crate, the project model,
+      the packager, the compiler, the dev protocol, the schema, Ende and the image comparer.
+      Its `NEVER` edges forbid `viso-svg` and `viso-text`. `viso-tooling` is on the compiler
+      side.
+    - The tooling suite passes: 157 tests, the dev session's against a counting `Reporter`.
+    - The CLI's unit tests and its check, inspect, json and run suites pass.
+    - Clippy passes on host, Windows and Linux.
 - [ ] Studio on the shared inspect and profile services, launched by `viso studio [--target]`.
   Verify that it builds without depending on anything the CLI does not.
 - [ ] `web-dom` and `web-hybrid` runtime backends and the per-target capability table (the C4.3

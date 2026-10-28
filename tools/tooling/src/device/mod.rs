@@ -1,0 +1,390 @@
+//! The virtual devices `viso run ios|android` deploys to: the Apple Simulator
+//! ([`simulator`]) and the Android Emulator ([`emulator`]), each driven
+//! through its own toolchain, and the profiles that name them
+//! ([`viso_project::DeviceStore`]).
+
+pub mod emulator;
+pub mod simulator;
+
+use std::io::{BufRead, IsTerminal, Write};
+use std::process::Command;
+
+use viso_package::android::Abi;
+use viso_project::{DeviceProfile, DeviceStore, Platform, Preset, Selection, device::valid_id};
+
+use crate::error::{
+    CLI_USAGE, DEVICE_AMBIGUOUS, DEVICE_EXISTS, DEVICE_ID_INVALID, DEVICE_MISSING, DEVICE_SYSTEM,
+    DEVICE_UNKNOWN, ENV_DEVICE,
+};
+use crate::report::Reporter;
+
+/// The profile a run creates when there is none and the user agrees.
+const STANDARD_PROFILE: &str = "phone";
+
+/// Runs `command` and returns its stdout, or what it said when it failed.
+pub fn capture(command: &mut Command) -> Result<String, String> {
+    crate::process::run(command, None)
+}
+
+/// Runs `command` for its effect.
+pub fn quiet(command: &mut Command) -> Result<(), String> {
+    capture(command).map(drop)
+}
+
+/// A version's numeric parts, for ordering: `26.3.1` is `[26, 3, 1]`.
+pub fn version_key(version: &str) -> Vec<u64> {
+    version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+/// The profile store, or the diagnostic for a machine without a home.
+pub fn store(out: &mut dyn Reporter) -> Result<DeviceStore, u8> {
+    DeviceStore::home().ok_or_else(|| {
+        out.failure(
+            ENV_DEVICE,
+            "no home directory for the device profiles (set VISO_HOME)",
+            &[],
+        )
+    })
+}
+
+/// Creates the profile `id` of `preset` on `platform` with its virtual
+/// device — on the Android system image of `api`, the newest when `None` —
+/// and saves it; or reports why it cannot be and returns the exit code.
+pub fn create(
+    platform: Platform,
+    store: &DeviceStore,
+    id: &str,
+    preset: Preset,
+    api: Option<&str>,
+    out: &mut dyn Reporter,
+) -> Result<DeviceProfile, u8> {
+    if !valid_id(id) {
+        return Err(out.failure(
+            DEVICE_ID_INVALID,
+            &format!("`{id}` is not a profile ID"),
+            &["use lowercase letters, digits and `-`, at most 40".into()],
+        ));
+    }
+    if store.get(platform, id).is_some() {
+        return Err(out.failure(
+            DEVICE_EXISTS,
+            &format!("a {platform} profile is already named `{id}`"),
+            &[],
+        ));
+    }
+    let made = match platform {
+        Platform::Ios => {
+            if api.is_some() {
+                return Err(out.failure(CLI_USAGE, "`--api` is an Android option", &[]));
+            }
+            simulator::runtime_for(preset)
+                .and_then(|(runtime, device_type, model)| {
+                    let udid =
+                        simulator::create(&format!("Viso {id} ({model})"), &device_type, &runtime)?;
+                    Ok((runtime, udid))
+                })
+                .map_err(|why| (ENV_DEVICE, why))
+        }
+        Platform::Android => create_avd(id, api, preset),
+    };
+    let (system, device) = match made {
+        Ok(made) => made,
+        Err((code, why)) => return Err(out.failure(code, &why, &[])),
+    };
+    let profile = DeviceProfile {
+        id: id.to_owned(),
+        platform,
+        preset,
+        system,
+        device,
+    };
+    if let Err(error) = store.save(&profile) {
+        return Err(out.failure(
+            ENV_DEVICE,
+            &format!("cannot write the profile: {error}"),
+            &[],
+        ));
+    }
+    out.device(platform.as_str(), &profile.id, &profile.device, "created");
+    Ok(profile)
+}
+
+/// Creates the AVD of the profile `id` on the image of `api` (the newest
+/// when `None`): its API level and AVD name.
+fn create_avd(
+    id: &str,
+    api: Option<&str>,
+    preset: Preset,
+) -> Result<(String, String), (crate::error::Code, String)> {
+    let sdk = crate::toolchain::android::sdk().map_err(|why| (ENV_DEVICE, why))?;
+    let abi = Abi::host();
+    let images = emulator::system_images(&sdk, abi);
+    // With no level asked, the one `viso android use` chose, when its image
+    // is here; else the newest.
+    let chosen = crate::toolchain::android::Home::current()
+        .and_then(|home| home.default_api())
+        .map(|level| level.to_string());
+    let api = api.or_else(|| {
+        chosen
+            .as_deref()
+            .filter(|level| images.iter().any(|image| image.api == *level))
+    });
+    let image = images
+        .iter()
+        .find(|image| {
+            api.is_none_or(|api| image.api == api || image.api.split('.').next() == Some(api))
+        })
+        .ok_or_else(|| {
+            let installed: Vec<&str> = images.iter().map(|i| i.api.as_str()).collect();
+            (
+                DEVICE_SYSTEM,
+                match api {
+                    Some(api) => format!(
+                        "no {} system image of API {api} is installed (installed: {}); \
+                         `viso android use {api}` installs it",
+                        abi.as_str(),
+                        if installed.is_empty() {
+                            "none".into()
+                        } else {
+                            installed.join(", ")
+                        }
+                    ),
+                    None => format!(
+                        "no {} system image is installed; `viso android use {}` installs one",
+                        abi.as_str(),
+                        crate::toolchain::android::components::DEFAULT_API
+                    ),
+                },
+            )
+        })?;
+    let name = emulator::avd_name(id);
+    emulator::create(&name, image, abi, preset).map_err(|why| (ENV_DEVICE, why))?;
+    Ok((image.api.clone(), name))
+}
+
+/// Whether the user can be asked: human output, a terminal on stdin and
+/// stderr, and no CI.
+pub fn can_ask(out: &dyn Reporter) -> bool {
+    out.human()
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+        && std::env::var_os("CI").is_none()
+}
+
+/// Asks which of `profiles` to run on, until an answer names one: its
+/// number or its ID. `None` when the input ends.
+fn choose<'a>(
+    input: &mut impl BufRead,
+    prompt: &mut impl Write,
+    platform: Platform,
+    profiles: &'a [DeviceProfile],
+) -> Option<&'a DeviceProfile> {
+    let kind = platform.device_kind();
+    let _ = writeln!(prompt, "Several {platform} {kind} profiles and no default:");
+    for (n, profile) in profiles.iter().enumerate() {
+        let _ = writeln!(
+            prompt,
+            "  {}. {} ({}, {})",
+            n + 1,
+            profile.id,
+            profile.preset.as_str(),
+            profile.system
+        );
+    }
+    loop {
+        let _ = write!(prompt, "Run on [1-{}]: ", profiles.len());
+        let _ = prompt.flush();
+        let mut line = String::new();
+        if input.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let answer = line.trim();
+        let chosen = answer
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|n| profiles.get(n))
+            .or_else(|| profiles.iter().find(|p| p.id == answer));
+        if chosen.is_some() {
+            return chosen;
+        }
+    }
+}
+
+/// Asks whether to create the standard profile; an empty answer agrees.
+fn agree(input: &mut impl BufRead, prompt: &mut impl Write, question: &str) -> bool {
+    let _ = write!(prompt, "{question} [Y/n]: ");
+    let _ = prompt.flush();
+    let mut line = String::new();
+    match input.read_line(&mut line) {
+        Ok(0) | Err(_) => false,
+        Ok(_) => matches!(line.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes"),
+    }
+}
+
+/// The profile a run of the project at `root` on `platform` uses, or the
+/// exit code of the diagnostic that says why there is none. Where the choice
+/// is the user's and they can be asked — at a terminal, without `--json` or
+/// CI — it asks which profile to run on, or whether to create the standard
+/// one when there is none; otherwise it never waits on stdin.
+pub fn select(
+    out: &mut dyn Reporter,
+    store: &DeviceStore,
+    platform: Platform,
+    requested: Option<&str>,
+    root: &std::path::Path,
+) -> Result<DeviceProfile, u8> {
+    let kind = platform.device_kind();
+    let create_hint = format!("viso {platform} {kind} create {STANDARD_PROFILE}");
+    match store.select(platform, requested, root) {
+        Selection::Profile(profile) => Ok(profile),
+        Selection::Missing if can_ask(out) => {
+            let question = format!(
+                "There is no {platform} {kind} profile. Create `{STANDARD_PROFILE}`, a phone on \
+                 the newest installed system?"
+            );
+            if agree(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stderr(),
+                &question,
+            ) {
+                create(platform, store, STANDARD_PROFILE, Preset::Phone, None, out)
+            } else {
+                missing(out, platform, &create_hint)
+            }
+        }
+        Selection::Missing => missing(out, platform, &create_hint),
+        Selection::Ambiguous(ids) if can_ask(out) => {
+            let profiles: Vec<DeviceProfile> = ids
+                .iter()
+                .filter_map(|id| store.get(platform, id))
+                .collect();
+            match choose(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stderr(),
+                platform,
+                &profiles,
+            ) {
+                Some(profile) => {
+                    eprintln!(
+                        "[viso] set `[{platform}] device = \"{}\"` in `.viso/local.toml` to \
+                         run on it without asking",
+                        profile.id
+                    );
+                    Ok(profile.clone())
+                }
+                None => ambiguous(out, platform, &ids),
+            }
+        }
+        Selection::Unknown(id) => Err(out.failure_next(
+            DEVICE_UNKNOWN,
+            &format!("no {platform} {kind} profile is named `{id}`"),
+            &[],
+            &[
+                format!("viso {platform} {kind} list"),
+                format!("viso {platform} {kind} create {id}"),
+            ],
+        )),
+        Selection::Ambiguous(ids) => ambiguous(out, platform, &ids),
+    }
+}
+
+/// `DEVICE_MISSING`, with the command that creates a profile.
+fn missing(out: &mut dyn Reporter, platform: Platform, create: &str) -> Result<DeviceProfile, u8> {
+    let kind = platform.device_kind();
+    Err(out.failure_next(
+        DEVICE_MISSING,
+        &format!("there is no {platform} {kind} profile"),
+        &[],
+        &[create.to_owned()],
+    ))
+}
+
+/// `DEVICE_AMBIGUOUS`, with the commands that choose among `ids`.
+fn ambiguous(
+    out: &mut dyn Reporter,
+    platform: Platform,
+    ids: &[String],
+) -> Result<DeviceProfile, u8> {
+    let kind = platform.device_kind();
+    Err(out.failure_next(
+        DEVICE_AMBIGUOUS,
+        &format!("several {platform} {kind} profiles and no default"),
+        &[
+            format!("profiles: {}", ids.join(", ")),
+            format!(
+                "set a default with `[{platform}] device = \"{}\"` in `.viso/local.toml`",
+                ids[0]
+            ),
+        ],
+        &[format!("viso run {platform} --device {}", ids[0])],
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(id: &str) -> DeviceProfile {
+        DeviceProfile {
+            id: id.into(),
+            platform: Platform::Ios,
+            preset: Preset::Phone,
+            system: "26.0".into(),
+            device: format!("udid-{id}"),
+        }
+    }
+
+    #[test]
+    fn a_choice_is_a_number_or_an_id_asked_again_until_it_names_one() {
+        let profiles = [profile("mini"), profile("max")];
+        let mut asked = Vec::new();
+        let chosen = choose(
+            &mut &b"0\nnope\n2\n"[..],
+            &mut asked,
+            Platform::Ios,
+            &profiles,
+        );
+        assert_eq!(chosen.map(|p| p.id.as_str()), Some("max"));
+        let asked = String::from_utf8(asked).unwrap();
+        assert!(asked.contains("  1. mini (phone, 26.0)"), "{asked}");
+        assert_eq!(asked.matches("Run on [1-2]: ").count(), 3);
+
+        let by_id = choose(
+            &mut &b"mini\n"[..],
+            &mut Vec::new(),
+            Platform::Ios,
+            &profiles,
+        );
+        assert_eq!(by_id.map(|p| p.id.as_str()), Some("mini"));
+        assert!(choose(&mut &b"7\n"[..], &mut Vec::new(), Platform::Ios, &profiles).is_none());
+    }
+
+    #[test]
+    fn creating_the_standard_profile_is_agreed_by_default_and_not_on_eof() {
+        for (answer, agreed) in [
+            (&b"\n"[..], true),
+            (b"Y\n", true),
+            (b"yes\n", true),
+            (b"n\n", false),
+            (b"later\n", false),
+            (b"", false),
+        ] {
+            assert_eq!(
+                agree(&mut &answer[..], &mut Vec::new(), "Create?"),
+                agreed,
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn versions_order_by_their_numbers() {
+        assert!(version_key("26.3.1") > version_key("26.3"));
+        assert!(version_key("27.0") > version_key("26.10"));
+        assert!(version_key("37.0") > version_key("36"));
+    }
+}

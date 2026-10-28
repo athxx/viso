@@ -625,7 +625,7 @@ fn diagnostic(w: &mut JsonWriter, report: &Report<'_>) {
             w.begin_object();
             w.name("file");
             match edit.source {
-                Some(source) => w.string(&source.name),
+                Some(source) => w.string(source.name()),
                 None => w.null(),
             }
             w.name("byte_start");
@@ -651,7 +651,7 @@ fn position(w: &mut JsonWriter, source: &Source<'_>, range: &Range<usize>) {
     let (line, column) = source.position_utf16(start);
     let (end_line, end_column) = source.position_utf16(end);
     w.name("file");
-    w.string(&source.name);
+    w.string(source.name());
     w.name("byte_start");
     w.uint(start as u64);
     w.name("byte_end");

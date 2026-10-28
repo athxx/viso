@@ -49,120 +49,17 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use viso_dsl::diag::Fix;
-use viso_dsl::{Diagnostic, LineIndex, Severity, TextSize};
+use viso_dsl::{Diagnostic, Severity};
 use viso_ende::JsonWriter;
 use viso_project::ConfigDiagnostic;
+
+use viso_tooling::report::Reporter;
+pub use viso_tooling::report::{DevIds, Source};
 
 use crate::args::{ColorChoice, Global};
 use crate::build::cargo::RustDiagnostic;
 use crate::dev::report::{RebuildEvent, ReloadEvent, RuntimeStatus};
 use crate::error::Code;
-
-/// Whom a dev session's event is about: the session, the runtime it
-/// concerns and the build.
-#[derive(Debug, Clone, Copy)]
-pub struct DevIds<'a> {
-    pub session: &'a str,
-    /// The runtime's `RuntimeSessionId` in hex; empty with none connected.
-    pub runtime_session: &'a str,
-    /// The runtime's target; `None` with none connected.
-    pub target: Option<&'a str>,
-    pub build_id: &'a str,
-    /// Whether human text names the target: the session serves more than
-    /// one runtime.
-    pub named: bool,
-}
-
-impl DevIds<'_> {
-    /// What a human line starts with: the target, when it is named.
-    fn prefix(&self) -> String {
-        match self.target {
-            Some(target) if self.named => format!("[{target}] "),
-            _ => String::new(),
-        }
-    }
-}
-
-/// A file diagnostics can point into: where it is, how to name it, and its text.
-pub struct Source<'a> {
-    path: &'a Path,
-    /// The path relative to the project root when it lies below it, with `/`
-    /// separators on every host.
-    name: String,
-    /// The `::`-joined path of the module the file holds, for a package source.
-    module: Option<String>,
-    text: &'a str,
-    lines: LineIndex,
-}
-
-impl<'a> Source<'a> {
-    /// A source at `path`, named relative to `root` when it lies below it.
-    pub fn new(path: &'a Path, root: &Path, text: &'a str) -> Self {
-        let relative = path.strip_prefix(root).unwrap_or(path);
-        let name = if relative.is_relative() {
-            relative
-                .iter()
-                .map(|part| part.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/")
-        } else {
-            relative.display().to_string()
-        };
-        Self {
-            path,
-            name,
-            module: None,
-            text,
-            lines: LineIndex::new(text),
-        }
-    }
-
-    /// The name diagnostics use for the file.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// This source as the file of the module `module` (`::`-joined, `""` for the
-    /// root module), so diagnostics of other files can point into it.
-    pub fn of_module(mut self, module: String) -> Self {
-        self.module = Some(module);
-        self
-    }
-
-    /// An offset clamped into the text.
-    fn clamp(&self, offset: usize) -> usize {
-        offset.min(self.text.len())
-    }
-
-    /// The 1-based line and character column of a byte offset.
-    fn position(&self, offset: usize) -> (u32, u32) {
-        let at = self
-            .lines
-            .line_col_scalar(TextSize::new(self.clamp(offset) as u32));
-        (at.line + 1, at.column + 1)
-    }
-
-    /// The 1-based line and UTF-16 column of a byte offset.
-    fn position_utf16(&self, offset: usize) -> (u32, u32) {
-        let at = self
-            .lines
-            .line_col_utf16(TextSize::new(self.clamp(offset) as u32));
-        (at.line + 1, at.column + 1)
-    }
-
-    /// The line holding `offset`, without its terminator, and its start offset.
-    fn line_at(&self, offset: usize) -> (&'a str, usize) {
-        let offset = self.clamp(offset);
-        let column = self
-            .lines
-            .line_col_utf8(TextSize::new(offset as u32))
-            .column;
-        let start = offset - column as usize;
-        let rest = &self.text[start..];
-        let line = rest.split('\n').next().unwrap_or(rest);
-        (line.strip_suffix('\r').unwrap_or(line), start)
-    }
-}
 
 /// Where a report points.
 enum Location<'a> {
@@ -376,7 +273,7 @@ impl Output {
     /// `manifest` is the file it points into.
     pub fn config(&mut self, manifest: Option<&Source<'_>>, diagnostic: &ConfigDiagnostic) {
         let location = match (&diagnostic.path, diagnostic.span) {
-            (Some(path), Some(span)) => match manifest.filter(|m| m.path == path) {
+            (Some(path), Some(span)) => match manifest.filter(|m| m.path() == path) {
                 Some(manifest) => Location::Span(manifest, span.start as usize..span.end as usize),
                 None => Location::Point {
                     file: path.display().to_string(),
@@ -422,12 +319,12 @@ impl Output {
             .iter()
             .map(|(path, text)| Source::new(path, root, text))
             .collect();
-        let find = |file: &Path| sources.iter().find(|source| source.path == file);
+        let find = |file: &Path| sources.iter().find(|source| source.path() == file);
         let location = match diagnostic.spans.first() {
             Some(span) => match find(&span.file) {
                 Some(source) => Location::Span(source, span.byte_start..span.byte_end),
                 None => Location::Point {
-                    file: Source::new(&span.file, root, "").name,
+                    file: Source::new(&span.file, root, "").name().to_owned(),
                     line: span.line,
                     column: span.column,
                 },
@@ -962,7 +859,7 @@ fn compiler_report<'a>(
     };
     let file = |module: Option<&str>| match module {
         None => source,
-        Some(module) => package.iter().find(|s| s.module.as_deref() == Some(module)),
+        Some(module) => package.iter().find(|s| s.module() == Some(module)),
     };
     let location = match source {
         Some(source) => Location::Span(source, diagnostic.primary.as_usize()),
@@ -1009,5 +906,65 @@ fn compiler_report<'a>(
         actual: diagnostic.actual.as_deref(),
         notes: &diagnostic.notes,
         fixes,
+    }
+}
+
+/// The services report through the CLI's output.
+impl Reporter for Output {
+    fn errors(&self) -> usize {
+        Output::errors(self)
+    }
+
+    fn human(&self) -> bool {
+        Output::human(self)
+    }
+
+    fn source(
+        &mut self,
+        source: Option<&Source<'_>>,
+        package: &[Source<'_>],
+        diagnostic: &Diagnostic,
+    ) {
+        Output::source(self, source, package, diagnostic);
+    }
+
+    fn config(&mut self, manifest: Option<&Source<'_>>, diagnostic: &ConfigDiagnostic) {
+        Output::config(self, manifest, diagnostic);
+    }
+
+    fn failure_next(&mut self, code: Code, message: &str, notes: &[String], next: &[String]) -> u8 {
+        Output::failure_next(self, code, message, notes, next)
+    }
+
+    fn error(&mut self, code: &str, message: &str, notes: &[String]) {
+        Output::error(self, code, message, notes);
+    }
+
+    fn log(&mut self, level: &str, source: &str, message: &str) {
+        Output::log(self, level, source, message);
+    }
+
+    fn device(&mut self, platform: &str, id: &str, name: &str, state: &str) {
+        Output::device(self, platform, id, name, state);
+    }
+
+    fn dev(&mut self, file: &str, ids: &DevIds<'_>, event: &ReloadEvent) {
+        Output::dev(self, file, ids, event);
+    }
+
+    fn rebuild(&mut self, ids: &DevIds<'_>, event: &RebuildEvent) {
+        Output::rebuild(self, ids, event);
+    }
+
+    fn runtime(&mut self, ids: &DevIds<'_>, status: &RuntimeStatus<'_>) {
+        Output::runtime(self, ids, status);
+    }
+
+    fn profile(
+        &mut self,
+        payload: &mut dyn FnMut(&mut JsonWriter),
+        text: &mut dyn FnMut() -> Option<String>,
+    ) {
+        Output::profile(self, payload, text);
     }
 }

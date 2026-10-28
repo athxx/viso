@@ -13,20 +13,19 @@
 
 mod events;
 
-pub(crate) use events::{Streamed, stream};
+pub(crate) use events::report_streamed;
 
 use std::path::Path;
-use std::time::Duration;
 
 use viso_dev_protocol::headless::HeadlessSurface;
 use viso_dev_protocol::inspect::{
-    Census, EventLog, FileSources, FrameDamage, FrameDetail, InspectAsk, Inspected, Inspection,
-    InspectorCaps, MAX_ASKED_NODES, NodeDetail, NodeDetails, Rect, Selector, SourceTable,
-    StateSource, WindowDetail, dirty_names, resolve, state_names,
+    Census, EventLog, FileSources, FrameDamage, FrameDetail, Inspected, Inspection, InspectorCaps,
+    NodeDetail, Rect, Selector, SourceTable, StateSource, WindowDetail, dirty_names, resolve,
+    state_names,
 };
 use viso_dsl::Diagnostic;
 use viso_ende::JsonWriter;
-use viso_project::{LockGuard, LockKind, Target};
+use viso_project::Target;
 
 use super::check;
 use super::scenario::{self, Case, Ended, Unplanned};
@@ -34,16 +33,12 @@ use crate::args::{
     FrameArgs, InspectArgs, InspectCommand, InspectedApp, NodeArgs, QueryArgs, TreeArgs,
 };
 use crate::context::Context;
-use crate::dev::control;
-use crate::dev::{ControlAsk, ControlReply};
 use crate::error::{
     self, CLI_USAGE, ENV_NO_DEV_SESSION, ENV_TEST_INPUT, INSPECT_ANSWER_INVALID, INSPECT_SELECTOR,
     INSPECT_UNSUPPORTED, RUN_TEST_CRASHED, SUCCESS, TEST_EXPECTATION, TEST_INPUT_INVALID,
 };
 use crate::output::{Output, Source, human};
-
-/// How long the session has to answer: the app answers at its next frame.
-const WAIT: Duration = Duration::from_secs(10);
+use viso_tooling::inspect::{self, AskError, Censused, NoSession};
 
 /// What a headless run's inspector tells: everything, its events as a
 /// journal of the whole run.
@@ -110,6 +105,25 @@ impl Wants {
 }
 
 impl App {
+    /// The app the session at `endpoint` runs, its census taken.
+    fn session(app: Censused, endpoint: String) -> App {
+        App {
+            census: app.census,
+            sources: app.sources,
+            inspector: app.inspector,
+            asked: Asked::Session(endpoint),
+        }
+    }
+
+    /// Its census, as the inspector client takes it.
+    fn censused(self) -> Censused {
+        Censused {
+            census: self.census,
+            sources: self.sources,
+            inspector: self.inspector,
+        }
+    }
+
     /// The detail of `nodes` of window `window`, in the order asked; a node
     /// gone since the census has none.
     fn nodes(
@@ -121,22 +135,7 @@ impl App {
         self.needs(InspectorCaps::NODES, "the detail of a node", out)?;
         let found = match &self.asked {
             Asked::Session(endpoint) => {
-                let mut found = Vec::new();
-                for chunk in nodes.chunks(MAX_ASKED_NODES) {
-                    let ask = InspectAsk::Nodes {
-                        window,
-                        nodes: chunk.to_vec(),
-                    };
-                    let answer = ask_session(endpoint, ask, out)?;
-                    let details = NodeDetails::from_bytes(&answer).map_err(|error| {
-                        invalid(
-                            out,
-                            &format!("the app's node detail does not decode: {error}"),
-                        )
-                    })?;
-                    found.extend(details.nodes);
-                }
-                found
+                inspect::nodes(endpoint, window, nodes).map_err(|error| failed(error, out))?
             }
             Asked::Headless { detail, .. } => match (window, detail) {
                 (0, Some(detail)) => detail.nodes.nodes.clone(),
@@ -159,13 +158,7 @@ impl App {
         self.needs(InspectorCaps::FRAME, "the detail of a frame", out)?;
         match &self.asked {
             Asked::Session(endpoint) => {
-                let answer = ask_session(endpoint, InspectAsk::Frame { window }, out)?;
-                FrameDetail::from_bytes(&answer).map_err(|error| {
-                    invalid(
-                        out,
-                        &format!("the app's frame detail does not decode: {error}"),
-                    )
-                })
+                inspect::frame(endpoint, window).map_err(|error| failed(error, out))
             }
             Asked::Headless {
                 detail: Some(detail),
@@ -191,19 +184,11 @@ impl App {
     }
 }
 
-/// Asks the session at `endpoint` what `ask` asks: the app's answer.
-fn ask_session(endpoint: &str, ask: InspectAsk, out: &mut Output) -> Result<Vec<u8>, u8> {
-    match control::call(endpoint, ControlAsk::Inspect(ask), Some(WAIT)) {
-        Ok(ControlReply::Inspected { answer, .. }) => Ok(answer),
-        Ok(reply) => Err(refused(reply, out)),
-        Err(message) => Err(out.failure(ENV_NO_DEV_SESSION, &message, &[])),
-    }
-}
-
-/// The failure a reply other than the one asked for is.
-fn refused(reply: ControlReply, out: &mut Output) -> u8 {
-    match reply {
-        ControlReply::Refused {
+/// The failure asking a session ended in.
+fn failed(error: AskError, out: &mut Output) -> u8 {
+    match error {
+        AskError::Gone(message) => out.failure(ENV_NO_DEV_SESSION, &message, &[]),
+        AskError::Refused {
             code,
             message,
             notes,
@@ -212,7 +197,7 @@ fn refused(reply: ControlReply, out: &mut Output) -> u8 {
             &message,
             &notes,
         ),
-        _ => invalid(out, "`viso run` answered another question"),
+        AskError::Invalid(message) => invalid(out, &message),
     }
 }
 
@@ -243,34 +228,8 @@ fn connect(
         ));
     }
     let endpoint = endpoint(ctx, target, app.device.as_deref(), out)?;
-    match control::call(
-        &endpoint,
-        ControlAsk::Inspect(InspectAsk::Census),
-        Some(WAIT),
-    ) {
-        Ok(ControlReply::Inspected {
-            answer,
-            sources,
-            inspector,
-        }) => {
-            let census = Census::from_bytes(&answer);
-            let sources = SourceTable::from_bytes(&sources);
-            match (census, sources) {
-                (Ok(census), Ok(sources)) => Ok(App {
-                    census,
-                    sources,
-                    inspector,
-                    asked: Asked::Session(endpoint),
-                }),
-                (Err(error), _) | (_, Err(error)) => Err(invalid(
-                    out,
-                    &format!("the session's answer does not decode: {error}"),
-                )),
-            }
-        }
-        Ok(reply) => Err(refused(reply, out)),
-        Err(message) => Err(out.failure(ENV_NO_DEV_SESSION, &message, &[])),
-    }
+    let censused = inspect::census(&endpoint).map_err(|error| failed(error, out))?;
+    Ok(App::session(censused, endpoint))
 }
 
 /// `text` as a selector, or the failure it is.
@@ -1066,60 +1025,29 @@ pub(super) fn endpoint(
         Target::Host => "viso run".to_owned(),
         target => format!("viso run {}", target.as_str()),
     };
-    let holder = match device {
-        Some(device) => LockGuard::holder(
-            &layout,
-            LockKind::DevSession {
-                target,
-                device: Some(device),
-            },
-        ),
-        None => {
-            let bare = format!("dev-{}.lock", target.as_str());
-            let on = format!("dev-{}-", target.as_str());
-            let mut sessions: Vec<_> = LockGuard::held(&layout)
-                .into_iter()
-                .filter(|held| {
-                    held.path.file_name().is_some_and(|name| {
-                        let name = name.to_string_lossy();
-                        name == bare || name.starts_with(&on)
-                    })
-                })
-                .collect();
-            if sessions.len() > 1 {
-                let devices: Vec<String> = sessions
-                    .iter()
-                    .filter_map(|held| {
-                        let name = held.path.file_stem()?.to_string_lossy().into_owned();
-                        Some(format!("`{}`", name.strip_prefix(&on)?.to_owned()))
-                    })
-                    .collect();
-                return Err(out.failure(
-                    CLI_USAGE,
-                    &format!("several `{run}` sessions are running; name one with `--device`"),
-                    &[format!("on {}", devices.join(", "))],
-                ));
-            }
-            sessions.pop().map(|held| held.holder)
-        }
-    };
-    match holder {
-        Some(holder) => holder.endpoint.clone().ok_or_else(|| {
+    inspect::endpoint(&layout, target, device).map_err(|why| match why {
+        NoSession::Several(devices) => {
+            let devices: Vec<String> = devices.iter().map(|d| format!("`{d}`")).collect();
             out.failure(
-                ENV_NO_DEV_SESSION,
-                &format!("the `{run}` session of this project takes no requests"),
-                &[format!(
-                    "it is starting, or failed to open its control endpoint ({holder})"
-                )],
+                CLI_USAGE,
+                &format!("several `{run}` sessions are running; name one with `--device`"),
+                &[format!("on {}", devices.join(", "))],
             )
-        }),
-        None => Err(out.failure_next(
+        }
+        NoSession::Closed(holder) => out.failure(
+            ENV_NO_DEV_SESSION,
+            &format!("the `{run}` session of this project takes no requests"),
+            &[format!(
+                "it is starting, or failed to open its control endpoint ({holder})"
+            )],
+        ),
+        NoSession::None => out.failure_next(
             ENV_NO_DEV_SESSION,
             &format!("no `{run}` session is running for this project"),
             &["`viso inspect` inspects the app a dev session runs, or a headless run of it with `--target headless`".to_owned()],
             &[run, "viso inspect query <selector> --target headless".to_owned()],
-        )),
-    }
+        ),
+    })
 }
 
 /// Builds the app headless and plays `scenario` (or lets the app settle):

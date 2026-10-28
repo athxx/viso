@@ -19,8 +19,9 @@ Landing points follow the dependency rules (§39–§41):
 - The project model (discovery, `Viso.toml`, precedence, targets, cache layout, locks,
   build ids) lives in `viso-project`; the compiler, its diagnostics registry, schema
   and IR dumps in `viso-dsl`; app wrapping, signing and the artifact manifest in
-  `viso-package`; device services in `tools/cli/src/device/` until Studio needs them,
-  then a shared tooling crate.
+  `viso-package`; build orchestration, the dev session, the inspector client, device
+  services, toolchains, delivery and deployment in `viso-tooling` (`tools/tooling`),
+  which the CLI and Studio share and which reports through the front end's `Reporter`.
 - The `.vs` formatter is a shared service: the CLI and `viso-lsp` call the same
   function, and the CLI does not depend on the LSP server.
 - `viso-dsl` never depends on the CLI's argument parser; no framework crate depends on
@@ -320,7 +321,7 @@ gap, and CI can run all of it headless.
 - [x] `build [<target>]` with profiles `dev`, `release`, `shipping` (`--release` is
       `--profile release`; `--release` with another `--profile` is a usage error);
       unknown profile C0009; `hot_reload` refused in release/shipping (C0008).
-- [x] One Build Service (`tools/cli/src/build/`) shared by `run` and `build`
+- [x] One Build Service (`tools/tooling/src/build/`) shared by `run` and `build`
       (`package` C5 and `test` C1.9 build through it): resolves profile and target,
       computes the `BuildId`, runs cargo with the profile's flags (`shipping` is
       Viso's own Cargo profile inheriting `release`), packs for the target (`.app`,

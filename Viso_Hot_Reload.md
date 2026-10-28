@@ -294,7 +294,7 @@ DevSessionService
 
 Architecture 关心的是 service contract，而不是一定存在独立 OS daemon process。
 
-已实现（desktop host，`tools/cli/src/dev/`）：service 由 `viso run` 进程持有，`DevSession` 在命令的整个生命周期拥有 session 身份、session lock（`LockKind::DevSession`，同一 project 与 target 同时只有一个 dev session）、ProjectWatcher（§6、§7，`dev/watch/`）、ChangeCoalescer（§7.1）、source graph 与 DSL 编译器（`dev/sources.rs`）以及 RuntimeConnectionManager（`dev/link.rs`）。顺序：取 lock → 计算 build id → 启动 watcher → `cargo build` → 启动 app → 接受连接、编译、发 patch，直到 app 退出。
+已实现（desktop host，`tools/tooling/src/dev/`）：service 由 `viso run` 进程持有，`DevSession` 在命令的整个生命周期拥有 session 身份、session lock（`LockKind::DevSession`，同一 project 与 target 同时只有一个 dev session）、ProjectWatcher（§6、§7，`dev/watch/`）、ChangeCoalescer（§7.1）、source graph 与 DSL 编译器（`dev/sources.rs`）以及 RuntimeConnectionManager（`dev/link.rs`）。顺序：取 lock → 计算 build id → 启动 watcher → `cargo build` → 启动 app → 接受连接、编译、发 patch，直到 app 退出。
 
 - watcher 在 build 之前启动，所以 session 知道 build 读到的每个文件；runtime 报来的 `source_hash` 与 host 上该文件当前内容不同，就说明 build 与启动之间有编辑，它直接成为第一个 patch，不需要 runtime 发源码；
 - `view!` 单独编译每个文件（只依赖该文件与其 package 的 catalog 和 capability），所以一个编辑只重新检查它碰到的文件，catalog 改动重新检查该 package 所有已挂载文件。跨文件 `.vs` import 在 build 本身支持之前不存在，因此也没有跨文件的受影响集合要算；
@@ -1086,7 +1086,7 @@ patch / restart / restore as on desktop
 
 dev channel 与桌面相同（§34–§36），只有地址不同：host 在通往板子的那个本机地址（私有、link-local 或 unique-local，§46）上开临时端口，`VISO_DEV_RUNTIME` 指向它，token、session 与 build 照常随 launch 变量交给 app；app 只接受本机或本地网络上的 host 地址。LAN 上的 listener 只为这一 session 打开、只接受带该 session token 的 runtime，session 结束即关闭；channel 不加密，同一网络上的设备能看到 patch，CLI 对此给出提示。Rust 改动走 warm restart（§26）：新 artifact 交给板子前先取 snapshot，旧进程在新 artifact 就位后才停止。
 
-已实现（`tools/cli/src/deploy/board.rs`，`Viso_CLI.md` §13.11）：写了 `deploy` 的 device target 总在该板卡上运行（即使本机 triple 相同）。构建开始前先经 `ssh`（batch mode，不问密码）清空并创建 `~/viso-dev/<project>` 作为 session 目录，同一次连接读出 `$SSH_CONNECTION`；listener 的地址取对其中板卡一侧地址 connect 的 UDP socket 的本地地址，即本机通往板子那一跳的地址，它不是 loopback、私有、link-local 或 unique-local 地址时 session 不启动。dev artifact 为 target 的 triple 构建，feature 为 embedded 集（facade 默认 feature 关闭）加 `viso/hot-reload`。可执行文件经 `scp` 进 session 目录，第一次 launch 时连同 `assets/`；远程 `sh` 把自己的 pid 写进 `.pid` 后 `exec env VISO_DEV_*=… ./<bin>`。启动 app 的 `ssh` 在自己的进程组里：Ctrl-C 只到 session，session 经另一条连接向 `.pid` 发 `SIGTERM`（再次 Ctrl-C 为 `SIGKILL`），app 如在桌面上一样关闭。SSH 的退出状态即 app 的，255（SSH 自身的失败或断线）报为连接失败。warm restart 用桌面的 prewarm 一步做复制：旧 app 仍运行时新 artifact 先 `scp` 为 `.next-<bin>`（最多 300 s），旧 app 交出 snapshot 并退出后，一次 SSH 校验其字节数并 `mv` 到位再启动，未完整到达时直接重新复制——与上文「新 artifact 就位后才停止旧进程」一致，只是「就位」是复制到旁边、启动前一刻才替换。listener 打开后 CLI 打印一条 `warn` 说明 channel 不加密。测试以 `ssh`/`scp` 脚本扮演板卡（`deploy/board_fake.rs`、`tests/run.rs`）。
+已实现（`tools/tooling/src/deploy/board.rs`，`Viso_CLI.md` §13.11）：写了 `deploy` 的 device target 总在该板卡上运行（即使本机 triple 相同）。构建开始前先经 `ssh`（batch mode，不问密码）清空并创建 `~/viso-dev/<project>` 作为 session 目录，同一次连接读出 `$SSH_CONNECTION`；listener 的地址取对其中板卡一侧地址 connect 的 UDP socket 的本地地址，即本机通往板子那一跳的地址，它不是 loopback、私有、link-local 或 unique-local 地址时 session 不启动。dev artifact 为 target 的 triple 构建，feature 为 embedded 集（facade 默认 feature 关闭）加 `viso/hot-reload`。可执行文件经 `scp` 进 session 目录，第一次 launch 时连同 `assets/`；远程 `sh` 把自己的 pid 写进 `.pid` 后 `exec env VISO_DEV_*=… ./<bin>`。启动 app 的 `ssh` 在自己的进程组里：Ctrl-C 只到 session，session 经另一条连接向 `.pid` 发 `SIGTERM`（再次 Ctrl-C 为 `SIGKILL`），app 如在桌面上一样关闭。SSH 的退出状态即 app 的，255（SSH 自身的失败或断线）报为连接失败。warm restart 用桌面的 prewarm 一步做复制：旧 app 仍运行时新 artifact 先 `scp` 为 `.next-<bin>`（最多 300 s），旧 app 交出 snapshot 并退出后，一次 SSH 校验其字节数并 `mv` 到位再启动，未完整到达时直接重新复制——与上文「新 artifact 就位后才停止旧进程」一致，只是「就位」是复制到旁边、启动前一刻才替换。listener 打开后 CLI 打印一条 `warn` 说明 channel 不加密。测试以 `ssh`/`scp` 脚本扮演板卡（`deploy/board_fake.rs`、`tests/run.rs`）。
 
 ---
 
@@ -1363,7 +1363,7 @@ NACK 后 running app 保持 last-good revision。
 
 ### 37.1 当前实现：`.vs` reload event
 
-host 为每个 candidate revision 的每个 `.vs` 文件构造一条 report（`tools/cli/src/dev/report.rs`），由它自己的编译与 runtime 的 ACK/NACK 组成：`base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected|held), stage, elapsed, counts, codes`（`held`：`--no-hot-reload` 下编译通过、未发送，stage 为 `transport`；`counts.dirty` 随 `counts` 一起来自 ACK，rejected/held 时全为 0）；诊断由 host 用它编译的源码给出行列，app 不发源码也不发诊断。`--json` 的 `dev` payload 在这些字段之外另带 `runtime_session_id`（已连接 runtime 的 `RuntimeSessionId` 十六进制；没有已连接 runtime 时为空字符串）、嵌套的 `dirty` object 与 `game` object（切换了游戏时为 ACK 的 `GameCommit`，否则 `null`；`Viso_CLI.md` §36.4）。游戏文件的层级另以提示诊断 `E5103` 报告、其 code 计入 `codes`；人类输出的 reload 行在切换了游戏时追加 `game <tier> from tick <n>[, <n> state(s) reset][, <n> character(s) kept]`。
+host 为每个 candidate revision 的每个 `.vs` 文件构造一条 report（`tools/tooling/src/dev/report.rs`），由它自己的编译与 runtime 的 ACK/NACK 组成：`base_revision, candidate_revision, last_good_revision, outcome(applied|scoped_reset|rejected|held), stage, elapsed, counts, codes`（`held`：`--no-hot-reload` 下编译通过、未发送，stage 为 `transport`；`counts.dirty` 随 `counts` 一起来自 ACK，rejected/held 时全为 0）；诊断由 host 用它编译的源码给出行列，app 不发源码也不发诊断。`--json` 的 `dev` payload 在这些字段之外另带 `runtime_session_id`（已连接 runtime 的 `RuntimeSessionId` 十六进制；没有已连接 runtime 时为空字符串）、嵌套的 `dirty` object 与 `game` object（切换了游戏时为 ACK 的 `GameCommit`，否则 `null`；`Viso_CLI.md` §36.4）。游戏文件的层级另以提示诊断 `E5103` 报告、其 code 计入 `codes`；人类输出的 reload 行在切换了游戏时追加 `game <tier> from tick <n>[, <n> state(s) reset][, <n> character(s) kept]`。
 
 - 一个 batch 是一个 candidate revision（被拒的 candidate 也消耗一个号，下一个 patch 跳号）；host 拒绝的文件 `stage` 是 §51 中的失败 stage（`parse`、`resolve`、`typecheck`、`capability`、`state-compat`、`shader-compile`），runtime NACK 的文件是 NACK 的 stage，提交的文件为 `runtime-commit`，计数来自 ACK；
 - `elapsed` 从 batch 开始编译算到 runtime 的回答（含编译、传输、等待帧边界与提交）；
@@ -1516,7 +1516,7 @@ DOM/WebGPU lowering
 
 这为 Studio Device Matrix 留出架构空间，但不要求 CLI 1.0 一条命令同时启动所有平台。
 
-已实现（`tools/cli/src/dev/`）：`DevSession` 持有所有已连接的 runtime（按连接顺序；Rust warm restart 重启的是某条 lane 启动的 app，即该 lane build 的第一个 runtime）；source graph（文本、增量 parse、catalog、asset 内容）全 session 共享，每个 runtime 有自己的 `Mounts`：它挂载的文件、各自的 running/last-good 编译结果、它持有的资源及其运行内容。一次 batch 的 pass 中，挂载同一文件且 profile 相同（origin、capability 授权、catalog、asset 目录）的 runtime 共用一次编译（`Memo`），asset decode 也每内容一次；plan、按 runtime GPU backend 打包 shader（`shader_lang`）、它是否接受资源/游戏 system、patch 与 ACK/NACK 都是每个 runtime 自己的。同一诊断每个 pass 只报告一次；`dev` event 与 failure overlay 每个 runtime 一份。新 build 只替换重启的 lane 的 runtime；其他 lane 的 runtime 继续把未被 patch 过的资源当作它们的 build 嵌入的内容。连接层接受 session 每条 lane 的 build id（`Expect.builds`，ADR 0046）：`viso run web-gpu --desktop` 等一个 session 同时接入多个 build，每个 runtime 属于它运行的 build 的 lane；warm restart 一次一条 lane，`viso game`/`inspect` 未指定 runtime 时交给第一条 lane 的 app。
+已实现（`tools/tooling/src/dev/`）：`DevSession` 持有所有已连接的 runtime（按连接顺序；Rust warm restart 重启的是某条 lane 启动的 app，即该 lane build 的第一个 runtime）；source graph（文本、增量 parse、catalog、asset 内容）全 session 共享，每个 runtime 有自己的 `Mounts`：它挂载的文件、各自的 running/last-good 编译结果、它持有的资源及其运行内容。一次 batch 的 pass 中，挂载同一文件且 profile 相同（origin、capability 授权、catalog、asset 目录）的 runtime 共用一次编译（`Memo`），asset decode 也每内容一次；plan、按 runtime GPU backend 打包 shader（`shader_lang`）、它是否接受资源/游戏 system、patch 与 ACK/NACK 都是每个 runtime 自己的。同一诊断每个 pass 只报告一次；`dev` event 与 failure overlay 每个 runtime 一份。新 build 只替换重启的 lane 的 runtime；其他 lane 的 runtime 继续把未被 patch 过的资源当作它们的 build 嵌入的内容。连接层接受 session 每条 lane 的 build id（`Expect.builds`，ADR 0046）：`viso run web-gpu --desktop` 等一个 session 同时接入多个 build，每个 runtime 属于它运行的 build 的 lane；warm restart 一次一条 lane，`viso game`/`inspect` 未指定 runtime 时交给第一条 lane 的 app。
 
 ---
 
@@ -1766,7 +1766,7 @@ tools/dev/
 
 也可以作为 shared tooling crate 的 module；不要为了图漂亮立即拆出十个 crate。
 
-已实现的布局是 `viso-cli` 里的一个 module，`tools/cli/src/dev/`：`mod.rs`（session、coalescer、candidate 与 patch 发送）、`watch/`（project watcher 与 scope，各平台后端）、`sources.rs`（source graph、每个挂载的 last-good 与 host 编译）、`link.rs`（连接管理）、`report.rs`（`dev` event 的 report）。patch planner 在 `viso-dsl::hotreload::patch`（diff + migration + retype 降为 `ReloadPlan`）。wire 协议在 `viso-view::dev::wire`，host 与 runtime 共用。
+已实现的布局是共享 tooling crate `viso-tooling` 里的一个 module，`tools/tooling/src/dev/`（经前端实现的 `Reporter` 报告，CLI 与 Studio 共用）：`mod.rs`（session、coalescer、candidate 与 patch 发送）、`watch/`（project watcher 与 scope，各平台后端）、`sources.rs`（source graph、每个挂载的 last-good 与 host 编译）、`link.rs`（连接管理）、`report.rs`（`dev` event 的 report）。patch planner 在 `viso-dsl::hotreload::patch`（diff + migration + retype 降为 `ReloadPlan`）。wire 协议在 `viso-view::dev::wire`，host 与 runtime 共用。
 
 ---
 

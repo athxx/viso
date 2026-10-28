@@ -5,23 +5,16 @@
 //! renders the result and picks the exit code. It never reimplements a service.
 
 mod args;
-mod atomic;
-mod build;
 mod command;
 mod complete;
 mod context;
-mod delivery;
-mod deploy;
-mod dev;
-mod device;
-mod error;
 mod generated;
 mod help;
-mod interrupt;
 mod output;
-mod process;
-mod secret;
-mod toolchain;
+
+use viso_tooling::{
+    atomic, build, delivery, deploy, dev, device, error, interrupt, process, toolchain,
+};
 
 use std::process::ExitCode;
 

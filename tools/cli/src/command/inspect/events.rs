@@ -8,34 +8,25 @@
 //! when an event names a node it does not hold; a headless run keeps its
 //! journal from its start and writes it at its end.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use viso_dev_protocol::inspect::{
-    Cause, Census, EventKind, EventLog, InspectAsk, InspectEvent, Inspected, InspectorCaps,
-    SourceTable, StateSource, dirty_names, resolve,
+    Cause, EventKind, EventLog, InspectEvent, InspectorCaps, SourceTable, StateSource, dirty_names,
 };
 use viso_ende::JsonWriter;
 use viso_project::{LockGuard, Target};
 
-use super::{App, Asked, connect, endpoint, invalid, write_inspector};
+use super::{App, Asked, connect, endpoint, failed, invalid, write_inspector};
 use crate::args::{AttachArgs, EventsArgs};
 use crate::context::Context;
-use crate::dev::control;
-use crate::dev::{ControlAsk, ControlReply};
 use crate::error::{CLI_USAGE, ENV_NO_DEV_SESSION, INSPECT_UNSUPPORTED, RUN_APP_FAILED};
 use crate::interrupt;
 use crate::output::Output;
 use crate::process::Launch;
-
-/// How often a follower asks for what is new.
-const POLL: Duration = Duration::from_millis(100);
-
-/// The least time between two censuses a follower takes to name new nodes.
-const RECENSUS: Duration = Duration::from_millis(500);
+use viso_tooling::inspect::{self, Labels, POLL, Streamed};
 
 /// How long `--run` waits for the session it starts to connect its app: a
 /// first build of a mobile target takes minutes.
@@ -94,7 +85,8 @@ pub(super) fn attach(ctx: &Context<'_>, args: &AttachArgs, out: &mut Output) -> 
         Some(session) => session_endpoint(ctx, session, out)?,
         None => endpoint(ctx, target, args.device.as_deref(), out)?,
     };
-    let app = census(&endpoint).map_err(|failure| failure.report(out))?;
+    let app = inspect::census(&endpoint).map_err(|error| failed(error, out))?;
+    let app = App::session(app, endpoint.clone());
     attached(app, &endpoint, out)
 }
 
@@ -178,92 +170,16 @@ fn session_endpoint(ctx: &Context<'_>, session: &str, out: &mut Output) -> Resul
     }
 }
 
-/// Why asking a session failed.
-enum Failure {
-    /// The session is not there, or no longer: the reason.
-    Gone(String),
-    /// The session refused: its code, message and notes.
-    Refused(String, String, Vec<String>),
-    /// What came back is not what was asked.
-    Invalid(String),
-}
-
-impl Failure {
-    fn report(self, out: &mut Output) -> u8 {
-        match self {
-            Failure::Gone(message) => out.failure(ENV_NO_DEV_SESSION, &message, &[]),
-            Failure::Refused(code, message, notes) => super::refused(
-                ControlReply::Refused {
-                    code,
-                    message,
-                    notes,
-                },
-                out,
-            ),
-            Failure::Invalid(message) => invalid(out, &message),
-        }
-    }
-}
-
-/// Asks the session at `endpoint` what `ask` asks: the app's answer, the
-/// session's source table and what the app's inspector tells.
-fn ask(endpoint: &str, ask: InspectAsk) -> Result<(Vec<u8>, Vec<u8>, InspectorCaps), Failure> {
-    match control::call(endpoint, ControlAsk::Inspect(ask), Some(super::WAIT)) {
-        Ok(ControlReply::Inspected {
-            answer,
-            sources,
-            inspector,
-        }) => Ok((answer, sources, inspector)),
-        Ok(ControlReply::Refused {
-            code,
-            message,
-            notes,
-        }) => Err(Failure::Refused(code, message, notes)),
-        Ok(_) => Err(Failure::Invalid(
-            "`viso run` answered another question".to_owned(),
-        )),
-        Err(message) => Err(Failure::Gone(message)),
-    }
-}
-
-/// The census of the app at `endpoint`.
-fn census(endpoint: &str) -> Result<App, Failure> {
-    let (answer, sources, inspector) = ask(endpoint, InspectAsk::Census)?;
-    let census = Census::from_bytes(&answer)
-        .map_err(|error| Failure::Invalid(format!("the app's census does not decode: {error}")))?;
-    let sources = SourceTable::from_bytes(&sources).map_err(|error| {
-        Failure::Invalid(format!(
-            "the session's source table does not decode: {error}"
-        ))
-    })?;
-    Ok(App {
-        census,
-        sources,
-        inspector,
-        asked: Asked::Session(endpoint.to_owned()),
-    })
-}
-
-/// A window followed through a session.
+/// A window followed through a session, and how many events it reported.
 pub(crate) struct Follower {
-    app: App,
-    window: u32,
-    labels: Labels,
-    /// The number of the last event reported.
-    after: u64,
-    census_at: Instant,
+    following: inspect::Follower,
     reported: u64,
 }
 
 impl Follower {
     fn new(app: App, window: u32) -> Self {
-        let labels = Labels::new(&app.census, &app.sources, window);
         Follower {
-            app,
-            window,
-            labels,
-            after: 0,
-            census_at: Instant::now(),
+            following: inspect::Follower::new(app.censused(), window),
             reported: 0,
         }
     }
@@ -279,10 +195,14 @@ impl Follower {
         interrupt::catch();
         let started = Instant::now();
         let ended = loop {
-            match self.poll(endpoint) {
-                Ok(log) => self.report(&log, out),
-                Err(Failure::Gone(why)) => break Some(why),
-                Err(failure) => return Err(failure.report(out)),
+            match self.following.poll(endpoint) {
+                Ok(log) => {
+                    let following = &self.following;
+                    report(out, following.labels(), &following.app().sources, &log);
+                    self.reported += log.events.len() as u64;
+                }
+                Err(inspect::AskError::Gone(why)) => break Some(why),
+                Err(error) => return Err(failed(error, out)),
             }
             let due = Instant::now() + POLL;
             while Instant::now() < due {
@@ -297,33 +217,6 @@ impl Follower {
         };
         finish(out, self.reported, ended.as_deref());
         Ok(())
-    }
-
-    /// What is new in the window, its nodes named.
-    fn poll(&mut self, endpoint: &str) -> Result<EventLog, Failure> {
-        let ask_events = InspectAsk::Events {
-            window: self.window,
-            after: self.after,
-        };
-        let (answer, _, _) = ask(endpoint, ask_events)?;
-        let log = EventLog::from_bytes(&answer).map_err(|error| {
-            Failure::Invalid(format!("the app's journal does not decode: {error}"))
-        })?;
-        if !self.labels.names_all(&log) && self.census_at.elapsed() >= RECENSUS {
-            self.census_at = Instant::now();
-            if let Ok(app) = census(endpoint) {
-                self.labels = Labels::new(&app.census, &app.sources, self.window);
-                self.app = app;
-            }
-        }
-        Ok(log)
-    }
-
-    /// Reports `log`, and asks after it next.
-    pub(crate) fn report(&mut self, log: &EventLog, out: &mut Output) {
-        report(out, &self.labels, &self.app.sources, log);
-        self.reported += log.events.len() as u64;
-        self.after = log.next.saturating_sub(1).max(self.after);
     }
 }
 
@@ -355,83 +248,23 @@ fn finish(out: &mut Output, events: u64, ended: Option<&str>) {
     );
 }
 
-/// What each node of a window is called in a report: its type, name and
-/// styles where a view declares it, else what it draws.
-#[derive(Clone)]
-pub(crate) struct Labels {
-    by_id: HashMap<(u32, u32), String>,
+/// Node `id` and what `labels` call it.
+fn write_label(w: &mut JsonWriter, labels: &Labels, id: (u32, u32)) {
+    w.begin_object();
+    w.name("node_id");
+    w.string(&format!("{}:{}", id.0, id.1));
+    w.name("label");
+    match labels.get(id) {
+        Some(label) => w.string(label),
+        None => w.null(),
+    }
+    w.end_object();
 }
 
-impl Labels {
-    pub(crate) fn new(census: &Census, sources: &SourceTable, window: u32) -> Labels {
-        let inspection = resolve(census, sources);
-        let by_id = inspection
-            .nodes
-            .iter()
-            .filter(|node| node.window == window)
-            .map(|node| ((node.node.index, node.node.generation), short(node)))
-            .collect();
-        Labels { by_id }
-    }
-
-    /// Whether every node `log` names is one it names.
-    fn names_all(&self, log: &EventLog) -> bool {
-        log.events.iter().all(|event| match &event.kind {
-            EventKind::Input { route, .. } => {
-                route.last().is_none_or(|id| self.by_id.contains_key(id))
-            }
-            EventKind::Focus { from, to } => [from, to]
-                .into_iter()
-                .flatten()
-                .all(|id| self.by_id.contains_key(id)),
-            EventKind::Dirty { node, .. } => self.by_id.contains_key(node),
-        })
-    }
-
-    /// Node `id` as a report shows it: `Button#save 12:1`, or the ID alone.
-    fn text(&self, (index, generation): (u32, u32)) -> String {
-        match self.by_id.get(&(index, generation)) {
-            Some(label) => format!("{label} {index}:{generation}"),
-            None => format!("{index}:{generation}"),
-        }
-    }
-
-    fn write(&self, w: &mut JsonWriter, id: (u32, u32)) {
-        w.begin_object();
-        w.name("node_id");
-        w.string(&format!("{}:{}", id.0, id.1));
-        w.name("label");
-        match self.by_id.get(&id) {
-            Some(label) => w.string(label),
-            None => w.null(),
-        }
-        w.end_object();
-    }
-
-    fn write_option(&self, w: &mut JsonWriter, id: Option<(u32, u32)>) {
-        match id {
-            Some(id) => self.write(w, id),
-            None => w.null(),
-        }
-    }
-}
-
-/// What a node is called: `Button#save.Primary`, or what it draws.
-fn short(node: &Inspected<'_>) -> String {
-    match node.source {
-        Some((_, source)) => {
-            let mut what = source.type_name.clone();
-            if let Some(name) = &source.name {
-                what.push('#');
-                what.push_str(name);
-            }
-            for style in &source.styles {
-                what.push('.');
-                what.push_str(style);
-            }
-            what
-        }
-        None => node.node.kind.label().to_owned(),
+fn write_label_option(w: &mut JsonWriter, labels: &Labels, id: Option<(u32, u32)>) {
+    match id {
+        Some(id) => write_label(w, labels, id),
+        None => w.null(),
     }
 }
 
@@ -547,23 +380,23 @@ fn write_event(
                 None => w.null(),
             }
             w.name("target");
-            labels.write_option(w, route.last().copied());
+            write_label_option(w, labels, route.last().copied());
             w.name("route");
             w.begin_array();
             for &id in route {
-                labels.write(w, id);
+                write_label(w, labels, id);
             }
             w.end_array();
         }
         EventKind::Focus { from, to } => {
             w.name("from");
-            labels.write_option(w, *from);
+            write_label_option(w, labels, *from);
             w.name("to");
-            labels.write_option(w, *to);
+            write_label_option(w, labels, *to);
         }
         EventKind::Dirty { node, class, cause } => {
             w.name("node");
-            labels.write(w, *node);
+            write_label(w, labels, *node);
             w.name("classes");
             w.begin_array();
             for name in dirty_names(*class) {
@@ -707,10 +540,10 @@ fn run_and_attach(
             viso_project::LockKind::DevSession { target, device },
         );
         if let Some(endpoint) = held.and_then(|holder| holder.endpoint)
-            && let Ok(app) = census(&endpoint)
+            && let Ok(app) = inspect::census(&endpoint)
             && !app.census.windows.is_empty()
         {
-            break (app, endpoint);
+            break (App::session(app, endpoint.clone()), endpoint);
         }
         std::thread::sleep(Duration::from_millis(250));
     };
@@ -731,13 +564,7 @@ impl Session {
         if let Ok(Some(_)) = self.child.try_wait() {
             return;
         }
-        #[cfg(unix)]
-        // SAFETY: signalling a child this process spawned and still owns.
-        unsafe {
-            libc::kill(self.child.id() as libc::pid_t, libc::SIGINT);
-        }
-        #[cfg(not(unix))]
-        let _ = self.child.kill();
+        crate::process::interrupt(&mut self.child);
         let asked = Instant::now();
         while asked.elapsed() < STOP {
             if let Ok(Some(_)) = self.child.try_wait() {
@@ -759,64 +586,7 @@ impl Session {
     }
 }
 
-/// `viso run --inspect`: the session's own first runtime followed, its
-/// events reported among the session's.
-pub(crate) fn stream(endpoint: String, sink: impl Fn(Streamed) -> bool + Send + 'static) {
-    std::thread::spawn(move || {
-        let mut follower: Option<Follower> = None;
-        loop {
-            let next = match &mut follower {
-                None => match census(&endpoint) {
-                    Ok(app) if app.inspector.contains(InspectorCaps::EVENTS) => {
-                        follower = Some(Follower::new(app, 0));
-                        None
-                    }
-                    Ok(_) => return,
-                    Err(_) => None,
-                },
-                Some(following) => match following.poll(&endpoint) {
-                    Ok(log) => Some(Streamed {
-                        labels: following.labels.clone(),
-                        sources: following.app.sources.clone(),
-                        after: log.next.saturating_sub(1),
-                        log,
-                    }),
-                    // The app left: the next one that connects is followed.
-                    Err(_) => {
-                        follower = None;
-                        None
-                    }
-                },
-            };
-            if let Some(streamed) = next {
-                if let Some(following) = &mut follower {
-                    following.after = streamed.after.max(following.after);
-                }
-                let news = !streamed.log.events.is_empty() || streamed.log.dropped > 0;
-                if news && !sink(streamed) {
-                    return;
-                }
-            }
-            std::thread::sleep(if follower.is_some() {
-                POLL
-            } else {
-                Duration::from_millis(500)
-            });
-        }
-    });
-}
-
-/// Events a stream brought, with what names their nodes.
-pub(crate) struct Streamed {
-    labels: Labels,
-    sources: SourceTable,
-    after: u64,
-    log: EventLog,
-}
-
-impl Streamed {
-    /// Reports them on `out`.
-    pub(crate) fn report(&self, out: &mut Output) {
-        report(out, &self.labels, &self.sources, &self.log);
-    }
+/// Reports what a stream of `viso run --inspect` brought on `out`.
+pub(crate) fn report_streamed(out: &mut Output, streamed: &Streamed) {
+    report(out, &streamed.labels, &streamed.sources, &streamed.log);
 }

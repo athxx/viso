@@ -1,0 +1,62 @@
+[package]
+name = "viso-tooling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+# The services the `viso` command and Studio share: build orchestration, the
+# dev session and its control endpoint, the inspector client, simulator and
+# emulator control, the platform toolchains, delivery and deployment. They
+# report through a `Reporter` each front end implements; none parses
+# arguments or renders.
+[dependencies]
+viso-dsl = { workspace = true }
+# The dev channel's wire protocol and the inspection, profile and scenario
+# data a running app reports, shared with it.
+viso-dev-protocol = { workspace = true }
+# The asset formats a changed asset is sniffed as.
+viso-schema = { workspace = true }
+# A changed asset is decoded as the app would before it is sent: a raster
+# through the image decoder, an SVG through its parser, a font through the
+# text runtime's. Icons are images too.
+viso-image = { workspace = true, features = ["avif"] }
+viso-svg = { workspace = true }
+viso-text = { workspace = true }
+viso-ende = { workspace = true }
+viso-project = { workspace = true }
+# A dev build for a simulator, an emulator or a browser is packaged as the
+# release build is.
+viso-package = { workspace = true }
+toml_edit = { workspace = true }
+# Each artifact's SHA-256, and the Brotli and gzip copies a web bundle is
+# served precompressed from.
+sha2 = "0.10"
+# What an Android SDK archive is checked against: the SHA-1 the Android
+# repository publishes for it.
+sha1 = "0.10"
+brotli = { version = "8", default-features = false, features = ["std"] }
+flate2 = "1"
+
+# The dev session's project watcher: kqueue (macOS, FreeBSD) and inotify
+# (Linux) file events, and `ReadDirectoryChangesW` on Windows. A build is
+# killed with every process under it: its process group, or a job object on
+# Windows.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+windows-core = "0.62"
+
+[lints]
+workspace = true

@@ -202,7 +202,7 @@ fn write(out: &mut String, report: &Report<'_>, paint: Paint) -> fmt::Result {
                 "{:gutter$}{} {}:{line}:{column}",
                 "",
                 paint.frame("-->"),
-                source.name
+                source.name()
             )?;
             writeln!(out, "{:gutter$} {bar}", "")?;
             let primary = Mark {
@@ -221,7 +221,7 @@ fn write(out: &mut String, report: &Report<'_>, paint: Paint) -> fmt::Result {
                         "{:gutter$}{} {}:{line}:{column}",
                         "",
                         paint.frame(":::"),
-                        shown.name
+                        shown.name()
                     )?;
                     writeln!(out, "{:gutter$} {bar}", "")?;
                 }
@@ -291,11 +291,14 @@ fn snippet(
     let end = range.end.clamp(start, line_end);
     // Tabs are copied into the padding so the underline lines up however the
     // terminal expands them.
-    let pad: String = source.text[line_start..start.min(line_end)]
+    let pad: String = source.text()[line_start..start.min(line_end)]
         .chars()
         .map(|c| if c == '\t' { '\t' } else { ' ' })
         .collect();
-    let width = source.text[start.min(line_end)..end].chars().count().max(1);
+    let width = source.text()[start.min(line_end)..end]
+        .chars()
+        .count()
+        .max(1);
     let underline: String = std::iter::repeat_n(mark.char, width).collect();
     let bar = paint.frame("|");
     let number = paint.frame(&format!("{line:>gutter$}"));
