@@ -1053,8 +1053,20 @@ Rules (as for `todo_features.md`):
     exact text of a drag, a cross-page drag, a double click and select all; the reader reads the
     export's documents back; a sweep of real files (to 645 pages, CJK, LaTeX Type 1, forms)
     reads without a panic at ~1 ms a page; `device_loss` and the asset, list and scroll tests pass.
-- [ ] A browser widget in `viso-ext/viso-webview`, which is still the cargo template. Verify that a
+- [x] A browser widget in `viso-ext/viso-webview`, which is still the cargo template. Verify that a
   page loads inside a node on macOS and Android.
+  - Built: core native views (ADR 0060, `viso_ui::native`): `BuildCx::native_view` gives a node a
+    platform view that hears its window box, clip, scale and visibility after layout when they
+    change and goes with the node; `BuildCx::native_events` hands reports from any thread to the
+    node's handler at the frame boundary. `viso-webview`'s `web_view` puts WKWebView (macOS) or
+    `android.webkit.WebView` (Android, a Java class in an embedded dex) in a clipping host over the
+    box, reports `WebEvent`s, and its `WebViewHandle` loads, moves through history and evaluates
+    scripts. iOS and the other targets leave the box empty and report `Failed`.
+  - Verified: `viso/tests/native_view.rs` checks placement under scroll and clip, hiding, the drop
+    with the node and cross-thread reports. The example's check mode loads its page, runs a
+    script and gets back the title, the text and the box's viewport on macOS (800x519) and on an
+    Android 37 emulator (411x818, GLES there since the emulator's Vulkan would not start with the
+    display asleep); a screenshot shows the page under the toolbar.
 - [ ] KMS: libinput gestures (pinch, swipe) as `RawEvent::Gesture`, and overlay planes for video.
   Verify with a libinput fixture, and a video scanned out on a board without the GLES pass.
 
