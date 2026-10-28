@@ -652,7 +652,7 @@ viso/
 └── xtask/             cargo xtask check-deps 等（§10.2）
 ```
 
-生态 adapter（tokio/tracing/serde 等）不设 `integrations/` 目录，归同级 `viso-ext` 仓库（§74）。目标（尚未建立）：`extras/` 的其余部分（markdown、pdf viewer、browser、xr）、`tools/migrate`（§38）、`vendor/`。新增目录或 crate 时必须同步 §8、§9、§10 与 xtask allowlist（`check-deps` 对未登记的 workspace member 直接失败）。
+生态 adapter（tokio/tracing/serde 等）不设 `integrations/` 目录，归同级 `viso-ext` 仓库（§74）。目标（尚未建立）：`extras/` 的其余部分（markdown、browser、xr）、`tools/migrate`（§38）、`vendor/`。新增目录或 crate 时必须同步 §8、§9、§10 与 xtask allowlist（`check-deps` 对未登记的 workspace member 直接失败）。
 
 ### 8.1 为什么不是几十个 crate
 
@@ -887,7 +887,7 @@ SVG 输入通道：bytes 一次性解析为规范化 vector 文档（`tree::Tree
 
 ### 分页捕获（`viso::paged`）
 
-facade 的 `viso::paged::capture(Paged, take)` 在应用第一个窗口的 store 里以页宽排版一棵分离子树（窗口借出字体、主题与图像，屏幕上不显示），等文本与图像就绪后按行与叶子分页（`page_break` 强制分页，`keep_together` 让一个盒子不跨页），为每页在上下页边距中各建一次页眉页脚，然后在该帧内把 `Capture` 交给 `take`：每页的 `PagePart`（正文、页眉、页脚各一段内容像素到纸面区域的映射），其中按绘制顺序列出 `viso_render::Primitive` 与按字形定位、映射回原文的 `TextRun`；`Capture` 同时是 `PageSource`，给出字形的轮廓（读不到轮廓时为平台的覆盖率 mask），并经窗口的 renderer 把没有矢量形式的内容画成栅格（Web 与 GLES 上没有）。文档写出器只依赖这份捕获：PDF 1.7 写出器与 `export` 在 viso-ext 的 `viso-pdf`（矢量路径、shading、Type 3 字体、透明组与 SMask，栅格化的部分按 dpi 嵌入），系统打印对话框是 viso-ext 的 `viso-print`。
+facade 的 `viso::paged::capture(Paged, take)` 在应用第一个窗口的 store 里以页宽排版一棵分离子树（窗口借出字体、主题与图像，屏幕上不显示），等文本与图像就绪后按行与叶子分页（`page_break` 强制分页，`keep_together` 让一个盒子不跨页），为每页在上下页边距中各建一次页眉页脚，然后在该帧内把 `Capture` 交给 `take`：每页的 `PagePart`（正文、页眉、页脚各一段内容像素到纸面区域的映射），其中按绘制顺序列出 `viso_render::Primitive` 与按字形定位、映射回原文的 `TextRun`；`Capture` 同时是 `PageSource`，给出字形的轮廓（读不到轮廓时为平台的覆盖率 mask），并经窗口的 renderer 把没有矢量形式的内容画成栅格（Web 与 GLES 上没有）。文档写出器只依赖这份捕获：PDF 1.7 写出器与 `export` 在 viso-ext 的 `viso-pdf`（矢量路径、shading、Type 3 字体、透明组与 SMask，栅格化的部分按 dpi 嵌入），系统打印对话框是 viso-ext 的 `viso-print`。反方向，`viso-pdf::read` 读 PDF 文件（xref 表与流、对象流、损坏文件扫描恢复、RC4/AES 加密），把每页读成路径、字形轮廓（TrueType、CFF、Type 1、Type 3，未嵌入的字体用替代字体）、图像与可选中的文本层，裁剪按包围盒保留；`pdf_view` 以虚拟列表按需构建视口附近的页，每页是以页面点为单位、`scaling_strokes` 的 `Drawing`，缩放只改尺寸，图像走 asset，支持跨页拖选、按词按行选择、全选与复制。
 
 ### `viso-image`
 
@@ -927,7 +927,7 @@ Layout / hit test / transform 的几何类型来自 `viso-math`（`ui -> math`�
 - desktop shell；
 - theme defaults。
 
-只依赖 `viso-ui` 与 `viso-math`。PDF/browser/chart/map/code editor 等不是基础 widget：图表、地图、代码编辑器在 `extras/`（见下），PDF 输出是 viso-ext 的 `viso-pdf`（基于核心的 `viso::paged`），不平铺进核心 widgets。
+只依赖 `viso-ui` 与 `viso-math`。PDF/browser/chart/map/code editor 等不是基础 widget：图表、地图、代码编辑器在 `extras/`（见下），PDF 输出与查看器是 viso-ext 的 `viso-pdf`（输出基于核心的 `viso::paged`），不平铺进核心 widgets。
 
 ### `viso-diag`
 
@@ -3837,7 +3837,7 @@ DSL `ComboBox` 与 `SearchField` 同样如此：逻辑在 `viso_ui::combo_box::C
 | Charts | `extras/charts`（`viso-charts`） |
 | Map | `extras/map`（`viso-map`）；瓦片读取、离线下载、搜索与导航不是 UI，在 viso-ext（`viso-tiles`、`viso-map-nav`、`viso-map-build`） |
 | Code editor | `extras/code-editor`（`viso-code-editor`，语言服务经其 `lsp` feature） |
-| PDF | 核心提供分页捕获（`viso::paged`）；PDF 写出与导出在 viso-ext（`viso-pdf`），打印在 viso-ext（`viso-print`）；查看器尚无 |
+| PDF | 核心提供分页捕获（`viso::paged`）；PDF 写出与导出在 viso-ext（`viso-pdf`），打印在 viso-ext（`viso-print`）；读取与查看器 `pdf_view` 也在 `viso-pdf` |
 | Browser / WebView | viso-ext 的 `viso-webview`（尚未实现） |
 | Video editor、XR | 尚无 |
 
@@ -5150,7 +5150,7 @@ Dev Hot Reload or Release AOT Artifact
 
 ## 71. Phase 7 — 官方 Widgets
 
-**状态**：Tier 1–5 已完成（ADR 0023 Dock、0024 FileTree；code-editor 在 `extras/code-editor`）。Tier 6 已有：Markdown / HTML 文档（`viso_widgets::document`）、Charts（`extras/charts`）、Map（`extras/map`）、Video（`viso-media`，ADR 0049/0050）。未实现：PDF 查看器（`viso-pdf` 只把 view 写成 PDF）、Browser（`viso-ext/viso-webview` 只是空 crate）、UI zoo 应用。Tier 1–4 控件有 build microbench（`crates/widgets/benches`）与 golden；之后加入的控件（DataGrid、Calendar、ColorPicker 等）只有测试与 golden，缺 microbench。
+**状态**：Tier 1–5 已完成（ADR 0023 Dock、0024 FileTree；code-editor 在 `extras/code-editor`）。Tier 6 已有：Markdown / HTML 文档（`viso_widgets::document`）、Charts（`extras/charts`）、Map（`extras/map`）、Video（`viso-media`，ADR 0049/0050）。PDF 读取与查看器（viso-ext `viso-pdf` 的 `read` 与 `pdf_view`）。未实现：Browser（`viso-ext/viso-webview` 只是空 crate）、UI zoo 应用。Tier 1–4 控件有 build microbench（`crates/widgets/benches`）与 golden；之后加入的控件（DataGrid、Calendar、ColorPicker 等）只有测试与 golden，缺 microbench。
 
 ### 原则
 
@@ -5288,7 +5288,7 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 当前仓库结构与 crate 清单见 §8/§9，依赖方向见 §10；本节不再重复一份目录树。顶层目录：
 
 - `crates/`：框架 crate；
-- `extras/`：选装的高阶组件：`charts`、`code-editor`、`map`（Markdown/HTML 文档在 `viso-widgets`，PDF 输出在 viso-ext 的 `viso-pdf`）；
+- `extras/`：选装的高阶组件：`charts`、`code-editor`、`map`（Markdown/HTML 文档在 `viso-widgets`，PDF 输出与查看器在 viso-ext 的 `viso-pdf`）；
 - `tools/`：`cli`、`project`、`package`（打包）；Inspector 是 `viso inspect` 与 `viso_view::inspect`，不是单独的 tool crate；Studio 尚未建立；
 - `libs/`：框架自有、可独立复用的小型算法 crate（§76）；
 - `examples/`：教程按编号（`01-counter`、`10-custom-shader`），功能示例按名字（`hello_world`、`i18n`、`images`、`video`、`code-editor`、`map` 等）；
