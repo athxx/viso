@@ -1249,6 +1249,21 @@ impl VirtualListState {
         self.headers_stale = self.sticky_of.is_some() || self.full_of.is_some();
     }
 
+    /// Give the rows their extents along the axis up front, row `i`
+    /// `extents[i]` long, as if each were measured: a list that knows its
+    /// rows' sizes before it mounts them — a document's pages — so its scroll
+    /// range and a scroll to a row are exact unmounted. A row mounted later
+    /// measures as usual; extents past the item count are ignored.
+    pub fn set_extents(&mut self, extents: &[f32]) {
+        let mut changed = false;
+        for (i, &extent) in extents.iter().enumerate().take(self.item_count) {
+            changed |= self.flow.update(i, extent);
+        }
+        if changed {
+            self.mark_data_dirty();
+        }
+    }
+
     /// The logical item count.
     #[inline]
     pub fn item_count(&self) -> usize {

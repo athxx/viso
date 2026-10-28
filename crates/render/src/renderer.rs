@@ -2456,8 +2456,8 @@ impl Renderer {
     ///
     /// Returns `true` when the fill was lowered this way; `false` when it should
     /// fall through to the tessellated path lane — a degenerate ROI, or a mask the
-    /// cache declined to allocate (empty/oversize), in which case the tessellated
-    /// fill (bounded by the active scissor) is the correct fallback.
+    /// cache declined to allocate, in which case the tessellated fill (bounded by
+    /// the active scissor) is the correct fallback.
     fn mask_solid_fill<B: GpuBackend>(
         &mut self,
         backend: &mut B,
@@ -2480,6 +2480,11 @@ impl Renderer {
             return false;
         }
 
+        // A fill larger than the largest mask page masks at the resolution
+        // one page holds, stretched over its bounds: softer, but its shape.
+        let side = roi.w.max(roi.h) * self.scale;
+        let scale = self.scale * ((MASK_PAGE_MAX - 1) as f32 / side).min(1.0);
+
         // Key the mask on its geometry: the path's coverage is a function of its
         // command stream (NonZero at the primitive level), so a stable path builds
         // its mask once and reuses the slot every frame after.
@@ -2487,18 +2492,23 @@ impl Renderer {
             kind: MaskKind::Path,
             source_revision: hash_path_cmds(&path.cmds),
             transform_bucket: 0,
-            device_scale_q: self.scale_q(),
+            device_scale_q: (scale * 64.0).round() as u32,
             fill_rule: ClipFillRule::NonZero,
         };
         let request = MaskRequest {
             kind: MaskKind::Path,
             needs_color: false,
-            roi: self.physical(roi),
+            roi: Rect {
+                x: roi.x * scale,
+                y: roi.y * scale,
+                w: roi.w * scale,
+                h: roi.h * scale,
+            },
             key,
         };
         let Some(res) = self.mask_cache.resolve(&request) else {
-            // Empty or oversize ROI the packer declined — fall through to the
-            // tessellated fill within the active scissor.
+            // An ROI the packer declined — fall through to the tessellated
+            // fill within the active scissor.
             return false;
         };
         self.mask_pages.sync(backend, self.mask_cache.page_edges());
@@ -2509,7 +2519,7 @@ impl Renderer {
             let cov = rasterize_path_coverage(
                 path.cmds.iter().copied(),
                 roi,
-                self.scale,
+                scale,
                 res.slot.w,
                 res.slot.h,
             );
@@ -6037,6 +6047,39 @@ mod tests {
         assert_eq!(r.frame_stats().clip_mask_builds, 1);
         r.upload(&mut gpu, &[solid_path(4.0, 4.0)]);
         assert_eq!(r.frame_stats().clip_mask_builds, 0);
+    }
+
+    /// A concave fill larger than the largest mask page still masks, at the
+    /// resolution one page holds, rather than falling to a centroid fan
+    /// that would fill its notch.
+    #[test]
+    fn oversize_masked_solid_fill_masks_at_a_page() {
+        use crate::primitive::Point as P;
+        let mut gpu = CpuRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, 64, 64);
+        let format = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        let s = 300.0;
+        let path = Primitive::Path(Box::new(crate::primitive::Path {
+            cmds: vec![
+                PathCmd::MoveTo(P::new(0.0, 0.0)),
+                PathCmd::LineTo(P::new(16.0 * s, 8.0 * s)),
+                PathCmd::LineTo(P::new(0.0, 16.0 * s)),
+                PathCmd::LineTo(P::new(6.0 * s, 8.0 * s)),
+                PathCmd::Close,
+            ],
+            fill: Some(Rgba::new(0.2, 0.4, 0.6, 1.0)),
+            stroke: None,
+            shadow: None,
+        }));
+        r.upload(&mut gpu, &[path]);
+        assert_eq!(r.frame_stats().clip_mask_builds, 1);
+        assert!(
+            r.segments
+                .iter()
+                .any(|s| matches!(s.kind, SegmentKind::GlyphRun { .. })),
+            "an oversize fill lowers as a masked draw"
+        );
     }
 
     /// The same concave outline as `solid_path`, now carrying a drop shadow.

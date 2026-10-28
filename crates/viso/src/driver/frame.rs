@@ -2105,10 +2105,12 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // this stops firing and, once every window is idle, the loop
                     // falls idle, holding the zero-CPU-when-idle contract.
                     // Text the worker still owes is committed by a later frame,
-                    // so keep beating until it lands.
+                    // so keep beating until it lands, and while the window owes
+                    // one.
                     if ws.is_animating()
                         || ws.text_work_pending()
                         || viso_ui::work::inline_pending()
+                        || ws.owes_frame()
                     {
                         cx.request_redraw(ws.window);
                     }
@@ -2196,7 +2198,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         scripted
             || !self.captures.is_empty()
             || self.windows.iter().any(|w| {
-                w.is_animating() || w.text_work_pending() || viso_ui::work::inline_pending()
+                w.is_animating()
+                    || w.text_work_pending()
+                    || viso_ui::work::inline_pending()
+                    || w.owes_frame()
             })
     }
 

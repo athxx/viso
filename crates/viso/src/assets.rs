@@ -655,7 +655,8 @@ impl Assets {
     /// rasters not resident into `gpu`, releasing what they replace.
     ///
     /// With no worker the decodes run here, within `slice` (at least one
-    /// decode; none when it is `None`). What they took is
+    /// decode; none when it is `None`), and all of them in a headless build.
+    /// What they took is
     /// [`Served::inline`]; [`Served::deferred`] when some wait for the next
     /// frame's slice.
     pub(crate) fn serve<B: GpuBackend>(
@@ -736,13 +737,20 @@ impl Assets {
                 }
                 _ => {}
             }
+            // A headless build decodes here, every decode on the frame that
+            // asks for it, as it lays its text out: its frames step a fixed
+            // clock, and a decode finishing between them would land on no
+            // frame in particular.
             if self.worker.is_none() && !self.inline {
-                self.worker = (crate::footprint::workers() > 0)
+                self.worker = (!cfg!(feature = "headless") && crate::footprint::workers() > 0)
                     .then(|| Worker::spawn(waker()))
                     .flatten();
                 self.inline = self.worker.is_none();
             }
-            if self.inline && slice.is_none_or(|slice| inline >= slice) {
+            if self.inline
+                && !cfg!(feature = "headless")
+                && slice.is_none_or(|slice| inline >= slice)
+            {
                 deferred = true;
                 continue;
             }

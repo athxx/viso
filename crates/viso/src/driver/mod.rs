@@ -360,6 +360,9 @@ pub(crate) struct WindowState {
     pub(crate) lost_gpu: Option<LostGpu>,
     /// How many lost devices were replaced.
     pub(crate) devices_replaced: u32,
+    /// Whether the next paint emits the whole tree: a new device's renderer
+    /// holds none of what was patched into the old one.
+    pub(crate) paint_whole: bool,
     /// What the window's renderer holds of the programs its nodes paint
     /// with.
     pub(crate) shaders: shaders::InstalledShaders,

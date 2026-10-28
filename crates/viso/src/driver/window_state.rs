@@ -131,6 +131,7 @@ impl WindowState {
             assets_served: 0,
             lost_gpu: None,
             devices_replaced: 0,
+            paint_whole: false,
             shaders: shaders::InstalledShaders::default(),
             clock_origin: None,
             draws_clock: false,
@@ -554,6 +555,19 @@ impl WindowState {
         self.lost_gpu.is_some() || self.gpu.as_ref().is_some_and(|g| g.backend.is_lost())
     }
 
+    /// Whether the window's device was lost and the window has not started
+    /// on a new one: the next frame does.
+    pub(crate) fn gpu_newly_lost(&self) -> bool {
+        self.lost_gpu.is_none() && self.gpu.as_ref().is_some_and(|g| g.backend.is_lost())
+    }
+
+    /// Whether the window has work its next frame does unasked: an asset
+    /// offered after the frame served it (a list row mounted at layout shows
+    /// one), or a device lost to replace.
+    pub(crate) fn owes_frame(&self) -> bool {
+        self.store.assets().revision() != self.assets_served || self.gpu_newly_lost()
+    }
+
     /// Replaces a lost device, once a new one opens and the platform has a
     /// native window `raw` to draw in. What the old device held — the window's
     /// GPU state, its glyph atlases, the textures, models and scenes its
@@ -594,6 +608,7 @@ impl WindowState {
         };
         self.lost_gpu = None;
         self.devices_replaced += 1;
+        self.paint_whole = true;
         self.attach_gpu(backend, raw, fonts);
         // Every table is served again, uploading into the new device.
         self.assets_served = u64::MAX;
@@ -839,7 +854,8 @@ impl WindowState {
     /// paint-affecting class is pending, and close the frame's recompute
     /// counts.
     pub(crate) fn repaint(&mut self) {
-        self.paint(false);
+        let whole = std::mem::take(&mut self.paint_whole);
+        self.paint(whole);
     }
 
     /// Re-emit the primitives — when a paint-affecting class is pending, or

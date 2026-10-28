@@ -1038,8 +1038,21 @@ Rules (as for `todo_features.md`):
   - Verified: the moved export test writes byte-identical output to the pre-move build (`cmp`),
     the writer's unit tests pass, `check-deps` is clean, and the facade checks and lints with
     defaults and with `--no-default-features --features rasterizer`.
-- [ ] A PDF viewer widget over `viso-pdf`'s reader side. Verify that a multi-page document renders
+- [x] A PDF viewer widget over `viso-pdf`'s reader side. Verify that a multi-page document renders
   and selects text in a golden test.
+  - Built: `viso_pdf::read` opens PDF files (xref tables and streams, object streams, recovery by
+    scan, RC4/AES, the common filters) and reads pages into paths, glyph outlines (TrueType, CFF,
+    Type 1, Type 3, stand-in faces), images and a text layer, clips kept as boxes. `pdf_view` is a
+    virtual column of pages built near the view as `Drawing`s in page points (the new
+    `Drawing::scaling_strokes`, so zoom is a size change) with images as assets; it zooms (fit
+    width, scale, pinch, Control-wheel, keys) and selects across pages by drag, word and line.
+    The core gains `VirtualList::set_extents`; an oversized masked solid fill masks at a page;
+    headless decodes assets inline; a window owes a frame while assets or a lost GPU are
+    unserved; and a recovered device's first paint emits the whole tree.
+  - Verified: `viso-pdf/tests/view.rs` renders a four-page report against goldens and checks the
+    exact text of a drag, a cross-page drag, a double click and select all; the reader reads the
+    export's documents back; a sweep of real files (to 645 pages, CJK, LaTeX Type 1, forms)
+    reads without a panic at ~1 ms a page; `device_loss` and the asset, list and scroll tests pass.
 - [ ] A browser widget in `viso-ext/viso-webview`, which is still the cargo template. Verify that a
   page loads inside a node on macOS and Android.
 - [ ] KMS: libinput gestures (pinch, swipe) as `RawEvent::Gesture`, and overlay planes for video.

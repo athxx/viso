@@ -12,12 +12,17 @@
 //! renderer as they are, and its vertices keep their screen extrusion,
 //! unscaled, so a line built that way keeps its width at every size.
 //!
+//! A path's stroke keeps its width as it maps, as a mesh's extrusion does,
+//! unless the drawing [scales its strokes](Drawing::scaling_strokes): then
+//! the width and dashes grow with the box, as a page's lines do with its
+//! zoom.
+//!
 //! The primitives a drawing maps are the geometric ones: quads, images,
 //! paths and meshes. Anything else it holds is skipped.
 
 use std::sync::Arc;
 
-use viso_render::{ImageDraw, MeshPlace, Path, PathCmd, Point, Primitive, Quad, Rect};
+use viso_render::{ImageDraw, MeshPlace, Path, PathCmd, Point, Primitive, Quad, Rect, Stroke};
 
 use crate::component::{BuildCx, Handle, LeafStyle, NodeStore};
 use crate::content::Content;
@@ -32,13 +37,16 @@ use crate::style::BoxStyle;
 pub struct Drawing {
     primitives: Arc<[Primitive]>,
     extent: Vec2,
+    scales_strokes: bool,
 }
 
 impl PartialEq for Drawing {
     /// Two drawings are the same when they share primitives and extent: a
     /// drawing is compared by identity, never vertex by vertex.
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.primitives, &other.primitives) && self.extent == other.extent
+        Arc::ptr_eq(&self.primitives, &other.primitives)
+            && self.extent == other.extent
+            && self.scales_strokes == other.scales_strokes
     }
 }
 
@@ -50,7 +58,15 @@ impl Drawing {
         Self {
             primitives: primitives.into(),
             extent,
+            scales_strokes: false,
         }
+    }
+
+    /// Scale its paths' strokes with the box: their widths by the mean of
+    /// the two axes' scales, their dashes alike. A hairline stays one.
+    pub fn scaling_strokes(mut self) -> Self {
+        self.scales_strokes = true;
+        self
     }
 
     /// The drawing's primitives, in drawing space.
@@ -66,11 +82,17 @@ impl Drawing {
     /// Emit the drawing mapped into `world`.
     pub(crate) fn paint(&self, world: Rect, out: &mut Vec<Primitive>) {
         let scale = |extent: f32, size: f32| if extent > 0.0 { size / extent } else { 1.0 };
+        let (sx, sy) = (scale(self.extent.x, world.w), scale(self.extent.y, world.h));
         let map = Map {
-            sx: scale(self.extent.x, world.w),
-            sy: scale(self.extent.y, world.h),
+            sx,
+            sy,
             ox: world.x,
             oy: world.y,
+            stroke: if self.scales_strokes {
+                (sx * sy).abs().sqrt()
+            } else {
+                1.0
+            },
         };
         out.reserve(self.primitives.len());
         out.extend(self.primitives.iter().filter_map(|p| map.primitive(p)));
@@ -84,6 +106,8 @@ struct Map {
     sy: f32,
     ox: f32,
     oy: f32,
+    /// What stroke widths scale by.
+    stroke: f32,
 }
 
 impl Map {
@@ -121,6 +145,17 @@ impl Map {
         }
     }
 
+    fn stroke(self, mut stroke: Stroke) -> Stroke {
+        if self.stroke != 1.0 {
+            stroke.width *= self.stroke;
+            if let Some(dash) = &mut stroke.dash {
+                dash.segments.iter_mut().for_each(|s| *s *= self.stroke);
+                dash.offset *= self.stroke;
+            }
+        }
+        stroke
+    }
+
     fn primitive(self, p: &Primitive) -> Option<Primitive> {
         Some(match p {
             Primitive::Quad(q) => Primitive::Quad(Quad {
@@ -134,6 +169,7 @@ impl Map {
             }),
             Primitive::Path(path) => Primitive::Path(Box::new(Path {
                 cmds: path.cmds.iter().map(|&c| self.cmd(c)).collect(),
+                stroke: path.stroke.map(|s| self.stroke(s)),
                 ..(**path).clone()
             })),
             // The shared buffers, placed: no vertex is copied.
@@ -248,6 +284,47 @@ mod tests {
             panic!("a mesh")
         };
         assert_eq!(m.place.apply(m.vertices[2].pos), [50.0, 28.0]);
+    }
+
+    #[test]
+    fn strokes_scale_only_when_asked() {
+        let line = || {
+            vec![Primitive::Path(Box::new(Path {
+                cmds: vec![
+                    PathCmd::MoveTo(Point::new(0.0, 0.0)),
+                    PathCmd::LineTo(Point::new(4.0, 4.0)),
+                ],
+                fill: None,
+                stroke: Some(Stroke {
+                    dash: Some(viso_render::DashPattern::new(&[1.0, 2.0], 0.5)),
+                    ..Stroke::new(1.0, INK)
+                }),
+                shadow: None,
+            }))]
+        };
+        let world = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 8.0,
+            h: 32.0,
+        };
+        let stroke_of = |drawing: Drawing| {
+            let mut out = Vec::new();
+            drawing.paint(world, &mut out);
+            let Primitive::Path(path) = &out[0] else {
+                panic!("a path")
+            };
+            path.stroke.unwrap()
+        };
+        let extent = Vec2 { x: 4.0, y: 4.0 };
+        assert_eq!(stroke_of(Drawing::new(line(), extent)).width, 1.0);
+        let scaled = stroke_of(Drawing::new(line(), extent).scaling_strokes());
+        assert_eq!(scaled.width, 4.0);
+        let dash = scaled.dash.unwrap();
+        assert_eq!(
+            (dash.segments[0], dash.segments[1], dash.offset),
+            (4.0, 8.0, 2.0)
+        );
     }
 
     #[test]
