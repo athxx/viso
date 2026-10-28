@@ -989,8 +989,14 @@ Rules (as for `todo_features.md`):
     arrays, `u128`) and their varint mirror (`EncodeVarint`/`DecodeVarint`).
   - Verified: `InspectAsk` (an enum) and `NodeSource` (a struct) ported; `derived_codecs` tests
     match their hand-written codecs byte for byte and read back; ende unit tests.
-- [ ] Extend the VM-vs-native differential test to every DSL doc-example fixture. Verify that it
+- [x] Extend the VM-vs-native differential test to every DSL doc-example fixture. Verify that it
   reports no mismatch.
+  - Built: every ```viso block of the specification and the rationale that compiles to behavior
+    (as written, or as a component's members, an action's body or a view's) is lowered into the
+    checked-in `differential/docs.rs` (`VISO_BLESS=1`); each chunk a component owns runs on both
+    sides with each value of a pool of every shape, twice over, a required input taking several
+    shapes in turn, tasks driven to their end. The doc-block reader is shared with `doc_examples`.
+  - Verified: 13 examples, 1176 runs, both forms (bytecode and compiled module), no mismatch.
 - [ ] A `stable / preview / reserved` matrix per grammar production in `Viso_DSL_1.0.md`. Verify
   with a doc test that every production is listed.
 

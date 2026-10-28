@@ -8,9 +8,16 @@
 //! ([`Module::compiled`], read in place by [`Module::decode_static`]), whose
 //! bodies keep no bytecode, so its faults carry no source span. The lowered
 //! modules are checked in
-//! (`differential/*.rs`, from `differential/*.vs`) and must be what the
-//! lowering writes today (`VISO_BLESS=1` rewrites them).
+//! (`differential/*.rs`, from `differential/*.vs`, and `differential/docs.rs`
+//! from the documentation's examples) and must be what the lowering writes
+//! today (`VISO_BLESS=1` rewrites them).
+//!
+//! Every ```viso example of the specification and the rationale that compiles
+//! to behavior runs the same way: each chunk of each component, called with
+//! every value of a pool of each shape, twice over.
 
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -18,7 +25,9 @@ use std::time::Duration;
 
 use viso_behavior::aot::{NativeCode, lower_module};
 use viso_behavior::native::{NativeError, Natives, Timers};
-use viso_behavior::{Budget, Fault, Fiber, Instance, Module, Outcome, TaskStep, Value, Vm};
+use viso_behavior::{
+    Aggregate, Budget, ChunkKind, Fault, Fiber, Instance, Module, Outcome, TaskStep, Value, Vm,
+};
 use viso_dsl::frontend::{Origin, compile_file};
 
 #[rustfmt::skip]
@@ -27,6 +36,11 @@ mod core_native;
 #[rustfmt::skip]
 #[path = "differential/tasks.rs"]
 mod tasks_native;
+#[rustfmt::skip]
+#[path = "differential/docs.rs"]
+mod docs_native;
+#[path = "support/doc_blocks.rs"]
+mod doc_blocks;
 
 const CORE: &str = include_str!("differential/core.vs");
 const TASKS: &str = include_str!("differential/tasks.vs");
@@ -47,10 +61,66 @@ fn compiled(source: &str) -> Rc<Module> {
     Rc::new(compiled.behavior.bytecode().expect("verified bytecode"))
 }
 
+/// Each ```viso example of the documentation that compiles to behavior, with
+/// where it is and the source it compiles as: the block itself, or the block
+/// as a component's members, an action's body or a view's.
+fn doc_modules() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let blocks = doc_blocks::all_blocks();
+    for block in blocks.iter().filter(|b| b.info == "viso" && !b.lexical) {
+        let body = &block.body;
+        let forms = [
+            body.clone(),
+            format!("component Doc {{\n{body}}}\n"),
+            format!("component Doc {{\n    action doc() {{\n{body}}}\n}}\n"),
+            format!("component Doc {{\n    view {{\n{body}}}\n}}\n"),
+        ];
+        let Some(source) = forms
+            .into_iter()
+            .find(|source| compile_file(source, &origin()).errors().next().is_none())
+        else {
+            continue;
+        };
+        let module = compiled(&source);
+        let lowers = module.chunks().iter().any(|c| c.body.code().is_some());
+        if lowers && !module.components().is_empty() {
+            out.push((format!("{}:{}", block.file, block.line), source));
+        }
+    }
+    out
+}
+
+/// The lowering of every example [`doc_modules`] finds, each in a module of
+/// its own, in order, and their table.
+fn docs_lowering() -> String {
+    let docs = doc_modules();
+    let mut out = String::from(
+        "//! Generated from the documentation's examples by the differential test:\n\
+         //! each one's chunks compiled to Rust. Do not edit; rerun with VISO_BLESS=1.\n\n",
+    );
+    for (at, (_, source)) in docs.iter().enumerate() {
+        let lowered = lower_module(&compiled(source), "viso_behavior");
+        let _ = write!(
+            out,
+            "#[allow(unused_macros)]\npub mod m{at} {{\n{lowered}}}\n\n"
+        );
+    }
+    out.push_str("/// Each example's code, in order.\npub static ALL: &[&viso_behavior::aot::NativeCode] = &[\n");
+    for at in 0..docs.len() {
+        let _ = writeln!(out, "    &m{at}::NATIVE,");
+    }
+    out.push_str("];\n");
+    out
+}
+
 #[test]
 fn the_checked_in_lowerings_are_current() {
-    for (name, source) in [("core", CORE), ("tasks", TASKS)] {
-        let lowered = lower_module(&compiled(source), "viso_behavior");
+    let lowerings = [
+        ("core", lower_module(&compiled(CORE), "viso_behavior")),
+        ("tasks", lower_module(&compiled(TASKS), "viso_behavior")),
+        ("docs", docs_lowering()),
+    ];
+    for (name, lowered) in lowerings {
         let path = format!(
             "{}/tests/differential/{name}.rs",
             env!("CARGO_MANIFEST_DIR")
@@ -64,8 +134,12 @@ fn the_checked_in_lowerings_are_current() {
             checked_in == lowered,
             "tests/differential/{name}.rs is stale: rerun with VISO_BLESS=1"
         );
-        assert_eq!(lowered, lower_module(&compiled(source), "viso_behavior"));
     }
+    assert_eq!(
+        docs_lowering(),
+        docs_lowering(),
+        "the lowering is deterministic"
+    );
 }
 
 /// Timers whose sleeps never finish: the script resumes every task itself.
@@ -134,6 +208,18 @@ impl Pair {
     fn new(source: &str, component: &str, native: &'static NativeCode, form: Form) -> Pair {
         let module = compiled(source);
         let index = module.component(component).expect("component");
+        Pair::of(module, index, &[], native, form)
+    }
+
+    /// The pair of instances of component `index` of `module`, mounted with
+    /// `inputs` by slot.
+    fn of(
+        module: Rc<Module>,
+        index: u32,
+        inputs: &[(usize, Value)],
+        native: &'static NativeCode,
+        form: Form,
+    ) -> Pair {
         let shipped = match form {
             Form::Bytecode => module.clone(),
             Form::Compiled => {
@@ -151,7 +237,9 @@ impl Pair {
                 let chunks = vm.install_native(native).expect("the lowered build");
                 assert!(chunks > 0);
             }
-            let instance = vm.instantiate(index, []).expect("instantiate");
+            let instance = vm
+                .instantiate(index, inputs.iter().cloned())
+                .expect("instantiate");
             (vm, instance)
         };
         let pair = Pair {
@@ -225,7 +313,13 @@ impl Pair {
     /// resumed with `()` until it returns, and their `done` handlers.
     fn call(&mut self, member: &str, args: &[Value]) -> Result<Value, Fault> {
         let chunk = self.chunk(member);
-        let what = format!("{member}{args:?}");
+        self.call_chunk(&format!("{member}{args:?}"), chunk, args)
+    }
+
+    /// Calls chunk `chunk` with `args`, then runs the tasks it started, as
+    /// [`call`](Self::call) does.
+    fn call_chunk(&mut self, what: &str, chunk: u32, args: &[Value]) -> Result<Value, Fault> {
+        let what = what.to_owned();
         let [result, _] = self.step(
             &what,
             |_, vm, instance| vm.call(instance, chunk, args),
@@ -302,6 +396,116 @@ impl Pair {
             vm.set_budget(budget);
         }
     }
+
+    /// Runs each chunk [`owned`] gives the component, natively compiled,
+    /// with each argument list [`arguments`] makes, a task started and driven
+    /// to its end: twice over, the second round on the states the first left.
+    /// Returns the number of runs.
+    fn exercise(&mut self, at: &str) -> usize {
+        let module = Rc::clone(self.sides[0].0.module());
+        let component = self.sides[0].1.component().expect("component");
+        let mut runs = 0;
+        for round in 0..2 {
+            for chunk in owned(&module, component) {
+                if !self.sides[1].0.is_native(chunk) {
+                    continue;
+                }
+                let c = module.chunk(chunk);
+                for args in arguments(c.params) {
+                    let what = format!("{at} round {round}: {}{args:?}", c.name);
+                    if c.kind == ChunkKind::Task {
+                        self.drive(&what, chunk, &args, &[]);
+                    } else {
+                        let _ = self.call_chunk(&what, chunk, &args);
+                    }
+                    runs += 1;
+                }
+            }
+        }
+        runs
+    }
+}
+
+/// The chunks that run on an instance of component `component`: those its
+/// layout names (members, handlers, region entries, state initializers, input
+/// defaults, effects), the tasks and closures declared in it, and for the
+/// first component, every chunk no component claims. A closure that captures
+/// is left out, its captures arriving only from the closure value.
+fn owned(module: &Module, component: u32) -> BTreeSet<u32> {
+    let claimed = |index: u32| {
+        let layout = module.layout(index);
+        let name = format!("{}.", module.components()[index as usize].name);
+        let mut chunks: BTreeSet<u32> = (layout.members.iter().map(|m| m.1))
+            .chain(layout.handlers.iter().copied())
+            .chain(layout.state_inits.iter().flatten().copied())
+            .chain(layout.input_defaults.iter().flatten().copied())
+            .chain(
+                layout
+                    .effects
+                    .iter()
+                    .flat_map(|e| e.deps.into_iter().chain([e.body])),
+            )
+            .collect();
+        chunks.extend(
+            (module.chunks().iter().enumerate())
+                .filter(|(_, c)| c.name.starts_with(&name) && !c.name.contains(" ["))
+                .map(|(at, _)| at as u32),
+        );
+        chunks
+    };
+    let mut chunks = claimed(component);
+    if component == 0 {
+        let all: BTreeSet<u32> = (0..module.components().len() as u32)
+            .flat_map(claimed)
+            .collect();
+        chunks.extend((0..module.chunks().len() as u32).filter(|c| !all.contains(c)));
+    }
+    chunks.retain(|&c| module.chunk(c).captures.is_empty());
+    chunks
+}
+
+/// A value of each shape a chunk may be handed: nothing, integers and floats
+/// at their edges, strings, lists, a record and a payloadless variant.
+fn pool() -> Vec<Value> {
+    let agg = |tag, fields: Vec<Value>| {
+        Value::Agg(Rc::new(Aggregate {
+            tag,
+            fields: fields.into_boxed_slice(),
+        }))
+    };
+    vec![
+        Value::Nil,
+        int(0),
+        int(2),
+        int(-7),
+        int(i64::MAX),
+        float(0.5),
+        float(-0.0),
+        float(f64::NAN),
+        Value::str(""),
+        Value::str("ab"),
+        ints(&[]),
+        ints(&[3, 1, 2]),
+        agg(0, vec![int(1), float(2.0)]),
+        agg(1, vec![]),
+    ]
+}
+
+/// The argument lists a chunk of `params` parameters is called with: none
+/// for none, otherwise one per pool value, the pool rotating across the
+/// parameters.
+fn arguments(params: u16) -> Vec<Vec<Value>> {
+    if params == 0 {
+        return vec![Vec::new()];
+    }
+    let pool = pool();
+    (0..pool.len())
+        .map(|first| {
+            (0..usize::from(params))
+                .map(|k| pool[(first + k) % pool.len()].clone())
+                .collect()
+        })
+        .collect()
 }
 
 fn int(v: i64) -> Value {
@@ -495,4 +699,43 @@ fn a_view_host_runs_the_lowered_module_and_refuses_another_build() {
     );
     let stale = ViewHost::with_native(compiled(CORE), "Core", &tasks_native::NATIVE);
     assert!(matches!(stale, Err(HostError::Native(_))), "{stale:?}");
+}
+
+#[test]
+fn every_doc_example_matches() {
+    let docs = doc_modules();
+    assert_eq!(
+        docs.len(),
+        docs_native::ALL.len(),
+        "tests/differential/docs.rs is stale: rerun with VISO_BLESS=1"
+    );
+    assert!(docs.len() >= 10, "only {} examples compile", docs.len());
+    let mut runs = 0;
+    for ((at, source), &native) in docs.iter().zip(docs_native::ALL) {
+        let module = compiled(source);
+        for form in FORMS {
+            for component in 0..module.components().len() as u32 {
+                // A required input takes each of a few shapes in turn.
+                let required: Vec<usize> = (module.layout(component).input_defaults.iter())
+                    .enumerate()
+                    .filter(|(_, default)| default.is_none())
+                    .map(|(slot, _)| slot)
+                    .collect();
+                let fills = match required.is_empty() {
+                    true => vec![Value::Nil],
+                    false => vec![int(2), float(0.5), Value::str("ab"), ints(&[3, 1, 2])],
+                };
+                for fill in fills {
+                    let inputs: Vec<_> = required.iter().map(|&s| (s, fill.clone())).collect();
+                    let mut p = Pair::of(Rc::clone(&module), component, &inputs, native, form);
+                    p.set_budget(Budget {
+                        instructions: 100_000,
+                        ..Budget::default()
+                    });
+                    runs += p.exercise(at);
+                }
+            }
+        }
+    }
+    assert!(runs > 500, "only {runs} runs");
 }

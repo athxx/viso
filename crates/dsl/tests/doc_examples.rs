@@ -6,8 +6,10 @@
 use viso_dsl::syntax::grammar::{Entry, parse_entry};
 use viso_dsl::syntax::{SyntaxKind, Token, tokenize};
 
-const SPEC: &str = include_str!("../../../Viso_DSL_1.0.md");
-const RATIONALE: &str = include_str!("../../../Viso_DSL_Rationale.md");
+#[path = "support/doc_blocks.rs"]
+mod doc_blocks;
+
+use doc_blocks::all_blocks;
 
 /// The entries an example may be written against.
 const ENTRIES: [Entry; 5] = [
@@ -17,57 +19,6 @@ const ENTRIES: [Entry; 5] = [
     Entry::BlockBody,
     Entry::Expr,
 ];
-
-/// One fenced block: its info string, the line it opens on, its body, and
-/// whether it sits in the lexical part of the specification.
-struct Block<'a> {
-    file: &'static str,
-    line: usize,
-    info: &'a str,
-    body: String,
-    lexical: bool,
-}
-
-fn blocks(file: &'static str, text: &'static str) -> Vec<Block<'static>> {
-    let mut out = Vec::new();
-    let mut open: Option<(usize, &str, String, bool)> = None;
-    let mut part = "";
-    for (n, line) in text.lines().enumerate() {
-        if open.is_none() && line.starts_with("# ") {
-            part = line;
-        }
-        let fence = line.trim_start();
-        match &mut open {
-            None if fence.starts_with("```") => {
-                let info = fence.trim_start_matches('`').trim();
-                open = Some((n + 1, info, String::new(), part.contains("词法规范")));
-            }
-            Some(_) if fence.starts_with("```") => {
-                let (line, info, body, lexical) = open.take().unwrap();
-                out.push(Block {
-                    file,
-                    line,
-                    info,
-                    body,
-                    lexical,
-                });
-            }
-            Some((_, _, body, _)) => {
-                body.push_str(line);
-                body.push('\n');
-            }
-            None => {}
-        }
-    }
-    assert!(open.is_none(), "{file}: an unclosed code fence");
-    out
-}
-
-fn all_blocks() -> Vec<Block<'static>> {
-    let mut all = blocks("Viso_DSL_1.0.md", SPEC);
-    all.extend(blocks("Viso_DSL_Rationale.md", RATIONALE));
-    all
-}
 
 /// The parser diagnostics `src` gets under `entry`, lexical errors included.
 fn errors(tokens: &[Token], src: &str, entry: Entry) -> Vec<String> {
