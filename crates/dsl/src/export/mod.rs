@@ -205,15 +205,30 @@ impl DomPage {
 /// Every place the view needs what a page's DOM cannot have, in source
 /// order.
 pub fn dom(compiled: &Compiled, options: &DomOptions) -> Result<DomPage, Vec<Finding>> {
+    page(compiled, options, false)
+}
+
+/// The view `compiled` mounts as a `web-hybrid` page: a `web-dom` page whose
+/// `Island` is the element the renderer draws its component in.
+///
+/// # Errors
+///
+/// As [`dom`], for what lies outside the island.
+pub fn hybrid(compiled: &Compiled, options: &DomOptions) -> Result<DomPage, Vec<Finding>> {
+    page(compiled, options, true)
+}
+
+fn page(compiled: &Compiled, options: &DomOptions, split: bool) -> Result<DomPage, Vec<Finding>> {
     let mut prepared = prepare(compiled, &options.lang)?;
     prepared.pick_locale();
-    let mut lower = html::Lower::new(
+    let lower = html::Lower::new(
         prepared.vb.as_ref(),
         prepared.eval.as_mut(),
         &compiled.assets,
         false,
     )
     .on_vm();
+    let mut lower = if split { lower.split() } else { lower };
     lower.view(&compiled.tree);
     lower.all_assets();
     let html::Lower {

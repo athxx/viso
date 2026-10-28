@@ -166,3 +166,106 @@ export component App {
     );
     assert!(page.script.contains("V.e("), "{}", page.script);
 }
+
+const ISLANDED: &str = r#"
+component Chart {
+    input points: List<F64>;
+    event picked(at: I64);
+    state hovered = 0;
+    effect warm { transaction { hovered = 1; } }
+    view {
+        Column {
+            Text { text: "inside"; }
+            Button { text: "pick"; on click { emit picked(hovered); } }
+        }
+    }
+}
+
+export component App {
+    state data = [1.0, 2.0];
+    state last = 0;
+    view {
+        Column {
+            Text { text: format("Picked {n}", n: last); }
+            Island {
+                width: 200dp;
+                height: 100dp;
+                Chart { points: data; on picked(event) { last = event.at; } }
+            }
+        }
+    }
+}
+"#;
+
+fn hybrid_page(source: &str) -> Result<DomPage, Vec<(Need, String, String)>> {
+    let compiled = compile_file_for(
+        source,
+        &origin(),
+        Natives::standard(),
+        TargetProfile::default(),
+    );
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let options = DomOptions {
+        title: "Demo".into(),
+        lang: "en".into(),
+    };
+    viso_dsl::export::hybrid(&compiled, &options).map_err(|findings| {
+        findings
+            .into_iter()
+            .map(|f| {
+                (
+                    f.need,
+                    source[std::ops::Range::<usize>::from(f.at)].to_owned(),
+                    f.message,
+                )
+            })
+            .collect()
+    })
+}
+
+#[test]
+fn a_hybrid_page_leaves_its_island_to_the_renderer() {
+    let page = hybrid_page(ISLANDED).unwrap_or_else(|f| panic!("{f:#?}"));
+    let index = page.index("s.css", "p.js", "");
+    // The island is the renderer's root, its content not in the page.
+    assert!(index.contains("data-viso-root"), "{index}");
+    assert!(
+        !index.contains("inside") && !index.contains(">pick<"),
+        "{index}"
+    );
+    // Its bound input is pushed across; its effect runs with the renderer.
+    assert!(page.script.contains("V.i(0, 0, "), "{}", page.script);
+    assert!(!page.script.contains("fx(m"), "{}", page.script);
+    // The same view as a `web-dom` page draws the island's content itself.
+    let dom = page_in(ISLANDED, None).unwrap_or_else(|f| panic!("{f:#?}"));
+    let index = dom.index("s.css", "p.js", "");
+    assert!(
+        index.contains("inside") && !index.contains("data-viso-root"),
+        "{index}"
+    );
+}
+
+#[test]
+fn a_hybrid_page_has_one_island_outside_every_region() {
+    let two = ISLANDED.replace(
+        "            Island {",
+        "            Island { Chart { points: data; } }\n            Island {",
+    );
+    let findings = hybrid_page(&two).unwrap_err();
+    assert!(
+        findings.iter().any(|f| f.2.contains("a second `Island`")),
+        "{findings:#?}"
+    );
+    let regional = ISLANDED
+        .replace("            Island {", "            if last > 0 { Island {")
+        .replace(
+            "on picked(event) { last = event.at; } }\n            }",
+            "on picked(event) { last = event.at; } }\n            } }",
+        );
+    let findings = hybrid_page(&regional).unwrap_err();
+    assert!(
+        findings.iter().any(|f| f.2.contains("a region mounts")),
+        "{findings:#?}"
+    );
+}

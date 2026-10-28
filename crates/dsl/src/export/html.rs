@@ -24,7 +24,7 @@ use crate::ir::ui_ir::{
     UiTree,
 };
 use crate::syntax::TextRange;
-use crate::view_behavior::{ViewBehavior, When};
+use crate::view_behavior::{ViewBehavior, ViewIsland, When};
 
 /// The text color a view shows where it sets none: the runtime's default,
 /// in sRGB.
@@ -101,6 +101,12 @@ pub(super) enum Wire {
     /// Makes the element a camera view: it shows the stream of the camera
     /// its `data-vx-facing` or `data-vx-device` names.
     Camera,
+    /// The element is island `island`, whose component the renderer draws:
+    /// each `(slot, entry)` of `inputs` gives one of its inputs.
+    Island {
+        island: u32,
+        inputs: Vec<(u32, u32)>,
+    },
 }
 
 /// The style of a sticky element: held at its scroller's start edge, over
@@ -281,6 +287,8 @@ pub(super) struct Lowered {
     pub(super) assets: BTreeMap<u64, String>,
     /// Whether a length has a device-pixel term.
     pub(super) device: bool,
+    /// The instance each island's component is inlined as, in view order.
+    pub(super) islands: Vec<u32>,
 }
 
 /// Where a node sits, which decides how its size reads.
@@ -307,6 +315,9 @@ pub(super) struct Lower<'v, 'e, 'a> {
     /// Whether the page's script calls the VM, which computes in the page
     /// what the export cannot: a native of the app's packages.
     on_vm: bool,
+    /// Whether an `Island` is drawn apart, by the renderer, in place of its
+    /// content: a `web-hybrid` page.
+    split: bool,
     pub(super) findings: Vec<Finding>,
     pub(super) out: Lowered,
     /// The next node key, counting every node in pre-order as the behavior
@@ -349,6 +360,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             uses,
             static_only,
             on_vm: false,
+            split: false,
             findings: Vec::new(),
             out: Lowered::default(),
             key: 0,
@@ -367,6 +379,23 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
     pub(super) fn on_vm(mut self) -> Self {
         self.on_vm = true;
         self
+    }
+
+    /// Lowers each `Island` as the element the renderer draws its component
+    /// in, its content left out.
+    pub(super) fn split(mut self) -> Self {
+        self.split = true;
+        self
+    }
+
+    /// The island the node of key `key` is, when islands are drawn apart.
+    fn island(&self, node: &UiNode, key: u32) -> Option<(u32, &'v ViewIsland)> {
+        if !self.split || node.type_name != crate::view_regions::ISLAND {
+            return None;
+        }
+        let islands = &self.vb?.islands;
+        let at = islands.iter().position(|i| i.node == NodeKey(key))?;
+        Some((at as u32, &islands[at]))
     }
 
     /// `at`, a span of instance `instance`'s view, as the page's source has
@@ -392,6 +421,19 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             }
         }
         self.out.root = root;
+        // What an island's component and the components in it do runs where
+        // the renderer draws it.
+        if let Some(eval) = self.eval.as_deref_mut() {
+            for id in 1..=tree.instances.len() as u32 {
+                let mut chain = id;
+                while chain != 0 && !self.out.islands.contains(&chain) {
+                    chain = tree.instance(chain).map_or(0, |i| i.parent);
+                }
+                if chain != 0 {
+                    eval.apart.insert(id);
+                }
+            }
+        }
     }
 
     fn need(&mut self, need: Need, at: TextRange, message: impl Into<String>, notes: Vec<String>) {
@@ -831,6 +873,31 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 }
             }
         }
+        let island = self.island(node, key);
+        if island.is_some() && (depth > 0 || templated || !self.out.islands.is_empty()) {
+            self.need(
+                Need::Unsupported,
+                self.own(node.instance, node.origin),
+                if self.out.islands.is_empty() {
+                    "an `Island` a region mounts, which a page draws only one of, once"
+                } else {
+                    "a second `Island`, where a page draws one"
+                },
+                vec![
+                    "a `web-hybrid` page has one island, outside every `if`, `for` and `match`"
+                        .to_owned(),
+                ],
+            );
+        }
+        if let Some((at, island)) = island {
+            el.attr("data-viso-root", "");
+            el.style("position: relative");
+            wires.push(Wire::Island {
+                island: at,
+                inputs: island.inputs.clone(),
+            });
+            self.out.islands.push(island.instance);
+        }
         if let Some(class) = self.out.sheet.class(&decls) {
             el.classes.push(class);
         }
@@ -869,7 +936,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             &mut self.stretch,
             node.kind == NodeKind::Flex && node.style.align == Some(Align::Stretch),
         );
-        match child_parent {
+        match child_parent.filter(|_| island.is_none()) {
             Some(child) => {
                 let mut index = 0i64;
                 for item in &node.children {

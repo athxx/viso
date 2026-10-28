@@ -526,6 +526,16 @@ fn mount(
                         anchored_reads(eval, *instance).join(", ")
                     );
                 }
+                Wire::Island { island, inputs } => {
+                    for &(slot, entry) in inputs {
+                        let deps = deps_literal(&eval.deps(entry).0);
+                        let _ = writeln!(
+                            out,
+                            "  u.push([{deps}, () => V.i({island}, {slot}, {})]);",
+                            call(entry)
+                        );
+                    }
+                }
             }
         }
     }
@@ -605,7 +615,9 @@ pub(super) fn effects_of<'l>(
 ) -> impl Iterator<Item = &'l EffectEntry> {
     let layout = eval.layout;
     layout.effects.iter().filter(move |effect| {
-        if root {
+        if eval.apart.contains(&effect.instance) {
+            false
+        } else if root {
             !layout
                 .regional
                 .iter()
@@ -632,6 +644,9 @@ pub(super) fn roots(page: &Lowered, eval: &Eval<'_>) -> BTreeSet<FuncId> {
                     }
                     Wire::On { handler, .. } => {
                         roots.insert(eval.func(handler));
+                    }
+                    Wire::Island { ref inputs, .. } => {
+                        roots.extend(inputs.iter().map(|&(_, entry)| eval.func(entry)));
                     }
                     Wire::Sync { entry: None, .. }
                     | Wire::Region(_)

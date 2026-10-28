@@ -46,6 +46,9 @@ pub(super) struct Eval<'a> {
     /// Whether the inputs change, as a component's props do, rather than
     /// hold their defaults for good, as a page's do.
     pub(super) props: bool,
+    /// The instances the renderer runs apart from the page: an island's
+    /// component and the components in it.
+    pub(super) apart: std::collections::BTreeSet<u32>,
 }
 
 impl<'a> Eval<'a> {
@@ -113,6 +116,7 @@ impl<'a> Eval<'a> {
             locales,
             picks_locale: false,
             props: false,
+            apart: Default::default(),
         })
     }
 

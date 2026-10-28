@@ -24,6 +24,9 @@ const taken = () => {
   };
 };
 $.ended = (id) => V.ended(id);
+// An event an island's component emits runs the handler of entry `n` with
+// its record `p`, as a transaction of the page.
+V.listen((n, p) => work.run(() => V.t(n, [p])));
 
 const host = {
   transact(f, m) {

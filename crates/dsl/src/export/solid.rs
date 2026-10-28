@@ -827,6 +827,8 @@ impl Jsx<'_> {
                 Wire::Sheet => refs.push("st.sheet(el);".to_owned()),
                 Wire::DragDrop => refs.push("st.dragDrop();".to_owned()),
                 Wire::Camera => refs.push("st.camera(el);".to_owned()),
+                // An export draws no island apart.
+                Wire::Island { .. } => {}
                 Wire::Anchor(instance) => {
                     if let Some(eval) = self.eval {
                         let reads = script::anchored_reads(eval, *instance);

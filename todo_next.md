@@ -961,8 +961,10 @@ Rules (as for `todo_features.md`):
     - [x] `Island` in `.vs`: one component of the file, recorded in `ViewBehavior::islands` (its
       input and event entries); a stack of its child where nothing splits the view. Verified:
       `view_islands` tests (record, mount errors, package mount).
-    - [ ] Hybrid page lowering: the island as a `data-viso-root` element, inputs pushed, events
-      handled.
+    - [x] Hybrid page lowering (`export::hybrid`): the island as a `data-viso-root` element, its
+      content and its instances' effects left out, each bound input pushed with `V.i`, island
+      events run through `V.listen`; a second island or one in a region is a finding. Verified:
+      `export_dom` hybrid tests.
     - [ ] Runtime: the facade's `web-hybrid` feature mounts the island's component as the root
       view; inputs from the page, events back to it.
     - [ ] Target, bundle, `check`/`build`/`run`/`serve web-hybrid`.
