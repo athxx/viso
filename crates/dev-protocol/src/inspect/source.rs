@@ -89,7 +89,7 @@ pub struct StateSource {
 }
 
 /// A node as its source declares it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, viso_macros::Encode, viso_macros::Decode)]
 pub struct NodeSource {
     /// Its widget type: `Button`, `Column`, …
     pub type_name: String,
@@ -103,10 +103,13 @@ pub struct NodeSource {
     /// The component whose view declares it.
     pub owner: String,
     /// Its declaration's byte range in the file.
+    #[ende(varint)]
     pub bytes: (u32, u32),
     /// The 1-based line and UTF-16 column of the declaration's start and
     /// end, as a diagnostic's location gives them.
+    #[ende(varint)]
     pub start: (u32, u32),
+    #[ende(varint)]
     pub end: (u32, u32),
     /// Each property bound to a reactive source, with the source's durable
     /// identity, in declaration order.
@@ -192,45 +195,4 @@ impl Decode for SourceTable {
 
 fn read_u32(dec: &mut Decoder<'_>) -> Result<u32, DecodeError> {
     u32::try_from(dec.read_varint()?).map_err(|_| malformed(dec))
-}
-
-impl Encode for NodeSource {
-    fn encode(&self, enc: &mut Encoder) {
-        enc.write_str(&self.type_name);
-        write_option_str(enc, self.name.as_deref());
-        write_strings(enc, &self.styles);
-        write_strings(enc, &self.components);
-        enc.write_str(&self.owner);
-        let (bytes, start, end) = (self.bytes, self.start, self.end);
-        for v in [bytes.0, bytes.1, start.0, start.1, end.0, end.1] {
-            enc.write_varint(u64::from(v));
-        }
-        enc.write_varint(self.bindings.len() as u64);
-        for (property, (hi, lo)) in &self.bindings {
-            enc.write_str(property);
-            enc.write_u64(*hi);
-            enc.write_u64(*lo);
-        }
-    }
-}
-
-impl Decode for NodeSource {
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(NodeSource {
-            type_name: dec.read_str()?.to_owned(),
-            name: read_option_str(dec)?,
-            styles: read_strings(dec)?,
-            components: read_strings(dec)?,
-            owner: dec.read_str()?.to_owned(),
-            bytes: (read_u32(dec)?, read_u32(dec)?),
-            start: (read_u32(dec)?, read_u32(dec)?),
-            end: (read_u32(dec)?, read_u32(dec)?),
-            bindings: (0..count(dec)?)
-                .map(|_| {
-                    let property = dec.read_str()?.to_owned();
-                    Ok((property, (dec.read_u64()?, dec.read_u64()?)))
-                })
-                .collect::<Result<_, DecodeError>>()?,
-        })
-    }
 }

@@ -7,6 +7,8 @@
 //! - [`macro@NativeData`] — derive a native record (a Rust struct whose
 //!   fields `.vs` reads) or schema enum (a Rust enum `.vs` builds and
 //!   matches), with its schema.
+//! - [`macro@Encode`] / [`macro@Decode`] — derive a plain message's
+//!   `viso_ende` codec, its fields in declaration order.
 //! - [`packaged_fonts!`] — scan `assets/fonts/` at build time and embed each
 //!   face with the metadata the font manifest keeps, subset to the
 //!   build's characters for an embedded target, its glyphs baked at the
@@ -24,11 +26,52 @@
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
 
+mod ende;
 mod font_bake;
 mod font_subset;
 mod gpu_instance;
 mod native_data;
 mod packaged_fonts;
+
+/// Derive `viso_ende::Encode` for a plain message: a struct writes its
+/// fields in declaration order, an enum a byte tag and then its variant's.
+///
+/// ```ignore
+/// #[derive(Encode, Decode)]
+/// pub enum Ask {
+///     Census,
+///     Nodes {
+///         #[ende(varint)]
+///         window: u32,
+///         #[ende(varint, max = MAX_NODES)]
+///         nodes: Vec<(u32, u32)>,
+///     },
+/// }
+/// ```
+///
+/// Tags count up from 0 in declaration order; `#[ende(tag = N)]` fixes one.
+/// A field writes as its type's `Encode`; `#[ende(varint)]` writes its
+/// integers as varints, `#[ende(max = N)]` caps a list's count when it is
+/// read, and `#[ende(with = path)]` writes it through `path::encode` and
+/// reads it through `path::decode`. `#[ende(crate = path)]` names the codec
+/// crate the output refers to, `::viso_ende` by default.
+#[proc_macro_derive(Encode, attributes(ende))]
+pub fn derive_encode(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    ende::derive_encode(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derive `viso_ende::Decode`, the mirror of [`macro@Encode`] under the same
+/// attributes: a tag no variant has is `DecodeError::Malformed` at the tag.
+#[proc_macro_derive(Decode, attributes(ende))]
+pub fn derive_decode(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    ende::derive_decode(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 /// Derive [`viso_gpu::GpuPod`] for a `#[repr(C)]` struct of GPU
 /// scalar/vector fields.

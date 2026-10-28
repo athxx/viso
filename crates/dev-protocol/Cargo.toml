@@ -11,6 +11,8 @@ rust-version.workspace = true
 # reports. Both sides build against it, so the CLI links no runtime (ADR 0042).
 [dependencies]
 viso-ende = { workspace = true }
+# `#[derive(Encode, Decode)]` for the plain messages.
+viso-macros = { workspace = true }
 # The shader language a runtime reads, named in its hello.
 viso-gpu-abi = { workspace = true }
 viso-math = { workspace = true, features = ["std"] }

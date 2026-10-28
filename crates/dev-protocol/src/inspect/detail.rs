@@ -17,74 +17,34 @@ use viso_schema::{DirtyClass, Interaction, StateValue};
 use super::census::{count, malformed, read_option_str, write_option_str};
 
 /// What an inspector asks a running app.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, viso_macros::Encode, viso_macros::Decode)]
 pub enum InspectAsk {
     /// Every window's [`Census`](super::Census).
     Census,
     /// The detail of `nodes` of window `window`, by index and generation.
-    Nodes { window: u32, nodes: Vec<(u32, u32)> },
+    Nodes {
+        #[ende(varint)]
+        window: u32,
+        #[ende(varint, max = MAX_ASKED_NODES)]
+        nodes: Vec<(u32, u32)>,
+    },
     /// What window `window`'s last frame drew and holds.
-    Frame { window: u32 },
+    Frame {
+        #[ende(varint)]
+        window: u32,
+    },
     /// The events window `window` recorded after number `after`; the first
     /// ask starts its journal.
-    Events { window: u32, after: u64 },
+    Events {
+        #[ende(varint)]
+        window: u32,
+        #[ende(varint)]
+        after: u64,
+    },
 }
 
 /// The most nodes one [`InspectAsk::Nodes`] names.
 pub const MAX_ASKED_NODES: usize = 4096;
-
-impl Encode for InspectAsk {
-    fn encode(&self, enc: &mut Encoder) {
-        match self {
-            InspectAsk::Census => enc.write_u8(0),
-            InspectAsk::Nodes { window, nodes } => {
-                enc.write_u8(1);
-                enc.write_varint(u64::from(*window));
-                enc.write_varint(nodes.len() as u64);
-                for (index, generation) in nodes {
-                    enc.write_varint(u64::from(*index));
-                    enc.write_varint(u64::from(*generation));
-                }
-            }
-            InspectAsk::Frame { window } => {
-                enc.write_u8(2);
-                enc.write_varint(u64::from(*window));
-            }
-            InspectAsk::Events { window, after } => {
-                enc.write_u8(3);
-                enc.write_varint(u64::from(*window));
-                enc.write_varint(*after);
-            }
-        }
-    }
-}
-
-impl Decode for InspectAsk {
-    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(match dec.read_u8()? {
-            0 => InspectAsk::Census,
-            1 => {
-                let window = read_u32(dec)?;
-                let len = count(dec)?;
-                if len > MAX_ASKED_NODES {
-                    return Err(malformed(dec));
-                }
-                let nodes = (0..len)
-                    .map(|_| Ok((read_u32(dec)?, read_u32(dec)?)))
-                    .collect::<Result<_, DecodeError>>()?;
-                InspectAsk::Nodes { window, nodes }
-            }
-            2 => InspectAsk::Frame {
-                window: read_u32(dec)?,
-            },
-            3 => InspectAsk::Events {
-                window: read_u32(dec)?,
-                after: dec.read_varint()?,
-            },
-            _ => return Err(malformed(dec)),
-        })
-    }
-}
 
 /// What a runtime's inspector answers, as its hello names it. A tool asks
 /// for nothing else, and reports the rest unavailable.

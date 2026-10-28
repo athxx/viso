@@ -226,7 +226,7 @@ Top-level layout (the workspace members in the root `Cargo.toml`; Architecture Â
 ```text
 crates/
     viso/        facade
-    macros/      GpuPod / NativeData derives, packaged_fonts!
+    macros/      GpuPod / NativeData / Encode / Decode derives, packaged_fonts!
     glyph-a8/    A8 glyph raster + baked glyph pages
     ui-macros/   ui! / component! / view!
     handle/

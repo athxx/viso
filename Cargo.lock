@@ -3096,6 +3096,7 @@ version = "0.0.0"
 dependencies = [
  "viso-ende",
  "viso-gpu-abi",
+ "viso-macros",
  "viso-math",
  "viso-schema",
 ]

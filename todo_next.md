@@ -981,8 +981,14 @@ Rules (as for `todo_features.md`):
       push into the island, the island's click runs the page's handler, a `.vs` edit in
       `viso run` rebuilt and served the new island; `web-dom` page still runs; CLI
       check/doctor/json/golden and tooling/project unit tests.
-- [ ] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
+- [x] `#[derive(Encode, Decode)]` in `viso-macros` for plain messages. Verify by porting one
   dev-protocol message and asserting identical bytes.
+  - Built: the derive (struct fields in order; enum byte tags in declaration order,
+    `#[ende(tag = N)]`; field `varint`/`max`/`with`; `crate = path`); `viso-ende` gains the
+    shapes a message is built of (strings, lists with `Vec<u8>` as one run, options, tuples,
+    arrays, `u128`) and their varint mirror (`EncodeVarint`/`DecodeVarint`).
+  - Verified: `InspectAsk` (an enum) and `NodeSource` (a struct) ported; `derived_codecs` tests
+    match their hand-written codecs byte for byte and read back; ende unit tests.
 - [ ] Extend the VM-vs-native differential test to every DSL doc-example fixture. Verify that it
   reports no mismatch.
 - [ ] A `stable / preview / reserved` matrix per grammar production in `Viso_DSL_1.0.md`. Verify

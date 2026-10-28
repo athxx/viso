@@ -165,7 +165,13 @@ fn allowed_edges() -> BTreeMap<&'static str, Allowed> {
             "viso-dev-protocol",
             Allowed {
                 dir: "crates/dev-protocol",
-                deps: &["viso-ende", "viso-math", "viso-schema", "viso-gpu-abi"],
+                deps: &[
+                    "viso-ende",
+                    "viso-macros",
+                    "viso-math",
+                    "viso-schema",
+                    "viso-gpu-abi",
+                ],
                 dev: &[],
             },
         ),

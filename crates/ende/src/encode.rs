@@ -209,6 +209,18 @@ pub trait Encode {
     /// Writes `self` to `enc`.
     fn encode(&self, enc: &mut Encoder);
 
+    /// Writes each of `items` in turn, as a list writes its items after its
+    /// count; a byte writes them as one run.
+    #[inline]
+    fn encode_slice(items: &[Self], enc: &mut Encoder)
+    where
+        Self: Sized,
+    {
+        for item in items {
+            item.encode(enc);
+        }
+    }
+
     /// Encodes `self` into a fresh `Vec<u8>`. A convenience over constructing an
     /// [`Encoder`] for one value.
     #[inline]
@@ -231,9 +243,20 @@ macro_rules! encode_scalar {
     )+};
 }
 
+impl Encode for u8 {
+    #[inline]
+    fn encode(&self, enc: &mut Encoder) {
+        enc.write_u8(*self);
+    }
+
+    #[inline]
+    fn encode_slice(items: &[u8], enc: &mut Encoder) {
+        enc.write_raw(items);
+    }
+}
+
 encode_scalar! {
     bool => write_bool,
-    u8 => write_u8,
     u16 => write_u16,
     u32 => write_u32,
     u64 => write_u64,
@@ -252,10 +275,13 @@ impl Encode for str {
     }
 }
 
-impl Encode for [u8] {
+/// A list: its count, then its items. A list of bytes is
+/// [`write_bytes`](Encoder::write_bytes)'s byte string.
+impl<T: Encode> Encode for [T] {
     #[inline]
     fn encode(&self, enc: &mut Encoder) {
-        enc.write_bytes(self);
+        enc.write_varint(self.len() as u64);
+        T::encode_slice(self, enc);
     }
 }
 

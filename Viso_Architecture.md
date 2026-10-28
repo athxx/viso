@@ -983,7 +983,7 @@ DSL compiler 与 runtime 之间交换的**纯数据合同**：widget / property 
 
 ### `viso-dev-protocol`（ADR 0042）
 
-`viso`（CLI）与 dev runtime 之间的开发链路：framed host/runtime message 与其携带的 patch bundle（UI / game section）、asset blob、game query，以及 running app 报告给工具的数据——inspection census / node detail / event log / source table / selector、profile frame、headless scenario。两侧都依赖它，CLI 因此不链接 runtime；runtime 侧的采集（census、node detail）留在 `viso-view`。依赖 `viso-schema`、`viso-ende`、`viso-math`、`viso-gpu-abi`。
+`viso`（CLI）与 dev runtime 之间的开发链路：framed host/runtime message 与其携带的 patch bundle（UI / game section）、asset blob、game query，以及 running app 报告给工具的数据——inspection census / node detail / event log / source table / selector、profile frame、headless scenario。两侧都依赖它，CLI 因此不链接 runtime；runtime 侧的采集（census、node detail）留在 `viso-view`。依赖 `viso-schema`、`viso-ende`、`viso-math`、`viso-gpu-abi`，以及为 plain message 生成 codec 的 `viso-macros`（`#[derive(Encode, Decode)]`：字段按声明顺序，enum 写一字节 tag，`#[ende(varint|max|with)]` 选字段的写法，与手写 codec 字节相同）。
 
 ### `viso-lsp`
 
@@ -1045,7 +1045,7 @@ CLI 依赖 `viso-project`、`viso-package`、`viso-dsl`、`viso-dev-protocol`、
 | `viso-gpu` | handle, macros, gpu-abi | — | |
 | `viso-runtime` | platform | — | |
 | `viso-platform` | handle | — | |
-| `viso-dev-protocol` | ende, math, schema, gpu-abi | — | |
+| `viso-dev-protocol` | ende, macros, math, schema, gpu-abi | — | `macros` 只为 plain message 的 `#[derive(Encode, Decode)]` |
 | `viso-schema` | ende | — | |
 | `viso-macros` | glyph-a8 | — | |
 | `viso-lexer` | diag | — | |

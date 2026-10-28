@@ -298,6 +298,14 @@ impl<'a> Decoder<'a> {
         Ok(items)
     }
 
+    /// Reads a list of `T`: a [`read_count`](Self::read_count) of at most
+    /// `max`, then that many items.
+    #[inline]
+    pub fn read_vec<T: Decode>(&mut self, max: usize) -> Result<Vec<T>, DecodeError> {
+        let count = self.read_count(max)?;
+        T::decode_many(self, count)
+    }
+
     /// Reads a length-prefixed UTF-8 string, validating the bytes.
     #[inline]
     pub fn read_str(&mut self) -> Result<&'a str, DecodeError> {
@@ -389,6 +397,17 @@ pub trait Decode: Sized {
     /// Reads one `Self` from `dec`, advancing its cursor.
     fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError>;
 
+    /// Reads `count` items in turn, as a list reads its items after its
+    /// count; a byte reads them as one run.
+    #[inline]
+    fn decode_many(dec: &mut Decoder<'_>, count: usize) -> Result<Vec<Self>, DecodeError> {
+        let mut items = Vec::with_capacity(count.min(LIST_PREALLOC));
+        for _ in 0..count {
+            items.push(Self::decode(dec)?);
+        }
+        Ok(items)
+    }
+
     /// Decodes one `Self` from a full slice and requires the input to be fully
     /// consumed, rejecting trailing bytes.
     #[inline]
@@ -412,9 +431,20 @@ macro_rules! decode_scalar {
     )+};
 }
 
+impl Decode for u8 {
+    #[inline]
+    fn decode(dec: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        dec.read_u8()
+    }
+
+    #[inline]
+    fn decode_many(dec: &mut Decoder<'_>, count: usize) -> Result<Vec<u8>, DecodeError> {
+        Ok(dec.read_raw(count)?.to_vec())
+    }
+}
+
 decode_scalar! {
     bool => read_bool,
-    u8 => read_u8,
     u16 => read_u16,
     u32 => read_u32,
     u64 => read_u64,

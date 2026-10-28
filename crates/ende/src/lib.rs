@@ -8,6 +8,11 @@
 //!   is checked against its cap and the bytes left before any item is read;
 //! - a minimal JSON emitter for diagnostics and tool interchange, and a
 //!   bounded reader for a tool reading another tool's JSON;
+//! - [`Encode`] / [`Decode`] for the shapes a message is built of (strings,
+//!   lists, options, tuples, arrays) and, through [`EncodeVarint`] /
+//!   [`DecodeVarint`], the same shapes with their integers as varints, which
+//!   `#[derive(Encode, Decode)]` (`viso-macros`) writes a plain message's
+//!   codec from;
 //! - the protocol tag payloads start with and a stable content hash;
 //! - execute-in-place support: zero padding to an alignment boundary
 //!   ([`Encoder::align`] / [`Decoder::align`]), a section table that splits a
@@ -33,11 +38,13 @@ extern crate std;
 
 mod aligned;
 pub mod base64;
+mod compound;
 mod decode;
 mod encode;
 mod json;
 mod json_value;
 mod section;
+mod varint;
 mod wire;
 
 pub use aligned::{Aligned, SECTION_ALIGN};
@@ -46,4 +53,5 @@ pub use encode::{Encode, Encoder};
 pub use json::JsonWriter;
 pub use json_value::{JsonError, JsonValue};
 pub use section::{Section, SectionWriter, Sections};
+pub use varint::{DecodeVarint, EncodeVarint};
 pub use wire::{ProtocolTag, WIRE_VERSION, content_hash};
