@@ -1110,14 +1110,32 @@ Rules (as for `todo_features.md`):
   - GPU board (llvmpipe): 7.41 MiB, 130 ms, heap 6.7 MiB, idle 0.
   - Budgets recalibrated: RSS is scaled to the panel, and the first-frame budgets are kept. The
     binary is over budget, which is the next item.
-- [ ] Link only what an app uses. A counter's binary carries every control kind, the game kit,
+- [x] Link only what an app uses. A counter's binary carries every control kind, the game kit,
   scene3d, every image decoder (~480 KiB) and svg (~198 KiB), because views name widgets and
   natives at run time. The build already knows the compiled views, so it can tell the facade
   which control kinds, natives and asset formats they reach (the `VISO_GPU`-style build cfg).
   Also gate cumulative size growth: desktop counter went from 5.00 MiB to 8.91 MiB between 10-18
   and 10-28 while each paired check passed. Verify with §50A.5's binary budgets (embedded-cpu
   ≤ 4 MB, embedded-gpu ≤ 4.5 MB) on the board subjects, and that an app using a pruned control
-  still builds and draws it.
+  still builds and draws it. Built (§50A.5.2 按用链接):
+  - The shipping profile uses fat LTO with one codegen unit, and the footprint xtask builds the
+    embedded window and board subjects as shipping.
+  - `view!` hands the host just the standard native libraries (`Natives::exactly`) and the
+    control kinds (`viso_view::kinds`, one `Kind` static per kind, reached through function
+    pointers) that it uses.
+  - Game audio, glTF decode, animated-image playback and paged capture are wired in at the call
+    that uses them.
+  - A board with converted rasters and no SVG links neither decoder.
+  - `PANEL_ONLY` folds the caption, menu bar and accessibility out of KMS-only builds.
+  - `footprint --against` also holds sizes to `baseline.json` (`check_sizes`).
+  Verified:
+  - Board subjects: embedded-cpu 3,947,176 B and embedded-gpu 4,461,920 B (were 6.88 / 7.41
+    MiB). Desktop counter is 8.45 MiB and embedded-cpu window 3.94 MiB.
+  - The baseline was re-recorded.
+  - Facade control tests pass on the linked-kinds path (non-hot-reload `view!`, with a
+    `debug_assert` on unlinked kinds): slider, combo, search, picker, stepper, chips, segmented,
+    swipe row, router, shaders and others.
+  - `sizes_cannot_creep_past_the_baseline`.
 - [x] Android chooses its GPU API at run time: `[target.android] gpu = "auto"` (the default)
   draws with Vulkan where the device opens it and with GLES 3 otherwise; `vulkan` / `gles` pin
   one (ADR 0062). GLES imports video without copying. Built: `AndroidBackend` (an enum, one
