@@ -48,7 +48,9 @@
 //! own, and measured on the same machine with the same toolchain; the work
 //! tree fails on a metric worse than `rev`'s by more than its paired
 //! tolerance, which holds sizes and the counted heap tighter than a baseline
-//! taken elsewhere can.
+//! taken elsewhere can. It fails, too, on a size over the baseline's: a size
+//! depends on the toolchain and the build alone, so steps that each pass
+//! cannot add up to a growth no baseline records.
 
 mod baseline;
 mod board;
@@ -108,6 +110,15 @@ const fn metric(
 }
 
 impl Metric {
+    /// Whether it is a size of the binary, which the toolchain and the build
+    /// alone decide.
+    fn is_size(&self) -> bool {
+        matches!(
+            self.key,
+            "binary_bytes" | "text_bytes" | "data_bytes" | "bss_bytes"
+        )
+    }
+
     /// The metric with `tolerance` and `floor` for a paired run: what one
     /// toolchain on one machine holds steady.
     const fn paired(self, tolerance: f64, floor: f64) -> Metric {
@@ -556,7 +567,14 @@ fn run(options: &Options) -> Result<(), String> {
     println!("{}", baseline::markdown(&meta, &rows));
     let dir = root.join("benches/footprint");
     if let (Some(rev), Some(base)) = (&options.against, base) {
-        baseline::check_paired(rev, &base, &rows)?;
+        let recorded = baseline::read(&dir.join("baseline.json"))?;
+        let paired = baseline::check_paired(rev, &base, &rows);
+        let sizes = baseline::check_sizes(&meta, &recorded, &rows);
+        match (paired, sizes) {
+            (Ok(()), Ok(())) => {}
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+            (Err(paired), Err(sizes)) => return Err(format!("{paired}\n{sizes}")),
+        }
     } else if options.record {
         let (meta, rows) = if options.only.is_empty() {
             (meta, rows)

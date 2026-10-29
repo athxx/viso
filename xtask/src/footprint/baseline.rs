@@ -6,7 +6,7 @@ use std::process::Command;
 
 use viso_ende::{JsonValue, JsonWriter};
 
-use super::{METRICS, MIB, Row, Unit, build, metric_index};
+use super::{METRICS, MIB, Metric, Row, Unit, build, metric_index};
 
 /// Where and how a measurement was taken.
 pub(super) struct Meta {
@@ -330,15 +330,23 @@ fn parse(text: &str) -> Result<Recorded, String> {
     })
 }
 
-/// A metric of `row` worse than its baseline by more than its tolerance.
-/// Each metric of `row` worse than `recorded`'s by more than its tolerance,
-/// or its paired tolerance when both were measured on this machine.
-fn regressions(recorded: &Row, row: &Row, paired: bool) -> Vec<String> {
+/// Each metric of `row` that `measured` holds worse than `recorded`'s by
+/// more than its tolerance, or its paired tolerance when both were measured
+/// on this machine.
+fn regressions(
+    recorded: &Row,
+    row: &Row,
+    paired: bool,
+    measured: fn(&Metric) -> bool,
+) -> Vec<String> {
     let mut out = Vec::new();
     for (at, metric) in METRICS.iter().enumerate() {
         let (Some(old), Some(new)) = (recorded.values[at], row.values[at]) else {
             continue;
         };
+        if !measured(metric) {
+            continue;
+        }
         let (tolerance, floor) = if paired {
             metric.paired
         } else {
@@ -370,7 +378,7 @@ pub(super) fn check(meta: &Meta, recorded: &Recorded, rows: &[Row]) -> Result<()
     let mut worse = Vec::new();
     for row in rows {
         match recorded.rows.iter().find(|r| r.id() == row.id()) {
-            Some(old) => worse.extend(regressions(old, row, false)),
+            Some(old) => worse.extend(regressions(old, row, false, |_| true)),
             None => println!("footprint: {} has no baseline", row.id()),
         }
     }
@@ -392,7 +400,7 @@ pub(super) fn check_paired(rev: &str, base: &[Row], rows: &[Row]) -> Result<(), 
     let mut worse = Vec::new();
     for row in rows {
         match base.iter().find(|r| r.id() == row.id()) {
-            Some(old) => worse.extend(regressions(old, row, true)),
+            Some(old) => worse.extend(regressions(old, row, true, |_| true)),
             None => println!("footprint: {} is not in {rev}", row.id()),
         }
     }
@@ -402,6 +410,38 @@ pub(super) fn check_paired(rev: &str, base: &[Row], rows: &[Row]) -> Result<(), 
     } else {
         Err(format!(
             "{} metric(s) worse than {rev}:\n  {}",
+            worse.len(),
+            worse.join("\n  ")
+        ))
+    }
+}
+
+/// Holds the sizes of `rows` to `recorded`, wherever it was taken: a size
+/// depends on the toolchain and the build alone, so a gate against the
+/// previous commit that each step passes cannot let the sizes creep. Under
+/// the recorded toolchain each is held to its paired tolerance; under
+/// another, to its baseline one, a toolchain moving sizes a little.
+pub(super) fn check_sizes(meta: &Meta, recorded: &Recorded, rows: &[Row]) -> Result<(), String> {
+    let same = recorded.rustc == meta.rustc;
+    if !same {
+        println!(
+            "footprint: the baseline's sizes are of {}; this run builds with {}",
+            recorded.rustc, meta.rustc
+        );
+    }
+    let mut worse = Vec::new();
+    for row in rows {
+        if let Some(old) = recorded.rows.iter().find(|r| r.id() == row.id()) {
+            worse.extend(regressions(old, row, same, Metric::is_size));
+        }
+    }
+    if worse.is_empty() {
+        println!("footprint: sizes within the baseline");
+        Ok(())
+    } else {
+        Err(format!(
+            "{} size(s) over the baseline; a deliberate growth records it \
+             (`cargo xtask footprint --record`):\n  {}",
             worse.len(),
             worse.join("\n  ")
         ))
@@ -484,20 +524,44 @@ mod tests {
     #[test]
     fn a_metric_over_its_tolerance_is_a_regression() {
         let old = row("viso", 5_000_000.0, 60.0);
-        assert!(regressions(&old, &row("viso", 5_100_000.0, 100.0), false).is_empty());
-        let worse = regressions(&old, &row("viso", 5_400_000.0, 200.0), false);
+        assert!(regressions(&old, &row("viso", 5_100_000.0, 100.0), false, |_| true).is_empty());
+        let worse = regressions(&old, &row("viso", 5_400_000.0, 200.0), false, |_| true);
         assert_eq!(worse.len(), 2, "{worse:?}");
         assert!(worse[0].contains("binary_bytes"));
-        assert!(regressions(&old, &row("viso", 1.0, 1.0), false).is_empty());
+        assert!(regressions(&old, &row("viso", 1.0, 1.0), false, |_| true).is_empty());
         // Measured beside each other, 2% more code is a regression; the
         // frame time keeps its tolerance.
-        let worse = regressions(&old, &row("viso", 5_100_000.0, 100.0), true);
+        let worse = regressions(&old, &row("viso", 5_100_000.0, 100.0), true, |_| true);
         assert_eq!(worse.len(), 1, "{worse:?}");
         assert!(worse[0].contains("binary_bytes"));
         let base = [old.clone()];
         assert!(check_paired("HEAD", &base, &[row("viso", 5_040_000.0, 61.0)]).is_ok());
         let failed = check_paired("HEAD", &base, &[row("viso", 5_100_000.0, 61.0)]);
         assert!(failed.unwrap_err().contains("worse than HEAD"));
+    }
+
+    #[test]
+    fn sizes_cannot_creep_past_the_baseline() {
+        let recorded = Recorded {
+            machine: "Other CPU".into(),
+            rustc: "rustc 1.0".into(),
+            makepad: None,
+            board: None,
+            rows: vec![row("viso", 5_000_000.0, 60.0)],
+        };
+        // Each step within the paired tolerance of the one before, but 2%
+        // over the baseline under its toolchain; the frame time is no size.
+        let crept = [row("viso", 5_100_000.0, 600.0)];
+        let failed = check_sizes(&meta(), &recorded, &crept).unwrap_err();
+        assert!(failed.contains("binary_bytes") && !failed.contains("startup_ms"));
+        assert!(check_sizes(&meta(), &recorded, &[row("viso", 5_040_000.0, 600.0)]).is_ok());
+        // Another toolchain moves sizes a little.
+        let other = Meta {
+            rustc: "rustc 2.0".into(),
+            ..meta()
+        };
+        assert!(check_sizes(&other, &recorded, &crept).is_ok());
+        assert!(check_sizes(&other, &recorded, &[row("viso", 5_400_000.0, 60.0)]).is_err());
     }
 
     #[test]
