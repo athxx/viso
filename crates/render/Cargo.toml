@@ -35,6 +35,8 @@ viso-ende = { workspace = true }
 # Build the Vulkan backend on targets where it is not the native one (MoltenVK on
 # macOS), so its device tests run there.
 vulkan = ["viso-gpu/vulkan"]
+# Build the GLES 3 backend on Linux, so its device tests run there.
+gles = ["viso-gpu/gles"]
 
 # The steady-state benches are native measurements; criterion does not build for
 # wasm32 (the web path is verified by the WebGPU tests instead).

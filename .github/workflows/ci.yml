@@ -208,3 +208,16 @@ jobs:
           cargo install wasm-bindgen-cli --locked --version "$version"
       - name: Browser session
         run: cargo test -p viso-cli --test device -- --ignored --nocapture web
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # The WebGPU backend and the scene lane on Deno's WebGPU; a run that
+      # finds no device skips every test, so it fails.
+      - name: WebGPU
+        env:
+          WASM_BINDGEN_USE_DENO: "1"
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+        run: |
+          export PATH="$PWD/tools/deno2:$PATH"
+          cargo test -p viso-render --target wasm32-unknown-unknown --test webgpu_backend 2>&1 | tee webgpu.log
+          ! grep -q "no WebGPU device" webgpu.log

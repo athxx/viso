@@ -2,6 +2,9 @@
 //! renderer, posed and pushed into a frame, draws its meshes where its node
 //! hierarchy places them.
 
+mod devices;
+
+use devices::{Device, Draw, differing, on_devices};
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::scene3d::model::{ModelAsset, Pose};
@@ -358,14 +361,13 @@ fn square(
 }
 
 /// `asset` seen from its front, unshadowed and unoccluded, drawn by `gpu`
-/// into a `w`×`h` BGRA8 texture read back by `read`: framed on the sphere
-/// of `radius` about the origin, or else on its bounds.
-fn front_view<B: GpuBackend>(
+/// into a `w`×`h` BGRA8 texture read back: framed on the sphere of `radius`
+/// about the origin, or else on its bounds.
+fn front_view<B: Device>(
     gpu: &mut B,
     asset: &ModelAsset,
     [w, h]: [u32; 2],
     radius: Option<f32>,
-    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
 ) -> Vec<u8> {
     use viso_gpu::{TextureDesc, TextureFormat};
     let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
@@ -415,37 +417,38 @@ fn front_view<B: GpuBackend>(
         label: "model",
     });
     r.render_to_texture(gpu, target, [0.0, 0.0, 0.0, 1.0], [w as f32, h as f32]);
-    read(gpu, target)
+    gpu.read(target)
 }
 
-/// `asset`'s front view on the CPU raster, and on the Metal device where
-/// there is one, which must draw the same.
+/// [`front_view`] of `asset`.
+struct FrontView<'a> {
+    asset: &'a ModelAsset,
+    size: [u32; 2],
+    radius: Option<f32>,
+}
+
+impl Draw for FrontView<'_> {
+    fn draw<B: Device>(&self, gpu: &mut B) -> Vec<u8> {
+        front_view(gpu, self.asset, self.size, self.radius)
+    }
+}
+
+/// `asset`'s front view on the CPU raster, and on each device here, which
+/// must draw the same.
 fn front_views(asset: &ModelAsset, size: [u32; 2], radius: Option<f32>, name: &str) -> Vec<u8> {
-    let cpu = front_view(&mut CpuRaster::new(), asset, size, radius, |gpu, t| {
-        gpu.read_texture(t)
-    });
-    #[cfg_attr(not(target_vendor = "apple"), allow(unused_mut))]
+    let view = FrontView {
+        asset,
+        size,
+        radius,
+    };
+    let cpu = view.draw(&mut CpuRaster::new());
     let mut shots = vec![("cpu", cpu.clone())];
-    #[cfg(target_vendor = "apple")]
-    {
-        let metal = front_view(
-            &mut viso_gpu::MetalBackend::new(),
-            asset,
-            size,
-            radius,
-            |gpu, t| gpu.read_texture(t),
-        );
-        let off = cpu
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .zip(metal.as_chunks::<4>().0)
-            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 3))
-            .count();
-        shots.push(("metal", metal));
+    for (device, px) in on_devices(&view) {
+        let off = differing(&cpu, &px, 3);
+        shots.push((device, px));
         assert!(
             off * 100 < (size[0] * size[1]) as usize,
-            "{name}: {off} pixels differ between the CPU raster and Metal"
+            "{name}: {off} pixels differ between the CPU raster and {device}"
         );
     }
     if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {

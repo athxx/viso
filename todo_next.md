@@ -1153,6 +1153,23 @@ Rules (as for `todo_features.md`):
     alone 9.72 / 4.61.
 - [ ] The 3D scene lane on real Vulkan, D3D12, GLES and WebGPU devices: today only the CPU raster
   and Metal are drawn and compared. Verify with the scene lane goldens on each.
+  - [x] Vulkan, GLES and WebGPU. Built:
+    - `crates/render/tests/devices` draws one picture on every device the machine has and reads
+      it back: Metal; Vulkan (native, or the `vulkan` feature) with validation; GLES 3 (the new
+      `gles` feature of viso-render); D3D12.
+    - `scene3d_lane`'s lane pictures, its mirrored-skin culling, and `scene_model`'s glTF front
+      views are each compared against the CPU raster on each device.
+    - `tests/scene_pictures` shares the lane pictures with `webgpu_backend.rs`, which draws them
+      on WebGPU.
+    - `tools/deno2` runs wasm-bindgen-test-runner's Deno harness on Deno 2.
+    Verified: every lane picture and glTF model matches the CPU raster within its tolerance on:
+    - Metal and on Vulkan through MoltenVK (macOS);
+    - Mesa lavapipe (Vulkan) and llvmpipe (GLES 3, surfaceless) in the `viso-gles` container;
+    - Deno 2.9's WebGPU, which runs wgpu on Metal.
+    The WebGPU suite passes, 7 tests.
+  - [ ] D3D12: the device comparison builds for `x86_64-pc-windows-msvc` and runs on any
+    Windows machine (`cargo test -p viso-render --test scene3d_lane --test scene_model`); none is
+    at hand. Also a browser's WebGPU (Dawn in Chrome), which needs chromedriver.
 - [ ] Windows: WASAPI audio playback and capture, `signtool` signing of the executable and the
   MSIX. Verify on a Windows machine.
 - [ ] Apple: a Developer ID signature, notarized; a device APNs token. Verify on real

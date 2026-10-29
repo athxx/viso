@@ -6,6 +6,11 @@
 //! of, moves a skinned mesh's vertices by its joints, and culls the far side
 //! of a mirrored instance and of a mesh its joints mirror.
 
+mod devices;
+mod scene_pictures;
+
+use devices::{Device, Draw, differing, on_devices};
+use scene_pictures::{LanePicture, SIDE, draw_lane, lane_pictures};
 use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle, SurfaceId};
 use viso_math::{LinearStraight, Mat4, Quat, Vec3, vec3};
 use viso_render::damage::Region;
@@ -343,132 +348,41 @@ fn a_sprite_blends_over_what_is_behind_it_and_hides_behind_what_is_in_front() {
     assert!(behind[1] < 20, "hidden behind the wall: {behind:?}");
 }
 
-/// The scene lane draws the same picture on the Metal device as on the CPU
+/// The scene lane draws the same picture on each device as on the CPU
 /// raster: exactly without ambient occlusion; with it, within the noise of
 /// its point-sampled taps, a tap on a texel's edge reading one texel on one
 /// and its neighbour on the other.
-#[cfg(target_vendor = "apple")]
 #[test]
-fn metal_draws_what_the_cpu_raster_draws() {
-    use viso_gpu::{MetalBackend, TextureDesc, TextureFormat};
-    use viso_render::scene3d::Sky;
+fn each_device_draws_what_the_cpu_raster_draws() {
+    /// [`draw_lane`] read back.
+    struct Lane(LanePicture);
 
-    fn image<B: GpuBackend>(
-        gpu: &mut B,
-        sky: Option<Sky>,
-        occlusion: AmbientOcclusion,
-        read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
-    ) -> Vec<u8> {
-        let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
-        r.set_surface_size([W as f32, H as f32], 1.0);
-        let mut frame = SceneFrame::new();
-        frame.camera = Camera {
-            eye: vec3(3.0, 2.5, 5.0),
-            target: Vec3::ZERO,
-            ..Camera::default()
-        };
-        frame.background = LinearStraight::new(0.5, 0.6, 0.8, 1.0);
-        frame.sky = sky;
-        frame.lighting.occlusion = occlusion;
-        let one = vec3(1.0, 1.0, 1.0);
-        let turn = Quat::from_axis_angle(vec3(0.0, 1.0, 0.0), 0.6);
-        let color = |r, g, b| LinearStraight::new(r, g, b, 1.0);
-        frame.push(
-            Shape::Cube,
-            instance(vec3(-1.2, 0.0, 0.0), turn, one, color(0.9, 0.2, 0.1)),
-        );
-        frame.push(
-            Shape::Sphere,
-            instance(vec3(1.2, 0.0, 0.0), turn, one, color(0.1, 0.6, 0.9)),
-        );
-        // Mirrored, so its far side is culled by the other winding.
-        frame.push(
-            Shape::Cone,
-            instance(
-                vec3(0.0, 0.0, -2.0),
-                turn,
-                vec3(-1.0, 1.0, 1.0),
-                color(0.9, 0.8, 0.2),
-            ),
-        );
-        frame.push(
-            Shape::Plane,
-            instance(
-                vec3(0.0, -1.0, 0.0),
-                Quat::IDENTITY,
-                vec3(6.0, 1.0, 6.0),
-                color(0.3, 0.5, 0.3),
-            ),
-        );
-        frame.push_unlit(
-            Shape::Cube,
-            instance(
-                vec3(0.0, 1.4, 0.0),
-                Quat::IDENTITY,
-                vec3(1.5, 0.05, 0.05),
-                color(0.2, 1.0, 0.3),
-            ),
-        );
-        for (x, z) in [(-0.4, 1.5), (0.5, 1.0), (0.0, -0.5)] {
-            frame.push_sprite(SceneSprite::new(
-                vec3(x, 0.4, z),
-                0.6,
-                LinearStraight::new(1.0, 0.8, 0.4, 0.7),
-            ));
+    impl Draw for Lane {
+        fn draw<B: Device>(&self, gpu: &mut B) -> Vec<u8> {
+            let target = draw_lane(gpu, &self.0);
+            gpu.read(target)
         }
-        r.swap_scene(SLOT, &mut frame);
-        r.upload(gpu, &stream(rect(0.0, 0.0, W as f32, H as f32), 1));
-        let target = gpu.create_texture(&TextureDesc {
-            width: W,
-            height: H,
-            format: TextureFormat::Bgra8Unorm,
-            render_target: true,
-            label: "out",
-        });
-        r.render_to_texture(gpu, target, CLEAR, [W as f32, H as f32]);
-        read(gpu, target)
     }
 
-    // The second under a low sun's sky, its disc in view behind the scene.
-    let low_sun = Sky {
-        sun: vec3(-0.6, 0.12, -1.0),
-        ..Sky::default()
-    };
-    let ao = AmbientOcclusion::default();
-    for (name, sky, occlusion, tolerance) in [
-        ("lane-shapes", None, AmbientOcclusion::NONE, 3),
-        ("lane-shapes-ao", None, ao, 16),
-        ("lane-sky", Some(low_sun), ao, 16),
-    ] {
-        let cpu = image(&mut CpuRaster::new(), sky, occlusion, |gpu, t| {
-            gpu.read_texture(t)
-        });
-        let metal = image(&mut MetalBackend::new(), sky, occlusion, |gpu, t| {
-            gpu.read_texture(t)
-        });
-        if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
-            for (who, px) in [("cpu", &cpu), ("metal", &metal)] {
-                let png = viso_image::snapshot::Image::from_bgra8(W, H, px).to_png();
-                let path = std::path::Path::new(&dir).join(format!("{name}-{who}.png"));
-                std::fs::write(path, png).unwrap();
+    for picture in lane_pictures() {
+        let (name, side) = (picture.name, SIDE);
+        let lane = Lane(picture);
+        let cpu = lane.draw(&mut CpuRaster::new());
+        for (device, px) in on_devices(&lane) {
+            if let Some(dir) = std::env::var_os("VISO_SCENE_SHOTS") {
+                for (who, px) in [("cpu", &cpu), (device, &px)] {
+                    let png = viso_image::snapshot::Image::from_bgra8(side, side, px).to_png();
+                    let path = std::path::Path::new(&dir).join(format!("{name}-{who}.png"));
+                    std::fs::write(path, png).unwrap();
+                }
             }
+            let off = differing(&cpu, &px, picture.tolerance);
+            assert!(
+                off * 100 < (side * side) as usize,
+                "{name}: {off} of {} pixels differ on {device}",
+                side * side
+            );
         }
-        let off = cpu
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .zip(metal.as_chunks::<4>().0)
-            .filter(|(a, b)| {
-                a.iter()
-                    .zip(b.iter())
-                    .any(|(x, y)| x.abs_diff(*y) > tolerance)
-            })
-            .count();
-        assert!(
-            off * 100 < (W * H) as usize,
-            "{name}: {off} of {} pixels differ",
-            W * H
-        );
     }
 }
 
@@ -701,13 +615,8 @@ fn ambient_occlusion_shades_where_the_cube_meets_the_ground() {
 /// joint 1 with a square before it that faces away from the camera, in a
 /// one-sided lit material, posed by `joints` and placed by `placement`
 /// (turned so three faces of each cube show), drawn by `gpu` into a BGRA8
-/// texture read back by `read`.
-fn two_skinned_cubes<B: GpuBackend>(
-    gpu: &mut B,
-    joints: [Mat4; 2],
-    placement: Mat4,
-    read: impl Fn(&mut B, viso_gpu::TextureId) -> Vec<u8>,
-) -> Vec<u8> {
+/// texture read back.
+fn two_skinned_cubes<B: Device>(gpu: &mut B, joints: [Mat4; 2], placement: Mat4) -> Vec<u8> {
     use viso_gpu::{TextureDesc, TextureFormat};
     let mut r = Renderer::new(gpu, TextureFormat::Bgra8Unorm);
     r.set_surface_size([W as f32, H as f32], 1.0);
@@ -764,22 +673,19 @@ fn two_skinned_cubes<B: GpuBackend>(
         label: "out",
     });
     r.render_to_texture(gpu, target, CLEAR, [W as f32, H as f32]);
-    read(gpu, target)
+    gpu.read(target)
 }
 
-/// How many pixels of `a` and `b` differ by more than `tolerance` in a
-/// channel.
-fn differing(a: &[u8], b: &[u8], tolerance: u8) -> usize {
-    a.as_chunks::<4>()
-        .0
-        .iter()
-        .zip(b.as_chunks::<4>().0)
-        .filter(|(p, q)| {
-            p.iter()
-                .zip(q.iter())
-                .any(|(x, y)| x.abs_diff(*y) > tolerance)
-        })
-        .count()
+/// [`two_skinned_cubes`] posed by `joints` and placed by `placement`.
+struct SkinnedCubes {
+    joints: [Mat4; 2],
+    placement: Mat4,
+}
+
+impl Draw for SkinnedCubes {
+    fn draw<B: Device>(&self, gpu: &mut B) -> Vec<u8> {
+        two_skinned_cubes(gpu, self.joints, self.placement)
+    }
 }
 
 #[test]
@@ -795,11 +701,7 @@ fn a_mirroring_joint_palette_shows_the_outside_of_its_triangles() {
             .mul(&flip)
             .mul(&Mat4::from_translation(vec3(-x, 0.0, 0.0)))
     };
-    let draw = |joints, placement| {
-        two_skinned_cubes(&mut CpuRaster::new(), joints, placement, |gpu, t| {
-            gpu.read_texture(t)
-        })
-    };
+    let draw = |joints, placement| two_skinned_cubes(&mut CpuRaster::new(), joints, placement);
     let rest = draw([Mat4::IDENTITY; 2], turn);
     let lit = rest.as_chunks::<4>().0.iter().filter(|p| p[2] > 40).count();
     assert!(lit > (W * H / 8) as usize, "the cubes show");
@@ -827,17 +729,19 @@ fn a_mirroring_joint_palette_shows_the_outside_of_its_triangles() {
             "{name}: {off} pixels differ from the cubes at rest"
         );
     }
-    // The device culls the same faces.
-    #[cfg(target_vendor = "apple")]
+    // Each device culls the same faces.
     for joints in [mirrored, mixed] {
         let cpu = draw(joints, turn);
-        let metal = two_skinned_cubes(
-            &mut viso_gpu::MetalBackend::new(),
+        let cubes = SkinnedCubes {
             joints,
-            turn,
-            |gpu, t| gpu.read_texture(t),
-        );
-        let off = differing(&cpu, &metal, 3);
-        assert!(off * 100 < (W * H) as usize, "{off} pixels differ on Metal");
+            placement: turn,
+        };
+        for (device, px) in on_devices(&cubes) {
+            let off = differing(&cpu, &px, 3);
+            assert!(
+                off * 100 < (W * H) as usize,
+                "{off} pixels differ on {device}"
+            );
+        }
     }
 }

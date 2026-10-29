@@ -1,0 +1,22 @@
+#!/bin/sh
+# Deno for wasm-bindgen-test-runner, whose Deno harness still names `window`,
+# a global Deno 2 no longer has. With this directory first on PATH and
+# WASM_BINDGEN_USE_DENO=1, the WebGPU tests run on Deno's WebGPU:
+#
+#   PATH=$PWD/tools/deno2:$PATH WASM_BINDGEN_USE_DENO=1 \
+#   CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+#   cargo test -p viso-render --target wasm32-unknown-unknown --test webgpu_backend
+for arg in "$@"; do
+  case "$arg" in
+    *.js) [ -f "$arg" ] && perl -pi -e 's/\bwindow\./globalThis./g' "$arg" ;;
+  esac
+done
+# The first `deno` on PATH that is not this one.
+IFS=:
+for dir in $PATH; do
+  if [ -x "$dir/deno" ] && ! [ "$dir/deno" -ef "$0" ]; then
+    exec "$dir/deno" "$@"
+  fi
+done
+echo "no deno on PATH" >&2
+exit 127

@@ -10,7 +10,9 @@
 
 #![cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 
+mod devices;
 mod golden_scenes;
+mod scene_pictures;
 
 use viso_gpu::backend::{
     DrawCommand, DrawList, Geometry, InlineUniforms, LoadOp, RenderPass, RenderTarget,
@@ -424,6 +426,30 @@ async fn golden_scenes_match_on_webgpu() {
         let target = golden_scenes::render_to_target(&mut gpu, scene);
         let pixels = gpu.read_texture(target).await;
         golden_scenes::assert_device_matches(scene, &pixels);
+    }
+    assert_no_validation_errors(&mut gpu).await;
+}
+
+/// The scene lane draws on WebGPU what it draws on the CPU raster.
+#[wasm_bindgen_test]
+async fn the_scene_lane_draws_what_the_cpu_raster_draws_on_webgpu() {
+    use scene_pictures::{SIDE, draw_lane, lane_pictures};
+    let Some(mut gpu) = device().await else {
+        return;
+    };
+    for picture in lane_pictures() {
+        let mut cpu = viso_gpu::CpuRaster::new();
+        let target = draw_lane(&mut cpu, &picture);
+        let expected = cpu.read_texture(target);
+        let target = draw_lane(&mut gpu, &picture);
+        let pixels = gpu.read_texture(target).await;
+        let off = devices::differing(&expected, &pixels, picture.tolerance);
+        assert!(
+            off * 100 < (SIDE * SIDE) as usize,
+            "{}: {off} of {} pixels differ on WebGPU",
+            picture.name,
+            SIDE * SIDE
+        );
     }
     assert_no_validation_errors(&mut gpu).await;
 }
