@@ -3618,6 +3618,111 @@ mod tests {
     }
 
     #[test]
+    fn a_catalog_saved_on_disk_reaches_the_views_through_the_watcher() {
+        let root =
+            std::env::temp_dir().join(format!("viso-dev-{}-watched-catalog", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("i18n")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let (path, catalog) = (root.join("view.vs"), root.join("i18n/en.toml"));
+        let view = "import viso::i18n::tr;\ncomponent Counter {\n    view { Text { text: tr(\"title\"); } }\n}\n";
+        std::fs::write(&path, view).unwrap();
+        std::fs::write(&catalog, "title = \"Inbox\"\n").unwrap();
+        let lock = LockGuard::acquire(
+            &Layout::new(&root),
+            LockKind::DevSession {
+                target: Target::Host,
+                device: None,
+            },
+        )
+        .unwrap();
+        let expect = Expect {
+            token: "t".into(),
+            dev_session: DevSessionId(1),
+            builds: vec![BuildId(2)],
+            project: ProjectFingerprint(3),
+            schema: SchemaFingerprint(4),
+        };
+        let scope = WatchScope {
+            project: root.clone(),
+            rust: RustScope::default(),
+        };
+        let (deliver, changes) = mpsc::channel();
+        let mut dev = DevSession::start(scope, &expect, vec![lock], true, move |change| {
+            deliver.send(change).is_ok()
+        });
+        let mut out = Counted::default();
+        let sent = connect(
+            &mut dev,
+            &mut out,
+            hello(9, RuntimeTarget::DesktopHost, Domains::NONE),
+        );
+        // Hands the session what the watcher delivers until `path` arrives,
+        // as the run loop does.
+        let take = |dev: &mut DevSession, out: &mut Counted, path: &Path| loop {
+            let change = changes
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the watcher delivers the file");
+            let done = change.path == path;
+            dev.change(change, out);
+            if done {
+                break;
+            }
+        };
+        // Ticks the session until it sends something, or a second passes.
+        let settle = |dev: &mut DevSession, out: &mut Counted| {
+            let end = Instant::now() + Duration::from_secs(1);
+            loop {
+                if let Some(due) = dev.deadline() {
+                    std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                    dev.tick(out);
+                }
+                let got: Vec<_> = sent.try_iter().collect();
+                if !got.is_empty() || Instant::now() > end {
+                    return got;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        take(&mut dev, &mut out, &catalog);
+        let i18n = catalog.parent().unwrap().display().to_string();
+        dev.link(
+            LinkEvent::Runtime(
+                RuntimeSessionId(9),
+                RuntimeMessage::Mounts(vec![mount_entry(&path, view, Some(("en".into(), i18n)))]),
+            ),
+            &mut out,
+        );
+        let _ = settle(&mut dev, &mut out);
+
+        // Past the watcher's settle window, so the edit is a new stamp.
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(&catalog, "title = \"Outbox\"\n").unwrap();
+        take(&mut dev, &mut out, &catalog);
+        let sent_now = settle(&mut dev, &mut out);
+        let [HostMessage::Patch(_)] = &sent_now[..] else {
+            panic!("the views recompiled against the catalog: {sent_now:?}");
+        };
+        let (_, _, patched) = patch(&sent_now[0]);
+        assert!(
+            patched.package.behavior.windows(6).any(|w| w == b"Outbox"),
+            "the patch carries the saved message"
+        );
+        assert_eq!(out.errors, 0);
+        dev.link(LinkEvent::Runtime(RuntimeSessionId(9), ack_of(2)), &mut out);
+
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(&catalog, "title = \"Out{box\"\n").unwrap();
+        take(&mut dev, &mut out, &catalog);
+        let sent_now = settle(&mut dev, &mut out);
+        assert!(out.errors > 0, "the broken catalog is reported");
+        assert!(
+            !sent_now.iter().any(|m| matches!(m, HostMessage::Patch(_))),
+            "and patches nothing: {sent_now:?}"
+        );
+    }
+
+    #[test]
     fn a_restart_lets_go_of_the_runtimes_of_its_lane_alone() {
         let mut f = Fixture::new("restart-matrix");
         let web = with_web(&mut f);

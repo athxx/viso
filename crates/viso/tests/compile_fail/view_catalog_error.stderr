@@ -1,0 +1,7 @@
+error: error[E3706]: $DIR/tests/compile_fail/catalog/i18n/en.toml:2:12: the message `greeting` is malformed at byte 12: expected `,` or `}` after the argument name
+ --> tests/compile_fail/view_catalog_error.rs:2:18
+  |
+2 |     let _build = viso::view!("catalog/app.vs");
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `viso::view` (in Nightly builds, run with -Z macro-backtrace for more info)

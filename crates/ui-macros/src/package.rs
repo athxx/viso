@@ -1,6 +1,7 @@
 //! Package identity for a macro invocation: the crate's manifest directory is the
-//! package root, the nearest `Viso.toml` at or above it names the package and may
-//! pin the language version, and the source file's path below the root is its
+//! package root, unless a `Viso.toml` lies between it and the source file, whose
+//! directory then is ([`home`]); the nearest `Viso.toml` at or above the root
+//! names the package and may pin the language version, and the source file's path below the root is its
 //! module path ([`Origin::for_file`]). Without a `Viso.toml` the Cargo package
 //! name stands in and nothing is granted. The message catalogs lie in `i18n/`
 //! beside the `Viso.toml`, or below the crate root without one.
@@ -21,6 +22,18 @@ pub fn root() -> syn::Result<PathBuf> {
     std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| syn::Error::new(Span::call_site(), "CARGO_MANIFEST_DIR is not set"))
+}
+
+/// The root of the package `file` belongs to, in the crate rooted at `root`:
+/// the directory of the nearest `Viso.toml` above the file and below the
+/// root, else the root.
+pub fn home(root: &Path, file: Option<&Path>) -> PathBuf {
+    file.and_then(Path::parent)
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .take_while(|dir| !root.starts_with(dir))
+        .find(|dir| dir.join(MANIFEST).is_file())
+        .map_or_else(|| root.to_path_buf(), Path::to_path_buf)
 }
 
 /// The Rust file the macro is invoked from, as an absolute path, when the
@@ -275,5 +288,17 @@ mod tests {
             Ok(_) => panic!("a catalog error is a compile error"),
             Err(error) => error.to_string(),
         }
+    }
+
+    #[test]
+    fn a_manifest_between_the_file_and_the_crate_root_is_the_files_package() {
+        let root = package(Some("[package]\nname = \"outer\"\n"));
+        let nested = root.join("fixtures").join("inner");
+        std::fs::create_dir_all(nested.join("views")).unwrap();
+        std::fs::write(nested.join(MANIFEST), "[package]\nname = \"inner\"\n").unwrap();
+        let file = nested.join("views").join("app.vs");
+        assert_eq!(home(&root, Some(&file)), nested);
+        assert_eq!(home(&root, Some(&root.join("src").join("app.vs"))), root);
+        assert_eq!(home(&root, None), root);
     }
 }

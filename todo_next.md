@@ -1349,8 +1349,11 @@ output, a live macOS session) is listed with the device runs of N8.
   asserts 512 (two per card), so no bench of it runs.
 - [ ] The CLI's preview of generated code runs its views on the preview host, under its
   restricted grant (`todo_dsl.md`, `E6103`).
-- [ ] A compile-fail test of a catalog error through `view!` (trybuild), and the dev session's
+- [x] A compile-fail test of a catalog error through `view!` (trybuild), and the dev session's
   catalog reload under a real watcher (`todo_dsl.md`, localization checks).
+  `view_catalog_error` reads a fixture package's broken `i18n/en.toml` (a `Viso.toml` between
+  a source file and the crate root is now the file's package); a dev session over a temporary
+  project takes its watcher's deliveries, patches on a saved catalog and reports a broken one.
 - [ ] Game audio on the web: an AudioWorklet over a shared-memory wasm build (`todo_dsl.md`,
   `AudioProcess`), which needs the threaded web build below.
 - [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a

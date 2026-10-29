@@ -71,8 +71,10 @@ pub fn component(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let report = Report::Inline(&source, TextSize::ZERO);
     let expansion = (|| {
         let root_dir = package::root()?;
-        let origin = package::origin(&root_dir, package::invoking_file().as_deref())?;
-        let profile = package::profile(&root_dir)?;
+        let file = package::invoking_file();
+        let home = package::home(&root_dir, file.as_deref());
+        let origin = package::origin(&home, file.as_deref())?;
+        let profile = package::profile(&home)?;
         let catalogs = profile_dependencies(&profile);
         let (compiled, packages) = compile_linked(&root_dir, &report, |natives| {
             frontend::compile_component_for(&source.text, &origin, natives, profile.target.clone())
@@ -169,8 +171,9 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         let dependency = path
             .to_str()
             .ok_or_else(|| syn::Error::new(span, "the `.vs` path is not UTF-8"))?;
-        let origin = package::origin(&canonical(&root_dir), Some(&path))?;
-        let profile = package::profile(&root_dir)?;
+        let home = package::home(&canonical(&root_dir), Some(&path));
+        let origin = package::origin(&home, Some(&path))?;
+        let profile = package::profile(&home)?;
         let catalogs = profile_dependencies(&profile);
         let catalog = match &profile.catalogs {
             Some(c) => {
@@ -437,7 +440,8 @@ pub fn asset(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                  climbs out"
             ))
         })?;
-        let dir = package::asset_dir(&package::root()?)?;
+        let home = package::home(&package::root()?, package::invoking_file().as_deref());
+        let dir = package::asset_dir(&home)?;
         let file = dir.join(&path);
         let mut head = Vec::with_capacity(4096);
         let opened = std::fs::File::open(&file)

@@ -1375,8 +1375,10 @@ timers (§104–§111).
     - [x] `viso check` reports catalog issues in the catalog file; the macros
           track the catalog files and fail on a catalog error; the dev session
           watches the catalogs and recompiles the package's views.
-    - [ ] A compile-fail test of a catalog error through `view!` (trybuild),
-          and the dev session's catalog reload under a real watcher.
+    - [x] A compile-fail test of a catalog error through `view!` (trybuild),
+          and the dev session's catalog reload under a real watcher. A
+          `Viso.toml` between a source file and the crate root is the file's
+          package, so a fixture package carries its own catalogs.
 
 ---
 
