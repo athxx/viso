@@ -7,7 +7,8 @@
 //! leaves for each lazy function, and the primary part's exports are handed
 //! over before the app starts. The lazy part is fetched, at low priority, as
 //! the page loads and compiled in the background, then instantiated over the
-//! primary part's memory and tables, which fills its functions in. A call to
+//! primary part's memory and tables, which fills its functions in; a worker
+//! of a threaded module loads it when it first calls into it. A call to
 //! one before then lands on its placeholder, which loads the lazy part on the
 //! spot (a synchronous request when its bytes are not in yet) and forwards
 //! the call.
@@ -199,17 +200,20 @@ const __visoLazy = (() => {
         for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
         return bytes;
     };
-    WebAssembly.compileStreaming(fetch(url, { priority: "low" })).then(
-        (module) => {
-            compiled ??= module;
-            try {
-                settle();
-            } catch (error) {
-                console.warn("the lazy module did not instantiate:", error);
-            }
-        },
-        (error) => console.warn("the lazy module did not load ahead:", error),
-    );
+    // A worker of a threaded module loads it when it first calls into it.
+    if (typeof window === "object") {
+        WebAssembly.compileStreaming(fetch(url, { priority: "low" })).then(
+            (module) => {
+                compiled ??= module;
+                try {
+                    settle();
+                } catch (error) {
+                    console.warn("the lazy module did not instantiate:", error);
+                }
+            },
+            (error) => console.warn("the lazy module did not load ahead:", error),
+        );
+    }
     const load = () => {
         if (instance === undefined) {
             compiled ??= new WebAssembly.Module(fetched());

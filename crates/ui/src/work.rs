@@ -3,9 +3,11 @@
 //! (decoding, building geometry) and must keep it off the UI thread.
 //!
 //! The pool is sized once, by [`configure`] before the first job; a build
-//! that configures no threads, or a target that cannot spawn one, keeps the
-//! jobs queued for the loop thread to run in idle slices
-//! ([`run_inline`]), so no caller may assume a worker exists. A job hands its
+//! that configures no threads, or a target that cannot spawn one (a web build
+//! without threads), keeps the jobs queued for the loop thread to run in idle
+//! slices ([`run_inline`]), so no caller may assume a worker exists. A
+//! threaded web build's workers are Web Workers; the queue's lock never waits
+//! on the page's thread, which may not. A job hands its
 //! result back however it likes — a completer that wakes the task awaiting
 //! it is the usual way — and should check its own cancellation flag first,
 //! so stale work costs nothing.
@@ -17,6 +19,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
+
+use viso_runtime::thread;
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -34,16 +38,20 @@ struct Pool {
 }
 
 fn lock(queue: &Mutex<VecDeque<Job>>) -> MutexGuard<'_, VecDeque<Job>> {
-    queue.lock().unwrap_or_else(|e| e.into_inner())
+    thread::lock(queue)
 }
 
 /// The threads a pool sized to the machine runs: one fewer than its cores,
 /// at least one and at most eight; none where threads cannot be spawned.
 fn machine_threads() -> usize {
-    if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
+    if cfg!(all(
+        target_arch = "wasm32",
+        target_os = "unknown",
+        not(target_feature = "atomics")
+    )) {
         return 0;
     }
-    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).clamp(1, 8))
+    thread::parallelism().saturating_sub(1).clamp(1, 8)
 }
 
 fn pool() -> &'static Pool {
@@ -54,10 +62,7 @@ fn pool() -> &'static Pool {
         };
         let mut spawned = 0;
         for i in 0..wanted {
-            let ok = std::thread::Builder::new()
-                .name(format!("viso-work-{i}"))
-                .spawn(work)
-                .is_ok();
+            let ok = thread::spawn(format!("viso-work-{i}"), work).is_ok();
             if !ok {
                 break;
             }

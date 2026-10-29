@@ -449,7 +449,13 @@ pub fn produce(
 ) -> Result<Staged, BuildFailure> {
     let mut stages = Vec::new();
     let started = Instant::now();
-    let exe = cargo::build(&job.cargo, cancelled, sink)?;
+    let exe = if job.target.is_web() && web::threaded(&job.web) {
+        let mut threaded = job.cargo.clone();
+        web::thread(&mut threaded)?;
+        cargo::build(&threaded, cancelled, sink)?
+    } else {
+        cargo::build(&job.cargo, cancelled, sink)?
+    };
     stages.push(("compile", started.elapsed()));
     if is_cancelled(cancelled) {
         return Err(BuildFailure::Cancelled);

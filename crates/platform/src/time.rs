@@ -5,7 +5,9 @@
 //! [`Instant`] is a same-shaped value read from `performance.now()` — the
 //! page's monotonic, sub-millisecond clock. Every crate names time points
 //! through this alias, so frame timing, timers and deadlines work unchanged on
-//! every target.
+//! every target. Each worker of a threaded build has its own clock origin, so
+//! there a time point is measured from the origin of the first thread that
+//! read the clock, the page's, and is the same on every thread.
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use std::time::Instant;
@@ -24,6 +26,32 @@ mod web {
     extern "C" {
         #[wasm_bindgen(js_namespace = performance, js_name = now)]
         fn performance_now() -> f64;
+        #[cfg(target_feature = "atomics")]
+        #[wasm_bindgen(thread_local_v2, js_namespace = performance, js_name = timeOrigin)]
+        static TIME_ORIGIN: wasm_bindgen::JsValue;
+    }
+
+    /// Milliseconds on the clock every thread shares.
+    #[cfg(not(target_feature = "atomics"))]
+    fn now_ms() -> f64 {
+        performance_now()
+    }
+
+    /// Milliseconds since the first reading thread's origin (an `f64`'s
+    /// bits; `0` until read).
+    #[cfg(target_feature = "atomics")]
+    static ORIGIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(target_feature = "atomics")]
+    fn now_ms() -> f64 {
+        use std::sync::atomic::Ordering;
+        let own = TIME_ORIGIN.with(|origin| origin.as_f64()).unwrap_or(0.0);
+        let first =
+            match ORIGIN.compare_exchange(0, own.to_bits(), Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => own,
+                Err(bits) => f64::from_bits(bits),
+            };
+        own - first + performance_now()
     }
 
     /// A point on the page's monotonic clock, as time since its origin.
@@ -34,7 +62,7 @@ mod web {
         /// The current time point (`performance.now()`, milliseconds → exact
         /// nanoseconds; the clock never goes backwards).
         pub fn now() -> Self {
-            let ms = performance_now().max(0.0);
+            let ms = now_ms().max(0.0);
             Self(Duration::from_nanos((ms * 1_000_000.0) as u64))
         }
 

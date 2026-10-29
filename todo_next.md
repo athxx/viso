@@ -1363,12 +1363,14 @@ output, a live macOS session) is listed with the device runs of N8.
   project takes its watcher's deliveries, patches on a saved catalog and reports a broken one.
 - [ ] Game audio on the web: an AudioWorklet over a shared-memory wasm build (`todo_dsl.md`,
   `AudioProcess`), which needs the threaded web build below.
-- [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
+- [x] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
   shared-memory threaded module (`todo_cli.md` C4.2).
   - [x] `split`: profile-guided by a headless training run (`wasm-split`), the lazy part
     compiled in the background and loaded on the spot by a call that comes first. The
     map's shipping startup: 1.86 → 1.19 MiB brotli, 3.66 → 1.44 MiB of code to compile.
-  - [ ] `threads`.
+  - [x] `threads`: `on` builds a shared-memory module on nightly `-Z build-std`; the
+    work pool's workers run on module Workers of the glue, a page-thread lock spins
+    instead of waiting, and a worker's wake reaches the page as a message.
 - [ ] The map's route card shows `…: the server answered 404` on one line past the card's
   edge in the frame it first appears, wrapped only later (found with the split; the
   unsplit bundle does the same).

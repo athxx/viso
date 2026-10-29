@@ -160,6 +160,7 @@ web-sys = { version = "0.3", features = [
     "CompositionEvent",
     "CssStyleDeclaration",
     "DataTransfer",
+    "DedicatedWorkerGlobalScope",
     "Document",
     "DomRect",
     "DomRectReadOnly",
@@ -179,6 +180,7 @@ web-sys = { version = "0.3", features = [
     "KeyboardEvent",
     "Location",
     "MediaQueryList",
+    "MessageEvent",
     "MouseEvent",
     "Navigator",
     "Node",
@@ -192,6 +194,9 @@ web-sys = { version = "0.3", features = [
     "VisualViewport",
     "WheelEvent",
     "Window",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
     "console",
 ] }
 

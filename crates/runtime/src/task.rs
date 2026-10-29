@@ -51,11 +51,9 @@ impl Wake for TaskWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.queue
-            .woken
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((self.id, self.slot));
+        // A worker's wake and the loop's drain share the list; the loop's
+        // thread may not wait for it.
+        viso_platform::thread::lock(&self.queue.woken).push((self.id, self.slot));
         self.queue.signal();
     }
 }
@@ -239,7 +237,7 @@ impl<O, T: TaskOwner> TaskSet<O, T> {
         self.scratch.clear();
         self.scratch.append(&mut self.spawned);
         if self.queue.signalled.swap(false, Ordering::AcqRel) {
-            let mut woken = self.queue.woken.lock().unwrap_or_else(|e| e.into_inner());
+            let mut woken = viso_platform::thread::lock(&self.queue.woken);
             self.scratch.append(&mut woken);
         }
         if self.scratch.is_empty() {

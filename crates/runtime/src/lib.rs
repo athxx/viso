@@ -39,6 +39,7 @@ pub use phase::FramePhase;
 pub use schedule::{FrameDecision, RedrawReason, RedrawReasons};
 pub use scheduler::Scheduler;
 pub use task::{TaskId, TaskOwner, TaskSet};
+pub use viso_platform::thread;
 pub use viso_platform::{
     Appearance, ColorScheme, CursorError, CursorIcon, CursorImage, CustomCursor, DisplayFeature,
     DisplayFeatureKind, EditLabels, EditMenu, EditMenuAction, GamepadButton, GamepadEvent,

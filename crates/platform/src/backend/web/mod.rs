@@ -318,10 +318,44 @@ fn wake() {
     drive();
 }
 
+/// What a worker posts the page to wake its loop.
+#[cfg(target_feature = "atomics")]
+pub(crate) const WAKE: &str = "viso-wake";
+
+/// A worker's wake is posted and not yet taken: later ones add nothing.
+#[cfg(target_feature = "atomics")]
+static WAKE_POSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this is the page's own thread, not a worker's.
+#[cfg(target_feature = "atomics")]
+fn on_page() -> bool {
+    thread_local! {
+        static PAGE: bool = js_sys::global().is_instance_of::<web_sys::Window>();
+    }
+    PAGE.with(|page| *page)
+}
+
+/// A worker's wake, on the page: the kick it asked for.
+#[cfg(target_feature = "atomics")]
+pub(crate) fn woken() {
+    WAKE_POSTED.store(false, std::sync::atomic::Ordering::Release);
+    kick();
+}
+
 /// Queue a `Wakeup` from a [`LoopWaker`](crate::LoopWaker) kick. The kick
-/// runs on the page's thread (the module is single-threaded), but may run
-/// inside a drain, so the wake goes out through the event loop.
+/// may run inside a drain, so the wake goes out through the event loop; on a
+/// worker of a threaded build it is posted to the page, which kicks there.
 fn kick() {
+    #[cfg(target_feature = "atomics")]
+    if !on_page() {
+        if !WAKE_POSTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let scope: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
+            if scope.post_message(&JsValue::from_str(WAKE)).is_err() {
+                WAKE_POSTED.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+        return;
+    }
     if LOOP.with(|l| l.kicked.replace(true)) {
         return;
     }

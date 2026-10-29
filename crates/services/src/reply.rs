@@ -71,7 +71,19 @@ pub fn reply<T>() -> (Completer<T>, Reply<T>) {
     )
 }
 
+/// The slot locked, poisoned or not. A worker of a threaded web build may
+/// complete it, and the page's thread may not wait (a wait traps there), so
+/// it spins while the worker holds it.
 fn lock<T>(slot: &Mutex<Slot<T>>) -> MutexGuard<'_, Slot<T>> {
+    #[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+    loop {
+        match slot.try_lock() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+        }
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
     slot.lock().unwrap_or_else(|e| e.into_inner())
 }
 

@@ -69,6 +69,7 @@ mod panel;
 mod placement;
 pub mod shell;
 pub mod stdio;
+pub mod thread;
 pub mod time;
 pub mod wake;
 

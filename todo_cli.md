@@ -677,10 +677,13 @@ alternative.
       in the background, a call before then loads them on the spot; `auto` splits a
       shipping build without debug info when `wasm-split` and a browser are found.
       The map's shipping startup download: 1.86 → 1.19 MiB brotli.)
-- [ ] `[profile.<name>.web] threads`: a shared-memory threaded module (`auto`
+- [x] `[profile.<name>.web] threads`: a shared-memory threaded module (`auto`
       resolves to off until then); with threads on, `serve` sends COOP `same-origin`
-      and COEP `require-corp`. (The serve half is in: a lane whose module shares its
-      memory gets both headers.)
+      and COEP `require-corp`. (`on` builds with nightly `-Z build-std` and atomics into
+      an imported shared memory; the glue is its own module-worker script, and the
+      work pool starts its workers on it. `auto` stays off, as COEP blocks cross-origin
+      assets that send no CORP. The map's release build runs threaded: 8 workers,
+      60 fps, tiles and text as unthreaded.)
 - [x] `serve` security headers of §15.3 (CSP, `nosniff`, correct MIME for `.wasm`),
       served precompressed when the client accepts it. (The page is the bundle's own
       `index.html` with the launch scripts ahead of `</head>`; a per-response nonce on

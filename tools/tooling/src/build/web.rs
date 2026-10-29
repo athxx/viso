@@ -22,9 +22,9 @@ use std::time::Duration;
 
 use viso_dsl::export::DomPage;
 use viso_package::web as bundle;
-use viso_project::{Profile, WebOptimize, WebSettings};
+use viso_project::{Auto, Profile, WebOptimize, WebSettings};
 
-use super::cargo::{BuildFailure, CargoEvent, Sink, is_cancelled};
+use super::cargo::{BuildCommand, BuildFailure, CargoEvent, Sink, is_cancelled};
 use crate::process::ProcessTree;
 
 /// How `wasm-opt` is installed, for a message about its absence.
@@ -40,6 +40,98 @@ pub(super) const FEATURES: &[&str] = &[
     "--enable-reference-types",
     "--enable-multivalue",
 ];
+
+/// What a threaded module is compiled with: atomics, a shared memory the
+/// glue creates and hands every thread (at most 1 GiB), and the thread-local
+/// storage `wasm-bindgen` sets up for each.
+const THREADED_RUSTFLAGS: &[&str] = &[
+    "-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals",
+    "-Clink-arg=--shared-memory",
+    "-Clink-arg=--import-memory",
+    "-Clink-arg=--max-memory=1073741824",
+    "-Clink-arg=--export=__wasm_init_tls",
+    "-Clink-arg=--export=__tls_size",
+    "-Clink-arg=--export=__tls_align",
+    "-Clink-arg=--export=__tls_base",
+];
+
+/// How the toolchain a threaded build needs is installed.
+const NIGHTLY_INSTALL: &str =
+    "rustup toolchain install nightly --component rust-src --target wasm32-unknown-unknown";
+
+/// Whether a web build with `web` is threaded: `threads = "on"`. `auto` is
+/// off, as a shared memory needs its page isolated across origins, which
+/// its server must do.
+pub fn threaded(web: &WebSettings) -> bool {
+    web.threads.value == Auto::On
+}
+
+/// `command`, a web build, made to build a shared-memory threaded module:
+/// the standard library rebuilt with atomics, on the nightly toolchain that
+/// can (the one `RUSTUP_TOOLCHAIN` names when it is a nightly).
+///
+/// # Errors
+///
+/// No nightly toolchain with the standard library's source.
+pub fn thread(command: &mut BuildCommand) -> Result<(), BuildFailure> {
+    let toolchain = std::env::var("RUSTUP_TOOLCHAIN")
+        .ok()
+        .filter(|name| name.starts_with("nightly"))
+        .unwrap_or_else(|| "nightly".to_owned());
+    let missing = |why: &str| {
+        BuildFailure::Tool(format!(
+            "a threaded web build needs {why} (`{NIGHTLY_INSTALL}`)"
+        ))
+    };
+    let sysroot = crate::process::capture(
+        Command::new("rustc")
+            .env("RUSTUP_TOOLCHAIN", &toolchain)
+            .args(["--print", "sysroot"]),
+        Some(crate::process::QUICK),
+    )
+    .ok()
+    .filter(|run| run.status.success())
+    .map(|run| PathBuf::from(run.stdout.trim()))
+    .ok_or_else(|| missing(&format!("the `{toolchain}` toolchain")))?;
+    if !sysroot.join("lib/rustlib/src/rust/library/std").is_dir() {
+        return Err(missing(&format!(
+            "the `{toolchain}` toolchain's `rust-src`"
+        )));
+    }
+    // The proxies, so the toolchain they run is the one named here, not the
+    // one a `cargo` this runs under pinned.
+    command.cargo = PathBuf::from("cargo");
+    command.env.extend([
+        ("RUSTUP_TOOLCHAIN".to_owned(), toolchain.into()),
+        ("RUSTC".to_owned(), "rustc".into()),
+    ]);
+    command
+        .build_args
+        .extend(["-Z".into(), "build-std=panic_abort,std".into()]);
+    // Flags from the environment replace every configured ones, so these
+    // join them there; otherwise they join the configured ones.
+    if let Ok(encoded) = std::env::var("CARGO_ENCODED_RUSTFLAGS") {
+        let mut flags: Vec<&str> = encoded.split('\x1f').filter(|f| !f.is_empty()).collect();
+        flags.extend(THREADED_RUSTFLAGS);
+        command.env.push((
+            "CARGO_ENCODED_RUSTFLAGS".to_owned(),
+            flags.join("\x1f").into(),
+        ));
+    } else if let Ok(flags) = std::env::var("RUSTFLAGS") {
+        let joined = format!("{flags} {}", THREADED_RUSTFLAGS.join(" "));
+        command.env.push(("RUSTFLAGS".to_owned(), joined.into()));
+    } else {
+        let flags: Vec<String> = THREADED_RUSTFLAGS
+            .iter()
+            .map(|f| format!("{f:?}"))
+            .collect();
+        command.build_args.extend([
+            "--config".into(),
+            format!("target.{}.rustflags=[{}]", bundle::TRIPLE, flags.join(",")).into(),
+        ]);
+    }
+    Ok(())
+}
 
 /// Brotli at its densest: quality 11, a 16 MiB window.
 const BROTLI_QUALITY: u32 = 11;
@@ -96,6 +188,7 @@ pub fn bundle(
         bundle::BINDGEN_INSTALL,
         cancelled,
     )?;
+    bundle::thread_glue(dir, bin).map_err(BuildFailure::Package)?;
 
     let module = dir.join(format!("{bin}_bg.wasm"));
     if let Some(level) = match web.optimize.value {
@@ -106,6 +199,9 @@ pub fn bundle(
         let optimized = dir.join(format!("{bin}_bg.opt.wasm"));
         let mut opt = Command::new("wasm-opt");
         opt.arg(level).args(FEATURES);
+        if threaded(web) {
+            opt.arg("--enable-threads");
+        }
         // Names and debug info survive only when asked to.
         if web.source_maps.value || !web.strip.value {
             opt.arg("-g");
@@ -126,7 +222,7 @@ pub fn bundle(
         }
     }
 
-    let lazy = super::split::split(dir, bin, page, profile, web, false, cancelled, sink)?;
+    let lazy = super::split::split(dir, bin, page, profile, web, threaded(web), cancelled, sink)?;
     fingerprint(dir, bin, worker, page, profile, lazy)?;
 
     let mut files = listed(dir)?;

@@ -66,7 +66,7 @@ use crate::device::{self as devices, emulator, simulator};
 use crate::error::{
     BUILD_FAILED, CLI_USAGE, DIAGNOSTICS, ENV_BUILD_WRITE, ENV_CARGO, ENV_CARGO_MANIFEST,
     ENV_DEPLOY, ENV_DEV_CHANNEL, ENV_DEVICE, ENV_DEVICE_TARGET, ENV_EMULATE, ENV_LOCK_HELD,
-    ENV_NO_EXECUTABLE, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
+    ENV_NO_EXECUTABLE, ENV_TOOL, INTERRUPTED, RUN_APP_FAILED, SUCCESS,
 };
 use crate::interrupt;
 use crate::output::Output;
@@ -866,7 +866,7 @@ pub(super) fn session(
         };
         triples.push(plan.rust.target.clone());
         let built = Mutex::new(tx.clone());
-        let command = BuildCommand {
+        let mut command = BuildCommand {
             cargo: cargo::program(),
             manifest: manifest.clone(),
             quiet: ctx.global.quiet,
@@ -885,6 +885,12 @@ pub(super) fn session(
             // `viso build` of the target waits while this one builds.
             lock: Some((layout.clone(), target)),
         };
+        if target.is_web()
+            && build::web::threaded(&resolved.config.settings.web)
+            && let Err(failure) = build::web::thread(&mut command)
+        {
+            return out.failure(ENV_TOOL, &failure.message(), &[]);
+        }
         let builds = RustBuild::new(command, move |event| {
             built
                 .lock()

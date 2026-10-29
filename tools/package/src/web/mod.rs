@@ -16,12 +16,14 @@ pub const TRIPLE: &str = "wasm32-unknown-unknown";
 pub const BINDGEN_INSTALL: &str = "cargo install wasm-bindgen-cli";
 
 /// Generates the glue of the module `wasm` into `dir` as `<bin>.js` and
-/// `<bin>_bg.wasm`, replacing what was there.
+/// `<bin>_bg.wasm`, replacing what was there; a threaded module's glue gets
+/// its threads part ([`thread_glue`]).
 pub fn bindgen(wasm: &Path, dir: &Path, bin: &str) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(dir);
     io(dir, std::fs::create_dir_all(dir))?;
     run(&mut bindgen_command(wasm, dir, bin))
-        .map_err(|e| format!("{e} (install the CLI: {BINDGEN_INSTALL})"))
+        .map_err(|e| format!("{e} (install the CLI: {BINDGEN_INSTALL})"))?;
+    thread_glue(dir, bin)
 }
 
 /// The `wasm-bindgen` command that generates the glue of `wasm` into `dir`
@@ -36,6 +38,60 @@ pub fn bindgen_command(wasm: &Path, dir: &Path, bin: &str) -> Command {
         .arg(wasm);
     command
 }
+
+/// Gives the glue of a threaded module in `dir`, the app `bin`'s, its
+/// threads part: nothing for a module without shared memory.
+///
+/// # Errors
+///
+/// A module or glue that cannot be read or written, or glue this does not
+/// know how to patch.
+pub fn thread_glue(dir: &Path, bin: &str) -> Result<(), String> {
+    let module = dir.join(format!("{bin}_bg.wasm"));
+    let bytes =
+        std::fs::read(&module).map_err(|e| format!("cannot read `{}`: {e}", module.display()))?;
+    if !shares_memory(&bytes) {
+        return Ok(());
+    }
+    let path = dir.join(format!("{bin}.js"));
+    let glue = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+    io(&path, std::fs::write(&path, threads_glue(&glue)?))
+}
+
+/// The glue `glue` of a threaded module with its threads part: it names its
+/// URL as `visoGlue`, the script every worker the app starts runs, and run
+/// as that worker, it takes the page's module, memory and job, instantiates
+/// the module over the memory, runs the job and ends the worker.
+///
+/// # Errors
+///
+/// Glue without the init function and the thread entry it calls.
+pub fn threads_glue(glue: &str) -> Result<String, String> {
+    for needed in ["async function __wbg_init(", "function __viso_thread("] {
+        if !glue.contains(needed) {
+            return Err(format!(
+                "the `wasm-bindgen` glue of a threaded module has no `{needed}`"
+            ));
+        }
+    }
+    Ok(format!("{glue}{THREADS}"))
+}
+
+/// A threaded module glue's threads part.
+const THREADS: &str = r#"
+globalThis.visoGlue ??= import.meta.url;
+if (typeof WorkerGlobalScope === "function" && globalThis instanceof WorkerGlobalScope) {
+    globalThis.addEventListener("message", async ({ data }) => {
+        if (!Array.isArray(data) || data[0] !== "viso-thread") return;
+        const [, module, memory, job] = data;
+        await __wbg_init({ module_or_path: module, memory });
+        __viso_thread(job);
+        wasm.__wbindgen_thread_destroy?.();
+        close();
+    }, { once: true });
+}
+"#;
 
 /// The service worker's file, beside the page.
 pub const WORKER: &str = "sw.js";
@@ -386,6 +442,44 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.join(WORKER)).unwrap(),
             "self.x = 1;\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_threaded_modules_glue_names_itself_and_runs_its_workers_jobs() {
+        let glue =
+            "async function __wbg_init(module_or_path) {}\nexport function __viso_thread(job) {}\n";
+        let patched = threads_glue(glue).unwrap();
+        assert!(patched.starts_with(glue));
+        assert!(patched.contains("globalThis.visoGlue ??= import.meta.url;"));
+        assert!(patched.contains("await __wbg_init({ module_or_path: module, memory });"));
+        assert!(threads_glue("async function __wbg_init() {}\n").is_err());
+
+        let dir = std::env::temp_dir().join(format!("viso-web-threads-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("app_bg.wasm"),
+            b"\0asm\x01\0\0\0\x05\x04\x01\x01\x01\x02",
+        )
+        .unwrap();
+        std::fs::write(dir.join("app.js"), glue).unwrap();
+        thread_glue(&dir, "app").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("app.js")).unwrap(),
+            glue,
+            "no shared memory"
+        );
+        std::fs::write(
+            dir.join("app_bg.wasm"),
+            b"\0asm\x01\0\0\0\x05\x04\x01\x03\x01\x02",
+        )
+        .unwrap();
+        thread_glue(&dir, "app").unwrap();
+        assert!(
+            std::fs::read_to_string(dir.join("app.js"))
+                .unwrap()
+                .contains("visoGlue")
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -230,8 +230,9 @@ pub(crate) fn workers() -> usize {
     BUILD_WORKERS
         .or(Footprint::of_build().default_workers())
         .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map_or(1, |n| n.get().saturating_sub(1).clamp(1, 8))
+            viso_runtime::thread::parallelism()
+                .saturating_sub(1)
+                .clamp(1, 8)
         })
 }
 
