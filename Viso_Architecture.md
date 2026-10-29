@@ -4893,7 +4893,7 @@ Viso 在这条路径上的差异：GLES3（GBM/EGL）与 CpuRaster（dumb buffer
 
 # Part XXV — Viso 1.0 实施路线图
 
-> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-vscode`），`web-dom` 与 `web-hybrid` 可构建与运行；Phase 10（§73A）除板卡实测与 KMS overlay plane 外已完成。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
+> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-vscode`），`web-dom` 与 `web-hybrid` 可构建与运行；Phase 10（§73A）除板卡实测外已完成（KMS overlay plane 见 ADR 0061）。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
 
 ## 64. Phase 0 — 固定 Architecture Contract
 
@@ -5279,7 +5279,7 @@ CLI、Studio、IDE、CI 都是共享 tooling services 的客户，不允许各�
 
 ## 73A. Phase 10 — Architecture 修正与 Embedded（ADR 0041–0044）
 
-**状态**：工作 1–12 已完成（`todo_arch.md` A1–A18；ADR 0042–0044 的文件状态仍为 Proposed）。KMS 视频 overlay plane 见 ADR 0061（只在 vkms 虚拟板上验证）。缺口：退出标准中的板卡实测与板卡 bit-exact 对比尚无数据（`benches/footprint/baseline.md` 只有桌面与 headless）；release 产物中不含 VM 尚无自动检查。
+**状态**：工作 1–12 已完成（`todo_arch.md` A1–A18；ADR 0042–0044 已接受）。KMS 视频 overlay plane 见 ADR 0061（只在 vkms 虚拟板上验证）。缺口：退出标准中的板卡实测与板卡 bit-exact 对比尚无数据（`benches/footprint/baseline.md` 只有桌面与 headless）。release 产物中不含 VM 由 `cargo xtask check-release-absence` 检查（行为解释器的符号是其标记之一）。
 
 ### 工作
 
