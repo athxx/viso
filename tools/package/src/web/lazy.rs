@@ -8,7 +8,8 @@
 //! over before the app starts. The lazy part is fetched, at low priority, as
 //! the page loads and compiled in the background, then instantiated over the
 //! primary part's memory and tables, which fills its functions in; a worker
-//! of a threaded module loads it when it first calls into it. A call to
+//! of a threaded module loads it when it first calls into it, and an audio
+//! worklet, which cannot request it, is handed the page's. A call to
 //! one before then lands on its placeholder, which loads the lazy part on the
 //! spot (a synchronous request when its bytes are not in yet) and forwards
 //! the call.
@@ -180,8 +181,8 @@ fn js_string(text: &str) -> String {
 /// The lazy part's loader, appended to the glue.
 const LOADER: &str = r#"
 const __visoLazy = (() => {
-    const url = new URL("./{module}", import.meta.url);
-    let compiled, instance, primary;
+    const url = () => new URL("./{module}", import.meta.url);
+    let compiled, instance, primary, ahead;
     const settle = () => {
         if (instance === undefined && compiled !== undefined && primary !== undefined) {
             instance = new WebAssembly.Instance(compiled, { primary });
@@ -189,20 +190,21 @@ const __visoLazy = (() => {
     };
     const fetched = () => {
         const request = new XMLHttpRequest();
-        request.open("GET", url, false);
+        request.open("GET", url(), false);
         request.overrideMimeType("text/plain; charset=x-user-defined");
         request.send();
         if (request.status !== 200) {
-            throw new Error(`the lazy module ${url} answered ${request.status}`);
+            throw new Error(`the lazy module ${url()} answered ${request.status}`);
         }
         const text = request.responseText;
         const bytes = new Uint8Array(text.length);
         for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
         return bytes;
     };
-    // A worker of a threaded module loads it when it first calls into it.
+    // A worker of a threaded module loads it when it first calls into it,
+    // and the page hands it to an audio worklet, which cannot request it.
     if (typeof window === "object") {
-        WebAssembly.compileStreaming(fetch(url, { priority: "low" })).then(
+        ahead = WebAssembly.compileStreaming(fetch(url(), { priority: "low" })).then(
             (module) => {
                 compiled ??= module;
                 try {
@@ -233,6 +235,13 @@ const __visoLazy = (() => {
         ready(exports) {
             primary = exports;
             if (compiled !== undefined) settle();
+        },
+        async module() {
+            await ahead;
+            return (compiled ??= new WebAssembly.Module(fetched()));
+        },
+        provide(module) {
+            compiled ??= module;
         },
     };
 })();

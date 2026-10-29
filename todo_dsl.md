@@ -1324,7 +1324,12 @@ timers (§104–§111).
           module's audio systems to the default device.
     - [ ] Verified on a device: Windows WASAPI, Linux ALSA, Android AAudio,
           iOS RemoteIO.
-    - [ ] Web audio output (an AudioWorklet over a shared-memory wasm build).
+    - [x] Web audio output (an AudioWorklet over a shared-memory wasm build):
+          the glue loads itself into the worklet, whose processor instantiates
+          the module over the page's memory and renders each 128-frame block;
+          stop/drop hand off through an atomic state (busy / stopped / closed).
+          Verified headless: a 440 Hz sine arrives (peak and zero crossings),
+          pause, resume and drop, under `serve`'s CSP and a split shipping build.
     - [x] A logic reload swaps the audio host on the running device without
           a gap (hand-off through a lock-free slot: `AudioSwap`, two atomic
           pointers).

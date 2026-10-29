@@ -68,7 +68,12 @@ pub fn thread_glue(dir: &Path, bin: &str) -> Result<(), String> {
 ///
 /// Glue without the init function and the thread entry it calls.
 pub fn threads_glue(glue: &str) -> Result<String, String> {
-    for needed in ["async function __wbg_init(", "function __viso_thread("] {
+    for needed in [
+        "async function __wbg_init(",
+        "function initSync(",
+        "function __viso_thread(",
+        "function __viso_audio(",
+    ] {
         if !glue.contains(needed) {
             return Err(format!(
                 "the `wasm-bindgen` glue of a threaded module has no `{needed}`"
@@ -90,6 +95,78 @@ if (typeof WorkerGlobalScope === "function" && globalThis instanceof WorkerGloba
         wasm.__wbindgen_thread_destroy?.();
         close();
     }, { once: true });
+}
+if (typeof AudioWorkletGlobalScope === "function" && globalThis instanceof AudioWorkletGlobalScope) {
+    registerProcessor("viso-audio", class extends AudioWorkletProcessor {
+        constructor({ processorOptions: [module, memory, device, lazy] }) {
+            super();
+            if (lazy !== undefined) __visoLazy.provide(lazy);
+            initSync({ module, memory });
+            this.device = device;
+            this.memory = memory;
+        }
+        process(_, [output]) {
+            const frames = output[0].length;
+            const at = __viso_audio(this.device, frames, output.length);
+            if (at === 1) {
+                wasm.__wbindgen_thread_destroy?.();
+                this.port.postMessage("ended");
+                return false;
+            }
+            if (at === 0) return true;
+            if (this.samples?.buffer !== this.memory.buffer) {
+                this.samples = new Float32Array(this.memory.buffer);
+            }
+            const samples = this.samples;
+            for (let c = 0, from = at >> 2; c < output.length; c++, from += frames) {
+                const out = output[c];
+                for (let i = 0; i < frames; i++) out[i] = samples[from + i];
+            }
+            return true;
+        }
+    });
+}
+function visoAudioOpen(module, memory, device) {
+    const context = new AudioContext({ latencyHint: "interactive" });
+    let running = false;
+    const gesture = () => {
+        if (running && context.state === "suspended") context.resume();
+    };
+    const gestures = ["pointerdown", "keydown", "touchend"];
+    for (const type of gestures) addEventListener(type, gesture, { capture: true, passive: true });
+    const close = () => {
+        running = false;
+        for (const type of gestures) removeEventListener(type, gesture, { capture: true });
+        if (context.state !== "closed") context.close();
+    };
+    const lazy = typeof __visoLazy === "undefined" ? undefined : __visoLazy.module();
+    context.audioWorklet.addModule(visoGlue).then(async () => {
+        const node = new AudioWorkletNode(context, "viso-audio", {
+            numberOfInputs: 0,
+            outputChannelCount: [2],
+            processorOptions: [module, memory, device, await lazy],
+        });
+        node.onprocessorerror = (error) => console.error("the audio output stopped:", error);
+        node.port.onmessage = close;
+        node.connect(context.destination);
+    }).catch((error) => console.error("the audio output did not start:", error));
+    return {
+        sampleRate: context.sampleRate,
+        start() {
+            running = true;
+            context.resume();
+        },
+        stop() {
+            running = false;
+            context.suspend();
+        },
+        end() {
+            running = false;
+            if (context.state === "closed") return;
+            context.resume();
+            setTimeout(close, 1000);
+        },
+    };
 }
 "#;
 
@@ -447,13 +524,15 @@ mod tests {
     }
 
     #[test]
-    fn a_threaded_modules_glue_names_itself_and_runs_its_workers_jobs() {
-        let glue =
-            "async function __wbg_init(module_or_path) {}\nexport function __viso_thread(job) {}\n";
+    fn a_threaded_modules_glue_names_itself_and_runs_its_workers_and_audio() {
+        let glue = "async function __wbg_init(module_or_path) {}\nfunction initSync(module) {}\n\
+            export function __viso_thread(job) {}\nexport function __viso_audio(d, f, c) {}\n";
         let patched = threads_glue(glue).unwrap();
         assert!(patched.starts_with(glue));
         assert!(patched.contains("globalThis.visoGlue ??= import.meta.url;"));
         assert!(patched.contains("await __wbg_init({ module_or_path: module, memory });"));
+        assert!(patched.contains(r#"registerProcessor("viso-audio""#));
+        assert!(patched.contains("function visoAudioOpen(module, memory, device) {"));
         assert!(threads_glue("async function __wbg_init() {}\n").is_err());
 
         let dir = std::env::temp_dir().join(format!("viso-web-threads-{}", std::process::id()));

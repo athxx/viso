@@ -6,8 +6,9 @@
 //!
 //! macOS and iOS render through an output Audio Unit (`AudioToolbox`),
 //! Windows through WASAPI, Linux through ALSA and Android through AAudio
-//! (both loaded at runtime); the web and the BSDs report
-//! [`AudioError::Unsupported`].
+//! (both loaded at runtime), and a threaded web build through an
+//! AudioWorklet running the module on its own thread; a web build without
+//! threads and the BSDs report [`AudioError::Unsupported`].
 
 #[cfg(target_os = "android")]
 mod aaudio;
@@ -17,6 +18,8 @@ mod alsa;
 mod apple;
 #[cfg(target_os = "windows")]
 mod wasapi;
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+mod web;
 
 #[cfg(target_os = "android")]
 use aaudio as imp;
@@ -26,6 +29,8 @@ use alsa as imp;
 use apple as imp;
 #[cfg(target_os = "windows")]
 use wasapi as imp;
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+use web as imp;
 
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -73,7 +78,8 @@ pub struct AudioOutput {
         target_vendor = "apple",
         target_os = "windows",
         target_os = "linux",
-        target_os = "android"
+        target_os = "android",
+        all(target_arch = "wasm32", target_feature = "atomics")
     ))]
     device: imp::Output,
     format: AudioFormat,
@@ -94,7 +100,8 @@ pub struct AudioOutput {
         target_vendor = "apple",
         target_os = "windows",
         target_os = "linux",
-        target_os = "android"
+        target_os = "android",
+        all(target_arch = "wasm32", target_feature = "atomics")
     )),
     expect(dead_code, reason = "no backend renders it")
 )]
@@ -115,7 +122,8 @@ impl AudioOutput {
             target_vendor = "apple",
             target_os = "windows",
             target_os = "linux",
-            target_os = "android"
+            target_os = "android",
+            all(target_arch = "wasm32", target_feature = "atomics")
         ))]
         {
             let (device, format) = imp::Output::open()?;
@@ -130,7 +138,8 @@ impl AudioOutput {
             target_vendor = "apple",
             target_os = "windows",
             target_os = "linux",
-            target_os = "android"
+            target_os = "android",
+            all(target_arch = "wasm32", target_feature = "atomics")
         )))]
         {
             Err(AudioError::Unsupported)
@@ -165,7 +174,8 @@ impl AudioOutput {
                 target_vendor = "apple",
                 target_os = "windows",
                 target_os = "linux",
-                target_os = "android"
+                target_os = "android",
+                all(target_arch = "wasm32", target_feature = "atomics")
             ))]
             self.device.stop();
             self.running = false;
@@ -187,7 +197,8 @@ impl AudioOutput {
             target_vendor = "apple",
             target_os = "windows",
             target_os = "linux",
-            target_os = "android"
+            target_os = "android",
+            all(target_arch = "wasm32", target_feature = "atomics")
         ))]
         {
             let slot = Arc::clone(slot);
@@ -205,7 +216,8 @@ impl AudioOutput {
             target_vendor = "apple",
             target_os = "windows",
             target_os = "linux",
-            target_os = "android"
+            target_os = "android",
+            all(target_arch = "wasm32", target_feature = "atomics")
         )))]
         {
             let _ = slot;

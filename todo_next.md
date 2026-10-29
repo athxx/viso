@@ -1361,8 +1361,9 @@ output, a live macOS session) is listed with the device runs of N8.
   `view_catalog_error` reads a fixture package's broken `i18n/en.toml` (a `Viso.toml` between
   a source file and the crate root is now the file's package); a dev session over a temporary
   project takes its watcher's deliveries, patches on a saved catalog and reports a broken one.
-- [ ] Game audio on the web: an AudioWorklet over a shared-memory wasm build (`todo_dsl.md`,
-  `AudioProcess`), which needs the threaded web build below.
+- [x] Game audio on the web: an AudioWorklet over a shared-memory wasm build (`todo_dsl.md`,
+  `AudioProcess`), which needs the threaded web build below. The glue is the worklet's
+  module; the processor ends its thread and the context closes after the output drops.
 - [x] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
   shared-memory threaded module (`todo_cli.md` C4.2).
   - [x] `split`: profile-guided by a headless training run (`wasm-split`), the lazy part
