@@ -1,6 +1,6 @@
 //! The labels a view shows: which of the drawn tiles' labels win their
-//! place, decided once the camera rests in a pass bounded in time, and the
-//! nodes that show them over the map.
+//! place, decided in a pass bounded in time as the camera moves and once it
+//! rests, and the nodes that show them over the map.
 //!
 //! A label is a sizeless node in the overlay holding its text (over a halo
 //! of offset copies, on a shield when it has one) and its icon, centered
@@ -13,9 +13,9 @@
 //!
 //! As the camera moves the nodes only move — a straight line label turns
 //! with the map and is kept upright, a bent one is set along its line again
-//! when the camera turns, zooms or tilts — and when it rests the pass places
-//! them again, highest layer and rank first, against the boxes already
-//! taken. Labels that win fade in; those that lose fade out. Tilted over
+//! when the camera turns, zooms or tilts — and every so often on the way,
+//! and when it rests, the pass places them again, highest layer and rank
+//! first, against the boxes already taken. Labels that win fade in; those that lose fade out. Tilted over
 //! relief, each sits on the ground at its own place.
 
 use std::collections::HashMap;
@@ -42,6 +42,9 @@ use crate::tess::MeshBuilder;
 
 /// How long one pass may take before it stops where it got to.
 const BUDGET_MS: u128 = 4;
+/// How often labels are placed again while the camera moves, so those it
+/// brings into view show on the way.
+const MOVING_PASS_MS: u128 = 300;
 /// How far past the view's edges labels are placed, in points.
 const MARGIN: f64 = 48.0;
 /// The side of the collision grid's cells, in points.
@@ -221,6 +224,10 @@ pub(crate) struct Labels {
     shown: Vec<Shown>,
     /// A pass is wanted when the camera next rests.
     pub due: bool,
+    /// The camera moved since the last pass.
+    pub drifted: bool,
+    /// When the last pass ran.
+    last_pass: Option<Instant>,
     /// Seconds of fading the clock has run since the last apply.
     pub fade_dt: f64,
     pub icons: Rc<IconSet>,
@@ -534,6 +541,8 @@ impl Labels {
             parent,
             shown: Vec::new(),
             due: true,
+            drifted: false,
+            last_pass: None,
             fade_dt: 0.0,
             icons: Rc::new(IconSet::new()),
             builder: MeshBuilder::new(),
@@ -547,6 +556,19 @@ impl Labels {
             reduced_motion: false,
             last: (0, 0),
         }
+    }
+
+    /// Whether to place the labels again: once the camera rests, if a pass
+    /// is due, and while it moves, every [`MOVING_PASS_MS`] it has moved or
+    /// one is due.
+    pub fn wants_pass(&self, still: bool, now: Instant) -> bool {
+        if still {
+            return self.due;
+        }
+        (self.due || self.drifted)
+            && self
+                .last_pass
+                .is_none_or(|t| now.duration_since(t).as_millis() >= MOVING_PASS_MS)
     }
 
     /// Whether a fade runs.
@@ -689,7 +711,9 @@ impl Labels {
         lift: Option<&Lift<'_>>,
     ) {
         self.due = false;
+        self.drifted = false;
         let start = Instant::now();
+        self.last_pass = Some(start);
         // A tile's labels count where no deeper drawn tile covers them.
         self.candidates.clear();
         for (ti, (_, built)) in tiles.iter().enumerate() {

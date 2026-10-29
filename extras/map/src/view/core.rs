@@ -20,8 +20,8 @@ use std::cell::RefCell;
 use viso_render::Rgba;
 use viso_ui::context::UpdateCx;
 use viso_ui::{
-    BuildCx, Continuation, DirtyClass, NodeId, Semantics, Sizing, StateId, StateStore, StateValue,
-    StateWriter, StructureCx, TaskId, Turn, Vec2,
+    BuildCx, Continuation, DirtyClass, Instant, NodeId, Semantics, Sizing, StateId, StateStore,
+    StateValue, StateWriter, StructureCx, TaskId, Turn, Vec2,
 };
 
 use super::labels::Labels;
@@ -798,11 +798,12 @@ impl Core {
         let mut told = None;
         if self.moved {
             self.moved = false;
+            self.labels.drifted = true;
             self.written = camera_values(&self.view.camera);
             self.cells.write(s.states, self.written);
         }
-        // Labels: faded on, placed again once the camera rests, and moved
-        // with it.
+        // Labels: faded on, placed again as the camera moves and once it
+        // rests, and moved with it.
         self.labels.reduced_motion = self.reduced_motion;
         if self.labels.fade_dt > 0.0 {
             let dt = std::mem::take(&mut self.labels.fade_dt);
@@ -815,7 +816,8 @@ impl Core {
             self.relief = relief;
             self.labels.due = true;
         }
-        if self.labels.due && !self.held && !self.moving() {
+        let still = !self.held && !self.moving();
+        if self.labels.wants_pass(still, Instant::now()) {
             let tiles: Vec<(Slot, &Built)> =
                 self.labeled.iter().map(|(slot, b)| (*slot, &**b)).collect();
             self.labels.pass(s, &self.view, &tiles, lift.as_ref());
