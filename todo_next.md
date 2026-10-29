@@ -1202,6 +1202,19 @@ Rules (as for `todo_features.md`):
   pan, pinch, rotate and tilt against the desktop behavior.
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and
   cadence traces.
+  - [x] Nothing caps a frame at 60 Hz. Built:
+    - iOS apps carry `CADisableMinimumFrameDurationOnPhone`, without which an iPhone's
+      ProMotion stays at 60 whatever the display link asks; the link asks for the screen's
+      `maximumFramesPerSecond`.
+    - Android votes on its surface for the display's highest rate at its resolution
+      (`Surface.setFrameRate`, API 30; API 31 only if seamless). It is a vote that counts only
+      while frames arrive, so an idle app leaves the panel be.
+    - macOS (`CAMetalLayer` display sync), Windows (DXGI flip) and Wayland present at the
+      display's rate.
+    - The loop measures its interval (`FramePace`); scroll, fling, spinners and transitions
+      advance by measured time. Only the game's fixed step is 60 Hz, by design.
+  - [ ] On devices: cadence traces at 120 Hz (iPhone Pro, an Android flagship) and at 144/240 Hz
+    (a desktop panel).
 - [ ] ASUN rows decoded as they arrive in `viso-net`, once `asun-rs`'s incremental decoder lands.
 
 ## N9 — Governance

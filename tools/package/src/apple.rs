@@ -248,6 +248,9 @@ pub fn info_plist(info: &Info, simulator: bool) -> Result<String, Problem> {
         ),
         ("UISupportedInterfaceOrientations", list(phone)),
         ("UISupportedInterfaceOrientations~ipad", list(pad)),
+        // An iPhone's ProMotion display runs above 60 Hz for an app only
+        // with this; the display link then asks for the screen's most.
+        ("CADisableMinimumFrameDurationOnPhone", Value::Bool(true)),
     ]);
     dict.extend(info.url_types());
     dict.extend(info.usage(false));
@@ -1029,6 +1032,7 @@ mod tests {
         assert!(dev.contains("<string>dev.viso.hello-world</string>"));
         assert!(dev.contains("<string>iPhoneSimulator</string>"));
         assert!(dev.contains("<key>UIRequiresFullScreen</key>\n\t<false/>"));
+        assert!(dev.contains("<key>CADisableMinimumFrameDurationOnPhone</key>\n\t<true/>"));
 
         let plist = info_plist(&notes(), false).unwrap();
         assert!(plist.contains("<string>iPhoneOS</string>"));

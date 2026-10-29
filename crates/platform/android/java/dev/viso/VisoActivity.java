@@ -385,7 +385,43 @@ public class VisoActivity extends Activity
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        voteFrameRate(holder.getSurface());
         nativeSurfaceChanged(holder.getSurface(), width, height);
+    }
+
+    /**
+     * Asks for the display's highest refresh rate at its resolution while the
+     * surface draws: a vote the system weighs only while frames arrive, so an
+     * idle app leaves the panel at its own rate. Only a seamless switch is
+     * taken where the system can tell (API 31).
+     */
+    private void voteFrameRate(android.view.Surface surface) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return;
+        }
+        android.view.Display display = getDisplay();
+        if (display == null) {
+            return;
+        }
+        android.view.Display.Mode now = display.getMode();
+        float highest = now.getRefreshRate();
+        for (android.view.Display.Mode mode : display.getSupportedModes()) {
+            if (mode.getPhysicalWidth() == now.getPhysicalWidth()
+                    && mode.getPhysicalHeight() == now.getPhysicalHeight()) {
+                highest = Math.max(highest, mode.getRefreshRate());
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                surface.setFrameRate(highest, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                        android.view.Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS);
+            } else {
+                surface.setFrameRate(highest, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+            }
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            // A surface already released, or a rate the system refuses: it
+            // keeps the system's choice.
+        }
     }
 
     @Override
