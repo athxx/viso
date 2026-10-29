@@ -2191,7 +2191,7 @@ impl TextShaper {
     /// Block until the worker ran every job sent so far, keeping its results
     /// for [`Self::pump`].
     #[cfg(test)]
-    fn wait_idle(&mut self) {
+    pub(crate) fn wait_idle(&mut self) {
         self.dispatch();
         self.worker.send(vec![ToWorker::Flush]);
         while let Some(message) = self.worker.recv() {

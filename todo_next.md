@@ -1347,7 +1347,9 @@ output, a live macOS session) is listed with the device runs of N8.
   shared-memory threaded module (`todo_cli.md` C4.2).
 - [ ] Per-target availability of natives, and the capability table rows it gives; lands with the
   first native missing on some target (`todo_cli.md` C1.5, C4.4).
-- [ ] A pixel golden of the frame-profile HUD (`todo_cli.md` C6).
+- [x] A pixel golden of the frame-profile HUD (`todo_cli.md` C6). `the_hud_draws_as_its_golden`
+  shapes a capture's line with the fixture font, draws the HUD over a grey window on the CPU
+  rasterizer and compares `tests/golden/profile_hud.bgra8`.
 - [ ] Recorded acceptance scenarios: resize, DPI change and surface recreate, with GPU frame time
   per scenario (`todo_rendering.md` D0.4).
 - [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did

@@ -219,6 +219,93 @@ mod tests {
         assert_eq!(texts[MAX_LINES + 1], "... 4 more");
     }
 
+    /// The HUD as a frame-time capture shows it, drawn in the window's top
+    /// right corner over what the window drew, against its golden. The line
+    /// keeps to the fixture font's glyphs, so no system fallback face enters
+    /// the pixels.
+    #[cfg(feature = "rasterizer")]
+    #[test]
+    fn the_hud_draws_as_its_golden() {
+        use viso_gpu::{CpuRaster, GpuBackend, RawWindowHandle};
+
+        use crate::text_content::{ParagraphSlot, TextShaper};
+
+        const W: u32 = 360;
+        const H: u32 = 48;
+        const FONT: &[u8] = include_bytes!("../../fixtures/DejaVuSans-subset.ttf");
+        let mut gpu = CpuRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+        let format = gpu.surface_format(surface);
+        let mut renderer = viso_render::Renderer::new(&mut gpu, format);
+        let mut shaper = TextShaper::new();
+        shaper.load_font(FONT, 0).expect("the fixture parses");
+
+        let mut store = NodeStore::new();
+        let panel = hud(
+            &mut store,
+            "frame 8.29 ms  p95 8.97 ms  gpu 0.82 ms  90 frames/s",
+        );
+        let surface_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: W as f32,
+            h: H as f32,
+        };
+        let links = |store: &NodeStore, node| store.arena().links(node).expect("a live node");
+        let body = links(&store, panel).first_child.expect("the HUD body");
+        let text = links(&store, body).first_child.expect("the HUD text");
+        let request = store.text_request(text).expect("a text").clone();
+        let sizing = viso_ui::TextSizing {
+            env: viso_ui::LengthEnv::default(),
+            font_size: HUD_FONT_SIZE,
+            line_height: None,
+            rtl: false,
+        };
+        // Shaping runs on a worker: the first ask starts it, the second
+        // reads what it shaped.
+        let slot = ParagraphSlot::from(text);
+        shaper.shape(&mut gpu, slot, &request, sizing.clone(), 1.0, None);
+        shaper.wait_idle();
+        let _ = shaper.pump(
+            &mut gpu,
+            std::time::Duration::MAX,
+            Some(std::time::Duration::MAX),
+            &mut Vec::new(),
+        );
+        let content = shaper.shape(&mut gpu, slot, &request, sizing, 1.0, None);
+        store.set_content_payload(text, content);
+        store.layout(panel, surface_rect, &mut Vec::new());
+        let mut primitives = Vec::new();
+        viso_ui::paint::paint_tree(&store, panel, &mut primitives);
+        renderer.upload(&mut gpu, &primitives);
+        // A window's mid-grey under the translucent panel.
+        renderer.submit(
+            &mut gpu,
+            surface,
+            [0.5, 0.5, 0.5, 1.0],
+            [W as f32, H as f32],
+        );
+        let frame = gpu.read_pixels_bgra8(surface);
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden/profile_hud.bgra8");
+        if std::env::var_os("BLESS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &frame).unwrap();
+            return;
+        }
+        let golden = std::fs::read(&path)
+            .unwrap_or_else(|_| panic!("missing {}; run with BLESS=1", path.display()));
+        assert_eq!(golden.len(), frame.len());
+        let worst = frame
+            .iter()
+            .zip(&golden)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= 2, "the HUD differs from its golden by {worst}");
+    }
+
     #[test]
     fn the_hud_sits_in_the_top_right_corner() {
         let mut store = NodeStore::new();
