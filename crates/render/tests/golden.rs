@@ -50,3 +50,8 @@ fn path_scene_matches_golden() {
 fn stroke_scene_matches_golden() {
     check(GoldenScene::Stroke);
 }
+
+#[test]
+fn analytic_scene_matches_golden() {
+    check(GoldenScene::Analytic);
+}

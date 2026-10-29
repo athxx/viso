@@ -1297,7 +1297,7 @@ fn segment_sdf(p: [f32; 2], a: [f32; 2], b: [f32; 2], hw: f32) -> f32 {
 }
 
 /// A butt (`cap_ext == 0`) or square (`cap_ext == hw`) capped segment: the
-/// segment SDF cut by the two end half-planes.
+/// box along the segment, `hw` across and reaching `cap_ext` past each end.
 fn capped_segment_sdf(p: [f32; 2], a: [f32; 2], b: [f32; 2], hw: f32, cap_ext: f32) -> f32 {
     let ba = [b[0] - a[0], b[1] - a[1]];
     let len = (ba[0] * ba[0] + ba[1] * ba[1]).sqrt();
@@ -1306,9 +1306,13 @@ fn capped_segment_sdf(p: [f32; 2], a: [f32; 2], b: [f32; 2], hw: f32, cap_ext: f
     } else {
         [1.0, 0.0]
     };
-    let t = (p[0] - a[0]) * dir[0] + (p[1] - a[1]) * dir[1];
-    let d = segment_sdf(p, a, b, hw);
-    d.max((-(t + cap_ext)).max(t - (len + cap_ext)))
+    let rel = [p[0] - (a[0] + b[0]) * 0.5, p[1] - (a[1] + b[1]) * 0.5];
+    let q = [
+        (rel[0] * dir[0] + rel[1] * dir[1]).abs() - (len * 0.5 + cap_ext),
+        (rel[1] * dir[0] - rel[0] * dir[1]).abs() - hw,
+    ];
+    let outside = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt();
+    outside + q[0].max(q[1]).min(0.0)
 }
 
 /// The whole advanced-blend composite of one pixel, premultiplied in and out.

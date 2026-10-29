@@ -13,9 +13,9 @@ use viso_gpu::{
     TextureFormat, TextureId,
 };
 use viso_render::{
-    Align, Align2, DashPattern, Fit, GlyphLane, GlyphRunDraw, ImageRect, LineCap, LineJoin,
-    NineSlice, Path, PathCmd, Point, Primitive, Rect, Renderer, Rgba, Stroke, TiledImage,
-    test_glyphs, test_scene, test_texture,
+    Align, Align2, AnalyticCapsule, AnalyticLine, Border, DashPattern, Fit, GlyphLane,
+    GlyphRunDraw, ImageRect, LineCap, LineJoin, NineSlice, Path, PathCmd, Point, Primitive, Rect,
+    Renderer, Rgba, Stroke, TiledImage, test_glyphs, test_scene, test_texture,
 };
 
 pub const W: u32 = 128;
@@ -30,10 +30,17 @@ pub enum GoldenScene {
     ImageFamily,
     Path,
     Stroke,
+    Analytic,
 }
 
 impl GoldenScene {
-    pub const ALL: [GoldenScene; 4] = [Self::Quad, Self::ImageFamily, Self::Path, Self::Stroke];
+    pub const ALL: [GoldenScene; 5] = [
+        Self::Quad,
+        Self::ImageFamily,
+        Self::Path,
+        Self::Stroke,
+        Self::Analytic,
+    ];
 
     /// The baseline: a raw BGRA8 dump, top-left origin.
     pub fn golden_path(self) -> PathBuf {
@@ -42,6 +49,7 @@ impl GoldenScene {
             Self::ImageFamily => "image_family",
             Self::Path => "path_scene",
             Self::Stroke => "stroke_scene",
+            Self::Analytic => "analytic_scene",
         };
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/{file}.bgra8"))
     }
@@ -64,6 +72,7 @@ impl GoldenScene {
             Self::ImageFamily => image_family(gpu),
             Self::Path => path(),
             Self::Stroke => stroke(),
+            Self::Analytic => analytic(),
         }
     }
 }
@@ -400,4 +409,69 @@ fn stroke() -> Vec<Primitive> {
         Primitive::Path(Box::new(rounded)),
         Primitive::Path(Box::new(dashed)),
     ]
+}
+
+/// The analytic line family: a butt, a square and a round cap, a bordered
+/// diagonal and a translucent square-capped one crossing it, and a bordered
+/// capsule.
+fn analytic() -> Vec<Primitive> {
+    let line = |p0: Point, p1: Point, width: f32, color: Rgba, cap: LineCap| AnalyticLine {
+        p0,
+        p1,
+        width,
+        color,
+        cap,
+        join: LineJoin::Miter,
+        miter_limit: 4.0,
+        border: Border::NONE,
+    };
+    let ink = Rgba::new(0.9, 0.85, 0.3, 1.0);
+    let mut out: Vec<Primitive> = [LineCap::Butt, LineCap::Square, LineCap::Round]
+        .into_iter()
+        .zip(0..)
+        .map(|(cap, i)| {
+            let y = 14.0 + 14.0 * i as f32;
+            Primitive::AnalyticLine(line(
+                Point::new(16.0, y),
+                Point::new(56.0, y),
+                8.0,
+                ink,
+                cap,
+            ))
+        })
+        .collect();
+    out.push(Primitive::AnalyticLine(AnalyticLine {
+        border: Border {
+            width: 2.0,
+            color: Rgba::new(0.95, 0.95, 0.95, 1.0),
+        },
+        ..line(
+            Point::new(72.0, 12.0),
+            Point::new(116.0, 60.0),
+            10.0,
+            Rgba::new(0.3, 0.6, 0.95, 1.0),
+            LineCap::Round,
+        )
+    }));
+    out.push(Primitive::AnalyticLine(line(
+        Point::new(70.0, 58.0),
+        Point::new(118.0, 14.0),
+        6.0,
+        Rgba::new(0.95, 0.3, 0.35, 0.6),
+        LineCap::Square,
+    )));
+    out.push(Primitive::AnalyticCapsule(AnalyticCapsule {
+        rect: Rect {
+            x: 14.0,
+            y: 62.0,
+            w: 100.0,
+            h: 22.0,
+        },
+        color: Rgba::new(0.35, 0.8, 0.45, 1.0),
+        border: Border {
+            width: 1.5,
+            color: Rgba::new(0.95, 0.95, 0.95, 1.0),
+        },
+    }));
+    out
 }

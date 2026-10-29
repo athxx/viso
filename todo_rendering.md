@@ -915,10 +915,12 @@ Section 3 — render crate (instance/primitive/store/renderer/inspect):
     size_of::<<Family>Instance>()`, `uploaded_ranges==1`, `dirty_primitives==1`,
       `path_tessellations==0`; scroll stays transform-only (`dirty_primitives==GRID`, no
       instance rebuilds / buffer churn). Existing pure-quad proofs kept intact.
-- [ ] Not verifiable here: real Metal-device MSL compile of `ANALYTIC_LINE_MSL` (headless does not
-      compile MSL). The MSL is codegen-derived from the shared template and locked by the
-      byte-equivalence test; one on-device Metal compile is still owed (same convention as the
-      `half`/reserved-word check).
+- [x] Real Metal-device MSL compile of `ANALYTIC_LINE_MSL`: the `Analytic` golden scene (butt,
+      square and round caps, a bordered diagonal, a capsule) renders on the Metal device through
+      the frozen MSL within 1/255 of the headless reference (`metal_golden`). It found square
+      caps drawing round in the shared IR and the CPU fill alike (the round-capped segment cut by
+      end half-planes); butt and square are now the box along the segment, and a square cap's
+      corner is inside the line's bounds.
 
 ### D1 Done
 
@@ -990,9 +992,9 @@ texture/sampler/pipeline in `viso-gpu`.
         gamma→linear at bake) implemented; `OkLab` variant reserved, unimplemented.
   - [x] Golden `test_scene` exercises all three: inline linear (LinearRgb), LUT radial
         (LinearRgb), LUT sweep (Srgb, `Repeat` extend); blessed + re-run stable.
-  - [ ] Real Metal device MSL compile (`newLibraryWithSource`) unverifiable in this
-        environment — headless does not compile MSL. `GRADIENT_MSL` is covered by byte-equivalence + CPU headless fill; `repeat`/`mirror` extend correctness is CPU-covered. Device
-        verification deferred.
+  - [x] Real Metal device MSL compile (`newLibraryWithSource`): `GRADIENT_MSL` compiles on the
+        Metal device and the `Quad` golden scene's inline linear, LUT radial and LUT sweep
+        (`Repeat`) gradients match the headless reference (`metal_golden`).
 
 ### D2.2 — Image / sprite / atlas lane
 

@@ -416,6 +416,18 @@ pub struct AnalyticLine {
 }
 
 impl AnalyticLine {
+    /// How far past the box over its endpoints the line paints, on every
+    /// side: its half-width and border, a square cap's corner reaching a
+    /// half-width along the segment and across it.
+    pub fn reach(&self) -> f32 {
+        let half = 0.5 * self.width;
+        let cap = match self.cap {
+            LineCap::Square => half * core::f32::consts::SQRT_2,
+            LineCap::Butt | LineCap::Round => half,
+        };
+        cap + self.border.width
+    }
+
     /// Lower this line to its GPU instance.
     pub fn to_instance(&self) -> AnalyticLineInstance {
         AnalyticLineInstance {

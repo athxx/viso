@@ -570,13 +570,12 @@ fn scan_layer_subtree(primitives: &[Primitive], layer_index: usize) -> SubtreeFa
             Primitive::AnalyticEllipse(ellipse) => Some(ellipse.rect),
             Primitive::AnalyticCapsule(capsule) => Some(capsule.rect),
             Primitive::AnalyticLine(line) => {
-                let inst = line.to_instance();
-                let reach = 0.5 * inst.width + inst.border_width;
+                let reach = line.reach();
                 Some(Rect {
-                    x: inst.p0[0].min(inst.p1[0]) - reach,
-                    y: inst.p0[1].min(inst.p1[1]) - reach,
-                    w: (inst.p1[0] - inst.p0[0]).abs() + 2.0 * reach,
-                    h: (inst.p1[1] - inst.p0[1]).abs() + 2.0 * reach,
+                    x: line.p0.x.min(line.p1.x) - reach,
+                    y: line.p0.y.min(line.p1.y) - reach,
+                    w: (line.p1.x - line.p0.x).abs() + 2.0 * reach,
+                    h: (line.p1.y - line.p0.y).abs() + 2.0 * reach,
                 })
             }
             Primitive::Image(image) => Some(image.rect),

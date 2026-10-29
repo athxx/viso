@@ -940,8 +940,7 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
 // Signed distance to a line segment of half-width `hw` (IQ): project the sample
 // onto the segment (clamped to its endpoints), then take the distance to that
 // nearest point minus the half-width. Negative inside. This alone yields round
-// caps (the endpoint projection rounds naturally); butt/square caps are applied
-// by the fragment as an along-axis trim/extension of the clamp parameter.
+// caps (the endpoint projection rounds naturally).
 static inline float segment_sdf(float2 p, float2 a, float2 b, float hw) {
     float2 pa = p - a;
     float2 ba = b - a;
@@ -950,20 +949,17 @@ static inline float segment_sdf(float2 p, float2 a, float2 b, float hw) {
     return length(pa - ba * h) - hw;
 }
 
-// Signed distance for a butt or square cap. `cap_ext` extends the segment span
-// by a half-width past each end (square); 0 keeps it flush (butt). The end faces
-// are half-planes perpendicular to the segment, intersected with the round-cap
-// body so the sides stay straight — a max() of the segment SDF and the two
-// end-plane distances.
+// Signed distance for a butt or square cap: the box along the segment, its
+// half-width across and reaching `cap_ext` past each end — a half-width for a
+// square cap, flush for a butt one — so the ends are flat and square-cornered.
 static inline float capped_segment_sdf(float2 p, float2 a, float2 b, float hw, float cap_ext) {
     float2 ba = b - a;
     float len = length(ba);
     float2 dir = len > 0.0 ? ba / len : float2(1.0, 0.0);
-    float t = dot(p - a, dir);
-    float d = segment_sdf(p, a, b, hw);
-    // Trim past the (possibly extended) ends with perpendicular half-planes.
-    float end_d = max(-(t + cap_ext), t - (len + cap_ext));
-    return max(d, end_d);
+    float2 rel = p - (a + b) * 0.5;
+    float2 q = float2(abs(dot(rel, dir)) - (len * 0.5 + cap_ext),
+                      abs(dot(rel, float2(-dir.y, dir.x))) - hw);
+    return length(max(q, float2(0.0, 0.0))) + min(max(q.x, q.y), 0.0);
 }
 
 // Device-pixel coverage factor: how many SDF units span one screen pixel at the
@@ -974,8 +970,8 @@ static inline float aa_factor(float2 p) {
 }
 
 fragment float4 fragment_main(VOut in [[stage_in]]) {
-    // Round cap (cap==2) is the bare segment SDF; butt (0) and square (1) trim or
-    // extend the ends with perpendicular half-planes (cap_ext = 0 or half-width).
+    // Round cap (cap==2) is the bare segment SDF; butt (0) and square (1) are the
+    // box along the segment, flush or reaching a half-width past each end.
     float d;
     if (in.cap == 2u) {
         d = segment_sdf(in.local, in.seg_a, in.seg_b, in.half_width);

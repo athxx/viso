@@ -119,14 +119,11 @@ impl Instance {
                     inst.color[3] *= fold;
                     inst.border_color[3] *= fold;
                 }
-                // The AABB over both endpoints, inflated by half the stroke width
-                // plus the border on every side (a square cap's extension along
-                // the axis never exceeds the perpendicular half-width already
-                // added).
+                // The AABB over both endpoints, inflated by the line's reach.
                 let min = [inst.p0[0].min(inst.p1[0]), inst.p0[1].min(inst.p1[1])];
                 let max = [inst.p0[0].max(inst.p1[0]), inst.p0[1].max(inst.p1[1])];
                 let world = rect(min, [max[0] - min[0], max[1] - min[1]]);
-                let stroke = inst.width + 2.0 * inst.border_width;
+                let stroke = 2.0 * line.reach();
                 (
                     Instance::AnalyticLine(inst),
                     Bounds::from_world(world, stroke, 0.0),
