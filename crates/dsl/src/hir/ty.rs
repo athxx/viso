@@ -182,6 +182,49 @@ impl Ty {
         Ty::Native(id, Vec::new())
     }
 
+    /// Every name [`from_builtin_name`](Self::from_builtin_name) resolves.
+    pub const BUILTIN_NAMES: &[&str] = &[
+        "Bool",
+        "I8",
+        "I16",
+        "I32",
+        "I64",
+        "U8",
+        "U16",
+        "U32",
+        "U64",
+        "F32",
+        "F64",
+        "Char",
+        "String",
+        "Bytes",
+        "Unit",
+        "Never",
+        "Color",
+        "Dp",
+        "Px",
+        "Sp",
+        "Em",
+        "Percent",
+        "MixedLength",
+        "Duration",
+        "Angle",
+        "Frequency",
+        "Animation",
+    ];
+
+    /// The generic heads a single-segment type path builds a structural type
+    /// from, with their parameter counts.
+    pub const STRUCTURAL_HEADS: &[(&str, usize)] = &[
+        ("List", 1),
+        ("Option", 1),
+        ("Result", 2),
+        ("Resource", 2),
+        ("ResourceState", 2),
+        ("Range", 1),
+        ("RangeInclusive", 1),
+    ];
+
     /// Resolves a scalar or UI-dimensional type *name* to its [`Ty`]. Nominal types
     /// (records/enums/components) are not decided here — those resolve through the
     /// resolver's symbol refs — so an unrecognized name returns `None` and the caller
@@ -701,6 +744,13 @@ fn function_type_word(node: &SyntaxNode) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_listed_builtin_name_resolves() {
+        for name in Ty::BUILTIN_NAMES {
+            assert!(matches!(Ty::from_builtin_name(name), Ok(Some(_))), "{name}");
+        }
+    }
 
     #[test]
     fn builtin_scalar_names_resolve() {

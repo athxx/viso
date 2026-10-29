@@ -1785,10 +1785,12 @@ stdout 专属 JSON-RPC，任何日志只写 stderr；`--json` 不适用（§6.1�
     goto definition, find references, rename,
     formatting（与 `viso fmt` 同一 `viso_dsl::format`）,
     code actions（诊断的 fix）,
-    hover（光标下诊断的 code：标题、解释与修复，来自 `viso explain` 读取的同一诊断 registry）
+    hover（光标下诊断的 code：标题、解释与修复，来自 `viso explain` 读取的同一诊断 registry）,
+    semantic tokens（名称按解析结果与 CST 位置分类，ADR-0018 2026-10-29 修订）,
+    completion（widget schema 的属性与事件、组件成员、局部变量、native 库路径、类型与关键字）
 
 1.0 目标（ADR-0018 明确 deferred，需后续 ADR/修订）:
-    completion, semantic tokens, schema lookup, source-to-generated mapping
+    schema lookup, source-to-generated mapping
 ```
 
 Exit code：客户端 `shutdown`+`exit` 后 0；未收到 `shutdown` 即 `exit`、未收到 `exit` 即输入结束或 transport 损坏时 1（LSP 规范）。
@@ -2189,7 +2191,7 @@ Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版�
 
 Viso 不做独立的 Studio，也没有 `viso studio` 子命令。热重载由 `viso run` 提供，观察由 `viso inspect` / `viso profile` 提供；它们的图形界面是编辑器扩展，在独立仓库 `viso-vscode` 中，一个仓库分别构建 VSCode 与 Zed 两个外壳：
 
-- 智能功能全部在 `viso-lsp`（诊断、hover、跳转、引用、重命名、格式化、codeAction，以及计划中的 semantic tokens 与补全），两个编辑器共用；
+- 智能功能全部在 `viso-lsp`（诊断、hover、跳转、引用、重命名、格式化、codeAction、semantic tokens 与补全），两个编辑器共用；
 - 高亮各用编辑器自己的机制：VSCode 用 TextMate 语法，Zed 用 Tree-sitter 语法与 query；
 - `.rs` 中 `ui! { … }` / `component! { … }` 的注入高亮与 `view!("x.vs")` 的文件链接，在编辑器允许处提供；
 - inspect / profile 面板只读 CLI 的 JSON event stream（§36），不链接任何 Viso crate。

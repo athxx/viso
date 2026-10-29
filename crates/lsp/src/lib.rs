@@ -1,6 +1,7 @@
 //! `viso-lsp` — the formatter and language server for `.vs`.
 //!
-//! This crate provides formatting, goto-definition, find-references and rename.
+//! This crate provides formatting, goto-definition, find-references, rename, hover,
+//! code actions, completion and semantic tokens.
 //! It is built in two layers, deliberately separated:
 //!
 //! 1. a **pure analysis engine** ([`engine`]) — goto-definition, find-references,
@@ -24,10 +25,12 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 pub mod actions;
+pub mod complete;
 pub mod engine;
 pub mod index;
 pub mod position;
 pub mod rpc;
+pub mod semantic;
 pub mod server;
 pub mod source_map;
 

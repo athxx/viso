@@ -1260,15 +1260,26 @@ editor extensions are their interface. They live in their own repository, `viso-
 repository builds two thin shells, VSCode and Zed, over the shared `viso-lsp`. They start after
 everything above is done.
 
-- [ ] `.vs` language support for VSCode and Zed. Both register the language, give its comment and
+- [x] `.vs` language support for VSCode and Zed. Both register the language, give its comment and
   bracket rules and launch `viso-lsp`. VSCode highlights with a TextMate grammar and Zed with a
   Tree-sitter grammar and queries. Verify that each opens a fixture, highlights it and shows a
   diagnostic, hover, go-to-definition and formatting from the server.
-- [ ] Semantic tokens and completion in `viso-lsp` (components, properties, events, states,
+  - [x] VSCode: the integration suite runs in an installed VSCode on `fixtures/app`. Zed: the
+    extension builds for `wasm32-wasip2` and the Tree-sitter corpus and highlight tests pass on
+    the same fixture, with Zed's `highlights.scm` checked as their copy.
+  - [ ] Zed opened by hand on the fixture (*install dev extension*), on the next device run.
+- [x] Semantic tokens and completion in `viso-lsp` (components, properties, events, states,
   natives, from the widget schema and the native registry). Verify with LSP tests, and that both
   editors use them.
-- [ ] The DSL inside `.rs`: injected highlighting for `ui! { … }` and `component! { … }`, and
+  - [x] `viso-lsp` advertises both; its unit and protocol tests cover classes, declarations,
+    natives through an import, contextual keywords, the UTF-16 encoding, and completion of
+    properties, events, members, locals, library paths, types and keywords. The VSCode suite
+    reads both through VSCode's own commands. Zed takes them through the same server.
+- [x] The DSL inside `.rs`: injected highlighting for `ui! { … }` and `component! { … }`, and
   `view!("x.vs")` as a link to its file, where each editor allows it. Verify on a fixture crate.
+  - [x] VSCode: the injection is checked by the grammar test on `fixtures/app/src/main.rs`, the
+    link by the integration suite. Zed allows neither: an extension cannot inject into the
+    built-in Rust language or add document links.
 - [ ] Optional: an inspect/profile panel over the CLI's JSON event stream in VSCode, and the
   language features inside a `ui!` body through a virtual document. Verify against a running
   `viso run`.

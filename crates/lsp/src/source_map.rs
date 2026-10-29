@@ -66,6 +66,8 @@ pub struct OpenDoc {
     /// Every diagnostic a full check of the document raises, from parsing
     /// through the shader compiler, as `viso check` reports them.
     pub diagnostics: Vec<Diagnostic>,
+    /// The native registry the document resolved against.
+    pub natives: Arc<Natives>,
 }
 
 impl OpenDoc {
@@ -104,8 +106,13 @@ impl OpenDoc {
         });
         let index = ReferenceIndex::build(&resolved);
         let module: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();
-        let diagnostics =
-            compile_parsed_in(&source, parse_result.clone(), &origin(&module), natives).diagnostics;
+        let diagnostics = compile_parsed_in(
+            &source,
+            parse_result.clone(),
+            &origin(&module),
+            natives.clone(),
+        )
+        .diagnostics;
         OpenDoc {
             source,
             line_index,
@@ -113,6 +120,7 @@ impl OpenDoc {
             resolved,
             index,
             diagnostics,
+            natives,
         }
     }
 }

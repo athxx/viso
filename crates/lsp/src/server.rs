@@ -22,9 +22,11 @@ use viso_dsl::LineIndex;
 use viso_dsl::diag::{Diagnostic, Severity, codes};
 
 use crate::actions;
+use crate::complete;
 use crate::engine;
 use crate::position::{self, LspPosition, LspRange};
 use crate::rpc::Json;
+use crate::semantic;
 use crate::source_map::{FileId, SourceMap};
 
 /// What the server produced from one incoming message: an optional reply (requests
@@ -118,6 +120,20 @@ impl Server {
             "textDocument/hover" => (
                 Outbound {
                     reply: Some(response(id, self.hover(params))),
+                    notifications: Vec::new(),
+                },
+                false,
+            ),
+            "textDocument/semanticTokens/full" => (
+                Outbound {
+                    reply: Some(response(id, self.semantic_tokens(params))),
+                    notifications: Vec::new(),
+                },
+                false,
+            ),
+            "textDocument/completion" => (
+                Outbound {
+                    reply: Some(response(id, self.completion(params))),
                     notifications: Vec::new(),
                 },
                 false,
@@ -248,6 +264,50 @@ impl Server {
             }
             None => Json::Null,
         }
+    }
+
+    /// Every keyword and name of the document, classified.
+    fn semantic_tokens(&self, params: Option<&Json>) -> Json {
+        let Some(doc) = params
+            .and_then(|p| p.get("textDocument")?.get("uri")?.as_str())
+            .and_then(|uri| self.id_of.get(uri))
+            .and_then(|&id| self.docs.get(id))
+        else {
+            return Json::Null;
+        };
+        let data = semantic::encode(&semantic::semantic_tokens(doc), &doc.line_index);
+        let mut m = BTreeMap::new();
+        m.insert(
+            "data".to_string(),
+            Json::Arr(data.into_iter().map(|n| Json::Num(f64::from(n))).collect()),
+        );
+        Json::Obj(m)
+    }
+
+    /// The names that fit at the cursor.
+    fn completion(&self, params: Option<&Json>) -> Json {
+        let Some((id, offset)) = self.locate(params) else {
+            return Json::Null;
+        };
+        let doc = self.docs.get(id).expect("located doc is open");
+        let items = complete::complete(doc, offset)
+            .into_iter()
+            .map(|c| {
+                let mut m = BTreeMap::new();
+                m.insert("label".to_string(), Json::Str(c.label));
+                m.insert("kind".to_string(), Json::Num(f64::from(c.kind as u8)));
+                if let Some(detail) = c.detail {
+                    m.insert("detail".to_string(), Json::Str(detail));
+                }
+                if let Some(snippet) = c.snippet {
+                    m.insert("insertText".to_string(), Json::Str(snippet));
+                    // InsertTextFormat.Snippet.
+                    m.insert("insertTextFormat".to_string(), Json::Num(2.0));
+                }
+                Json::Obj(m)
+            })
+            .collect();
+        Json::Arr(items)
     }
 
     /// What each diagnostic under the cursor means and how to fix it, from
@@ -527,6 +587,21 @@ fn initialize_result() -> Json {
     caps.insert("documentFormattingProvider".to_string(), Json::Bool(true));
     caps.insert("hoverProvider".to_string(), Json::Bool(true));
     caps.insert("codeActionProvider".to_string(), Json::Bool(true));
+    let names =
+        |names: &[&str]| Json::Arr(names.iter().map(|n| Json::Str(n.to_string())).collect());
+    let mut legend = BTreeMap::new();
+    legend.insert("tokenTypes".to_string(), names(semantic::TOKEN_TYPES));
+    legend.insert(
+        "tokenModifiers".to_string(),
+        names(semantic::TOKEN_MODIFIERS),
+    );
+    let mut tokens = BTreeMap::new();
+    tokens.insert("legend".to_string(), Json::Obj(legend));
+    tokens.insert("full".to_string(), Json::Bool(true));
+    caps.insert("semanticTokensProvider".to_string(), Json::Obj(tokens));
+    let mut completion = BTreeMap::new();
+    completion.insert("triggerCharacters".to_string(), names(&[":"]));
+    caps.insert("completionProvider".to_string(), Json::Obj(completion));
     let mut result = BTreeMap::new();
     result.insert("capabilities".to_string(), Json::Obj(caps));
     Json::Obj(result)
@@ -765,6 +840,12 @@ mod tests {
         assert_eq!(caps.get("definitionProvider"), Some(&Json::Bool(true)));
         assert_eq!(caps.get("renameProvider"), Some(&Json::Bool(true)));
         assert_eq!(caps.get("codeActionProvider"), Some(&Json::Bool(true)));
+        let legend = caps
+            .get("semanticTokensProvider")
+            .and_then(|p| p.get("legend"));
+        let types = legend.and_then(|l| l.get("tokenTypes")).cloned();
+        assert!(matches!(types, Some(Json::Arr(t)) if t.len() == semantic::TOKEN_TYPES.len()));
+        assert!(caps.get("completionProvider").is_some());
     }
 
     fn range_params(uri: &str, line: u32, character: u32) -> Json {
@@ -1076,6 +1157,43 @@ mod tests {
 
         let (out, _) = s.handle(&req(6, "textDocument/hover", at(0, 2)));
         assert_eq!(out.reply.unwrap().get("result"), Some(&Json::Null));
+    }
+
+    #[test]
+    fn semantic_tokens_and_completion_answer_over_the_protocol() {
+        let mut s = Server::new();
+        let uri = "file:///t.vs";
+        s.handle(&open(uri, "component C {\n    view { Column {  } }\n}\n"));
+        let doc = json::parse(&format!(r#"{{"textDocument":{{"uri":"{uri}"}}}}"#)).unwrap();
+        let (out, _) = s.handle(&req(8, "textDocument/semanticTokens/full", doc));
+        let Some(Json::Arr(data)) = result(out).get("data").cloned() else {
+            panic!("no token data");
+        };
+        // `component` is the first token: line 0, column 0, nine long, a keyword.
+        let first: Vec<Option<i64>> = data[..5].iter().map(Json::as_i64).collect();
+        assert_eq!(
+            first,
+            [0, 0, 9, semantic::TokenType::Keyword as i64, 0].map(Some)
+        );
+        assert_eq!(data.len() % 5, 0);
+
+        let at = json::parse(&format!(
+            r#"{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":1,"character":20}}}}"#
+        ))
+        .unwrap();
+        let (out, _) = s.handle(&req(9, "textDocument/completion", at));
+        let Json::Arr(items) = result(out) else {
+            panic!("no completion list");
+        };
+        let gap = items
+            .iter()
+            .find(|i| i.get("label").and_then(Json::as_str) == Some("gap"))
+            .expect("Column's `gap`");
+        assert_eq!(
+            gap.get("insertText").and_then(Json::as_str),
+            Some("gap: $0;")
+        );
+        assert_eq!(gap.get("insertTextFormat").and_then(Json::as_i64), Some(2));
     }
 
     #[test]

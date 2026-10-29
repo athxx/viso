@@ -174,3 +174,25 @@ The binary now exits as the protocol specifies: `0` when `exit` follows `shutdow
 `viso lsp` is the CLI's entry to the server and stays outside it: it finds `viso-lsp` beside the
 `viso` executable, then on `PATH`, and replaces its own process with it, so no `viso-cli →
 viso-lsp` edge exists and stdout carries the protocol alone.
+
+## Amendment — 2026-10-29: semantic tokens and completion
+
+The editor extensions (VSCode, Zed) are thin shells over this server, so the two methods an
+editor's own grammar cannot answer are added here rather than in either shell.
+
+- `textDocument/semanticTokens/full` classifies every keyword and name from the resolver's
+  bindings and declarations (a state read in a handler reads as the state it binds; an
+  imported native's path carries its function or type to its last segment) and, for names the
+  resolver does not bind, from their CST position (a node's widget, a property, an event, a
+  field, an argument label). The legend is standard LSP token types plus `declaration`,
+  `readonly` and `defaultLibrary`; positions are UTF-16 as everywhere else in the server.
+- `textDocument/completion` reads the position from the token before the word being typed, so a
+  half-written word never decides it: a node body offers its widget's properties (from the
+  widget schema `viso schema` reads) or a same-file component's inputs, the nodes and the
+  node-member keywords; `on` offers events; an expression its component's members, locals,
+  imports and value keywords; `lib::` the native library's functions, types and sub-libraries
+  from the registry; a type position the builtin, structural and declared types; a declaration
+  start the keywords of its level.
+
+Both are cold-path and re-derive from the open document; signature help and folding stay out of
+scope.
