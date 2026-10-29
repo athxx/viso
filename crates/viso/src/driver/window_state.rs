@@ -1666,7 +1666,7 @@ pub(crate) fn wrap_root_with_caption(
     bar: Option<viso_widgets::MenuBar>,
     build_content: impl FnOnce(&mut BuildCx<'_>) -> Option<NodeId>,
 ) -> Option<NodeId> {
-    if !caption {
+    if super::PANEL_ONLY || !caption {
         return build_content(cx);
     }
 
@@ -1719,7 +1719,7 @@ pub(crate) fn drawn_menu_bar(
     window: WindowId,
     caption: bool,
 ) -> Option<viso_widgets::MenuBar> {
-    if !caption || cx.capabilities().menus {
+    if super::PANEL_ONLY || !caption || cx.capabilities().menus {
         return None;
     }
     app_menu::bar(menu?, window, picks)

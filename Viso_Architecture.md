@@ -4173,6 +4173,7 @@ embedded-cpu（桌面窗口，CpuRaster）：二进制 6.92 MiB，空闲 footpri
 - **游戏音频**：driver 在启动时只放行（`audio::allow`）；音频 host 由挂载 game 的 view 接上（展开调用 facade 的 `__link_game`，headless 加载 package 与 dev 构建同样接上）。
 - **分页捕获**：`paged::capture` 把捕获作为 `Job` trait object 排队，driver 只经 trait 推进它。
 - **图像与模型解码**：见 §51（动图播放、glTF）。
+- **只有面板的构建**：Linux 上没有 `desktop` 会话与 headless 的构建只有 KMS 面板，facade 的 `PANEL_ONLY` 常量让窗口 caption、自绘菜单栏与无障碍 bridge 的分支在编译期折掉。
 
 ### 50A.6 MCU-ready 不变量（1.0 必须守住）
 

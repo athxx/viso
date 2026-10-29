@@ -27,6 +27,17 @@ mod pace;
 mod surrounding;
 mod window_state;
 
+/// Whether the build's only display is a KMS panel: a Linux build without
+/// the desktop sessions or the headless harness. A panel frames no window
+/// and has no menu bar or assistive technology, so such a build links no
+/// caption, drawn menu bar or accessibility bridge.
+pub(crate) const PANEL_ONLY: bool = cfg!(all(
+    target_os = "linux",
+    not(feature = "desktop"),
+    not(feature = "headless"),
+    not(test),
+));
+
 /// What a field's surrounding text was made from: the field, its text's
 /// revision, the selection's anchor and focus and the composition's range.
 pub(crate) type SurroundingKey = (

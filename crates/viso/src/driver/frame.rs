@@ -22,7 +22,7 @@ use super::window_state::{
     drawn_menu_bar, native_handle, to_platform_config, wrap_root_in_safe_area,
     wrap_root_with_caption,
 };
-use super::{AppDriver, SessionFonts, WindowState};
+use super::{AppDriver, PANEL_ONLY, SessionFonts, WindowState};
 use crate::{
     Application, Lifecycle, accessibility, audio, edit_menu, environment, footprint, persist,
     services, shell,
@@ -99,7 +99,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
         // special case.
         let ui_chrome = cfg.chrome;
         let title = cfg.title.clone();
-        let framed = cx.framed_windows();
+        let framed = !PANEL_ONLY && cx.framed_windows();
         let caption = cfg.caption && framed;
         let bar = drawn_menu_bar(self.app_menu.as_ref(), &self.menu_picks, cx, id, caption);
         let app = self.app.as_mut();
@@ -1131,7 +1131,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
     }
 
     fn on_accessibility(&mut self, window: WindowId, request: viso_platform::AccessRequest) {
-        if !self.accessibility {
+        if PANEL_ONLY || !self.accessibility {
             return;
         }
         let Some(ws) = self.window_mut(window) else {
@@ -1592,7 +1592,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // Values the build closure moves in to wrap the deferred tree
                     // in the default caption band, exactly as the launch path does.
                     let title = req.config.title.clone();
-                    let framed = cx.framed_windows();
+                    let framed = !PANEL_ONLY && cx.framed_windows();
                     let caption = req.config.caption && framed;
                     let build = req.build;
                     let id_slot = req.id_slot;
@@ -1879,7 +1879,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ws.store.set_dirty_cause(DirtyCause::Other);
                 }
             }
-            FramePhase::UpdateSemantics => {
+            FramePhase::UpdateSemantics if !PANEL_ONLY => {
                 for ws in &mut self.windows {
                     let (Some(access), Some(root)) = (&mut ws.access, ws.root) else {
                         continue;
