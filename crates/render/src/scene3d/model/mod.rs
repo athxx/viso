@@ -23,16 +23,26 @@
 //! Everything read is checked: an accessor reading past its view, an index
 //! past its vertices, a node in a cycle, or a URI that leaves the asset's
 //! directory makes the asset fail to decode rather than read out of bounds.
+//!
+//! An app decodes model assets through [`ModelAsset::decode_linked`], which
+//! only decodes once something that draws models called [`ModelAsset::link`]:
+//! an app drawing none links no glTF decoder, and no image decoder for it.
 
 pub(crate) mod geometry;
 mod gltf;
 mod mips;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub use gltf::ModelError;
 pub use mips::ImageKind;
 use viso_math::{Mat4, Quat, Vec3, vec3};
+
+/// How a model decodes, set by [`ModelAsset::link`].
+type Decode = fn(&[u8], &mut dyn FnMut(&str) -> Option<Vec<u8>>) -> Result<ModelAsset, ModelError>;
+
+/// The decoder, once something draws models.
+static DECODE: OnceLock<Decode> = OnceLock::new();
 
 /// A decoded glTF asset: its geometry, materials, images and rig.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +78,21 @@ impl ModelAsset {
     /// As [`decode`](Self::decode), and a URI that is not a data URI.
     pub fn decode_embedded(bytes: &[u8]) -> Result<ModelAsset, ModelError> {
         gltf::decode(bytes, &mut |_| None)
+    }
+
+    /// Links the decoder [`decode_linked`](Self::decode_linked) uses. Called
+    /// by what draws models, so only an app that can draw one links it.
+    pub fn link() {
+        DECODE.get_or_init(|| Self::decode);
+    }
+
+    /// As [`decode`](Self::decode), once [`link`](Self::link)ed; `None`
+    /// before, when nothing in the app draws a model.
+    pub fn decode_linked(
+        bytes: &[u8],
+        resolve: &mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Option<Result<ModelAsset, ModelError>> {
+        DECODE.get().map(|decode| decode(bytes, resolve))
     }
 
     /// About the bytes it holds.

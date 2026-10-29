@@ -5,10 +5,15 @@ use std::process::Command;
 
 use super::{Row, Scene};
 
-/// The Cargo profile every subject is built with, defined on the command
-/// line so neither workspace's nor the user's `[profile.release]` changes
-/// what is measured, and kept apart from their release builds.
+/// The Cargo profile a `release` subject is built with, the settings every
+/// framework is compared at. It is defined on the command line so neither
+/// workspace's nor the user's `[profile.release]` changes what is measured,
+/// and kept apart from their release builds.
 pub(super) const PROFILE: &str = "footprint";
+
+/// The Cargo profile a `shipping` subject is built with: what
+/// `viso build --profile shipping` adds, optimized for size as one unit.
+const SHIPPING: &str = "footprint-shipping";
 
 /// The settings of [`PROFILE`].
 const PROFILE_CONFIG: &[&str] = &[
@@ -22,14 +27,43 @@ const PROFILE_CONFIG: &[&str] = &[
     "incremental=false",
 ];
 
-/// The settings of [`PROFILE`], as the baseline records them.
+/// The settings of [`SHIPPING`].
+const SHIPPING_CONFIG: &[&str] = &[
+    "inherits=\"release\"",
+    "opt-level=\"s\"",
+    "lto=\"fat\"",
+    "codegen-units=1",
+    "panic=\"unwind\"",
+    "strip=\"symbols\"",
+    "debug=false",
+    "incremental=false",
+];
+
+/// The settings of both profiles, as the baseline records them.
 pub(super) fn profile_settings() -> String {
-    PROFILE_CONFIG
-        .iter()
-        .filter(|s| !s.starts_with("inherits"))
-        .map(|s| s.replace('"', ""))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let settings = |config: &[&str]| {
+        config
+            .iter()
+            .filter(|s| !s.starts_with("inherits"))
+            .map(|s| s.replace('"', ""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    format!(
+        "{}; shipping subjects: {}",
+        settings(PROFILE_CONFIG),
+        settings(SHIPPING_CONFIG)
+    )
+}
+
+/// The Cargo profile and its settings for a subject built with `env`:
+/// [`SHIPPING`] when its `VISO_PROFILE` is `shipping`.
+fn profile(env: &[(&str, &str)]) -> (&'static str, &'static [&'static str]) {
+    if env.contains(&("VISO_PROFILE", "shipping")) {
+        (SHIPPING, SHIPPING_CONFIG)
+    } else {
+        (PROFILE, PROFILE_CONFIG)
+    }
 }
 
 /// What to build.
@@ -81,19 +115,20 @@ pub(super) fn target_dir() -> PathBuf {
         .unwrap_or_else(|| crate::workspace_root().join("target"))
 }
 
-/// `cargo build` of the package in `dir` with [`PROFILE`], under `target`.
-fn cargo(dir: &Path, target: &Path) -> Command {
+/// `cargo build` of the package in `dir` with the Cargo profile `name` of
+/// `settings`, under `target`.
+fn cargo(dir: &Path, target: &Path, (name, settings): (&str, &[&str])) -> Command {
     let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     command
         .current_dir(dir)
         .env("CARGO_TARGET_DIR", target)
         .arg("build")
         .arg("--profile")
-        .arg(PROFILE);
-    for setting in PROFILE_CONFIG {
+        .arg(name);
+    for setting in settings {
         command
             .arg("--config")
-            .arg(format!("profile.{PROFILE}.{setting}"));
+            .arg(format!("profile.{name}.{setting}"));
     }
     command
 }
@@ -124,14 +159,15 @@ pub(super) fn build(
             env,
             triple,
         } => {
-            let mut command = cargo(root, target);
+            let profile = profile(env);
+            let mut command = cargo(root, target, profile);
             command.args(["-p", "viso-footprint"]);
             let out = match triple {
                 Some(triple) => {
                     command.args(["--target", triple]);
-                    target.join(triple).join(PROFILE)
+                    target.join(triple).join(profile.0)
                 }
-                None => out,
+                None => target.join(profile.0),
             };
             if !default_features {
                 command.arg("--no-default-features");
@@ -164,7 +200,10 @@ pub(super) fn build(
         }
         Build::Makepad { checkout } => {
             let dir = makepad_crate(root, checkout, scratch)?;
-            status(cargo(&dir, target), "the Makepad apps")?;
+            status(
+                cargo(&dir, target, (PROFILE, PROFILE_CONFIG)),
+                "the Makepad apps",
+            )?;
             Ok(Built {
                 counter: out.join("makepad-footprint-counter"),
                 list: Some(out.join("makepad-footprint-list")),
@@ -174,7 +213,7 @@ pub(super) fn build(
             })
         }
         Build::MakepadExample { checkout, package } => {
-            let mut command = cargo(checkout, target);
+            let mut command = cargo(checkout, target, (PROFILE, PROFILE_CONFIG));
             command.args(["-p", package]);
             status(command, package)?;
             Ok(Built {
@@ -402,7 +441,9 @@ mod tests {
     fn the_profile_is_recorded_without_its_parent() {
         assert_eq!(
             profile_settings(),
-            "opt-level=3 lto=thin codegen-units=1 panic=unwind strip=symbols debug=false incremental=false"
+            "opt-level=3 lto=thin codegen-units=1 panic=unwind strip=symbols debug=false \
+             incremental=false; shipping subjects: opt-level=s lto=fat codegen-units=1 \
+             panic=unwind strip=symbols debug=false incremental=false"
         );
     }
 }

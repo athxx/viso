@@ -6,10 +6,13 @@
 //!     [--makepad <dir> | --no-makepad] [--only <subject>]...
 //! ```
 //!
-//! Every subject is built in release with the same settings
-//! ([`build::PROFILE`]: opt-level 3, thin LTO, one codegen unit, stripped)
-//! under the shared target directory, then run `runs` times (default 3,
-//! after one unrecorded warm-up) and each metric's median kept.
+//! Every subject is built under the shared target directory, then run
+//! `runs` times (default 3, after one unrecorded warm-up) and each metric's
+//! median kept. The desktop and headless subjects and Makepad's are built in
+//! release with the same settings ([`build::PROFILE`]: opt-level 3, thin LTO,
+//! one codegen unit, stripped). The embedded window and board subjects are
+//! the artifact `viso build --profile shipping` makes for a device target:
+//! opt-level `s`, fat LTO, and every raster converted at build time.
 //!
 //! - A window subject opens its window: the time from spawn to the first
 //!   frame it submits, its RSS and memory footprint at the peak and after it
@@ -300,17 +303,28 @@ const EMBEDDED_CPU_ENV: &[(&str, &str)] = &[
     ("VISO_FONT_CHARSET", "ascii"),
 ];
 
+/// The variables `viso build --profile shipping` hands an embedded-cpu
+/// device target: the shipped artifact, every raster converted at build
+/// time, so it links no raster decoder.
+const EMBEDDED_CPU_SHIPPING: &[(&str, &str)] = &[
+    ("VISO_PROFILE", "shipping"),
+    ("VISO_FOOTPRINT", "embedded-cpu"),
+    ("VISO_FONT_CHARSET", "ascii"),
+    ("VISO_IMAGES_CONVERTED", "raster"),
+];
+
 const RELEASE_ENV: &[(&str, &str)] = &[("VISO_PROFILE", "release")];
 
 /// The facade features of the embedded-gpu profile on GLES.
 const EMBEDDED_GPU: &[&str] = &["viso/gles", "viso/kms", "viso/rasterizer"];
 
-/// The variables of an embedded-gpu release build, its font subset to the
+/// The variables of an embedded-gpu shipping build, its font subset to the
 /// embedded-cpu one's.
-const EMBEDDED_GPU_ENV: &[(&str, &str)] = &[
-    ("VISO_PROFILE", "release"),
+const EMBEDDED_GPU_SHIPPING: &[(&str, &str)] = &[
+    ("VISO_PROFILE", "shipping"),
     ("VISO_FOOTPRINT", "embedded-gpu"),
     ("VISO_FONT_CHARSET", "ascii"),
+    ("VISO_IMAGES_CONVERTED", "raster"),
 ];
 
 /// The Viso subjects: each profile `viso build` makes for this host, with a
@@ -333,7 +347,7 @@ fn viso_subjects() -> Vec<Subject> {
             framework: "viso",
             profile: "embedded-cpu",
             mode: Mode::Window,
-            build: app(EMBEDDED_CPU, false, EMBEDDED_CPU_ENV),
+            build: app(EMBEDDED_CPU, false, EMBEDDED_CPU_SHIPPING),
         },
         Subject {
             framework: "viso",
@@ -367,13 +381,13 @@ fn board_subjects(triple: &str) -> Vec<Subject> {
             framework: "viso",
             profile: "embedded-cpu-board",
             mode: Mode::Board,
-            build: app(EMBEDDED_CPU, EMBEDDED_CPU_ENV),
+            build: app(EMBEDDED_CPU, EMBEDDED_CPU_SHIPPING),
         },
         Subject {
             framework: "viso",
             profile: "embedded-gpu-board",
             mode: Mode::Board,
-            build: app(EMBEDDED_GPU, EMBEDDED_GPU_ENV),
+            build: app(EMBEDDED_GPU, EMBEDDED_GPU_SHIPPING),
         },
     ]
 }

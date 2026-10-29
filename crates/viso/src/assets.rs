@@ -381,9 +381,14 @@ fn decode_model(bytes: &[u8], dir: Option<&Path>) -> Result<Arc<ModelAsset>, Ass
         let bytes = read(&dir?.join(uri)).ok()?;
         Some(bytes.to_vec())
     };
-    ModelAsset::decode(bytes, &mut resolve)
-        .map(Arc::new)
-        .map_err(|error| AssetError::Decode(error.to_string()))
+    match ModelAsset::decode_linked(bytes, &mut resolve) {
+        Some(model) => model
+            .map(Arc::new)
+            .map_err(|error| AssetError::Decode(error.to_string())),
+        None => Err(AssetError::Decode(
+            "nothing in this app draws a model, so none decodes".to_owned(),
+        )),
+    }
 }
 
 /// `image`, or its texels decoded to RGBA8 when `sampled` lacks its format.

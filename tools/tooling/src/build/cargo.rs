@@ -181,7 +181,8 @@ impl std::fmt::Debug for BuildCommand {
 /// The Cargo profile a Viso profile builds with, and the settings Viso
 /// gives it: `--profile` and a `--config` per setting that is not already
 /// Cargo's own for that profile. `shipping` is a Cargo profile of Viso's,
-/// inheriting `release`. A web build's debug info follows its web
+/// inheriting `release` and optimizing the whole program as one unit (fat
+/// LTO, one codegen unit) for the smallest artifact. A web build's debug info follows its web
 /// settings, and its symbols are stripped by `wasm-bindgen`. An unoptimized
 /// headless build still optimizes the crates that draw its frames in
 /// software ([`RASTER`]), which would otherwise take most of a second each.
@@ -195,6 +196,8 @@ pub fn profile_args(profile: Profile, settings: &ProfileSettings, target: Target
     };
     if profile == Profile::Shipping {
         config("inherits", "\"release\"".to_owned());
+        config("lto", "\"fat\"".to_owned());
+        config("codegen-units", "1".to_owned());
     }
     // What Cargo's own `dev` and `release` profiles build with.
     let release = profile != Profile::Dev;
@@ -834,6 +837,10 @@ mod tests {
                 "--config",
                 "profile.shipping.inherits=\"release\"",
                 "--config",
+                "profile.shipping.lto=\"fat\"",
+                "--config",
+                "profile.shipping.codegen-units=1",
+                "--config",
                 "profile.shipping.opt-level=\"s\"",
                 "--config",
                 "profile.shipping.strip=true",
@@ -845,7 +852,7 @@ mod tests {
                 Profile::Shipping,
                 &settings(Profile::Shipping, plain),
                 Target::WebGpu
-            )[4..],
+            )[8..],
             ["--config", "profile.shipping.opt-level=\"s\""]
         );
         // An unoptimized headless build optimizes its software raster.

@@ -4204,6 +4204,7 @@ impl NodeStore {
     /// the slot is [`reset`](crate::scenes::SceneSlots::reset), for its filler
     /// to draw it afresh.
     pub fn scene_model(&mut self, slot: SceneSlot, asset: &Asset) -> Option<Arc<SceneModel>> {
+        viso_render::scene3d::model::ModelAsset::link();
         let (node, held) = self.scenes.hold_model(slot, asset.id)?;
         if !held {
             self.offer_asset(asset);

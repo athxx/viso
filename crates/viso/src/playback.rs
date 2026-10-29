@@ -16,6 +16,11 @@
 //! environment does not ask for reduced motion; otherwise it holds its
 //! frame, and what was left of the frame's time when it stopped is what is
 //! left when it plays again. An image no table holds closes its player.
+//!
+//! A build that converted every raster records no animation, so none of this
+//! runs and no animation decoder is linked.
+
+#![cfg_attr(viso_converted_rasters, allow(dead_code))]
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -76,13 +81,28 @@ struct Track {
     plays: u32,
 }
 
+/// What answers the orders: the animations' decoders, behind a pointer so
+/// that only a build that can record an animation links them.
+trait Answer: Send {
+    fn handle(&mut self, order: Order) -> Option<Reply>;
+}
+
+/// Makes what answers the orders.
+type Answerer = fn() -> Box<dyn Answer>;
+
 /// The open animations, by player.
 #[derive(Default)]
 struct Decoders {
     tracks: HashMap<u64, Track>,
 }
 
-impl Decoders {
+/// The [`Answerer`] of a build that plays animations.
+#[cfg(not(viso_converted_rasters))]
+fn decoders() -> Box<dyn Answer> {
+    Box::<Decoders>::default()
+}
+
+impl Answer for Decoders {
     fn handle(&mut self, order: Order) -> Option<Reply> {
         match order {
             Order::Open { key, bytes } => {
@@ -150,15 +170,15 @@ struct Worker {
 }
 
 impl Worker {
-    /// A thread that wakes the loop with `waker` after each reply; `None` when
-    /// none can be spawned.
-    fn spawn(waker: LoopWaker) -> Option<Worker> {
+    /// A thread answering with what `answerer` makes, waking the loop with
+    /// `waker` after each reply; `None` when none can be spawned.
+    fn spawn(waker: LoopWaker, answerer: Answerer) -> Option<Worker> {
         let (orders, inbox) = mpsc::channel::<Order>();
         let (outbox, replies) = mpsc::channel();
         thread::Builder::new()
             .name("viso-playback".into())
             .spawn(move || {
-                let mut decoders = Decoders::default();
+                let mut decoders = answerer();
                 for order in inbox {
                     if let Some(reply) = decoders.handle(order) {
                         if outbox.send(reply).is_err() {
@@ -181,7 +201,9 @@ pub(crate) struct Playback {
     sources: HashMap<ResourceId, (ResourceRevision, AssetBytes)>,
     worker: Option<Worker>,
     /// Whether no thread could be spawned: frames decode in the frame step.
-    inline: Option<Decoders>,
+    inline: Option<Box<dyn Answer>>,
+    /// What makes the decoders, set by the first animation recorded.
+    answerer: Option<Answerer>,
     replies: Vec<Reply>,
     next_key: u64,
     /// Frames written into textures, counted since the app started.
@@ -197,9 +219,16 @@ impl Playback {
         revision: ResourceRevision,
         bytes: AssetBytes,
     ) {
-        let newer = self.sources.get(&id).is_none_or(|(r, _)| revision >= *r);
-        if newer {
-            self.sources.insert(id, (revision, bytes));
+        // A build that converted every raster has no animation to play.
+        #[cfg(viso_converted_rasters)]
+        let _ = (id, revision, bytes);
+        #[cfg(not(viso_converted_rasters))]
+        {
+            let newer = self.sources.get(&id).is_none_or(|(r, _)| revision >= *r);
+            if newer {
+                self.sources.insert(id, (revision, bytes));
+            }
+            self.answerer = Some(decoders);
         }
     }
 
@@ -223,7 +252,7 @@ impl Playback {
                 // The thread died: decode in the frame step from now on.
                 Err(TryRecvError::Disconnected) => {
                     self.worker = None;
-                    self.inline = Some(Decoders::default());
+                    self.inline = self.answerer.map(|answerer| answerer());
                 }
             }
         }
@@ -231,12 +260,16 @@ impl Playback {
     }
 
     fn send(&mut self, order: Order, waker: &dyn Fn() -> LoopWaker) {
+        // Orders are only sent for an animation recorded.
+        let Some(answerer) = self.answerer else {
+            return;
+        };
         if self.worker.is_none() && self.inline.is_none() {
             self.worker = (crate::footprint::workers() > 0)
-                .then(|| Worker::spawn(waker()))
+                .then(|| Worker::spawn(waker(), answerer))
                 .flatten();
             if self.worker.is_none() {
-                self.inline = Some(Decoders::default());
+                self.inline = Some(answerer());
             }
         }
         let order = match &self.worker {
@@ -244,13 +277,13 @@ impl Playback {
                 Ok(()) => return,
                 Err(mpsc::SendError(order)) => {
                     self.worker = None;
-                    self.inline = Some(Decoders::default());
+                    self.inline = Some(answerer());
                     order
                 }
             },
             None => order,
         };
-        if let Some(reply) = self.inline.get_or_insert_default().handle(order) {
+        if let Some(reply) = self.inline.get_or_insert_with(answerer).handle(order) {
             self.replies.push(reply);
         }
     }
@@ -554,7 +587,7 @@ mod tests {
             let format = backend.surface_format(surface);
             let mut renderer = Renderer::new(&mut backend, format);
             let mut assets = Assets::default();
-            assets.playback.inline = Some(Decoders::default());
+            assets.playback.inline = Some(Box::<Decoders>::default());
             for _ in 0..2000 {
                 assets.provide(std::iter::once(&mut store));
                 let _ = assets.serve(
