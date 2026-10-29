@@ -1280,9 +1280,18 @@ everything above is done.
   - [x] VSCode: the injection is checked by the grammar test on `fixtures/app/src/main.rs`, the
     link by the integration suite. Zed allows neither: an extension cannot inject into the
     built-in Rust language or add document links.
-- [ ] Optional: an inspect/profile panel over the CLI's JSON event stream in VSCode, and the
+- [x] Optional: an inspect/profile panel over the CLI's JSON event stream in VSCode, and the
   language features inside a `ui!` body through a virtual document. Verify against a running
   `viso run`.
+  - [x] Inspector, Events and Profile views run `viso inspect tree`, `viso inspect events` and
+    `viso profile` with `--json`; rows open the source they name. `ui!`/`component!` bodies
+    are mirrored to `.vs` documents for completion, hover and definition, mapped back.
+  - [x] Verified: node unit tests on the stream and the mirrors; the VSCode suite fills the
+    Inspector (17 nodes, a node opens `src/inbox.vs` at its line) and Profile views from a
+    headless `examples/i18n` and completes and resolves inside the fixture's `component!`;
+    against a running `viso run` of `examples/i18n` on macOS the same three commands answer,
+    and a hot-reload edit during capture gives 44 frames and 6 `reload` dirty events, read as
+    rows by the views' reader.
 
 
 ## Backlog — carried over from the older todo files
