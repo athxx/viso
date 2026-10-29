@@ -63,6 +63,7 @@ use crate::control::{
 };
 use crate::host::ViewHost;
 use crate::input::BackSink;
+use crate::kinds::Kind;
 use crate::layout_values::{alignment, layout_value, length};
 use crate::scope::Scope;
 use crate::shaders::encode_shader;
@@ -411,6 +412,22 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Ripple,
 ];
 
+/// Where `input`'s value sits among the values a node shows.
+const fn at(input: ControlInput) -> usize {
+    let mut at = 0;
+    while SHOWN_INPUTS[at] as u8 != input as u8 {
+        at += 1;
+    }
+    at
+}
+
+/// The values `showing` shows for each input named, in order.
+macro_rules! shown {
+    ($showing:expr, $($input:ident),+ $(,)?) => {
+        [$(&$showing.values[const { at(ControlInput::$input) }]),+]
+    };
+}
+
 /// Where a video's `controls` and `fullscreen` sit among the values a node
 /// shows.
 const CONTROLS: usize = SHOWN - 5;
@@ -527,6 +544,8 @@ pub(crate) struct Shown {
     laid: Option<Box<[Value]>>,
     /// The parts the framework builds inside it, once built.
     parts: Option<Parts>,
+    /// What delivering to a node of its kind runs.
+    kind: &'static Kind,
 }
 
 impl Shown {
@@ -541,6 +560,7 @@ impl Shown {
         let interaction = control
             .reads_state()
             .then(|| cx.store.interaction_cell(cx.states));
+        let kind = host.kind(control.kind);
         let mut shown = Shown {
             node,
             control,
@@ -552,6 +572,7 @@ impl Shown {
             program: None,
             laid: None,
             parts: None,
+            kind,
         };
         shown.rescope(scope, host);
         shown
@@ -640,11 +661,14 @@ impl Shown {
         // before that a reload gives no entry shows the default too: it is
         // the one value that changes with no entry.
         let held = prior.is_some();
-        // Whether the value at `at` is given, by an entry or an arm.
-        let given = |at: usize| {
-            let input = Switched::Input(SHOWN_INPUTS[at]);
-            entries[at].is_some() || control.arms.iter().any(|a| a.target == input)
+        let showing = Showing {
+            control,
+            values: &shows,
+            prior,
+            entries: &entries,
+            first,
         };
+        let given = |at: usize| showing.given(at);
         // Whether the value at `at` shows: it is given, or it showed before.
         let shown = |at: usize| held || given(at);
         let dialog = control.kind == ControlKind::Dialog;
@@ -657,8 +681,6 @@ impl Shown {
             value,
             min,
             max,
-            fit,
-            tint,
             background,
             opacity,
             corner_radius,
@@ -674,69 +696,74 @@ impl Shown {
             autofocus,
             clip,
             text_color,
-            soft_wrap,
-            font_weight,
-            font_family,
-            line_height,
-            max_lines,
-            overflow,
-            align,
             placeholder,
             secure,
-            multiline,
-            input_kind,
-            max_length,
-            step,
-            precision,
             caption,
             translate,
             scale,
             rotation,
             origin,
             cursor,
-            font_style,
             pieces,
-            selectable,
             shadow,
             refreshing,
             sticky,
-            paging,
             hero,
             focus_ring,
             access_key,
             drag_axis,
-            pan_margin,
             drag,
             drag_kind,
             drop_accepts,
             drop_operation,
-            url,
-            removable,
-            wrap,
-            fill_origin,
-            marks,
-            axis,
-            alpha,
-            wheel,
-            options,
-            free_text,
-            empty_text,
-            debounce,
-            animate,
-            playing,
-            looping,
-            muted,
-            volume,
-            rate,
-            controls,
-            fullscreen,
-            mirror,
             backdrop,
             ripple,
-        ] = &shows;
+        ] = shown!(
+            showing,
+            Value,
+            Min,
+            Max,
+            Background,
+            Opacity,
+            CornerRadius,
+            Border,
+            Label,
+            Hint,
+            SpokenValue,
+            Hidden,
+            HeadingLevel,
+            Visible,
+            Focusable,
+            Enabled,
+            Autofocus,
+            Clip,
+            TextColor,
+            Placeholder,
+            Secure,
+            Caption,
+            Translate,
+            Scale,
+            Rotation,
+            TransformOrigin,
+            Cursor,
+            Spans,
+            Shadow,
+            Refreshing,
+            Sticky,
+            Hero,
+            FocusRing,
+            AccessKey,
+            DragAxis,
+            Drag,
+            DragKind,
+            DropAccepts,
+            DropOperation,
+            Backdrop,
+            Ripple,
+        );
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
-        let changed = |at: usize| prior.is_none_or(|prior| prior[at] != shows[at]);
+        let changed = |at: usize| showing.changed(at);
         let secure = truth(secure, false);
         if semantics.says_anything()
             && ((SEMANTICS..NODE).any(changed)
@@ -827,62 +854,19 @@ impl Shown {
             | ControlKind::Number => move_of(TEXT, look.color_transition.filter(|_| given(TEXT))),
             _ => None,
         };
-        match control.kind {
-            ControlKind::ColorPicker => {
-                let (alpha, wheel) = (truth(alpha, true), truth(wheel, false));
-                show_picker(&mut self.parts, self.node, cx, host, value, alpha, wheel);
-            }
-            ControlKind::ComboBox => {
-                // Its parts are built again when what they are built from
-                // changes.
-                let stale = [FIELD, FIELD + 7]
-                    .into_iter()
-                    .chain(LISTED..LISTED + 3)
-                    .any(changed);
-                let spec = ComboSpec {
-                    options: labels(options).into_iter().map(ComboOption::new).collect(),
-                    free: truth(free_text, false),
-                    placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
-                    empty: empty_text
-                        .as_str()
-                        .map_or_else(|| ComboSpec::default().empty, str::to_owned),
-                    label: caption.as_str().map(str::to_owned),
-                    ..ComboSpec::default()
-                };
-                show_combo(&mut self.parts, self.node, cx, host, spec, stale, value);
-            }
-            ControlKind::Router => show_router(&mut self.parts, self.node, cx, host, value),
-            ControlKind::Video if first || changed(CONTROLS) => {
-                show_video_controls(&mut self.parts, self.node, cx, truth(controls, false));
-            }
-            ControlKind::SearchField => {
-                let stale = [FIELD, FIELD + 7, LISTED + 3].into_iter().any(changed);
-                let spec = SearchSpec {
-                    placeholder: placeholder
-                        .as_str()
-                        .map_or_else(|| SearchSpec::default().placeholder, str::to_owned),
-                    label: caption.as_str().map(str::to_owned),
-                    debounce: debounce
-                        .as_float()
-                        .and_then(|s| Duration::try_from_secs_f64(s).ok())
-                        .unwrap_or_default(),
-                    ..SearchSpec::default()
-                };
-                let suggestions = changed(LISTED).then(|| labels(options));
-                show_search(
-                    &mut self.parts,
-                    self.node,
-                    cx,
-                    host,
-                    spec,
-                    stale,
-                    value,
-                    suggestions,
-                );
-            }
-            _ => {}
+        let mut delivery = Delivery {
+            node: self.node,
+            showing,
+            spanned,
+            program: &program,
+            parts: &mut self.parts,
+            cx,
+            host,
+        };
+        if let Some(parts) = self.kind.parts {
+            parts(&mut delivery);
         }
-        let store = &mut *cx.store;
+        let store = &mut *delivery.cx.store;
         // A dialog or a toast is a layer that shows while open; a dialog
         // traps the focus meanwhile, and a toast's own box lets the pointer
         // through.
@@ -1056,11 +1040,92 @@ impl Shown {
                 (None, value) => store.present(self.node, value),
             }
         }
-        let text = |shown: &Value| TextRequest {
+        if prior.is_some()
+            && (0..LOOK)
+                .chain(TEXT..TRANSLATE)
+                .chain(PIECES..SHADOW)
+                .chain([ACCESS_KEY, PAN_MARGIN, URL, REMOVABLE, WRAP])
+                .chain(SLIDE..SHOWN)
+                .all(|at| !changed(at))
+            && !repaint
+        {
+            self.shows = Some(shows);
+            return;
+        }
+        if let Some(state) = self.kind.state {
+            state(&mut delivery);
+        }
+        self.shows = Some(shows);
+        self.program = program;
+    }
+}
+
+/// What delivering to a node gives the code of its kind of control.
+pub(crate) struct Delivery<'d, 'c> {
+    node: NodeId,
+    showing: Showing<'d>,
+    /// A label's text as its `pieces` span it.
+    spanned: Option<(String, Vec<TextSpan>)>,
+    program: &'d Option<Arc<BrushProgram>>,
+    parts: &'d mut Option<Parts>,
+    cx: &'d mut StructureCx<'c>,
+    host: &'d mut ViewHost,
+}
+
+/// The code a kind of control runs on a delivery.
+pub(crate) type Deliver = fn(&mut Delivery<'_, '_>);
+
+/// The values a node shows, as one delivery sees them.
+#[derive(Clone, Copy)]
+struct Showing<'d> {
+    control: &'d Control,
+    values: &'d [Value; SHOWN],
+    /// What it showed before, `None` before its first delivery.
+    prior: Option<&'d [Value; SHOWN]>,
+    entries: &'d [Option<u32>; SHOWN],
+    /// Whether the delivery shows every value anew.
+    first: bool,
+}
+
+impl Showing<'_> {
+    /// Whether the value at `at` is given, by an entry or an arm.
+    fn given(&self, at: usize) -> bool {
+        let input = Switched::Input(SHOWN_INPUTS[at]);
+        self.entries[at].is_some() || self.control.arms.iter().any(|a| a.target == input)
+    }
+
+    /// Whether the value at `at` differs from the one shown before.
+    fn changed(&self, at: usize) -> bool {
+        self.prior.is_none_or(|prior| prior[at] != self.values[at])
+    }
+
+    /// The first character of its `access_key`.
+    fn access_key(&self) -> Option<char> {
+        let [key] = shown!(self, AccessKey);
+        key.as_str().and_then(|key| key.chars().next())
+    }
+
+    /// The request showing `shown` in its text style.
+    fn text(&self, shown: &Value) -> TextRequest {
+        let [
+            text_color,
+            soft_wrap,
+            font_weight,
+            font_style,
+            font_family,
+            line_height,
+            max_lines,
+            overflow,
+            align,
+        ] = shown!(
+            self, TextColor, SoftWrap, FontWeight, FontStyle, FontFamily, LineHeight, MaxLines,
+            Overflow, TextAlign,
+        );
+        TextRequest {
             spans: Vec::new(),
             text: shown.as_str().unwrap_or_default().to_owned(),
             font_size: FontSize::Inherited,
-            color: if given(TEXT) {
+            color: if self.given(TEXT) {
                 color(text_color)
             } else {
                 COLOR
@@ -1076,531 +1141,689 @@ impl Shown {
                 overflow,
                 align,
             ]),
+        }
+    }
+}
+
+pub(crate) fn picker_parts(d: &mut Delivery<'_, '_>) {
+    let [value, alpha, wheel] = shown!(d.showing, Value, Alpha, Wheel);
+    let (alpha, wheel) = (truth(alpha, true), truth(wheel, false));
+    show_picker(d.parts, d.node, d.cx, d.host, value, alpha, wheel);
+}
+
+pub(crate) fn combo_parts(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, placeholder, caption, options, free_text, empty_text] =
+        shown!(s, Value, Placeholder, Caption, Options, FreeText, EmptyText);
+    // Its parts are built again when what they are built from changes.
+    let stale = [FIELD, FIELD + 7]
+        .into_iter()
+        .chain(LISTED..LISTED + 3)
+        .any(|at| s.changed(at));
+    let spec = ComboSpec {
+        options: labels(options).into_iter().map(ComboOption::new).collect(),
+        free: truth(free_text, false),
+        placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
+        empty: empty_text
+            .as_str()
+            .map_or_else(|| ComboSpec::default().empty, str::to_owned),
+        label: caption.as_str().map(str::to_owned),
+        ..ComboSpec::default()
+    };
+    show_combo(d.parts, d.node, d.cx, d.host, spec, stale, value);
+}
+
+pub(crate) fn router_parts(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    show_router(d.parts, d.node, d.cx, d.host, value);
+}
+
+pub(crate) fn video_parts(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    if s.first || s.changed(CONTROLS) {
+        let [controls] = shown!(s, Controls);
+        show_video_controls(d.parts, d.node, d.cx, truth(controls, false));
+    }
+}
+
+pub(crate) fn search_parts(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, placeholder, caption, options, debounce] =
+        shown!(s, Value, Placeholder, Caption, Options, Debounce);
+    let stale = [FIELD, FIELD + 7, LISTED + 3]
+        .into_iter()
+        .any(|at| s.changed(at));
+    let spec = SearchSpec {
+        placeholder: placeholder
+            .as_str()
+            .map_or_else(|| SearchSpec::default().placeholder, str::to_owned),
+        label: caption.as_str().map(str::to_owned),
+        debounce: debounce
+            .as_float()
+            .and_then(|s| Duration::try_from_secs_f64(s).ok())
+            .unwrap_or_default(),
+        ..SearchSpec::default()
+    };
+    let suggestions = s.changed(LISTED).then(|| labels(options));
+    show_search(
+        d.parts,
+        d.node,
+        d.cx,
+        d.host,
+        spec,
+        stale,
+        value,
+        suggestions,
+    );
+}
+
+/// A viewer clips its content unless its `clip` says, and keeps the content
+/// within its limits as they change.
+pub(crate) fn viewer(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [min, max, pan_margin] = shown!(s, Min, Max, PanMargin);
+    let store = &mut *d.cx.store;
+    if s.first && !s.given(NODE + 4) {
+        store.set_clip(d.node, true);
+    }
+    let limits = viso_ui::ViewerLimits {
+        min_scale: float(min, 1.0),
+        max_scale: float(max, 4.0),
+        margin: dp(pan_margin),
+    };
+    store.set_viewer(d.node, Some(limits));
+}
+
+/// A swipe row takes its panels among its children, clipping them past its
+/// edges unless its `clip` says; a full swipe runs on the edges its
+/// `full_swipe` names, the trailing one unless set.
+pub(crate) fn swipe_row(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value] = shown!(s, Value);
+    let store = &mut *d.cx.store;
+    if s.first && !s.given(NODE + 4) {
+        store.set_clip(d.node, true);
+    }
+    let full = value.as_int().unwrap_or(2);
+    store.set_swipe_row_of_children(d.node, Some((full & 1 != 0, full & 2 != 0)));
+}
+
+/// A preview is a layer its parent, a drag source, shows as it is carried.
+pub(crate) fn drag_preview(d: &mut Delivery<'_, '_>) {
+    let store = &mut *d.cx.store;
+    if d.showing.first {
+        store.set_layer(d.node, true);
+        if let Some(source) = store.arena().parent(d.node) {
+            store.set_drag_preview(source, Some(d.node));
+        }
+    }
+}
+
+/// A row's panel of actions waits past the edge it names.
+pub(crate) fn swipe_actions(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    let edge = match value.as_int() {
+        Some(0) => viso_ui::SwipeEdge::Leading,
+        _ => viso_ui::SwipeEdge::Trailing,
+    };
+    d.cx.store.set_swipe_panel(d.node, Some(edge));
+}
+
+/// A handle carries the reorderable row it lies in, the pointer showing a
+/// grab over it unless its `cursor` says.
+pub(crate) fn reorder_handle(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let store = &mut *d.cx.store;
+    if s.first && !s.given(CURSOR) {
+        store.set_cursor(d.node, Some(CursorIcon::Grab));
+    }
+    store.set_reorder_handle(d.node, true);
+}
+
+/// A navigation stack shows its current page, clipping the pages as they
+/// trade places unless its `clip` says.
+pub(crate) fn pages(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, paging] = shown!(s, Value, PageTransition);
+    let store = &mut *d.cx.store;
+    if s.first && !s.given(NODE + 4) {
+        store.set_clip(d.node, true);
+    }
+    let page = value.as_int().and_then(|v| usize::try_from(v).ok());
+    store.set_page(d.node, page, page_transition(paging));
+}
+
+/// The game of the view's root fills the scene each frame.
+pub(crate) fn viewport(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    let store = &mut *d.cx.store;
+    if let Some(slot) = store.set_scene(d.node) {
+        let rig =
+            <viso_behavior::game::kit::CameraRig as viso_behavior::native::NativeValue>::from_value(
+                value,
+            );
+        crate::world_scene::set_viewport_rig(store, slot, rig);
+    }
+}
+
+/// A shader the view's table lacks, or a value that is not its parameters,
+/// leaves the node as it is.
+pub(crate) fn shader(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    let (store, host) = (&mut *d.cx.store, &*d.host);
+    if let Some(program) = d.program
+        && let Some((params, images)) = encode_shader(&program.layout, value)
+    {
+        for &image in &images {
+            offer(store, host, image);
+        }
+        store.set_shader(d.node, program, params, &images);
+    }
+}
+
+/// A `url` shows in place of the `source`; an unbound source shows nothing.
+pub(crate) fn asset(d: &mut Delivery<'_, '_>) {
+    let [value, fit, tint, url, animate] = shown!(d.showing, Value, Fit, Tint, Url, Animate);
+    let (store, host) = (&mut *d.cx.store, &*d.host);
+    let fetched = url.as_str().filter(|url| !url.is_empty()).map(|url| {
+        let asset = viso_ui::Asset::url(url);
+        if let AssetSource::Url(url) = asset.source {
+            store.assets_mut().locate(asset.id, AssetOrigin::Url(url));
+        }
+        asset.id
+    });
+    if let Some(resource) = fetched.or_else(|| {
+        let resource = resource(value)?;
+        offer(store, host, resource);
+        Some(resource)
+    }) {
+        let tint = tint.as_int().map(|_| color(tint));
+        store.set_asset(d.node, resource, asset_fit(fit), tint);
+        store.set_asset_still(d.node, !truth(animate, true));
+    }
+}
+
+/// A `url` plays in place of the `source`; with neither, it shows nothing.
+pub(crate) fn video(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [
+        value,
+        fit,
+        tint,
+        url,
+        playing,
+        looping,
+        muted,
+        volume,
+        rate,
+        fullscreen,
+    ] = shown!(
+        s, Value, Fit, Tint, Url, Playing, Looping, Muted, Volume, Rate, Fullscreen
+    );
+    let store = &mut *d.cx.store;
+    let source = match url.as_str().filter(|url| !url.is_empty()) {
+        Some(url) if url.contains("://") => Some(VideoSource::url(url)),
+        Some(path) => Some(VideoSource::file(path)),
+        None => resource(value)
+            .and_then(|resource| d.host.asset_bytes(resource))
+            .map(|bytes| VideoSource::Bytes(bytes.clone())),
+    };
+    if let Some(source) = source {
+        let tint = tint.as_int().map(|_| color(tint));
+        store.set_video(d.node, &source, asset_fit(fit), tint);
+        let playback = Playback {
+            playing: truth(playing, false),
+            looping: truth(looping, false),
+            muted: truth(muted, false),
+            volume: float(volume, 1.0).clamp(0.0, 1.0),
+            rate: float(rate, 1.0),
         };
-        if prior.is_some()
-            && (0..LOOK)
-                .chain(TEXT..TRANSLATE)
-                .chain(PIECES..SHADOW)
-                .chain([ACCESS_KEY, PAN_MARGIN, URL, REMOVABLE, WRAP])
-                .chain(SLIDE..SHOWN)
-                .all(|at| !changed(at))
-            && !repaint
-        {
-            self.shows = Some(shows);
-            return;
+        store.declare_playback(d.node, playback);
+    }
+    if s.changed(FULLSCREEN) {
+        store.set_fullscreen(d.node, truth(fullscreen, false));
+    }
+}
+
+/// A camera view captures unless its `playing` says otherwise, from the
+/// camera its `device` names, else the first its `facing` names, else the
+/// default.
+pub(crate) fn camera(d: &mut Delivery<'_, '_>) {
+    let [value, fit, tint, url, playing, mirror] =
+        shown!(d.showing, Value, Fit, Tint, Url, Playing, Mirror);
+    let store = &mut *d.cx.store;
+    let device = url.as_str().filter(|device| !device.is_empty());
+    let camera = match (device, value.as_int()) {
+        (Some(device), _) => Camera::id(device),
+        (None, Some(facing)) => Camera::facing(match facing {
+            0 => CameraFacing::Front,
+            1 => CameraFacing::Back,
+            _ => CameraFacing::External,
+        }),
+        (None, None) => Camera::default(),
+    };
+    let tint = tint.as_int().map(|_| color(tint));
+    store.set_video(
+        d.node,
+        &VideoSource::Camera(camera),
+        asset_fit_or(fit, AssetFit::Cover),
+        tint,
+    );
+    store.set_video_mirror(d.node, mirror.as_int().map(|on| on != 0));
+    let playback = Playback {
+        playing: truth(playing, true),
+        muted: true,
+        ..Playback::default()
+    };
+    store.declare_playback(d.node, playback);
+}
+
+pub(crate) fn label(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, url, selectable] = shown!(s, Value, Url, Selectable);
+    let (node, store) = (d.node, &mut *d.cx.store);
+    // A link label's text is one link, in the link blue.
+    let linked = url.as_str().filter(|url| !url.is_empty()).map(|url| {
+        let shown = value.as_str().unwrap_or_default().to_owned();
+        let mut style = SpanStyle::default().link(url);
+        if !s.given(TEXT) {
+            style = style.color(LINK);
         }
-        match control.kind {
-            ControlKind::Plain
-            | ControlKind::Glass
-            | ControlKind::Dialog
-            | ControlKind::Sheet
-            | ControlKind::Toast
-            | ControlKind::ColorPicker
-            | ControlKind::ComboBox
-            | ControlKind::SearchField
-            | ControlKind::Router
-            | ControlKind::Rust => {}
-            // A viewer clips its content unless its `clip` says, and keeps
-            // the content within its limits as they change.
-            ControlKind::Viewer => {
-                if first && !given(NODE + 4) {
-                    store.set_clip(self.node, true);
-                }
-                let limits = viso_ui::ViewerLimits {
-                    min_scale: float(min, 1.0),
-                    max_scale: float(max, 4.0),
-                    margin: dp(pan_margin),
-                };
-                store.set_viewer(self.node, Some(limits));
-            }
-            // A swipe row takes its panels among its children, clipping them
-            // past its edges unless its `clip` says; a full swipe runs on
-            // the edges its `full_swipe` names, the trailing one unless set.
-            ControlKind::SwipeRow => {
-                if first && !given(NODE + 4) {
-                    store.set_clip(self.node, true);
-                }
-                let full = value.as_int().unwrap_or(2);
-                store.set_swipe_row_of_children(self.node, Some((full & 1 != 0, full & 2 != 0)));
-            }
-            // A preview is a layer its parent, a drag source, shows as it is
-            // carried.
-            ControlKind::DragPreview => {
-                if first {
-                    store.set_layer(self.node, true);
-                    if let Some(source) = store.arena().parent(self.node) {
-                        store.set_drag_preview(source, Some(self.node));
-                    }
-                }
-            }
-            // A row's panel of actions waits past the edge it names.
-            ControlKind::SwipeActions => {
-                let edge = match value.as_int() {
-                    Some(0) => viso_ui::SwipeEdge::Leading,
-                    _ => viso_ui::SwipeEdge::Trailing,
-                };
-                store.set_swipe_panel(self.node, Some(edge));
-            }
-            // A handle carries the reorderable row it lies in, the pointer
-            // showing a grab over it unless its `cursor` says.
-            ControlKind::ReorderHandle => {
-                if first && !given(CURSOR) {
-                    store.set_cursor(self.node, Some(CursorIcon::Grab));
-                }
-                store.set_reorder_handle(self.node, true);
-            }
-            // A navigation stack shows its current page, clipping the pages
-            // as they trade places unless its `clip` says.
-            ControlKind::Pages => {
-                if first && !given(NODE + 4) {
-                    store.set_clip(self.node, true);
-                }
-                let page = value.as_int().and_then(|v| usize::try_from(v).ok());
-                store.set_page(self.node, page, page_transition(paging));
-            }
-            // The game of the view's root fills the scene each frame.
-            ControlKind::Viewport => {
-                if let Some(slot) = store.set_scene(self.node) {
-                    let rig = <viso_behavior::game::kit::CameraRig as viso_behavior::native::NativeValue>::from_value(value);
-                    crate::world_scene::set_viewport_rig(store, slot, rig);
-                }
-            }
-            // A shader the view's table lacks, or a value that is not its
-            // parameters, leaves the node as it is.
-            ControlKind::Shader => {
-                if let Some(program) = &program
-                    && let Some((params, images)) = encode_shader(&program.layout, value)
-                {
-                    for &image in &images {
-                        offer(store, host, image);
-                    }
-                    store.set_shader(self.node, program, params, &images);
-                }
-            }
-            // A `url` shows in place of the `source`; an unbound source
-            // shows nothing.
-            ControlKind::Asset => {
-                let fetched = url.as_str().filter(|url| !url.is_empty()).map(|url| {
-                    let asset = viso_ui::Asset::url(url);
-                    if let AssetSource::Url(url) = asset.source {
-                        store.assets_mut().locate(asset.id, AssetOrigin::Url(url));
-                    }
-                    asset.id
-                });
-                if let Some(resource) = fetched.or_else(|| {
-                    let resource = resource(value)?;
-                    offer(store, host, resource);
-                    Some(resource)
-                }) {
-                    let tint = tint.as_int().map(|_| color(tint));
-                    store.set_asset(self.node, resource, asset_fit(fit), tint);
-                    store.set_asset_still(self.node, !truth(animate, true));
-                }
-            }
-            // A `url` plays in place of the `source`; with neither, it shows
-            // nothing.
-            ControlKind::Video => {
-                let source = match url.as_str().filter(|url| !url.is_empty()) {
-                    Some(url) if url.contains("://") => Some(VideoSource::url(url)),
-                    Some(path) => Some(VideoSource::file(path)),
-                    None => resource(value)
-                        .and_then(|resource| host.asset_bytes(resource))
-                        .map(|bytes| VideoSource::Bytes(bytes.clone())),
-                };
-                if let Some(source) = source {
-                    let tint = tint.as_int().map(|_| color(tint));
-                    store.set_video(self.node, &source, asset_fit(fit), tint);
-                    let playback = Playback {
-                        playing: truth(playing, false),
-                        looping: truth(looping, false),
-                        muted: truth(muted, false),
-                        volume: float(volume, 1.0).clamp(0.0, 1.0),
-                        rate: float(rate, 1.0),
-                    };
-                    store.declare_playback(self.node, playback);
-                }
-                if changed(FULLSCREEN) {
-                    store.set_fullscreen(self.node, truth(fullscreen, false));
-                }
-            }
-            // A camera view captures unless its `playing` says otherwise, from
-            // the camera its `device` names, else the first its `facing`
-            // names, else the default.
-            ControlKind::Camera => {
-                let device = url.as_str().filter(|device| !device.is_empty());
-                let camera = match (device, value.as_int()) {
-                    (Some(device), _) => Camera::id(device),
-                    (None, Some(facing)) => Camera::facing(match facing {
-                        0 => CameraFacing::Front,
-                        1 => CameraFacing::Back,
-                        _ => CameraFacing::External,
-                    }),
-                    (None, None) => Camera::default(),
-                };
-                let tint = tint.as_int().map(|_| color(tint));
-                store.set_video(
-                    self.node,
-                    &VideoSource::Camera(camera),
-                    asset_fit_or(fit, AssetFit::Cover),
-                    tint,
-                );
-                store.set_video_mirror(self.node, mirror.as_int().map(|on| on != 0));
-                let playback = Playback {
-                    playing: truth(playing, true),
-                    muted: true,
-                    ..Playback::default()
-                };
-                store.declare_playback(self.node, playback);
-            }
-            ControlKind::Label | ControlKind::Button => {
-                // A link label's text is one link, in the link blue.
-                let linked = url.as_str().filter(|url| !url.is_empty()).map(|url| {
-                    let shown = value.as_str().unwrap_or_default().to_owned();
-                    let mut style = SpanStyle::default().link(url);
-                    if !given(TEXT) {
-                        style = style.color(LINK);
-                    }
-                    let span = TextSpan {
-                        range: 0..shown.len(),
-                        style,
-                    };
-                    (shown, vec![span])
-                });
-                let mut request = match linked.or(spanned) {
-                    Some((shown, spans)) => TextRequest {
-                        text: shown,
-                        spans,
-                        ..text(&Value::Nil)
-                    },
-                    None => text(value),
-                };
-                // A text shows its access key's cue.
-                if let Some(key) = access_key {
-                    request.cue(key);
-                }
-                // A radio group's option that is one caption draws the circle
-                // that fills with its selection, and a segmented control's is
-                // a segment centred over its thumb; a composed one draws its
-                // own.
-                if first
-                    && store.arena().first_child(self.node).is_none()
-                    && store.check_mark(self.node).is_none()
-                    && store
-                        .semantics(self.node)
-                        .is_some_and(|s| s.role == Role::Radio)
-                {
-                    let checked = store
-                        .semantic_state(self.node)
-                        .and_then(|s| s.checked.or(s.selected))
-                        .unwrap_or(false);
-                    let segment = store
-                        .arena()
-                        .parent(self.node)
-                        .is_some_and(|parent| store.segments(parent).is_some());
-                    let shape = if segment {
-                        CheckShape::Segment
-                    } else {
-                        CheckShape::Radio
-                    };
-                    store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
-                }
-                let selectable = truth(selectable, false);
-                let was = store.field_marks(self.node).is_some();
-                // A text takes the focus while it is selectable, unless its
-                // `focusable` says.
-                if selectable != was && !given(NODE + 1) {
-                    store.set_focusable(self.node, selectable);
-                }
-                if selectable {
-                    let multiline = request.soft_wrap;
-                    let seed = FieldSeed {
-                        request,
-                        valued: true,
-                        look: FieldLook {
-                            multiline,
-                            read_only: true,
-                            ..FieldLook::default()
-                        },
-                    };
-                    store.seed_text(self.node, seed);
-                } else {
-                    if was {
-                        store.unmake_field(self.node);
-                    }
-                    store.set_text_request(self.node, request);
-                }
-            }
-            ControlKind::TextInput => {
-                let seed = FieldSeed {
-                    request: text(value),
-                    valued: control.value.is_some(),
-                    look: FieldLook {
-                        placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
-                        secure,
-                        multiline: truth(multiline, false),
-                        kind: input_kind_of(input_kind),
-                        max_length: max_length.as_int().and_then(|v| u32::try_from(v).ok()),
-                        filter: None,
-                        number: None,
-                        read_only: false,
-                    },
-                };
-                store.seed_text(self.node, seed);
-            }
-            ControlKind::Number => {
-                let format = number_format(min, max, step, precision);
-                let number = format.settle(value.as_float().unwrap_or(format.origin()));
-                let shown = Value::str(format.show(number));
-                let seed = FieldSeed {
-                    request: text(&shown),
-                    valued: true,
-                    look: FieldLook {
-                        kind: number_kind(&format),
-                        number: Some(format),
-                        ..FieldLook::default()
-                    },
-                };
-                store.seed_text(self.node, seed);
-                store.set_semantic_state(
-                    self.node,
-                    SemanticState::number(number, format.min, format.max),
-                );
-            }
-            ControlKind::Check | ControlKind::Switch => {
-                let checked = value.as_int().is_some_and(|v| v != 0);
-                store.set_semantic_state(self.node, SemanticState::checked(checked));
-                let shape = match control.kind {
-                    ControlKind::Switch => CheckShape::Switch,
-                    _ => CheckShape::Box,
-                };
-                store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
-                // A check with no caption still shapes an empty one, which
-                // sizes and inks its mark.
-                if first || (given(FIELD + 7) && changed(FIELD + 7)) || changed(ACCESS_KEY) {
-                    let mut request = text(caption);
-                    if let Some(key) = access_key {
-                        request.cue(key);
-                    }
-                    store.set_text_request(self.node, request);
-                }
-            }
-            // A chip shows its caption on its body, selected or not when it
-            // selects, with a cross when removable.
-            ControlKind::Chip => {
-                let checked = value.as_int().is_some_and(|v| v != 0);
-                if control.value.is_some() {
-                    store.set_semantic_state(self.node, SemanticState::checked(checked));
-                }
-                let shape = CheckShape::Chip {
-                    removable: truth(removable, false),
-                };
-                store.set_check_mark(self.node, Some(CheckMark { shape, checked }));
-                if first || (given(FIELD + 7) && changed(FIELD + 7)) || changed(ACCESS_KEY) {
-                    let mut request = text(caption);
-                    if let Some(key) = access_key {
-                        request.cue(key);
-                    }
-                    store.set_text_request(self.node, request);
-                }
-            }
-            // A stepper inked its tint, or the text color, dims a half that
-            // can step no further and reports its number within its bounds.
-            ControlKind::Stepper => {
-                if first || changed(4) {
-                    let ink = tint.as_int().map_or(COLOR, |_| color(tint));
-                    let fill = viso_ui::fade(ink, 0.08);
-                    let stepper = viso_ui::stepper::Stepper::new(ink, fill);
-                    store.set_content_payload(self.node, Content::Stepper(stepper));
-                }
-                let at = value.as_float().unwrap_or(0.0);
-                let (lo, hi) = (min.as_float(), max.as_float());
-                let (lower, upper) = viso_ui::stepper::can_step(at, lo, hi, truth(wrap, false));
-                store.show_stepper(self.node, lower, upper);
-                let state = SemanticState::number(
-                    at,
-                    lo.unwrap_or(f64::NEG_INFINITY),
-                    hi.unwrap_or(f64::INFINITY),
-                );
-                store.set_semantic_state(self.node, state);
-            }
-            // A slider fills its tint, or the accent, from its start or its
-            // origin, along its axis or round a knob, its thumb easing to
-            // its value.
-            ControlKind::Slider | ControlKind::Knob => {
-                let (lo, hi) = (float(min, 0.0), float(max, 1.0));
-                let grid = SliderRange::new(
-                    f64::from(lo),
-                    f64::from(hi),
-                    step.as_float().filter(|s| *s > 0.0),
-                );
-                let at = f64::from(float(value, lo));
-                let shape = match (control.kind, axis) {
-                    (ControlKind::Knob, _) => SliderShape::Knob,
-                    (_, Value::Int(1)) => SliderShape::Bar(viso_ui::Axis::Column),
-                    _ => SliderShape::Bar(viso_ui::Axis::Row),
-                };
-                let fill = tint.as_int().map_or(ACCENT, |_| color(tint));
-                let slider =
-                    SliderMark::new(shape, SLIDER_TRACK, fill, SLIDER_THUMB, grid.fraction(at))
-                        .with_origin(fill_origin.as_float().map(|o| grid.fraction(o)))
-                        .with_marks(if truth(marks, false) { grid.steps() } else { 0 });
-                // A new slider stands at its value; one shown eases there.
-                store.set_slider(self.node, slider);
-                let state = SemanticState {
-                    value: Some(at as f32),
-                    range: Some((lo, hi)),
-                    ..SemanticState::default()
-                };
-                store.set_semantic_state(self.node, state);
-            }
-            // A progress indicator with no value runs; one with a value
-            // shows its fraction of `min..=max`.
-            ControlKind::Progress | ControlKind::Ring => {
-                let (lo, hi) = (float(min, 0.0), float(max, 1.0));
-                let at = value
-                    .as_float()
-                    .map(|v| (v as f32).clamp(lo.min(hi), hi.max(lo)));
-                let state = SemanticState {
-                    value: at,
-                    range: at.map(|_| (lo, hi)),
-                    ..SemanticState::default()
-                };
-                store.set_semantic_state(self.node, state);
-                let fraction = at.map(|v| if hi > lo { (v - lo) / (hi - lo) } else { 0.0 });
-                let (shape, natural) = match control.kind {
-                    ControlKind::Progress => (ProgressShape::Bar, BAR),
-                    _ => (ProgressShape::Ring, RING),
-                };
-                let ink = tint.as_int().map_or(ACCENT, |_| color(tint));
-                store.set_progress(self.node, shape, natural, ink, fraction);
-            }
-            // A spinner turns while it shows.
-            ControlKind::Spinner => {
-                let ink = tint.as_int().map_or(ACCENT, |_| color(tint));
-                if store.spinner(self.node).is_none() {
-                    let spinner = Spinner::new(SpinnerLook::native(), SPINNER, ink);
-                    store.set_content_payload(self.node, Content::Spinner(spinner));
-                    store.set_transform_origin(self.node, Alignment2D::Center);
-                    store.set_spinning(self.node, true);
-                } else {
-                    store.set_spinner_color(self.node, ink);
-                }
-            }
-            // A badge shows its count up to its most centred on its pill,
-            // white on the error red unless styled; with no count, a dot.
-            ControlKind::Badge => {
-                let shown = value
-                    .as_int()
-                    .map_or_else(String::new, |c| badge_count(c, max.as_int().unwrap_or(99)));
-                let mut request = text(&Value::str(shown));
-                if !given(TEXT) {
-                    request.color = BADGE_INK;
-                }
-                if !given(TEXT + 2) {
-                    request.style.weight = FontWeight(500);
-                }
-                store.set_text_request(self.node, request);
-                plate(store, self.node, first && !given(LOOK + 2));
-                if (first || changed(4)) && !given(LOOK) {
-                    let fill = tint.as_int().map_or(BADGE_FILL, |_| color(tint));
-                    store.set_fill(self.node, fill);
-                }
-            }
-            // An avatar shows its picture cropped to its circle, or its
-            // name's initials, white on the color the name picks unless
-            // styled.
-            ControlKind::Avatar => {
-                let name = caption.as_str().unwrap_or_default();
-                if (first || changed(4) || changed(FIELD + 7)) && !given(LOOK) {
-                    let fill = tint
-                        .as_int()
-                        .map_or_else(|| avatar_fill(name), |_| color(tint));
-                    store.set_fill(self.node, fill);
-                }
-                match resource(value) {
-                    Some(picture) => {
-                        offer(store, host, picture);
-                        store.set_check_mark(self.node, None);
-                        store.set_asset(self.node, picture, AssetFit::Cover, None);
-                        if first && !given(LOOK + 2) {
-                            store.set_corner_radius(self.node, ROUND);
-                        }
-                    }
-                    None => {
-                        let mut request = text(&Value::str(initials(name)));
-                        if !given(TEXT) {
-                            request.color = BADGE_INK;
-                        }
-                        if !given(TEXT + 2) {
-                            request.style.weight = FontWeight(500);
-                        }
-                        store.set_text_request(self.node, request);
-                        plate(store, self.node, first && !given(LOOK + 2));
-                    }
-                }
-            }
-            ControlKind::Select => select(store, self.node, value.as_int().unwrap_or(0)),
-            // A segmented control's track, inked its tint or the text color,
-            // draws the thumb under its selected segment; its caption items
-            // are segments, a composed one draws its own.
-            ControlKind::Segmented => {
-                let at = value.as_int().unwrap_or(0);
-                if first || changed(4) {
-                    let ink = tint.as_int().map_or(COLOR, |_| color(tint));
-                    let faded = |a: f32| viso_ui::fade(ink, a);
-                    let shown = u32::try_from(at).ok();
-                    let segments = Segments::new(faded(0.24), faded(0.2), shown);
-                    store.set_content_payload(self.node, Content::Segments(segments));
-                    if !given(LOOK) {
-                        store.set_fill(self.node, faded(0.1));
-                    }
-                    if first && !given(LOOK + 2) {
-                        store.set_corner_radius(self.node, SEGMENTED_RADIUS);
-                    }
-                    let mut child = store.arena().first_child(self.node);
-                    while let Some(id) = child {
-                        child = store.arena().next_sibling(id);
-                        if let Some(mark) = store.check_mark(id)
-                            && mark.shape == CheckShape::Radio
-                        {
-                            let segment = CheckMark {
-                                shape: CheckShape::Segment,
-                                ..mark
-                            };
-                            store.set_check_mark(id, Some(segment));
-                        }
-                    }
-                }
-                select(store, self.node, at);
-                store.select_segment(self.node, u32::try_from(at).ok());
-            }
-            ControlKind::Disclosure => {
-                let expanded = value.as_int().is_some_and(|v| v != 0);
-                store.set_folded(self.node, !expanded);
-                if let Some(header) = store.arena().first_child(self.node) {
-                    // A header that is one caption draws the chevron that
-                    // turns with it; a composed one, or a check, draws its own.
-                    let own = store
-                        .check_mark(header)
-                        .is_some_and(|mark| mark.shape != CheckShape::Chevron);
-                    if first && !own {
-                        let caption = store.arena().first_child(header).is_none();
-                        let chevron = CheckMark {
-                            shape: CheckShape::Chevron,
-                            checked: expanded,
-                        };
-                        store.set_check_mark(header, caption.then_some(chevron));
-                    }
-                    let state = SemanticState {
-                        expanded: Some(expanded),
-                        ..SemanticState::default()
-                    };
-                    store.set_semantic_state(header, state);
-                }
+        let span = TextSpan {
+            range: 0..shown.len(),
+            style,
+        };
+        (shown, vec![span])
+    });
+    let mut request = match linked.or(d.spanned.take()) {
+        Some((shown, spans)) => TextRequest {
+            text: shown,
+            spans,
+            ..s.text(&Value::Nil)
+        },
+        None => s.text(value),
+    };
+    // A text shows its access key's cue.
+    if let Some(key) = s.access_key() {
+        request.cue(key);
+    }
+    // A radio group's option that is one caption draws the circle that fills
+    // with its selection, and a segmented control's is a segment centred over
+    // its thumb; a composed one draws its own.
+    if s.first
+        && store.arena().first_child(node).is_none()
+        && store.check_mark(node).is_none()
+        && store.semantics(node).is_some_and(|s| s.role == Role::Radio)
+    {
+        let checked = store
+            .semantic_state(node)
+            .and_then(|s| s.checked.or(s.selected))
+            .unwrap_or(false);
+        let segment = store
+            .arena()
+            .parent(node)
+            .is_some_and(|parent| store.segments(parent).is_some());
+        let shape = if segment {
+            CheckShape::Segment
+        } else {
+            CheckShape::Radio
+        };
+        store.set_check_mark(node, Some(CheckMark { shape, checked }));
+    }
+    let selectable = truth(selectable, false);
+    let was = store.field_marks(node).is_some();
+    // A text takes the focus while it is selectable, unless its `focusable`
+    // says.
+    if selectable != was && !s.given(NODE + 1) {
+        store.set_focusable(node, selectable);
+    }
+    if selectable {
+        let multiline = request.soft_wrap;
+        let seed = FieldSeed {
+            request,
+            valued: true,
+            look: FieldLook {
+                multiline,
+                read_only: true,
+                ..FieldLook::default()
+            },
+        };
+        store.seed_text(node, seed);
+    } else {
+        if was {
+            store.unmake_field(node);
+        }
+        store.set_text_request(node, request);
+    }
+}
+
+pub(crate) fn text_input(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [
+        value,
+        placeholder,
+        secure,
+        multiline,
+        input_kind,
+        max_length,
+    ] = shown!(
+        s,
+        Value,
+        Placeholder,
+        Secure,
+        Multiline,
+        InputKind,
+        MaxLength
+    );
+    let seed = FieldSeed {
+        request: s.text(value),
+        valued: s.control.value.is_some(),
+        look: FieldLook {
+            placeholder: placeholder.as_str().unwrap_or_default().to_owned(),
+            secure: truth(secure, false),
+            multiline: truth(multiline, false),
+            kind: input_kind_of(input_kind),
+            max_length: max_length.as_int().and_then(|v| u32::try_from(v).ok()),
+            filter: None,
+            number: None,
+            read_only: false,
+        },
+    };
+    d.cx.store.seed_text(d.node, seed);
+}
+
+pub(crate) fn number(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, min, max, step, precision] = shown!(s, Value, Min, Max, Step, Precision);
+    let format = number_format(min, max, step, precision);
+    let number = format.settle(value.as_float().unwrap_or(format.origin()));
+    let shown = Value::str(format.show(number));
+    let seed = FieldSeed {
+        request: s.text(&shown),
+        valued: true,
+        look: FieldLook {
+            kind: number_kind(&format),
+            number: Some(format),
+            ..FieldLook::default()
+        },
+    };
+    let store = &mut *d.cx.store;
+    store.seed_text(d.node, seed);
+    store.set_semantic_state(
+        d.node,
+        SemanticState::number(number, format.min, format.max),
+    );
+}
+
+pub(crate) fn check(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, caption] = shown!(s, Value, Caption);
+    let store = &mut *d.cx.store;
+    let checked = value.as_int().is_some_and(|v| v != 0);
+    store.set_semantic_state(d.node, SemanticState::checked(checked));
+    let shape = match s.control.kind {
+        ControlKind::Switch => CheckShape::Switch,
+        _ => CheckShape::Box,
+    };
+    store.set_check_mark(d.node, Some(CheckMark { shape, checked }));
+    // A check with no caption still shapes an empty one, which sizes and inks
+    // its mark.
+    captioned(s, store, d.node, caption);
+}
+
+/// A chip shows its caption on its body, selected or not when it selects,
+/// with a cross when removable.
+pub(crate) fn chip(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, caption, removable] = shown!(s, Value, Caption, Removable);
+    let store = &mut *d.cx.store;
+    let checked = value.as_int().is_some_and(|v| v != 0);
+    if s.control.value.is_some() {
+        store.set_semantic_state(d.node, SemanticState::checked(checked));
+    }
+    let shape = CheckShape::Chip {
+        removable: truth(removable, false),
+    };
+    store.set_check_mark(d.node, Some(CheckMark { shape, checked }));
+    captioned(s, store, d.node, caption);
+}
+
+/// Shapes a check's or a chip's `caption` as it first shows and as it or its
+/// access key changes.
+fn captioned(s: Showing<'_>, store: &mut NodeStore, node: NodeId, caption: &Value) {
+    if s.first || (s.given(FIELD + 7) && s.changed(FIELD + 7)) || s.changed(ACCESS_KEY) {
+        let mut request = s.text(caption);
+        if let Some(key) = s.access_key() {
+            request.cue(key);
+        }
+        store.set_text_request(node, request);
+    }
+}
+
+/// A stepper inked its tint, or the text color, dims a half that can step no
+/// further and reports its number within its bounds.
+pub(crate) fn stepper(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, min, max, tint, wrap] = shown!(s, Value, Min, Max, Tint, Wrap);
+    let store = &mut *d.cx.store;
+    if s.first || s.changed(4) {
+        let ink = tint.as_int().map_or(COLOR, |_| color(tint));
+        let fill = viso_ui::fade(ink, 0.08);
+        let stepper = viso_ui::stepper::Stepper::new(ink, fill);
+        store.set_content_payload(d.node, Content::Stepper(stepper));
+    }
+    let at = value.as_float().unwrap_or(0.0);
+    let (lo, hi) = (min.as_float(), max.as_float());
+    let (lower, upper) = viso_ui::stepper::can_step(at, lo, hi, truth(wrap, false));
+    store.show_stepper(d.node, lower, upper);
+    let state = SemanticState::number(
+        at,
+        lo.unwrap_or(f64::NEG_INFINITY),
+        hi.unwrap_or(f64::INFINITY),
+    );
+    store.set_semantic_state(d.node, state);
+}
+
+/// A slider fills its tint, or the accent, from its start or its origin,
+/// along its axis or round a knob, its thumb easing to its value.
+pub(crate) fn slider(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, min, max, tint, step, fill_origin, marks, axis] =
+        shown!(s, Value, Min, Max, Tint, Step, FillOrigin, Marks, Axis);
+    let (lo, hi) = (float(min, 0.0), float(max, 1.0));
+    let grid = SliderRange::new(
+        f64::from(lo),
+        f64::from(hi),
+        step.as_float().filter(|s| *s > 0.0),
+    );
+    let at = f64::from(float(value, lo));
+    let shape = match (s.control.kind, axis) {
+        (ControlKind::Knob, _) => SliderShape::Knob,
+        (_, Value::Int(1)) => SliderShape::Bar(viso_ui::Axis::Column),
+        _ => SliderShape::Bar(viso_ui::Axis::Row),
+    };
+    let fill = tint.as_int().map_or(ACCENT, |_| color(tint));
+    let slider = SliderMark::new(shape, SLIDER_TRACK, fill, SLIDER_THUMB, grid.fraction(at))
+        .with_origin(fill_origin.as_float().map(|o| grid.fraction(o)))
+        .with_marks(if truth(marks, false) { grid.steps() } else { 0 });
+    let store = &mut *d.cx.store;
+    // A new slider stands at its value; one shown eases there.
+    store.set_slider(d.node, slider);
+    let state = SemanticState {
+        value: Some(at as f32),
+        range: Some((lo, hi)),
+        ..SemanticState::default()
+    };
+    store.set_semantic_state(d.node, state);
+}
+
+/// A progress indicator with no value runs; one with a value shows its
+/// fraction of `min..=max`.
+pub(crate) fn progress(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, min, max, tint] = shown!(s, Value, Min, Max, Tint);
+    let store = &mut *d.cx.store;
+    let (lo, hi) = (float(min, 0.0), float(max, 1.0));
+    let at = value
+        .as_float()
+        .map(|v| (v as f32).clamp(lo.min(hi), hi.max(lo)));
+    let state = SemanticState {
+        value: at,
+        range: at.map(|_| (lo, hi)),
+        ..SemanticState::default()
+    };
+    store.set_semantic_state(d.node, state);
+    let fraction = at.map(|v| if hi > lo { (v - lo) / (hi - lo) } else { 0.0 });
+    let (shape, natural) = match s.control.kind {
+        ControlKind::Progress => (ProgressShape::Bar, BAR),
+        _ => (ProgressShape::Ring, RING),
+    };
+    let ink = tint.as_int().map_or(ACCENT, |_| color(tint));
+    store.set_progress(d.node, shape, natural, ink, fraction);
+}
+
+/// A spinner turns while it shows.
+pub(crate) fn spinner(d: &mut Delivery<'_, '_>) {
+    let [tint] = shown!(d.showing, Tint);
+    let store = &mut *d.cx.store;
+    let ink = tint.as_int().map_or(ACCENT, |_| color(tint));
+    if store.spinner(d.node).is_none() {
+        let spinner = Spinner::new(SpinnerLook::native(), SPINNER, ink);
+        store.set_content_payload(d.node, Content::Spinner(spinner));
+        store.set_transform_origin(d.node, Alignment2D::Center);
+        store.set_spinning(d.node, true);
+    } else {
+        store.set_spinner_color(d.node, ink);
+    }
+}
+
+/// A badge shows its count up to its most centred on its pill, white on the
+/// error red unless styled; with no count, a dot.
+pub(crate) fn badge(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, max, tint] = shown!(s, Value, Max, Tint);
+    let store = &mut *d.cx.store;
+    let shown = value
+        .as_int()
+        .map_or_else(String::new, |c| badge_count(c, max.as_int().unwrap_or(99)));
+    let mut request = s.text(&Value::str(shown));
+    if !s.given(TEXT) {
+        request.color = BADGE_INK;
+    }
+    if !s.given(TEXT + 2) {
+        request.style.weight = FontWeight(500);
+    }
+    store.set_text_request(d.node, request);
+    plate(store, d.node, s.first && !s.given(LOOK + 2));
+    if (s.first || s.changed(4)) && !s.given(LOOK) {
+        let fill = tint.as_int().map_or(BADGE_FILL, |_| color(tint));
+        store.set_fill(d.node, fill);
+    }
+}
+
+/// An avatar shows its picture cropped to its circle, or its name's
+/// initials, white on the color the name picks unless styled.
+pub(crate) fn avatar(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, tint, caption] = shown!(s, Value, Tint, Caption);
+    let (store, host) = (&mut *d.cx.store, &*d.host);
+    let name = caption.as_str().unwrap_or_default();
+    if (s.first || s.changed(4) || s.changed(FIELD + 7)) && !s.given(LOOK) {
+        let fill = tint
+            .as_int()
+            .map_or_else(|| avatar_fill(name), |_| color(tint));
+        store.set_fill(d.node, fill);
+    }
+    match resource(value) {
+        Some(picture) => {
+            offer(store, host, picture);
+            store.set_check_mark(d.node, None);
+            store.set_asset(d.node, picture, AssetFit::Cover, None);
+            if s.first && !s.given(LOOK + 2) {
+                store.set_corner_radius(d.node, ROUND);
             }
         }
-        self.shows = Some(shows);
-        self.program = program;
+        None => {
+            let mut request = s.text(&Value::str(initials(name)));
+            if !s.given(TEXT) {
+                request.color = BADGE_INK;
+            }
+            if !s.given(TEXT + 2) {
+                request.style.weight = FontWeight(500);
+            }
+            store.set_text_request(d.node, request);
+            plate(store, d.node, s.first && !s.given(LOOK + 2));
+        }
+    }
+}
+
+pub(crate) fn select_state(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    select(d.cx.store, d.node, value.as_int().unwrap_or(0));
+}
+
+/// A segmented control's track, inked its tint or the text color, draws the
+/// thumb under its selected segment; its caption items are segments, a
+/// composed one draws its own.
+pub(crate) fn segmented(d: &mut Delivery<'_, '_>) {
+    let s = d.showing;
+    let [value, tint] = shown!(s, Value, Tint);
+    let (node, store) = (d.node, &mut *d.cx.store);
+    let at = value.as_int().unwrap_or(0);
+    if s.first || s.changed(4) {
+        let ink = tint.as_int().map_or(COLOR, |_| color(tint));
+        let faded = |a: f32| viso_ui::fade(ink, a);
+        let shown = u32::try_from(at).ok();
+        let segments = Segments::new(faded(0.24), faded(0.2), shown);
+        store.set_content_payload(node, Content::Segments(segments));
+        if !s.given(LOOK) {
+            store.set_fill(node, faded(0.1));
+        }
+        if s.first && !s.given(LOOK + 2) {
+            store.set_corner_radius(node, SEGMENTED_RADIUS);
+        }
+        let mut child = store.arena().first_child(node);
+        while let Some(id) = child {
+            child = store.arena().next_sibling(id);
+            if let Some(mark) = store.check_mark(id)
+                && mark.shape == CheckShape::Radio
+            {
+                let segment = CheckMark {
+                    shape: CheckShape::Segment,
+                    ..mark
+                };
+                store.set_check_mark(id, Some(segment));
+            }
+        }
+    }
+    select(store, node, at);
+    store.select_segment(node, u32::try_from(at).ok());
+}
+
+pub(crate) fn disclosure(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    let store = &mut *d.cx.store;
+    let expanded = value.as_int().is_some_and(|v| v != 0);
+    store.set_folded(d.node, !expanded);
+    if let Some(header) = store.arena().first_child(d.node) {
+        // A header that is one caption draws the chevron that turns with it;
+        // a composed one, or a check, draws its own.
+        let own = store
+            .check_mark(header)
+            .is_some_and(|mark| mark.shape != CheckShape::Chevron);
+        if d.showing.first && !own {
+            let caption = store.arena().first_child(header).is_none();
+            let chevron = CheckMark {
+                shape: CheckShape::Chevron,
+                checked: expanded,
+            };
+            store.set_check_mark(header, caption.then_some(chevron));
+        }
+        let state = SemanticState {
+            expanded: Some(expanded),
+            ..SemanticState::default()
+        };
+        store.set_semantic_state(header, state);
     }
 }
 

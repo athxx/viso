@@ -27,9 +27,11 @@ use viso_ui::{
     TaskFuture, TaskId,
 };
 
+use crate::control::ControlKind;
 use crate::env::env_value;
 use crate::game::GameSession;
 use crate::input::{HostRoutes, MountedInput};
+use crate::kinds::Kind;
 use crate::regions::{LocalTemplate, Mounted, RegionNode};
 use crate::scope::{Locals, Scope};
 use crate::tasks::Tasks;
@@ -301,6 +303,8 @@ pub struct ViewHost {
     inputs: Vec<InputLink>,
     /// The implementations of the Rust widgets its nodes name.
     widgets: Vec<&'static crate::widget::WidgetImpl>,
+    /// The kinds of control its nodes are.
+    kinds: &'static [&'static Kind],
 }
 
 /// A root input: the cell its readers depend on and, for a navigator, the
@@ -437,6 +441,28 @@ impl ViewHost {
         native: Option<&'static NativeCode>,
         inputs: Vec<(usize, Value)>,
     ) -> Result<ViewHost, HostError> {
+        let kinds = crate::kinds::ALL;
+        ViewHost::assemble(
+            module,
+            component,
+            natives,
+            capabilities,
+            native,
+            inputs,
+            kinds,
+        )
+    }
+
+    /// [`linked_with`](Self::linked_with) for nodes of just `kinds`.
+    fn assemble(
+        module: Rc<Module>,
+        component: &str,
+        natives: Arc<Natives>,
+        capabilities: &[&str],
+        native: Option<&'static NativeCode>,
+        inputs: Vec<(usize, Value)>,
+        kinds: &'static [&'static Kind],
+    ) -> Result<ViewHost, HostError> {
         let index = module
             .component(component)
             .ok_or_else(|| HostError::NoComponent(component.to_owned()))?;
@@ -487,6 +513,7 @@ impl ViewHost {
             nodes: crate::nodes::NodeRefs::default(),
             sinks: Vec::new(),
             inputs: Vec::new(),
+            kinds,
         })
     }
 
@@ -1247,6 +1274,14 @@ impl ViewHost {
         self.widgets.extend(packages.iter().flat_map(|p| p.iter()));
     }
 
+    /// What delivering to a node of `kind` runs; nothing beyond what every
+    /// node's delivery does for a kind it does not link.
+    pub(crate) fn kind(&self, kind: ControlKind) -> &'static Kind {
+        let linked = self.kinds.iter().find(|k| k.kind == kind);
+        debug_assert!(linked.is_some(), "a {kind:?} is not among the view's kinds");
+        linked.copied().unwrap_or(&crate::kinds::Plain)
+    }
+
     /// The linked implementation of the Rust widget `name`.
     pub(crate) fn widget(&self, name: &str) -> Option<&'static crate::widget::WidgetImpl> {
         self.widgets.iter().copied().find(|w| w.name == name)
@@ -1749,14 +1784,27 @@ pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
     }
 }
 
+/// What an embedded view links: just what it uses.
+#[doc(hidden)]
+pub struct __Links<'a> {
+    /// The standard libraries it calls.
+    pub standard: &'a [&'static NativeLibrary],
+    /// The libraries of the native packages it calls.
+    pub libraries: &'a [&'static [&'static NativeLibrary]],
+    /// The implementations of the Rust widgets its nodes name, by package.
+    pub widgets: &'a [&'static [crate::widget::WidgetImpl]],
+    /// The kinds of control its nodes are.
+    pub kinds: &'static [&'static Kind],
+}
+
 /// The host for an embedded, build-time-verified module, sharing one decoded
 /// module per thread across every mount of the same view, running `native`,
 /// the module compiled to Rust beside it, when the build carries it, and
-/// linked against `standard`, the standard libraries it calls, and
-/// `libraries`, those of the native packages it calls. A development build
-/// links every standard library, for a reload to call any. The module borrows `bytes` ([`Module::decode_static`]):
-/// its names and string constants stay in the binary. Its nodes naming a
-/// Rust widget build it from `widgets`, those packages' implementations.
+/// linking `links`: the natives it calls, the Rust widgets its nodes build
+/// and the kinds of control they are, the code of no other linking. A
+/// development build links every standard library and every kind, for a
+/// reload to use any. The module borrows `bytes` ([`Module::decode_static`]):
+/// its names and string constants stay in the binary.
 ///
 /// # Panics
 ///
@@ -1768,9 +1816,7 @@ pub fn __embedded(
     bytes: &'static [u8],
     component: &str,
     native: Option<&'static NativeCode>,
-    standard: &[&'static NativeLibrary],
-    libraries: &[&'static [&'static NativeLibrary]],
-    widgets: &[&'static [crate::widget::WidgetImpl]],
+    links: __Links<'_>,
     inputs: Vec<(&'static str, MountedInput)>,
 ) -> Rc<RefCell<ViewHost>> {
     thread_local! {
@@ -1802,21 +1848,28 @@ pub fn __embedded(
         .zip(&inputs)
         .filter_map(|(slot, (_, input))| Some(((*slot)?, input.value.clone())))
         .collect();
-    let host = embedded_natives(standard, libraries)
+    let host = embedded_natives(links.standard, links.libraries)
         .map_err(HostError::Link)
         .and_then(|natives| {
-            ViewHost::linked_with(
+            // A development build reloads into any kind.
+            let kinds = if cfg!(feature = "hot-reload") {
+                crate::kinds::ALL
+            } else {
+                links.kinds
+            };
+            ViewHost::assemble(
                 Rc::clone(&module),
                 component,
                 natives,
                 &grant,
                 native,
                 values,
+                kinds,
             )
         });
     match host {
         Ok(mut host) => {
-            host.link_widgets(widgets);
+            host.link_widgets(links.widgets);
             for (slot, (_, input)) in slots.iter().zip(&inputs) {
                 if let Some(slot) = *slot {
                     host.link_input(slot, input);

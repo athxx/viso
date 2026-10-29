@@ -4171,6 +4171,7 @@ embedded-cpu（桌面窗口，CpuRaster）：二进制 6.92 MiB，空闲 footpri
 一个可选的子系统只在 app 用到它时才被链接：它的代码只从用到它的调用（view 展开、authoring API）可达，driver 与 runtime 经这一调用接上的指针或 trait object 驱动它，从不直接引用。没有用到时，链接器把它整段丢掉，运行时不付分支以外的代价。
 - **native**：`view!` 展开把模块调用到的标准 Library 逐个按名交给 Host（`viso_behavior::native::libraries`，`standard_name` 按路径取最长前缀），Host 以 `Natives::exactly` 只链接这些与调用到的包；dev 构建（`hot-reload`）链接全部标准 Library，reload 可调用任何一个。运行时加载的 View Package 与 Game 仍以 `Natives::standard` / `shared` 链接全部。
 - **游戏音频**：driver 在启动时只放行（`audio::allow`）；音频 host 由挂载 game 的 view 接上（展开调用 facade 的 `__link_game`，headless 加载 package 与 dev 构建同样接上）。
+- **控件种类**：每种控件在投递值时超出公共部分的代码（建 parts、显示状态）是 `viso_view::kinds` 里该种类的一个 `Kind` static，经函数指针调用。`view!` 展开把 view（含 region 模板）用到的种类交给 Host，`Shown` 挂载时取自己种类的 `Kind`；没用到的种类（color picker、combo、video、slider 等）连同它们的 widget 都不链接。dev 构建与运行时加载的 View Package 用 `kinds::ALL`。
 - **分页捕获**：`paged::capture` 把捕获作为 `Job` trait object 排队，driver 只经 trait 推进它。
 - **图像与模型解码**：见 §51（动图播放、glTF）。
 - **只有面板的构建**：Linux 上没有 `desktop` 会话与 headless 的构建只有 KMS 面板，facade 的 `PANEL_ONLY` 常量让窗口 caption、自绘菜单栏与无障碍 bridge 的分支在编译期折掉。

@@ -31,6 +31,8 @@ mod game;
 mod host;
 mod input;
 pub mod inspect;
+#[doc(hidden)]
+pub mod kinds;
 mod layout_values;
 #[cfg(feature = "inspect")]
 mod mounts;
@@ -62,7 +64,7 @@ pub use game::{
     StartedAudio, describe_fault, game_session, install_game_audio, keep_game_history, mount_game,
     mount_view_game, take_game_faults,
 };
-pub use host::{__embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
+pub use host::{__Links, __embedded, HostError, StateCells, ViewHost, cell_value, vm_value};
 pub use input::{
     __Route, __mount_input, __mount_navigator, __pushed_input, MountedInput, ViewInput, input_kind,
 };

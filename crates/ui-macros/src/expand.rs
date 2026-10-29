@@ -874,6 +874,7 @@ fn host_tokens(
     });
     let component = &behavior.component;
     let standard = standard_libraries(behavior);
+    let kinds = control_kinds(behavior);
     let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
         let local = idents.get(symbol)?;
         let slot = *slot as usize;
@@ -888,9 +889,12 @@ fn host_tokens(
             __viso_module,
             #component,
             __viso_native,
-            #standard,
-            #libraries,
-            #widgets,
+            ::viso::__private::viso_view::__Links {
+                standard: #standard,
+                libraries: #libraries,
+                widgets: #widgets,
+                kinds: #kinds,
+            },
             ::std::vec![#(#given),*],
         );
         {
@@ -935,6 +939,23 @@ fn standard_libraries(behavior: &ViewBehavior) -> TokenStream {
         .map(|name| Ident::new(name, Span::call_site()));
     quote! {
         &[#(&::viso::__private::viso_behavior::native::libraries::#names),*]
+    }
+}
+
+/// The kinds of control the view's nodes are, its regions' included:
+/// `&[&::viso::__private::viso_view::kinds::Slider]`.
+fn control_kinds(behavior: &ViewBehavior) -> TokenStream {
+    let kinds: BTreeSet<String> = behavior
+        .controls()
+        .map(|(_, control)| format!("{:?}", control.kind))
+        .collect();
+    let kinds = kinds.iter().map(|kind| Ident::new(kind, Span::call_site()));
+    quote! {
+        {
+            static __VISO_KINDS: &[&::viso::__private::viso_view::kinds::Kind] =
+                &[#(&::viso::__private::viso_view::kinds::#kinds),*];
+            __VISO_KINDS
+        }
     }
 }
 
