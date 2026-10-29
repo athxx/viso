@@ -1494,10 +1494,12 @@ fn a_page_runs_its_tasks_effects_and_resources() {
         ">item=b<",
         ">item=bb<",
         ">y=12<",
+        ">tally=pp<",
+        ">tally=rp<",
     ] {
         assert!(dom.contains(shown), "{shown} in {dom}");
     }
-    for gone in [">item=a<", ">x="] {
+    for gone in [">item=a<", ">x=", ">tally=rr<"] {
         assert!(!dom.contains(gone), "{gone} in {dom}");
     }
 }

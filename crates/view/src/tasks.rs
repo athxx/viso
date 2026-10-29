@@ -311,7 +311,7 @@ impl ViewHost {
                 },
             ) => self.transact(done, &[value], &live.scope, cells),
             (value, Sink::Resource(loading)) => {
-                self.settle(token, loading, value, &live.scope, live.owner, cells);
+                self.settle(token, loading, value, live.owner, cells);
             }
             _ => {}
         }

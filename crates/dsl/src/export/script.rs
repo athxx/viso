@@ -582,13 +582,14 @@ pub(super) fn effect_literal(
         |d: Option<std::time::Duration>| d.map_or("null".to_owned(), |d| float(d.as_secs_f64()));
     let load = effect.resource.map_or("null".to_owned(), |load| {
         format!(
-            "{{ s: {}, w: {}, d: {}, c: {}, e: {}, k: {} }}",
+            "{{ s: {}, w: {}, d: {}, c: {}, e: {}, k: {}, p: {} }}",
             thunk(load.state),
             write(load.write),
             secs(load.debounce),
             secs(load.cache_for),
             load.cache_errors,
-            load.keep_latest
+            load.keep_latest,
+            load.shared.map_or("null".to_owned(), |p| p.to_string())
         )
     });
     format!("[{dep}, {deps}, {}, {run}, {load}]", body(effect.body))

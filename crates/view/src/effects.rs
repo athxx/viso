@@ -88,7 +88,13 @@ pub(crate) fn mount_effect(
     scope: Scope,
     owner: NodeId,
 ) {
-    let Ok(epoch) = host.try_borrow().map(|view| view.epoch()) else {
+    let Ok((epoch, loads)) = host.try_borrow_mut().map(|mut view| {
+        let store = match effect.resource.and_then(|load| load.shared) {
+            Some(pool) => view.pool(pool),
+            None => Rc::default(),
+        };
+        (view.epoch(), store)
+    }) else {
         return;
     };
     let mount = Rc::new(Mount {
@@ -108,7 +114,7 @@ pub(crate) fn mount_effect(
     let body = effect.body;
     match effect.resource {
         Some(load) => {
-            let resource = Resource::new(mount, body, load, owner);
+            let resource = Resource::new(mount, body, load, owner, loads);
             gate.resource = Some(Rc::clone(&resource));
             store.add_effect_from(
                 owner,
@@ -147,6 +153,11 @@ impl Mount {
             .try_borrow()
             .is_ok_and(|view| view.epoch() == self.epoch);
         live.then(|| Rc::clone(&self.host))
+    }
+
+    /// The host's epoch when it mounted.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Runs body `body`, returning its cleanup.

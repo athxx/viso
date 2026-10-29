@@ -56,6 +56,10 @@ pub struct ResourceLoad {
     pub cache_errors: bool,
     /// Whether a key change cancels the load in flight.
     pub keep_latest: bool,
+    /// The pool of a `ResourceScope::shared` resource, one per declaration:
+    /// every instance of it in the view shares one load and one cache per
+    /// key. `None` for a resource each instance loads and caches alone.
+    pub shared: Option<u32>,
 }
 
 impl Encode for ComponentEffect {
@@ -77,6 +81,7 @@ impl Encode for ComponentEffect {
                 write_duration(enc, load.cache_for);
                 enc.write_bool(load.cache_errors);
                 enc.write_bool(load.keep_latest);
+                enc.write_varint(load.shared.map_or(0, |p| u64::from(p) + 1));
             }
         }
     }
@@ -102,6 +107,7 @@ fn read_resource(dec: &mut Decoder<'_>) -> Result<ResourceLoad, DecodeError> {
         cache_for: read_duration(dec)?,
         cache_errors: dec.read_bool()?,
         keep_latest: dec.read_bool()?,
+        shared: read_u32_varint(dec)?.checked_sub(1),
     })
 }
 

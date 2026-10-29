@@ -19,6 +19,27 @@ component Counter {
     }
 }
 
+component Tally {
+    input label: String;
+    task echo(s: String) -> Result<String, String> {
+        await time::sleep(10ms);
+        Ok(s)
+    }
+    resource seen: Resource<String, String> {
+        load = echo(label);
+        key = 0;
+        scope = ResourceScope::shared;
+    }
+    view {
+        Text {
+            text: match seen.state {
+                ResourceState::ready(s) => "tally=" + label + s,
+                _ => "tally",
+            };
+        }
+    }
+}
+
 export component Demo {
     state log = "";
     state runs = 0;
@@ -104,6 +125,8 @@ export component Demo {
             for name in names key name {
                 Counter { label: name; }
             }
+            Tally { label: "p"; }
+            Tally { label: "r"; }
         }
     }
 }

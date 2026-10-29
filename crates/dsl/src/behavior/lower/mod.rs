@@ -73,6 +73,8 @@ pub(crate) struct ProgramBuilder {
     depth: u32,
     /// The function building each trait-object vtable, by its slots.
     vtables: HashMap<Vec<FuncId>, FuncId>,
+    /// How many `ResourceScope::shared` resources have a pool.
+    pools: u32,
 }
 
 /// An instantiation of a generic callable to lower.
@@ -634,6 +636,7 @@ impl ProgramBuilder {
         sites: [TextRange; 4],
         key: FuncId,
         load: FuncId,
+        // A `shared` of any `Some` asks for a pool, numbered here.
         policies: viso_behavior::ResourceLoad,
     ) {
         let Some(&(layout, Place::State(slot))) = self.places.get(&resource) else {
@@ -685,6 +688,10 @@ impl ProgramBuilder {
                 Inst::Return { src: r1 },
             ],
         );
+        let shared = policies.shared.map(|_| {
+            self.pools += 1;
+            self.pools - 1
+        });
         let layout = &mut self.program.components[layout];
         layout.state_inits[slot as usize] = Some(init);
         let mut entry = |at: TextRange, func: FuncId| {
@@ -703,6 +710,7 @@ impl ProgramBuilder {
             resource: Some(viso_behavior::ResourceLoad {
                 state,
                 write,
+                shared,
                 ..policies
             }),
         });

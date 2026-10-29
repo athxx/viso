@@ -1,8 +1,9 @@
 //! A view's resources: a state only its loader writes, loading on mount and
 //! on each key change through the task machinery, its result settled as
 //! `ready` or `error` while the key is still the one it loaded; `keep_latest`,
-//! `debounce`, `cache_for` and `cache_errors`; unmount, hot reload and the
-//! release package. And the checks: `load` and `key` once (`E4301`), the
+//! `debounce`, `cache_for` and `cache_errors`; instances of a
+//! `ResourceScope::shared` resource sharing one load and cache per key;
+//! unmount, hot reload and the release package. And the checks: `load` and `key` once (`E4301`), the
 //! policies and the scope (`E4302`), a `StableKey` key (`E2701`), a task-call
 //! loader (`E4401`) of the declared result (`E2103`), no writes (`E2110`),
 //! exhaustive `ResourceState` matches (`E2301`).
@@ -96,6 +97,12 @@ fn the_policies_and_scope_are_checked() {
             "{bad}"
         );
     }
+    assert_eq!(
+        codes(&resource(
+            "load = fetch(q); key = q; scope = ResourceScope::shared;"
+        )),
+        CLEAN
+    );
     assert_eq!(
         codes(&resource(
             "load = fetch(q); key = q; scope = ResourceScope::app;"
@@ -377,5 +384,130 @@ fn the_release_package_runs_the_same() {
     rt.click(0);
     rt.ring();
     assert_eq!(state(&rt, "r"), "ready(20)");
+    assert_eq!(rt.fault(), None);
+}
+
+/// A board of cards, each loading by its key `k` a resource shared across
+/// them under `policy`: the first card's key is `a`, the second's `1`, and a
+/// third of key `1` shows while `show` holds. Its buttons: `a += 1` and
+/// toggling the third card.
+fn board(policy: &str) -> String {
+    format!(
+        r#"
+import viso::time;
+
+component Card {{
+    input k: I64 = 0;
+    resource r: Resource<I64, String> {{
+        load = fetch(k);
+        key = k;
+        policy = [{policy}];
+        scope = ResourceScope::shared;
+    }}
+    task fetch(n: I64) -> Result<I64, String> {{ await time::sleep(1s); Ok(n * 10) }}
+    view {{
+        Column {{
+            match r.state {{
+                ResourceState::ready(v) => {{ Text {{ text: format("{{}}", v); }} }},
+                ResourceState::reloading(v) => {{ Text {{ text: format("~{{}}", v); }} }},
+                ResourceState::loading => {{ Text {{ text: "..."; }} }},
+                _ => {{ }},
+            }}
+        }}
+    }}
+}}
+
+export component Board {{
+    state a = 1;
+    state show = false;
+    view {{
+        Column {{
+            width: 400dp;
+            height: 100dp;
+            Text {{ width: 20dp; height: 20dp; on click {{ a += 1; }} }}
+            Text {{ width: 20dp; height: 20dp; on click {{ show = !show; }} }}
+            Card {{ k: a; }}
+            Card {{ k: 1; }}
+            if show {{ Card {{ k: 1; }} }}
+        }}
+    }}
+}}
+"#
+    )
+}
+
+/// The texts the cards show, in order.
+fn cards(rt: &mut Rt) -> Vec<String> {
+    rt.settle();
+    let mut out = Vec::new();
+    let mut stack = vec![rt.root.expect("mounted")];
+    while let Some(at) = stack.pop() {
+        if let Some(request) = rt.store.text_request(at)
+            && !request.text.is_empty()
+        {
+            out.push(request.text.clone());
+        }
+        stack.extend(rt.children(at).into_iter().rev());
+    }
+    out
+}
+
+#[test]
+fn shared_instances_on_one_key_load_it_once_and_settle_together() {
+    for mount in [Rt::mount, Rt::packaged] {
+        let mut rt = mount(&board("ResourcePolicy::keep_latest"));
+        assert_eq!(cards(&mut rt), ["...", "..."]);
+        assert_eq!(rt.store.task_count(), 1, "one load for key 1");
+        rt.click(1);
+        assert_eq!(cards(&mut rt), ["...", "...", "..."]);
+        assert_eq!(
+            rt.store.task_count(),
+            1,
+            "an instance mounting in region content joins it"
+        );
+        rt.ring();
+        assert_eq!(cards(&mut rt), ["10", "10", "10"]);
+
+        rt.click(0);
+        assert_eq!(cards(&mut rt), ["~10", "10", "10"]);
+        assert_eq!(rt.store.task_count(), 1, "key 2 loads for the first card");
+        rt.ring();
+        assert_eq!(cards(&mut rt), ["20", "10", "10"]);
+        assert_eq!(rt.fault(), None);
+    }
+}
+
+#[test]
+fn keep_latest_cancels_a_shared_load_only_once_no_instance_waits_on_it() {
+    let mut rt = Rt::mount(&board("ResourcePolicy::keep_latest"));
+    rt.click(0);
+    assert_eq!(
+        rt.store.task_count(),
+        2,
+        "the second card still waits on key 1; the first loads key 2"
+    );
+    rt.click(0);
+    assert_eq!(rt.store.task_count(), 2, "no one waited on key 2");
+    rt.ring();
+    assert_eq!(cards(&mut rt), ["30", "10"]);
+}
+
+#[test]
+fn the_shared_cache_outlives_the_instance_that_loaded_it() {
+    let mut rt = Rt::mount(&board("ResourcePolicy::cache_for(1min)"));
+    rt.click(1);
+    rt.ring_upto(Duration::from_secs(1));
+    assert_eq!(cards(&mut rt), ["10", "10", "10"]);
+    rt.click(1);
+    rt.click(1);
+    assert_eq!(
+        cards(&mut rt),
+        ["10", "10", "10"],
+        "the third card settled from the cache at once"
+    );
+    rt.click(0);
+    rt.ring_upto(Duration::from_secs(1));
+    rt.click(1);
+    assert_eq!(cards(&mut rt), ["20", "10"]);
     assert_eq!(rt.fault(), None);
 }

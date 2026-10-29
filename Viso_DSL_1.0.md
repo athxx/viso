@@ -1493,7 +1493,7 @@ resource search_result: Resource<List<SearchItem>, SearchError> {
 - `load` 必须且只能出现一次；
 - `key` 必须且只能出现一次；
 - `policy` 可以省略，默认 `[]`；
-- `scope` 可以省略，默认 `ResourceScope::component`；
+- `scope` 可以省略，默认 `ResourceScope::component`：每个挂载的实例各自加载、各自缓存；`ResourceScope::shared` 则让同一声明在 View 中的所有实例共享，同一 Key 只加载一次、缓存一份；
 - Item 的源码顺序不影响语义；
 - 重复 Item 是静态错误；
 - 未知 Item 是静态错误；
@@ -1517,7 +1517,7 @@ match search_result.state {
 
 Resource 状态是标准 Enum；语法没有硬编码上述成员。
 
-当前实现：`resource` 是组件成员（System 中报 `E9109`），类型必须写作 `Resource<T, E>`（否则 `E2103`）。`load`、`key` 缺少或任一 Item 重复报 `E4301`，未知 Item 是语法错误。`policy` 是 `ResourcePolicy::keep_latest`、`debounce(d)`、`cache_for(d)`、`cache_errors` 的列表，各至多一次，`d` 为大于零的常量 Duration；`cache_errors` 需要 `cache_for`；`scope` 目前只接受 `ResourceScope::component`；违反者报 `E4302`。`key` 是纯表达式（Computed 上下文），类型须为 `StableKey`（整数、`Bool`、`Char`、`String`、`Unit`，以及由它们组成的 Tuple、Record、`Option` 与 Enum），否则报 `E2701`。`load` 必须是 Task Call（含 Native Task），否则报 `E4401`；其参数是纯表达式，结果类型须为 `Result<T, E>`（`E2103`）。Resource 只经 `.state`（`ResourceState<T, E>`）读取，可在表达式与 View `match` 中匹配并做穷尽检查（`E2301`）；对其赋值报 `E2110`；其他成员名报 `E2001`。
+当前实现：`resource` 是组件成员（System 中报 `E9109`），类型必须写作 `Resource<T, E>`（否则 `E2103`）。`load`、`key` 缺少或任一 Item 重复报 `E4301`，未知 Item 是语法错误。`policy` 是 `ResourcePolicy::keep_latest`、`debounce(d)`、`cache_for(d)`、`cache_errors` 的列表，各至多一次，`d` 为大于零的常量 Duration；`cache_errors` 需要 `cache_for`；`scope` 是 `ResourceScope::component` 或 `ResourceScope::shared`；违反者报 `E4302`。`key` 是纯表达式（Computed 上下文），类型须为 `StableKey`（整数、`Bool`、`Char`、`String`、`Unit`，以及由它们组成的 Tuple、Record、`Option` 与 Enum），否则报 `E2701`。`load` 必须是 Task Call（含 Native Task），否则报 `E4401`；其参数是纯表达式，结果类型须为 `Result<T, E>`（`E2103`）。Resource 只经 `.state`（`ResourceState<T, E>`）读取，可在表达式与 View `match` 中匹配并做穷尽检查（`E2301`）；对其赋值报 `E2110`；其他成员名报 `E2001`。
 
 ---
 
@@ -3871,7 +3871,7 @@ ResourceSymbolId + StableKeyValue + ScopeId + LoaderVersion
 - Loader Capability 在 Start 前检查；
 - LoaderVersion 变化默认使缓存失效，除非声明兼容迁移。
 
-当前实现：Resource 编译为一个 Effect：依赖是 `key`，主体启动 Loader Task（无 Handler），另有读写其状态槽的入口；状态初值 `idle`。挂载与每次 Key 值变化后：命中缓存则直接写入缓存状态；否则状态进入 `loading`（持有值时为 `reloading(value)`），再启动 Loader（有 `debounce` 时在延迟后启动，期间再变化会重新计时）。Loader 返回 `Ok(v)` 写 `ready(v)`、`Err(e)` 写 `error(e)`，各为一个新 Transaction，且仅当当前 Key 仍等于该次加载的 Key 时写入：过期结果从不覆盖新 Key 的状态。`keep_latest` 在 Key 变化时取消进行中的加载；没有它，旧加载照常完成并填充缓存。`cache_for(d)` 在结果提交时开始计时，到期移除；`cache_errors` 使错误同样缓存。缓存按挂载（`ResourceScope::component`）与 Key 值保存；加载、去抖与缓存到期都是该实例节点的 UI Task，卸载即全部丢弃。热重载以旧代码取消进行中的加载，状态按类型迁移保留，重新挂载后再次加载（新 Loader 即新 LoaderVersion，缓存不跨越热重载）。Loader 的 Capability 在其 Fiber 首次调用 Native 时检查（同步发生在启动内，早于任何异步工作）；被拒绝时报 `E6103`，状态停留在 `loading`。
+当前实现：Resource 编译为一个 Effect：依赖是 `key`，主体启动 Loader Task（无 Handler），另有读写其状态槽的入口；状态初值 `idle`。挂载与每次 Key 值变化后：命中缓存则直接写入缓存状态；否则状态进入 `loading`（持有值时为 `reloading(value)`），再启动 Loader（有 `debounce` 时在延迟后启动，期间再变化会重新计时）。Loader 返回 `Ok(v)` 写 `ready(v)`、`Err(e)` 写 `error(e)`，各为一个新 Transaction，且仅当当前 Key 仍等于该次加载的 Key 时写入：过期结果从不覆盖新 Key 的状态。`keep_latest` 在 Key 变化时取消进行中的加载；没有它，旧加载照常完成并填充缓存。`cache_for(d)` 在结果提交时开始计时，到期移除；`cache_errors` 使错误同样缓存。缓存按挂载（`ResourceScope::component`）与 Key 值保存；加载、去抖与缓存到期都是该实例节点的 UI Task，卸载即全部丢弃。`ResourceScope::shared` 的加载与缓存属于该声明在 View 中的池：某 Key 已在加载时，其他实例加入等待而不再启动 Loader，结果作为各自的 Transaction 写入每个仍处在该 Key 的等待者；Loader 在发起它的实例的作用域里求值参数（Key 相同即视为同一次加载）；`keep_latest` 只在已无实例等待时取消加载；池的加载与缓存到期是 View 根节点的 UI Task，发起它的实例卸载后照常完成并填充缓存，去抖仍属各实例。热重载以旧代码取消进行中的加载，状态按类型迁移保留，重新挂载后再次加载（新 Loader 即新 LoaderVersion，缓存不跨越热重载）。Loader 的 Capability 在其 Fiber 首次调用 Native 时检查（同步发生在启动内，早于任何异步工作）；被拒绝时报 `E6103`，状态停留在 `loading`。
 
 ---
 

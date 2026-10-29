@@ -721,6 +721,7 @@ mod tests {
                                     cache_for: None,
                                     cache_errors: false,
                                     keep_latest: true,
+                                    shared: Some(2),
                                 }),
                             },
                             anchor: 0,

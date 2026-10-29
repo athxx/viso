@@ -285,6 +285,9 @@ pub struct ViewHost {
     /// content.
     pub(crate) root: Option<NodeId>,
     pub(crate) tasks: Tasks,
+    /// The loads and cache of each `ResourceScope::shared` resource, by
+    /// pool.
+    pub(crate) pools: Vec<Rc<RefCell<crate::resources::Store>>>,
     persist: Persisting,
     persist_reports: Vec<PersistReport>,
     /// The encoded bytes of each asset the view can show, by resource,
@@ -505,6 +508,7 @@ impl ViewHost {
             this: Weak::new(),
             root: None,
             tasks: Tasks::default(),
+            pools: Vec::new(),
             persist: Persisting::Unmounted,
             persist_reports: Vec::new(),
             assets: Vec::new(),

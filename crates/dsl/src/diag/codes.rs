@@ -2937,8 +2937,8 @@ export component Profile {
         title: "Invalid Resource or Task Policy",
         explanation: "A resource `policy` is a list of `ResourcePolicy::keep_latest`, `debounce(d)`, \
             `cache_for(d)` and `cache_errors`, each at most once, with `d` a constant duration \
-            above zero; `cache_errors` needs `cache_for`, and `scope` accepts only \
-            `ResourceScope::component`. A `start` block takes exactly one `TaskPolicy` \
+            above zero; `cache_errors` needs `cache_for`, and `scope` is \
+            `ResourceScope::component` or `ResourceScope::shared`. A `start` block takes exactly one `TaskPolicy` \
             (`keep_latest`, `drop_new`, `queue` or `parallel(n)`), only on a named slot \
             (`start task() as slot { ... }`), and each handler at most once. Anything else is \
             rejected.",

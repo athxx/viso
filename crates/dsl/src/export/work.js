@@ -39,6 +39,8 @@ class Work {
     // the next; null outside one.
     this.woke = null;
     this.queued = false;
+    // The loads and cache of each shared resource, by pool.
+    this.pools = [];
   }
 
   // Runs `f` as one transaction in mount `m`, then the tasks it started and
@@ -62,7 +64,10 @@ class Work {
   effects(m, list) {
     for (const [dep, d, body, run, res] of list) {
       const x = { m, dep, d, body, run, res, on: false, last: undefined, clean: null, live: true };
-      if (res) x.q = { key: undefined, gen: 0, loads: [], wait: null, cache: [] };
+      if (res) {
+        x.q = { key: undefined, gen: 0, wait: null };
+        x.s = res.p === null ? { loads: [], cache: [] } : (this.pools[res.p] ??= { loads: [], cache: [] });
+      }
       m.fx.push(x);
       this.fx.push(x);
     }
@@ -209,17 +214,27 @@ class Work {
   // The resources: a key change moves the state to `loading` — `reloading`
   // while it holds a value — and starts the loader, after the debounce; the
   // loader's `Result` settles it while the key is still the one it loaded,
-  // and stays cached under its key for `cache_for`.
+  // and stays cached under its key for `cache_for`. Each keeps its loads and
+  // cache in its store `s`, its own or its pool's: a key loading there is
+  // joined, its result settling every resource waiting `w` on it, and
+  // `keep_latest` cancels a load once none waits on it.
   reload(x) {
-    const q = x.q, R = x.res;
+    const q = x.q, R = x.res, s = x.s;
     if (q.key === undefined) return;
     q.gen++;
     if (q.wait !== null) {
       clearTimeout(q.wait);
       q.wait = null;
     }
-    if (R.k) q.loads.splice(0).forEach((j) => this.cancel(j));
-    const hit = q.cache.find((c) => $.eq(c.key, q.key));
+    for (const l of s.loads.slice()) {
+      if ($.eq(l.key, q.key)) continue;
+      l.w = l.w.filter((y) => y !== x && y.live);
+      if (R.k && !l.w.length) {
+        s.loads.splice(s.loads.indexOf(l), 1);
+        this.cancel(l.j);
+      }
+    }
+    const hit = s.cache.find((c) => $.eq(c.key, q.key));
     if (hit) {
       this.run(() => R.w(hit.state), x.m);
       return;
@@ -245,16 +260,23 @@ class Work {
   }
 
   load(x, key) {
+    const s = x.s;
+    const flying = s.loads.find((l) => $.eq(l.key, key));
+    if (flying) {
+      if (!flying.w.includes(x)) flying.w.push(x);
+      return;
+    }
     const t = this.h.transact(x.body, x.m);
     if (!t || !t.starts.length) return;
-    const j = this.begin(t.starts[0], null, x.m, x.m, { x, key });
-    if (j) x.q.loads.push(j);
+    const owner = x.res.p === null ? x.m : this.top;
+    const j = this.begin(t.starts[0], null, x.m, owner, { s, R: x.res, key });
+    if (j) s.loads.push({ j, key, w: [x] });
   }
 
   loaded(j, v) {
-    const { x, key } = j.load;
-    const q = x.q, R = x.res;
-    q.loads = q.loads.filter((l) => l !== j);
+    const { s, R, key } = j.load;
+    const at = s.loads.findIndex((l) => l.j === j);
+    const w = at < 0 ? [] : s.loads.splice(at, 1)[0].w;
     if (v === undefined) return;
     if (v === null || typeof v !== "object" || v.t > 1 || v.f.length !== 1) {
       console.error(fault("a resource's loader returned no `Result`"));
@@ -262,13 +284,13 @@ class Work {
     }
     const state = { t: v.t === 0 ? READY : ERROR, f: [v.f[0]] };
     if (R.c !== null && (state.t === READY || R.e)) {
-      const stale = q.cache.findIndex((c) => $.eq(c.key, key));
-      if (stale >= 0) clearTimeout(q.cache.splice(stale, 1)[0].x);
+      const stale = s.cache.findIndex((c) => $.eq(c.key, key));
+      if (stale >= 0) clearTimeout(s.cache.splice(stale, 1)[0].x);
       const c = { key, state, x: 0 };
-      c.x = setTimeout(() => { q.cache = q.cache.filter((e) => e !== c); }, R.c * 1000);
-      q.cache.push(c);
+      c.x = setTimeout(() => { s.cache = s.cache.filter((e) => e !== c); }, R.c * 1000);
+      s.cache.push(c);
     }
-    if ($.eq(q.key, key)) this.run(() => R.w(state), x.m);
+    for (const y of w) if (y.live && $.eq(y.q.key, key)) this.run(() => y.res.w(state), y.m);
   }
 
   // Ends the work of mount `m`: its effects clean up, the tasks it owns stop
@@ -279,7 +301,7 @@ class Work {
       x.live = false;
       if (x.q) {
         if (x.q.wait !== null) clearTimeout(x.q.wait);
-        for (const c of x.q.cache) clearTimeout(c.x);
+        if (x.res.p === null) for (const c of x.s.cache) clearTimeout(c.x);
       }
       if (x.clean) this.h.drop(x.clean, m);
       x.clean = null;

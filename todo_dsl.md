@@ -1177,7 +1177,9 @@ timers (§104–§111).
         keeps the state and reloads; hot reload, release package and macros run
         it alike; capability checked when the loader first calls a native,
         before any work is spawned.
-  - [ ] `ResourceScope` beyond `component` (shared caches across instances).
+  - [x] `ResourceScope` beyond `component` (shared caches across instances):
+        `ResourceScope::shared`, one load and one cache per key for every instance of the
+        declaration in the view.
 - [x] `style` / `theme` grammar and lowering; `@styleable`, `@selector` `E3710` (§59, §60, U2.3, U12).
   - [x] Grammar: `style NAME for Component : Base + Base { prop: v; when sel { } }`
         and `theme NAME : Base { name = expr; }`; both resolve (`theme` reads in

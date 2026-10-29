@@ -97,9 +97,11 @@ fn lower_resource(
         Some(list) => parse_policies(list, diagnostics),
         None => Some(Policies::default()),
     };
-    let scoped = scope
-        .as_ref()
-        .is_none_or(|scope| check_scope(scope, diagnostics));
+    let shared = match &scope {
+        Some(scope) => check_scope(scope, diagnostics),
+        None => Some(false),
+    };
+    let scoped = shared.is_some();
 
     let state = schema.states.iter().find(|s| s.name == member);
     let (value, error) = match state.map(|s| &s.meta.inferred_type) {
@@ -179,6 +181,7 @@ fn lower_resource(
         cache_for: policies.cache_for,
         cache_errors: policies.cache_errors,
         keep_latest: policies.keep_latest,
+        shared: (shared == Some(true)).then_some(0),
     };
     let sites = [key_at, load_at, at, resource.syntax().text_range()];
     b.resource(
@@ -279,20 +282,23 @@ const UNKNOWN: &str = "a resource policy is `ResourcePolicy::keep_latest`, \
                        `ResourcePolicy::debounce(d)`, `ResourcePolicy::cache_for(d)` or \
                        `ResourcePolicy::cache_errors`";
 
-/// Whether the scope `scope` is one a resource runs in (`E4302`): the
-/// component's own, `ResourceScope::component`.
-fn check_scope(scope: &Expr, diagnostics: &mut Vec<Diagnostic>) -> bool {
-    let path = segments(scope.syntax());
-    if path == ["ResourceScope", "component"] {
-        return true;
+/// Whether the scope `scope` shares the resource across instances
+/// (`ResourceScope::shared`) or not (`ResourceScope::component`); `None`
+/// for neither (`E4302`).
+fn check_scope(scope: &Expr, diagnostics: &mut Vec<Diagnostic>) -> Option<bool> {
+    match segments(scope.syntax()).as_slice() {
+        [a, b] if a == "ResourceScope" && b == "component" => return Some(false),
+        [a, b] if a == "ResourceScope" && b == "shared" => return Some(true),
+        _ => {}
     }
     diagnostics.push(Diagnostic::error(
         "E4302",
         scope.syntax().text_range(),
-        "a resource runs in `ResourceScope::component`: each mounted instance loads and \
-         caches its own",
+        "a resource's scope is `ResourceScope::component`, each mounted instance loading \
+         and caching its own, or `ResourceScope::shared`, every instance in the view \
+         sharing one load and one cache per key",
     ));
-    false
+    None
 }
 
 fn segments(path: &SyntaxNode) -> Vec<String> {

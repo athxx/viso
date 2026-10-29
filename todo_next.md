@@ -1336,7 +1336,17 @@ output, a live macOS session) is listed with the device runs of N8.
   repeat-sampled draw for a raster, a copy a cell clipped to the box for a vector; a repeating
   `background-image`, or mask under a tint, in the HTML exports). No compact stop table: a stop
   loop per pixel costs more than the LUT's one sample, and a LUT row bakes once.
-- [ ] `ResourceScope` beyond `component`: caches shared across instances (`todo_dsl.md` D7).
+- [x] `ResourceScope` beyond `component`: caches shared across instances (`todo_dsl.md` D7).
+  `ResourceScope::shared` gives each declaration a pool in the view: a key loading is joined,
+  not loaded again, its result settles every instance waiting on it, `keep_latest` cancels a
+  load once none waits, and the pool's loads and expiries are the view root's, outliving the
+  instance that started them. The VM host, the release package and both web exports run it.
+- [ ] A component whose view root is a region (`view { match .. }`), mounted in region content,
+  shows nothing and faults on its region entries: its states, effects and starters are claimed
+  at its first node, and a region item has none to anchor them (found with the shared
+  resources; wrapping the view in a `Column` works).
+- [ ] The `renderer_steady_state` bench stops at its decorated-cards gate: 496 draws where it
+  asserts 512 (two per card), so no bench of it runs.
 - [ ] The CLI's preview of generated code runs its views on the preview host, under its
   restricted grant (`todo_dsl.md`, `E6103`).
 - [ ] A compile-fail test of a catalog error through `view!` (trybuild), and the dev session's
