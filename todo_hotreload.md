@@ -1126,8 +1126,10 @@ differ.
 
 ### Done
 
-- [ ] A `.vs` edit patches a running Android emulator, iOS simulator and browser app;
-      a Rust edit restarts each with state restored.
+- [x] A `.vs` edit patches a running Android emulator, iOS simulator and browser app;
+      a Rust edit restarts each with state restored. Verified by `tests/device.rs` on this
+      Mac: `ios_simulator`, `android_emulator`, `web` and `web_lan` (each ends on its own
+      after the interrupt).
 
 ---
 
@@ -1180,8 +1182,9 @@ Goal: one source graph serves several running runtimes with per-runtime revision
 - [x] §62 integration suite under a test host driving a real dev app: UI, invalid
       `.vs`, shader, game, Rust. Mapped in `Viso_Hot_Reload.md` §62: the facade's real
       session over TCP for UI/invalid/shader/game, `tests/warm_restart.rs` for Rust.
-- [ ] §63 simulator/emulator suite: the Android fake runs with `cargo test`; the real
-      simulator, emulator and browser runs (`tests/device.rs`) wait for their CI jobs.
+- [x] §63 simulator/emulator suite: the Android fake runs with `cargo test`; the real
+      simulator, emulator and browser runs (`tests/device.rs`) pass locally; their CI
+      jobs are the open line above.
 - [x] §64 release absence suite in CI, including the web, Android and iOS
       simulator dev/release artifacts (per-target markers: no link thread on web).
       `check-release-absence --target ios-sim|android|web`; the web drops the link

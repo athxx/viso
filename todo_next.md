@@ -1199,6 +1199,13 @@ Rules (as for `todo_features.md`):
 - [ ] CI emulator and simulator jobs: boot, install, hot reload, and the examples rendering on the
   iOS simulator, the Android emulator and Chromium (open lines in `todo_hotreload.md` and
   `todo_platform.md`).
+  - [x] The device e2e tests pass on this Mac: boot, install, hot patch, Rust warm restart with
+    state restored, and the interrupt ending each session. Found on the way: the commands that
+    stop an app (`simctl terminate`, `am force-stop`, `adb reverse --remove`) were themselves
+    ended by the interrupt they served, so an interrupted simulator session waited forever on
+    the app's link; they now run through it (`process::finish`, which the board's SSH calls
+    share). `javac` and `keytool` now come from `JAVA_HOME` as the other JDK tools do.
+  - [ ] The jobs' first run on CI, and the examples rendering there.
 - [ ] The map on Android (emulator with an API 36 image, or a device) and touch gestures on iOS:
   pan, pinch, rotate and tilt against the desktop behavior.
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and

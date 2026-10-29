@@ -226,9 +226,9 @@ pub fn launch(
 
 /// Stops the app `id`.
 pub fn terminate(udid: &str, id: &str) {
-    let _ = crate::process::status(
+    let _ = crate::process::finish(
         simctl().args(["terminate", udid, id]),
-        crate::process::QUICK,
+        Some(crate::process::QUICK),
     );
 }
 

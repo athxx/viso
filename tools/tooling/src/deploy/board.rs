@@ -15,12 +15,12 @@
 //! board takes the host's key, or an agent's.
 
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io;
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use viso_project::DeployAddress;
 
@@ -324,54 +324,10 @@ fn quick(command: &mut Command) -> Result<String, String> {
     run(command, Some(QUICK))
 }
 
-/// Runs `command` with no input, out of the terminal's Ctrl-C, to its end or
-/// for `timeout`: a call the session makes while it closes, after an
-/// interrupt, runs all the same.
+/// Runs `command` with no input to its end or for `timeout`: a call the
+/// session makes while it closes, after an interrupt, runs all the same.
 fn run(command: &mut Command, timeout: Option<Duration>) -> Result<String, String> {
-    let name = crate::process::name(command.get_program());
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    own_group(command);
-    let mut child = command.launch().map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => format!("`{name}` is not installed"),
-        _ => format!("cannot run `{name}`: {e}"),
-    })?;
-    let until = timeout.map(|timeout| Instant::now() + timeout);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if until.is_some_and(|until| Instant::now() >= until) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "`{name}` did not finish in {} s",
-                    timeout.unwrap_or_default().as_secs()
-                ));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(e) => return Err(format!("cannot run `{name}`: {e}")),
-        }
-    };
-    let read = |stream: Option<Box<dyn Read>>| {
-        let mut text = String::new();
-        if let Some(mut stream) = stream {
-            let _ = stream.read_to_string(&mut text);
-        }
-        text
-    };
-    let stdout = read(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read>));
-    let stderr = read(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read>));
-    if status.success() {
-        Ok(stdout)
-    } else {
-        let said = match stderr.trim() {
-            "" => stdout.trim().to_owned(),
-            said => said.to_owned(),
-        };
-        Err(format!("`{name}` failed ({status}): {said}"))
-    }
+    crate::process::finish(command, timeout)
 }
 
 #[cfg(test)]

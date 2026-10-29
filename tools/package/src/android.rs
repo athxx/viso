@@ -562,7 +562,7 @@ impl Sdk {
         for d in [&classes, &out] {
             io(d, std::fs::create_dir_all(d))?;
         }
-        run(Command::new("javac")
+        run(Command::new(jdk_tool("javac"))
             .args([
                 "-source",
                 "8",
@@ -877,7 +877,7 @@ pub fn debug_keystore() -> Result<PathBuf, String> {
         return Ok(keystore);
     }
     io(&dir, std::fs::create_dir_all(&dir))?;
-    run(Command::new("keytool")
+    run(Command::new(jdk_tool("keytool"))
         .args(["-genkeypair", "-keystore"])
         .arg(&keystore)
         .args([

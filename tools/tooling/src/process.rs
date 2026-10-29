@@ -2,7 +2,8 @@
 //! list, never a shell string; under `--verbose` the command line shown, the
 //! program apart from its arguments and every secret hidden; what it wrote
 //! and how it exited captured as data; a timeout and the first interrupt
-//! ending it with everything it started.
+//! ending it with everything it started, unless it is one of the calls that
+//! stop what the interrupt is stopping.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -185,6 +186,23 @@ impl fmt::Display for Failure {
 /// interrupt arrives, then ends it and what it started; what it wrote is
 /// read as it writes, so neither pipe fills.
 pub fn capture(command: &mut Command, timeout: Option<Duration>) -> Result<Captured, Failure> {
+    capture_in(command, timeout, false)
+}
+
+/// Runs `command` as [`run`] does, but to its end through an interrupt: a
+/// call that stops an app or undoes what the session set up still runs
+/// while an interrupted session ends.
+pub fn finish(command: &mut Command, timeout: Option<Duration>) -> Result<String, String> {
+    let captured = capture_in(command, timeout, true);
+    output(command, captured)
+}
+
+/// [`capture`], ending `command` at an interrupt unless `through` it.
+fn capture_in(
+    command: &mut Command,
+    timeout: Option<Duration>,
+    through: bool,
+) -> Result<Captured, Failure> {
     let name = name(command.get_program());
     command
         .stdin(Stdio::null())
@@ -228,7 +246,7 @@ pub fn capture(command: &mut Command, timeout: Option<Duration>) -> Result<Captu
     let status = loop {
         match tree.child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if interrupt::count() > 0 => {
+            Ok(None) if !through && interrupt::count() > 0 => {
                 tree.kill();
                 return Err(Failure::Interrupted(name));
             }
@@ -263,7 +281,13 @@ pub fn status(command: &mut Command, timeout: Duration) -> Result<ExitStatus, Fa
 /// Runs `command` as [`capture`] does and returns what it wrote to stdout;
 /// when it fails, why, with what it said.
 pub fn run(command: &mut Command, timeout: Option<Duration>) -> Result<String, String> {
-    let captured = capture(command, timeout).map_err(|failure| failure.to_string())?;
+    let captured = capture(command, timeout);
+    output(command, captured)
+}
+
+/// What `command` wrote to stdout, or why it failed, with what it said.
+fn output(command: &Command, captured: Result<Captured, Failure>) -> Result<String, String> {
+    let captured = captured.map_err(|failure| failure.to_string())?;
     if captured.status.success() {
         return Ok(captured.stdout);
     }

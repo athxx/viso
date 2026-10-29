@@ -334,10 +334,10 @@ impl Device {
 
     /// Stops forwarding `port`.
     pub fn unreverse(&self, port: u16) {
-        let _ = crate::process::status(
+        let _ = crate::process::finish(
             self.adb()
                 .args(["reverse", "--remove", &format!("tcp:{port}")]),
-            crate::process::QUICK,
+            Some(crate::process::QUICK),
         );
     }
 
@@ -437,9 +437,9 @@ impl Device {
 
     /// Stops `package`.
     pub fn force_stop(&self, package: &str) {
-        let _ = crate::process::status(
+        let _ = crate::process::finish(
             self.adb().args(["shell", "am", "force-stop", package]),
-            crate::process::QUICK,
+            Some(crate::process::QUICK),
         );
     }
 }
