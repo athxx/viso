@@ -1,6 +1,6 @@
 # ADR 0037 — Mounting a view's handlers on the behavior VM
 
-- Status: Proposed
+- Status: Accepted (2026-10-29); release path revised by [ADR 0041](0041-release-native-lowering.md)
 - Date: 2026-09-28
 
 ## Context
@@ -42,3 +42,8 @@ depend on `viso-behavior`.
   never re-entered, and a re-entrant dispatch is skipped rather than panicking.
 - Capture-phase routing, component event delivery to a parent and native
   capability grants for view handlers are not yet provided.
+
+## As built
+
+- `ViewPackage` lives in `viso-schema`; `viso-view` also depends on `viso-schema` and `viso-dev-protocol`.
+- A release build runs no VM: handlers, bindings and computeds are Rust (ADR 0041).

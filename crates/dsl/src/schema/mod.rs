@@ -16,7 +16,7 @@ pub use project::package_schemas;
 use std::sync::Arc;
 
 pub use viso_behavior::native::{
-    COMPONENT, NativeId, NativeKind, Natives, Ownership, ThreadDomain,
+    COMPONENT, NativeId, NativeKind, Natives, Ownership, ThreadDomain, standard_name,
 };
 use viso_behavior::native::{
     NativeEntry, NativeFunction, NativeLibrary, NativeTypeEntry, NativeWidgetEntry, SlotCardinality,

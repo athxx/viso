@@ -22,7 +22,6 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 toml_edit = "0.25"
-viso-behavior = { workspace = true, features = ["std"] }
 viso-dsl = { workspace = true }
 viso-shader = { workspace = true }
 

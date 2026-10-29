@@ -1,6 +1,6 @@
 # ADR 0038 — Mounting a view's control-flow regions
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-09-28
 
 ## Context
@@ -53,3 +53,8 @@ knowledge of the behavior VM.
 - Region node property values that are not static edges are not evaluated;
   detached preserved nodes keep their bindings; `VirtualList` content from a
   view is not supported yet.
+
+## As built
+
+- `ViewRegions` lives in `viso-schema`.
+- `VirtualList` content is supported: a single keyed `for` is its item template.

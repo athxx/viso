@@ -1,5 +1,8 @@
 # Viso Hot Reload — H0 → H1 → H2 → H3 → H4 → H5 → H6 → H7 → H8
 
+> The N9 sweep of 2026-10-29 moved this file's open lines to `todo_next.md`: the device runs to
+> N8, the rest to its Backlog. This file is the record of what was built.
+
 Construction order follows `Viso_Hot_Reload.md` Part XXII (§65–§70): H0 closes the
 dev-only build contract, H1 is Phase A on the target architecture (host watches and
 compiles, the app receives typed patches), H2 is Phase B, H3–H5 are Phase C, H6 is
@@ -506,10 +509,9 @@ session comes first, then every reload item builds on it.
       timeline, protocol 9), CLI §22.3, §36.4 (the `dev` event's `game` object) and
       §44 (the lock's endpoint line), DSL §110 (the two-phase swap, `GameSession`,
       the audio swap, tape patches, `SystemLayout::states`).
-- [ ] Not in this phase: `GameViewport` and the 3D lane that draws the World (designed
-      in ADR 0047) — tracked in
-      `todo_dsl.md` D5. HUD game queries re-link across a reload by query, keeping
-      their cells (ADR 0045).
+- [x] Not in this phase: `GameViewport` and the 3D lane that draws the World (designed
+      in ADR 0047) — done in `todo_features.md` W1 and W14. HUD game queries re-link
+      across a reload by query, keeping their cells (ADR 0045).
 
 ### Done
 
@@ -1153,7 +1155,8 @@ Goal: one source graph serves several running runtimes with per-runtime revision
       listener, restart); the link admits every lane's build; restarts run one lane at a
       time; app lines are prefixed `[target]`; a later lane of a repeated triple builds in
       `target/viso/lanes/<target>/`.
-- [ ] Studio Device Matrix over the `runtime` stream.
+- [x] Dropped: the Studio Device Matrix. There is no Studio; an editor panel over the
+      `runtime` stream is the optional item of `todo_next.md` N10.
 
 ### Done
 

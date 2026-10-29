@@ -1,7 +1,7 @@
 //! `.vs` shaders drawn from the same encoded buffers by the reference
 //! interpreter's rasterizer on the CPU, by the headless raster running the
 //! program as its `CpuShader`, by Metal from the MSL, and — with the `vulkan`
-//! feature, on MoltenVK — by Vulkan from the SPIR-V of the WGSL, each
+//! feature, on MoltenVK or a Linux driver — by Vulkan from the SPIR-V of the WGSL, each
 //! backend's code from `program::code`. Every image
 //! agrees with the reference, and Vulkan with Metal, within a small
 //! per-channel tolerance; the headless one on every platform. The GLSL ES
@@ -232,7 +232,7 @@ fn metal(_: &Encoded) -> Option<Vec<u8>> {
 
 /// The program on Vulkan from the SPIR-V of its WGSL, or `None` without a
 /// Vulkan device (or without the `vulkan` feature).
-#[cfg(all(target_os = "macos", feature = "vulkan"))]
+#[cfg(feature = "vulkan")]
 fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
     use viso_gpu::VulkanBackend;
     let Some(mut gpu) = VulkanBackend::try_new_with(true) else {
@@ -272,7 +272,7 @@ fn vulkan(e: &Encoded) -> Option<Vec<u8>> {
     Some(picture)
 }
 
-#[cfg(not(all(target_os = "macos", feature = "vulkan")))]
+#[cfg(not(feature = "vulkan"))]
 fn vulkan(_: &Encoded) -> Option<Vec<u8>> {
     None
 }

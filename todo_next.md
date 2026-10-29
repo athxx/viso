@@ -1,4 +1,4 @@
-# Viso next program — N1 → N9
+# Viso next program — N1 → N10
 
 What the architecture audit of `Viso_Architecture.md` against the code left to build. Every
 part of the document was checked claim by claim:
@@ -946,8 +946,9 @@ Rules (as for `todo_features.md`):
     - The tooling suite passes: 157 tests, the dev session's against a counting `Reporter`.
     - The CLI's unit tests and its check, inspect, json and run suites pass.
     - Clippy passes on host, Windows and Linux.
-- [ ] `web-dom` and `web-hybrid` runtime backends and the per-target capability table (the C4.3
-  and C4.4 lines of `todo_cli.md`). Verify that `viso build web-dom` no longer reports `C0011` and
+- [x] `web-dom` and `web-hybrid` runtime backends and the per-target capability table (the C4.3
+  and C4.4 lines of `todo_cli.md`; the platform-gated natives' rows wait for a native missing on
+  some target, carried over in N9). Verify that `viso build web-dom` no longer reports `C0011` and
   `viso check web-dom` flags a GPU-only node.
   - [x] `web-dom` build and check: `viso-dom` runs the view's behavior on the VM in the app's
     wasm; the page is the html export's lowering with its calls going to the VM.
@@ -1215,15 +1216,35 @@ Rules (as for `todo_features.md`):
       advance by measured time. Only the game's fixed step is 60 Hz, by design.
   - [ ] On devices: cadence traces at 120 Hz (iPhone Pro, an Android flagship) and at 144/240 Hz
     (a desktop panel).
+- [ ] Device runs of what is built and only compile- or headless-checked (carried over by N9):
+  - secure text entry on each platform (`todo_dsl.md`);
+  - `@persist` storage: Android `getFilesDir`, the iOS sandbox, the web's `localStorage`;
+  - game audio output: WASAPI, ALSA, AAudio, iOS RemoteIO;
+  - a live macOS session: cursors, IME candidate placement, appearance and key-window
+    notifications, memory pressure (`todo_platform.md`);
+  - GPU time on presenting Vulkan and D3D12 devices (`todo_cli.md` C6).
 - [ ] ASUN rows decoded as they arrive in `viso-net`, once `asun-rs`'s incremental decoder lands.
 
 ## N9 — Governance
 
-- [ ] Move the implemented ADRs from Proposed to Accepted after review: 0034–0040, 0042–0044 and
+- [x] Move the implemented ADRs from Proposed to Accepted after review: 0034–0040, 0042–0044 and
   0047. Verify that the Part XXVIII table matches the files.
-- [ ] Sweep the older todo files (`todo_cli.md`, `todo_dsl.md`, `todo_hotreload.md`,
+  - Reviewed each against the code, with 0054–0056 as well; all are Accepted, each with an
+    "As built" list where the code differs from the record (codes, crate homes, sizes, what was
+    later built). The table now lists 0061 and 0062 and the amendments.
+  - Found on the way: `viso-ui-macros` depended on `viso-behavior` outside the DAG; it now
+    reaches `standard_name` through `viso_dsl::schema` and `check-deps` passes. ADR 0044 says
+    `check-profiles` validates every profile: it now also holds the mobile profile on iOS and
+    Android and the web's on wasm32 (11 closures, all clean).
+- [x] Sweep the older todo files (`todo_cli.md`, `todo_dsl.md`, `todo_hotreload.md`,
   `todo_rendering.md`) for lines done since, such as the `GameViewport`/3D lane lines finished in
   W1 and W14. Tick them or move what is left here.
+  - Ticked: `GameViewport` and the World's drawing, the game frame sheet, video planes, SDR
+    encoded once, `web-dom`; the Studio lines dropped (there is no Studio). The shader
+    two-backends line now also runs on Linux: `shader_golden` with `vulkan` on lavapipe agrees
+    with the CPU reference (worst channel difference 1).
+  - The rest went to the Backlog at the end of this file, and the device runs of built code to
+    N8; each older file says so at its top.
 
 ## N10 — Editor extensions (last)
 
@@ -1245,3 +1266,37 @@ everything above is done.
   language features inside a `ui!` body through a virtual document. Verify against a running
   `viso run`.
 
+
+## Backlog — carried over from the older todo files
+
+Open lines the N9 sweep found in `todo_cli.md`, `todo_dsl.md`, `todo_hotreload.md`,
+`todo_rendering.md`, `todo_platform.md`, `todo_arch.md` and `todo_features.md` that are neither
+done nor already an item above. Not scheduled; each names the file and section it came from.
+Device-only verification of what is built (secure text entry, `@persist` paths, game audio
+output, a live macOS session) is listed with the device runs of N8.
+
+- [ ] `Brush::ImagePattern` and `Brush::ShaderBrush` lowering in the renderer: both are declared
+  and reach a `todo!` panic (`todo_rendering.md` D2.1). A compact shared stop table between the
+  inline 2-stop and the 3+ stop LUT tiers.
+- [ ] `ResourceScope` beyond `component`: caches shared across instances (`todo_dsl.md` D7).
+- [ ] The CLI's preview of generated code runs its views on the preview host, under its
+  restricted grant (`todo_dsl.md`, `E6103`).
+- [ ] A compile-fail test of a catalog error through `view!` (trybuild), and the dev session's
+  catalog reload under a real watcher (`todo_dsl.md`, localization checks).
+- [ ] Game audio on the web: an AudioWorklet over a shared-memory wasm build (`todo_dsl.md`,
+  `AudioProcess`), which needs the threaded web build below.
+- [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
+  shared-memory threaded module (`todo_cli.md` C4.2).
+- [ ] Per-target availability of natives, and the capability table rows it gives; lands with the
+  first native missing on some target (`todo_cli.md` C1.5, C4.4).
+- [ ] A pixel golden of the frame-profile HUD (`todo_cli.md` C6).
+- [ ] Recorded acceptance scenarios: resize, DPI change and surface recreate, with GPU frame time
+  per scenario (`todo_rendering.md` D0.4).
+- [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did
+  (`todo_arch.md`).
+- [ ] An opt-in disk cache of dev snapshots, once the DSL can mark a state sensitive
+  (`todo_hotreload.md`).
+- [ ] A published `viso` on a registry, so a project made without `--framework` resolves without
+  a `[patch]` (`todo_cli.md` C1.2).
+- [ ] Usability: timed sessions with people, and real-model prompt sets and generation runs
+  (`todo_dsl.md` D9).

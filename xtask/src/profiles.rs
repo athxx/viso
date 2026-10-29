@@ -7,7 +7,7 @@
 //! profile's on and `rasterizer`, which a build that rasterizes glyphs adds
 //! back; a desktop one with the defaults alone. For each Linux triple
 //! (`aarch64-unknown-linux-gnu` and `armv7-unknown-linux-gnueabihf` when none
-//! is named). Only normal edges count, and no proc-macro's subtree: the
+//! is named); the mobile and web profiles on their own triples. Only normal edges count, and no proc-macro's subtree: the
 //! closure is what the app links, not what compiles it.
 //!
 //! No release closure turns on the behavior interpreter, which only a dev
@@ -30,22 +30,28 @@ const COMPILER: &[&str] = &["viso-dsl", "viso-lsp", "notify*", "kqueue*", "inoti
 /// D-Bus portal and the AT-SPI accessibility bridge.
 const DESKTOP: &[&str] = &["x11rb*", "wayland-*", "zbus*", "accesskit*"];
 
+/// The desktop stack without accessibility, which a mobile app bridges too.
+const DESKTOP_STACK: &[&str] = &["x11rb*", "wayland-*", "zbus*", "accesskit_unix"];
+
 /// The crate features no release closure turns on: the behavior
 /// interpreter, which a release build replaces with the Rust each view's
 /// behavior compiles to.
 const RELEASE_FEATURES: &[(&str, &str)] = &[("viso-behavior", "interpreter")];
 
 /// One profile: its name, the facade features it turns on, whether it keeps
-/// the facade's defaults, and the crates its closure must not hold (`name*`
-/// is every crate whose name starts so).
+/// the facade's defaults, the triples it is built for (none: the Linux
+/// board triples the run checks), and the crates its closure must not hold
+/// (`name*` is every crate whose name starts so).
 struct FootprintCheck {
     name: &'static str,
     features: &'static str,
     defaults: bool,
+    targets: &'static [&'static str],
     forbidden: &'static [&'static [&'static str]],
 }
 
-/// The profiles: the desktop's and the embedded ones.
+/// The profiles: the embedded ones, the desktop's, the mobile one and the
+/// web's.
 const PROFILES: &[FootprintCheck] = &[
     // GLES 3 on a KMS display: no other platform's graphics or system API,
     // and no Vulkan.
@@ -53,6 +59,7 @@ const PROFILES: &[FootprintCheck] = &[
         name: "embedded-gpu",
         features: "viso/gles,viso/kms,viso/rasterizer",
         defaults: false,
+        targets: &[],
         forbidden: &[
             &["windows*", "objc2*", "metal", "wgpu*", "ash"],
             DESKTOP,
@@ -64,6 +71,7 @@ const PROFILES: &[FootprintCheck] = &[
         name: "embedded-gpu (vulkan)",
         features: "viso/native-vulkan,viso/kms,viso/rasterizer",
         defaults: false,
+        targets: &[],
         forbidden: &[
             &[
                 "windows*",
@@ -82,6 +90,7 @@ const PROFILES: &[FootprintCheck] = &[
         name: "embedded-cpu",
         features: "viso/cpu,viso/kms,viso/rasterizer",
         defaults: false,
+        targets: &[],
         forbidden: &[
             &[
                 "ash",
@@ -103,7 +112,38 @@ const PROFILES: &[FootprintCheck] = &[
         name: "desktop",
         features: "",
         defaults: true,
+        targets: &[],
         forbidden: &[COMPILER],
+    },
+    // An iOS or Android app: its own platform's APIs, no desktop stack and
+    // no compiler.
+    FootprintCheck {
+        name: "mobile",
+        features: "",
+        defaults: true,
+        targets: &["aarch64-apple-ios", "aarch64-linux-android"],
+        forbidden: &[&["windows*", "d3d12", "wgpu*"], DESKTOP_STACK, COMPILER],
+    },
+    // A web app: the browser's APIs alone.
+    FootprintCheck {
+        name: "web",
+        features: "",
+        defaults: true,
+        targets: &["wasm32-unknown-unknown"],
+        forbidden: &[
+            &[
+                "windows*",
+                "d3d12",
+                "wgpu*",
+                "objc2*",
+                "metal",
+                "ash",
+                "glow",
+                "khronos-egl",
+            ],
+            DESKTOP,
+            COMPILER,
+        ],
     },
 ];
 
@@ -116,8 +156,17 @@ pub fn check_profiles(args: &[String]) -> ExitCode {
         }
     };
     let mut violations = Vec::new();
+    let mut tried = 0;
     for profile in PROFILES {
-        for target in &targets {
+        let own: Vec<String>;
+        let targets = if profile.targets.is_empty() {
+            &targets
+        } else {
+            own = profile.targets.iter().map(|t| (*t).to_owned()).collect();
+            &own
+        };
+        for target in targets {
+            tried += 1;
             match closure(profile, target) {
                 Ok(tree) => {
                     let found = forbidden(profile, &tree);
@@ -152,9 +201,8 @@ pub fn check_profiles(args: &[String]) -> ExitCode {
     }
     if violations.is_empty() {
         println!(
-            "check-profiles: OK — {} profile(s) on {} target(s)",
-            PROFILES.len(),
-            targets.len()
+            "check-profiles: OK — {} profile(s), {tried} closure(s)",
+            PROFILES.len()
         );
         ExitCode::SUCCESS
     } else {

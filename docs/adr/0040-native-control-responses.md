@@ -1,6 +1,6 @@
 # ADR 0040 — Native control responses mounted from the handler table
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-09-28
 
 ## Context
@@ -56,3 +56,7 @@ coordinates, not local to the node.
   belongs to the reactive graph.
 - A `ui!` fragment has no state and no handler table, so it mounts no control
   response.
+
+## As built
+
+- `Control` lives in `viso-schema`; there are many more control kinds than the first four, each driven through the `Drive` trait.

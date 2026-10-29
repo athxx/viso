@@ -3576,7 +3576,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "toml_edit",
- "viso-behavior",
  "viso-dsl",
  "viso-shader",
 ]

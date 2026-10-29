@@ -5506,38 +5506,40 @@ per-node 每帧回调式 `Painter` trait 与可直接录制 backend 命令的 `C
 | 0026 | System-font provider 与 color-glyph rasterizer seam（trait 在 viso-text，CoreText 在 facade） | Accepted |
 | 0027 | Width-aware text reflow | Accepted |
 | 0028 | SFNT-only font input（WOFF2 由调用方解压） | Accepted |
-| 0029 | GPU backend static selection per target | Accepted |
+| 0029 | GPU backend static selection per target | Accepted（Android 部分由 ADR 0062 修订） |
 | 0030 | Accessibility OS bridge（AccessKit） | Accepted |
 | 0031 | Service protocols：一个 registry、one-shot reply、每 OS 一个实现 | Accepted |
 | 0032 | UI task protocol：loop-thread task、cross-thread wake、node-scoped cancellation | Accepted |
 | 0033 | Relative length units：`em`、Percent basis、`MixedLength` | Accepted |
-| 0034 | DSL keyword tiers 与 label positions | Proposed（已实现） |
-| 0035 | Behavior bytecode VM in a leaf crate | Proposed（已实现） |
-| 0036 | Native schema bridge in the behavior crate | Proposed（已实现） |
-| 0037 | Mounting a view's handlers on the behavior VM | Proposed（已实现；Release 路径由 ADR 0041 修订） |
-| 0038 | Mounting a view's control-flow regions | Proposed（已实现） |
-| 0039 | Inlining user-component instances into the mounting view | Proposed（已实现） |
-| 0040 | Native control responses mounted from the handler table | Proposed（已实现） |
+| 0034 | DSL keyword tiers 与 label positions | Accepted |
+| 0035 | Behavior bytecode VM in a leaf crate | Accepted（Release 路径由 ADR 0041 修订） |
+| 0036 | Native schema bridge in the behavior crate | Accepted |
+| 0037 | Mounting a view's handlers on the behavior VM | Accepted（Release 路径由 ADR 0041 修订） |
+| 0038 | Mounting a view's control-flow regions | Accepted |
+| 0039 | Inlining user-component instances into the mounting view | Accepted |
+| 0040 | Native control responses mounted from the handler table | Accepted |
 | 0041 | Release native lowering：handler / binding / computed 生成 Rust，VM 仅 Dev 与 dynamic | Accepted |
-| 0042 | Crate DAG 修正：`viso-schema`、编译器不依赖运行时、删除 gpu→runtime 与 text→gpu | Proposed（已实现） |
-| 0043 | Frame phases 与 transform plane：17 阶段、dirty worklist、transform root | Proposed（已实现） |
-| 0044 | Device Class、Footprint Profile 与 Embedded（GLES3、CpuRaster、KMS、MCU-ready） | Proposed（已实现，板卡实测除外） |
+| 0042 | Crate DAG 修正：`viso-schema`、编译器不依赖运行时、删除 gpu→runtime 与 text→gpu | Accepted（tooling 拆分见 ADR 0057） |
+| 0043 | Frame phases 与 transform plane：17 阶段、dirty worklist、transform root | Accepted |
+| 0044 | Device Class、Footprint Profile 与 Embedded（GLES3、CpuRaster、KMS、MCU-ready） | Accepted |
 | 0045 | HUD 读游戏状态：reactive game query（`@query`、注入绑定 `game`） | Accepted |
 | 0046 | 一个 dev session、多个 build（`viso run` 多 target lane） | Accepted |
-| 0047 | `GameViewport` 与 3D scene lane | Proposed（已实现） |
+| 0047 | `GameViewport` 与 3D scene lane | Accepted |
 | 0048 | Output color encoding（sRGB 纹理格式与 surface） | Accepted |
 | 0049 | Media through the OS players（`viso-media`） | Accepted |
 | 0050 | Capture devices as extensions（`LiveSource`、`CameraProvider`） | Accepted |
 | 0051 | Native packages（扩展 crate 携带 `.vs` Native Library） | Accepted |
 | 0052 | Gamepads polled per frame into the game input | Accepted |
 | 0053 | Extruded mesh vertices、retained drawings 与共享 worker 池 | Accepted |
-| 0054 | Copy control handles over a generational control table | Proposed |
-| 0055 | Typed routes in `.vs`（native enum、generic native type、root input） | Proposed |
-| 0056 | GPU device loss：backend 报告，窗口在新 device 上重建 | Proposed |
+| 0054 | Copy control handles over a generational control table | Accepted |
+| 0055 | Typed routes in `.vs`（native enum、generic native type、root input） | Accepted |
+| 0056 | GPU device loss：backend 报告，窗口在新 device 上重建 | Accepted |
 | 0057 | Tools share their services in `viso-tooling`（`Reporter`） | Accepted |
 | 0058 | `web-dom` 页面的行为在 app wasm 的 VM 上执行（`viso-dom`） | Accepted |
 | 0059 | `web-hybrid` 岛：DOM 页面中由 renderer 绘制的一个 Component | Accepted |
 | 0060 | Native views：叠在节点上的平台视图 | Accepted |
+| 0061 | Video on display planes：KMS 板卡上 NV12 画面走 overlay plane | Accepted |
+| 0062 | Android GPU `auto`：Vulkan 优先、GLES 兜底（修订 ADR 0029 的 Android 部分） | Accepted |
 
 ## 文内架构取舍摘要（AD-01 … AD-24）
 

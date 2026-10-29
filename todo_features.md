@@ -1,5 +1,8 @@
 # Viso Feature Completion — W1 → W16
 
+> The N9 sweep of 2026-10-29 moved this file's open lines to `todo_next.md`: the device runs to
+> N8, the rest to its Backlog. This file is the record of what was built.
+
 The rendering, text, tooling, DSL and hot-reload programs are complete. This program fills
 the remaining surface gaps:
 

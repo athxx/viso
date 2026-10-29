@@ -1,6 +1,6 @@
 # ADR 0047 — GameViewport and the 3D scene lane
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-10-22
 
 ## Context
@@ -282,3 +282,8 @@
   4. `Content::Scene` and `GameViewport` with the session fill;
   5. particles, debug shapes and focus.
   Each step lands with its tests.
+
+## As built
+
+- `SceneVertex` is 48 bytes and the frame's uniforms are `FrameUniforms`, 512 bytes.
+- Lit materials, shadows, the sky, ambient occlusion and skinning, which this record left for later, are built (`viso_render::scene3d`).

@@ -1,5 +1,8 @@
 # Viso DSL — D0 → D1 → D2 → D3 → D4 → D5 → D6 → D7 → D8
 
+> The N9 sweep of 2026-10-29 moved this file's open lines to `todo_next.md`: the device runs to
+> N8, the rest to its Backlog. This file is the record of what was built.
+
 Construction order follows `Viso_DSL_1.0.md` §151: D0 is P0 (Core frontend), D1–D6 are
 P1 (Core runtime, hot reload, adaptive, game, shader), D7 is P2 (Standard), D8 is P3
 (Advanced). A later phase never becomes a prerequisite of an earlier phase's vertical
@@ -1003,13 +1006,15 @@ timers (§104–§111).
         (`viso_dsl::scenario` runs it).
   - [x] `viso game record`, `viso game peek` (with the running session, `todo_hotreload.md`
         H3.2).
-  - [ ] Headless frame sheet (`--sheet`; needs a game renderer).
+  - [x] Headless frame sheet (`--sheet`): a headless build of the app draws the run's frames
+        through the software raster into one image (`viso::game_sheet`, `test_game` tests).
 - [x] A mounted view runs its module's game (`viso_view::GameSession`, a frame client of
       the window's store owned by the view's root; `todo_hotreload.md` H3.2).
-- [ ] `GameViewport` and the World's drawing: the Rendering spec's Mesh/3D lane (designed
+- [x] `GameViewport` and the World's drawing: the Rendering spec's Mesh/3D lane (designed
       in ADR 0047: RHI depth + vertex layouts, scene shader profile, `PassWork::Scene`,
       `Content::Scene`, the session's per-frame fill), the Kit's models, terrain, camera rigs, particles and debug shapes
       drawn from the session's World and Stage; the viewport takes input focus (§106.2).
+      Done in `todo_features.md` W1 and W14 (`viso_view::world_scene`, the scene lane tests).
 - [x] HUD reads of game state through Reactive Queries (§109, ADR 0045): a system's
       `@query fn` read as `game.<name>()`, `game.is_paused()`/`tick()`, the actions
       `game.pause()`/`resume()`; one host-filled slot per query, the session runs each
@@ -1538,4 +1543,5 @@ timers (§104–§111).
         cascade), preserve/key separation, a running reactive keyed component
         with last-good reload, fixed-tick system, front-end fuzz, wire
         verifier, stale handles.
-  - [ ] Shader on two backends runs on macOS only (Metal + CPU reference).
+  - [x] Shader on two backends: Metal and Vulkan (MoltenVK) on macOS, Vulkan on a Linux driver
+        (lavapipe), each against the CPU reference (`shader_golden` with `vulkan`).

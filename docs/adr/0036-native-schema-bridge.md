@@ -1,6 +1,6 @@
 # ADR 0036 — Native schema bridge in the behavior crate
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-09-28
 
 ## Context
@@ -71,3 +71,8 @@ Alternatives rejected:
   a native panic aborts the process.
 - A project's own native libraries are registered in Rust; `viso schema` currently answers
   from the standard registry and the widget baseline, not from project components.
+
+## As built
+
+- `Natives::standard()` returns an `Arc`.
+- The schema now carries the project's components (`viso_dsl::schema::package_schemas`).

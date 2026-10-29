@@ -1,6 +1,6 @@
 # ADR 0035 — Behavior bytecode VM in a leaf crate
 
-- Status: Proposed
+- Status: Accepted (2026-10-29); release path revised by [ADR 0041](0041-release-native-lowering.md)
 - Date: 2026-09-28
 
 ## Context
@@ -87,3 +87,8 @@ dispatched through a separate non-inlined function so the hot dispatch loop stay
   tests and hot reload.
 - Native calls, method calls and task bodies are not yet executable; they arrive with the
   typed native schema and later slices.
+
+## As built
+
+- `viso-behavior` is no longer a leaf: it depends on `viso-math`, `viso-schema` and `viso-ende` (ADRs 0037 and 0042).
+- `Value` gained a `Handle` variant; the interpreter is the optional `interpreter` feature, which only dev builds turn on.

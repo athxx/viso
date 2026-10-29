@@ -18,8 +18,8 @@
 //!
 //! The shader item (one shader through the instance ABI on two backends) is
 //! `crates/viso/tests/shader_golden.rs`: the CPU reference rasterizer and
-//! Metal agree, and Vulkan with the `vulkan` feature — a GPU test this crate
-//! cannot run.
+//! Metal agree, and Vulkan with the `vulkan` feature on macOS and Linux — a GPU
+//! test this crate cannot run.
 
 mod support;
 

@@ -932,7 +932,7 @@ fn standard_libraries(behavior: &ViewBehavior) -> TokenStream {
         .module
         .natives()
         .iter()
-        .filter_map(|import| viso_behavior::native::standard_name(&import.path))
+        .filter_map(|import| viso_dsl::schema::standard_name(&import.path))
         .collect();
     let names = names
         .into_iter()

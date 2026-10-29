@@ -1,6 +1,6 @@
 # ADR 0055 — Typed routes in `.vs`: native enums, generic native types and root inputs
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-10-27
 
 ## Context

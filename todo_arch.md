@@ -1,5 +1,8 @@
 # Architecture correction & Embedded — A1 → A18
 
+> The N9 sweep of 2026-10-29 moved this file's open lines to `todo_next.md`: the device runs to
+> N8, the rest to its Backlog. This file is the record of what was built.
+
 Implements Architecture Part XXV §73A (Phase 10) and ADR 0041–0044. Order is by
 dependency: mechanical moves land before semantic changes (AGENTS §40), and every
 section keeps `cargo xtask check-deps`, `cargo check --workspace --all-targets`
@@ -124,7 +127,7 @@ and the affected crates' tests green.
 - [x] Read makepad's `platform/src/os/linux/direct` (libdrm legacy `SetCrtc` / `PageFlip` blocking in `select` every frame, GLES2 only, a thread per `/dev/input/event*` drained once a frame, no damage, no CPU path)
 - [x] DRM/KMS atomic modeset with a legacy fallback, raw ioctls (no libdrm); GBM + EGL surface (`Scanout::gbm`, libgbm loaded at run time); dumb-buffer double buffering (`Scanout::present_pixels`, per-buffer stale damage)
 - [x] Page-flip events pace redraws; `FB_DAMAGE_CLIPS`; hardware cursor (arrow / I-beam / cross, scaled and turned); rotation through the plane (`TEST_ONLY`-probed), else turned while copying (CPU) or drawn turned (`Scanout::turns`, GLES `viso_place` / `viso_frag_position`)
-- [ ] Overlay planes for video (no video surface in the platform yet)
+- [x] Overlay planes for video: NV12 pictures on the display's planes when nothing blends with them (ADR 0061)
 - [x] evdev input: keys (xkbcommon, US fallback), mice, encoders → Tab / Shift+Tab, touchscreens (MT protocol B with `EVIOCGMTSLOTS` resync, single-touch), absolute pointers, touchpads; uevent netlink hotplug (no udev daemon)
 - [x] Optional libinput adapter (`kms/libinput.rs`, loaded at run time): acceleration, tapping / two-finger scroll, calibration matrix; keyboards and encoders stay on the evdev decoder. Pinch / swipe gestures wait for a gesture `RawEvent`
 - [x] Single epoll loop: card / evdev / uevent / seat / waker / timerfd; nothing armed when idle

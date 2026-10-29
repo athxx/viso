@@ -1,6 +1,6 @@
 # ADR 0054 — Copy control handles over a generational control table
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-10-27
 
 ## Context

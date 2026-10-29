@@ -1,5 +1,8 @@
 # Viso Platforms — P0 → P11
 
+> The N9 sweep of 2026-10-29 moved this file's open lines to `todo_next.md`: the device runs to
+> N8, the rest to its Backlog. This file is the record of what was built.
+
 Tier-1 (AGENTS 65.1): macOS/iOS → Metal, Windows → D3D12, Linux → Vulkan, Android → Vulkan,
 Web → WebGPU. Today only macOS is real. P0–P11 run in order; each section closes one gap on
 every target it names and is ticked only when `cargo check --target` is green for each of them

@@ -1,5 +1,8 @@
 # Viso CLI — C0 → C1 → C2 → C3 → C4 → C5 → C6
 
+> The N9 sweep of 2026-10-29 moved this file's open lines to `todo_next.md`: the device runs to
+> N8, the rest to its Backlog. This file is the record of what was built.
+
 Construction order follows `Viso_CLI.md` Part XVIII (§69–§75): C0 is the foundation
 (P0), C1 the host development loop (P1), C2 compiler tooling (P2), C3 the mobile
 development environment (P3), C4 web (P4), C5 delivery and export (P5), C6 full
@@ -688,7 +691,7 @@ alternative.
 
 ### C4.3 — web-dom and web-hybrid
 
-- [ ] `web-dom`: the page runtime is `viso-dom` (the view's behavior on the VM in the
+- [x] `web-dom`: the page runtime is `viso-dom` (the view's behavior on the VM in the
       app's wasm, called by the export's DOM runtime); `build`, `package` and
       `check web-dom` are done.
   - [x] Build target and bundle: `viso/web-dom` feature, `view!` offers its module,
@@ -948,9 +951,8 @@ and traced from the CLI and from Studio over the same services.
       own control endpoint, the same journal `inspect --attach` follows.
 - [x] Device profiles for mobile performance (simulator vs emulator caveats reported
       in the result).
-- [ ] `viso studio [--target]` (§26): launches Studio against the project, sharing the
-      dev session service (blocked until Studio exists; the dev session moves into a
-      shared tooling crate first, see `todo_hotreload.md`).
+- [x] Dropped: `viso studio`. There is no Studio; the editor extensions over the CLI's
+      event stream take its place (`todo_next.md` N10).
 
 ---
 
@@ -1101,8 +1103,7 @@ and traced from the CLI and from Studio over the same services.
       (`web-gpu`, `web-dom`, `web-hybrid` and `serve` done; the platform-gated rows of
       the capability table remain, C4.4.)
 - [x] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
-- [ ] Test/Debug: `test`, `snapshot`, `inspect`, `profile`, `studio`.
-      (All but `studio`, which waits for Studio itself.)
+- [x] Test/Debug: `test`, `snapshot`, `inspect`, `profile` (`studio` dropped, see above).
 - [x] Delivery: `package`, artifact manifest, `export html`, `export solid`.
       (Signing with real credentials and the Windows host run are the open
       verification items of C5.2.)

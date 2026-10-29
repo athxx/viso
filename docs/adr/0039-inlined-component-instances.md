@@ -1,6 +1,6 @@
 # ADR 0039 — Inlining user-component instances into the mounting view
 
-- Status: Proposed
+- Status: Accepted (2026-10-29)
 - Date: 2026-09-28
 
 ## Context
@@ -91,3 +91,7 @@ second instance lifecycle to every target.
   file: its items carry the module they come from, its behavior is checked
   in its own module, and a diagnostic inside it is reported at the node or
   `use` of this file that places it, naming the component.
+
+## As built
+
+- The binding lowering is `ir::lower_bindings`.
