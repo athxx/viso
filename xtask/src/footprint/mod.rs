@@ -304,13 +304,13 @@ const EMBEDDED_CPU_ENV: &[(&str, &str)] = &[
 ];
 
 /// The variables `viso build --profile shipping` hands an embedded-cpu
-/// device target: the shipped artifact, every raster converted at build
-/// time, so it links no raster decoder.
+/// device target: the shipped artifact, its images converted at build time
+/// (none to convert: it links no raster decoder and no SVG parser).
 const EMBEDDED_CPU_SHIPPING: &[(&str, &str)] = &[
     ("VISO_PROFILE", "shipping"),
     ("VISO_FOOTPRINT", "embedded-cpu"),
     ("VISO_FONT_CHARSET", "ascii"),
-    ("VISO_IMAGES_CONVERTED", "raster"),
+    ("VISO_IMAGES_CONVERTED", "raster,svg"),
 ];
 
 const RELEASE_ENV: &[(&str, &str)] = &[("VISO_PROFILE", "release")];
@@ -324,7 +324,7 @@ const EMBEDDED_GPU_SHIPPING: &[(&str, &str)] = &[
     ("VISO_PROFILE", "shipping"),
     ("VISO_FOOTPRINT", "embedded-gpu"),
     ("VISO_FONT_CHARSET", "ascii"),
-    ("VISO_IMAGES_CONVERTED", "raster"),
+    ("VISO_IMAGES_CONVERTED", "raster,svg"),
 ];
 
 /// The Viso subjects: each profile `viso build` makes for this host, with a

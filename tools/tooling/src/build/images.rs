@@ -131,7 +131,8 @@ pub fn plan(
 ///
 /// What no longer needs a decoder is named too ([`CONVERTED_ENV`]): SVG when
 /// SVGs rasterize, and on a board — whose app shows no image the build did
-/// not see — every raster format, unless an animated image ships as written.
+/// not see — every raster format, unless an animated image ships as written,
+/// and SVG when the package has none.
 ///
 /// # Errors
 ///
@@ -169,16 +170,34 @@ pub fn add_converted_images(
         plan.env
             .push((OVERLAY_ENV.to_owned(), overlay.into_os_string()));
     }
-    let board = device.is_some_and(|d| d.profile.value.is_embedded()) && converted.animated == 0;
-    let kinds: Vec<&str> = [(board, "raster"), (svg.is_some(), "svg")]
-        .into_iter()
-        .filter_map(|(on, kind)| on.then_some(kind))
-        .collect();
+    let board = device.is_some_and(|d| d.profile.value.is_embedded());
+    let has_svg = catalog
+        .files()
+        .any(|(_, format)| format == AssetFormat::Svg);
+    let kinds = converted_kinds(board, converted.animated, svg.is_some(), has_svg);
     if !kinds.is_empty() {
         plan.env
             .push((CONVERTED_ENV.to_owned(), kinds.join(",").into()));
     }
     Ok(Some(converted))
+}
+
+/// The kinds of image no decoder is linked for ([`CONVERTED_ENV`]): every
+/// raster on a `board` shipping no `animated` one, and SVG when they
+/// rasterize or a board's package has none.
+fn converted_kinds(
+    board: bool,
+    animated: usize,
+    svg_rasterizes: bool,
+    has_svg: bool,
+) -> Vec<&'static str> {
+    [
+        (board && animated == 0, "raster"),
+        (svg_rasterizes || (board && !has_svg), "svg"),
+    ]
+    .into_iter()
+    .filter_map(|(on, kind)| on.then_some(kind))
+    .collect()
 }
 
 /// Converts every image of `catalog` as `conversion` says (each SVG at `svg`
@@ -309,6 +328,15 @@ mod tests {
     fn device(toml: &str) -> DeviceTarget {
         let manifest = Manifest::parse("Viso.toml", toml).ok().expect("parses");
         manifest.targets.devices[0].clone()
+    }
+
+    #[test]
+    fn a_board_links_decoders_only_for_what_it_ships() {
+        assert_eq!(converted_kinds(true, 0, false, false), ["raster", "svg"]);
+        assert_eq!(converted_kinds(true, 0, false, true), ["raster"]);
+        assert_eq!(converted_kinds(true, 1, true, true), ["svg"]);
+        assert!(converted_kinds(false, 0, false, false).is_empty());
+        assert_eq!(converted_kinds(false, 0, true, true), ["svg"]);
     }
 
     #[test]

@@ -2940,7 +2940,7 @@ fit       = true       # 有 display 尺寸的 board 把超出 cover fit 所示�
 
 - 格式族随 target：host / desktop → BC，`ios` / `android` / mobile → ASTC，embedded-gpu → ETC2，embedded-cpu → RGBA8 / RGB565 / RGBA5551 / RGBA4444（`display.format = "rgb565"` 时不透明图像取 RGB565）；`web-*` 与 `headless` 不转换。`quality`：`lossless` 一律 RGBA8；`high` BC7、ASTC 4×4、ETC2、8-bit 面板 RGBA8；`balanced` 不透明 BC1、ASTC 6×6、16-bit；`compact` ASTC 8×8，soft alpha RGBA4444；
 - `build` 在 Cargo 运行前转换，结果写入 `target/viso/generated/images/<target>/`，路径作为 `VISO_ASSET_OVERLAY` 交给 `asset!` / `view!`；转换按 sha256(转换器版本、设置、源字节) 缓存在 `generated/images/cache/`，内容不变不重写；`images` 一条 progress 日志报告张数、缓存命中与前后字节。不能解码的 asset 是 `ENV_BUILD_WRITE`；
-- board 构建另设 `VISO_IMAGES_CONVERTED=raster`（facade 不链接 PNG/JPEG 解码），`svg = "raster"` 时含 `svg`（不链接 SVG 解析）；
+- board 构建另设 `VISO_IMAGES_CONVERTED=raster`（facade 不链接 PNG/JPEG 解码），`svg = "raster"` 或包内没有 SVG 时含 `svg`（不链接 SVG 解析）：board 上的 app 只显示构建见过的图像；
 - 设备不采样所转换的格式时在加载时软件解码为 RGBA8（不失败，只多花一次解码与 4 字节/texel）。
 
 `[i18n] source = "en"` 是声明全部消息的源 Locale（缺省 `en`）；消息目录是 `Viso.toml` 旁的 `i18n/<locale>.toml`（DSL §U10.3）。`viso check` 编译目录并报告其问题（`E3706`，指向目录文件的行列），`tr` 与 `MessageKey` 字面量据此检查；`i18n/` 无法读取是环境错误。
