@@ -1216,6 +1216,10 @@ Rules (as for `todo_features.md`):
     the map draws, and the emulator's gRPC touch input (two tracked fingers) pans it, pinches
     it about the fingers' midpoint, rotates it with them (labels stay upright) and tilts it with
     a two-finger slide up into the 3D buildings and the horizon, as on the desktop.
+  - [x] iOS simulator: `viso run ios` launches it and, with the data copied into the
+    container's `Documents` (`documents_dir`), the map draws.
+  - [ ] iOS touch gestures, on a device: this machine's Xcode has no Simulator app, so nothing
+    here injects two fingers (`simctl` has no touch input).
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and
   cadence traces.
   - [x] Nothing caps a frame at 60 Hz. Built:
