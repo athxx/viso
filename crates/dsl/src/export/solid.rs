@@ -13,7 +13,7 @@ use viso_schema::view::EventRoute;
 
 use super::eval::Eval;
 use super::html::{
-    Content, Element, Lowered, Piece, Prop, RegionKind, VarToken, Wire, escape_attr,
+    Content, Element, Lowered, Piece, Prop, RegionKind, Showing, VarToken, Wire, escape_attr,
 };
 use super::script::{self, Dialect};
 use super::{Finding, GENERATED, Need, SolidOptions};
@@ -596,11 +596,13 @@ impl Jsx<'_> {
         }
         if let Some(shown) = &el.asset {
             let import = self.assets.get(&shown.id).cloned().unwrap_or_default();
-            if shown.mask {
-                let mask = format!("show.mask({import})");
+            let properties = shown.shown.image_properties();
+            if !properties.is_empty() {
+                let image = format!("show.mask({import})");
                 self.runtime.insert("show");
-                style.insert(0, ("-webkit-mask-image".to_owned(), mask.clone()));
-                style.insert(0, ("mask-image".to_owned(), mask));
+                for property in properties.iter().rev() {
+                    style.insert(0, ((*property).to_owned(), image.clone()));
+                }
             } else {
                 attrs.push(format!("src={{{import}}}"));
             }
@@ -741,21 +743,38 @@ impl Jsx<'_> {
                         Prop::Media(name) => {
                             refs.push(format!("st.effect(() => show.media(el, {v}, \"{name}\"));"))
                         }
-                        Prop::Source { mask: false } => {
-                            attrs.push(format!("src={{show.url({v})}}"))
+                        Prop::Source {
+                            shown: Showing::Src,
+                        } => attrs.push(format!("src={{show.url({v})}}")),
+                        Prop::Source { shown } => {
+                            let image = format!("show.mask(show.url({v}))");
+                            for property in shown.image_properties() {
+                                style.push(((*property).to_owned(), image.clone()));
+                            }
                         }
-                        Prop::Source { mask: true } => {
-                            let mask = format!("show.mask(show.url({v}))");
-                            style.push(("mask-image".to_owned(), mask.clone()));
-                            style.push(("-webkit-mask-image".to_owned(), mask));
-                        }
-                        Prop::Fit { mask: false } => {
+                        Prop::Fit {
+                            shown: Showing::Src,
+                        } => {
                             style.push(("object-fit".to_owned(), format!("show.fit({v})")));
                         }
-                        Prop::Fit { mask: true } => {
-                            let size = format!("show.maskSize({v})");
-                            style.push(("mask-size".to_owned(), size.clone()));
-                            style.push(("-webkit-mask-size".to_owned(), size));
+                        Prop::Fit { shown } => {
+                            let prefixes: &[&str] = if *shown == Showing::Pattern {
+                                &["background"]
+                            } else {
+                                &["mask", "-webkit-mask"]
+                            };
+                            for prefix in prefixes {
+                                for (part, read) in [
+                                    ("size", "maskSize"),
+                                    ("repeat", "maskRepeat"),
+                                    ("position", "maskPosition"),
+                                ] {
+                                    style.push((
+                                        format!("{prefix}-{part}"),
+                                        format!("show.{read}({v})"),
+                                    ));
+                                }
+                            }
                         }
                         Prop::Var {
                             name,

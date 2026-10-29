@@ -239,7 +239,9 @@ const tab = (el) => {
   }
   el.tabIndex = off(el) ? -1 : el.$tab;
 };
-const fits = ["contain", "cover", "fill"];
+const fits = ["contain", "cover", "fill", "tile"];
+// A fit as a mask's or background's size.
+const fitSize = (fit) => (fit === "fill" ? "100% 100%" : fit === "tile" ? "auto" : fit);
 // The CSS `cursor` of each `Cursor`, by tag.
 const cursors = [
   "default", "pointer", "text", "vertical-text", "crosshair", "move", "grab",
@@ -690,10 +692,14 @@ const P = {
     else el.dataset.dragAxis = v === 0n ? "row" : "column";
     if (el.$drag) el.style.touchAction = dragTouch(el);
   },
-  source(el, v, mask) {
+  // As its `src` (0), the mask its tint shows through (1) or a background
+  // pattern (2).
+  source(el, v, shown) {
     const u = url(v);
-    if (!mask) el.src = u;
-    else el.style.maskImage = el.style.webkitMaskImage = u ? 'url("' + u + '")' : "none";
+    const image = u ? 'url("' + u + '")' : "none";
+    if (shown === 0) el.src = u;
+    else if (shown === 1) el.style.maskImage = el.style.webkitMaskImage = image;
+    else el.style.backgroundImage = image;
   },
   // A video's `url`, which plays in place of its source when set, and how
   // it plays.
@@ -726,10 +732,19 @@ const P = {
     else if (name === "volume") el.volume = Math.min(Math.max(Number(v ?? 1), 0), 1);
     else el.playbackRate = Number(v ?? 1);
   },
-  fit(el, v, mask) {
+  fit(el, v, shown) {
     const fit = fits[Number(v ?? 0n)] || "contain";
-    if (!mask) el.style.objectFit = fit;
-    else el.style.maskSize = el.style.webkitMaskSize = fit === "fill" ? "100% 100%" : fit;
+    const s = el.style;
+    if (shown === 0) s.objectFit = fit === "tile" ? "none" : fit;
+    else if (shown === 1) {
+      s.maskSize = s.webkitMaskSize = fitSize(fit);
+      s.maskRepeat = s.webkitMaskRepeat = fit === "tile" ? "repeat" : "no-repeat";
+      s.maskPosition = s.webkitMaskPosition = fit === "tile" ? "0 0" : "center";
+    } else {
+      s.backgroundSize = fitSize(fit);
+      s.backgroundRepeat = fit === "tile" ? "repeat" : "no-repeat";
+      s.backgroundPosition = fit === "tile" ? "0 0" : "center";
+    }
   },
   vcolor: (el, v, name) => el.style.setProperty(name, color(v)),
   vopacity: (el, v, name) => el.style.setProperty(name, String(Math.min(Math.max(v ?? 1, 0), 1))),

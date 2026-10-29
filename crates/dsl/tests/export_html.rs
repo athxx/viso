@@ -2361,6 +2361,33 @@ fn combo_boxes_and_search_fields_export_as_inputs_over_a_datalist() {
 }
 
 #[test]
+fn a_tiled_image_exports_as_a_repeating_background_or_mask() {
+    let source = r#"
+export component Patterns {
+    view {
+        Column {
+            Image { url: "https://example.org/a.png"; fit: ImageFit::tile; width: 64dp; height: 64dp; }
+            Image { url: "https://example.org/b.png"; fit: ImageFit::tile; tint: #ff0000; width: 64dp; height: 64dp; }
+        }
+    }
+}
+"#;
+    let page = export_in(source, None, false).unwrap();
+    assert!(!page.index.contains("<img"), "{}", page.index);
+    assert!(page.index.contains("vx-pattern"), "{}", page.index);
+    let styles = &page.styles;
+    for want in [
+        "background-image: url(\"https://example.org/a.png\")",
+        "mask-image: url(\"https://example.org/b.png\")",
+        "mask-repeat: repeat",
+        "mask-size: auto",
+        ".vx-pattern { display: block; background: 0 0 repeat; }",
+    ] {
+        assert!(styles.contains(want), "{want}: {styles}");
+    }
+}
+
+#[test]
 fn a_camera_view_exports_as_a_video_its_script_gives_the_camera_stream() {
     let source = r#"
 export component Preview {

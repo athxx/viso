@@ -211,7 +211,7 @@ export record DateTime { date: Date; time: Time; }
 export record ImageAsset { resource: I64; }
 export record SvgAsset { resource: I64; }
 export record VideoAsset { resource: I64; }
-export enum ImageFit { contain; cover; fill; }
+export enum ImageFit { contain; cover; fill; tile; }
 // Which way a `CameraView`'s camera faces: toward the user, away, or
 // wherever it is put.
 export enum CameraFacing { front; back; external; }

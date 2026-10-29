@@ -71,6 +71,9 @@ pub enum AssetFit {
     Cover,
     /// Stretched to the box.
     Fill,
+    /// Repeated at its natural size across the box from its top-left corner:
+    /// a pattern.
+    Tile,
 }
 
 /// An asset a Rust view shows: its resource, how it draws and where its

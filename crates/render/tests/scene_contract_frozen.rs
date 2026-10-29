@@ -13,8 +13,8 @@ use std::mem::{align_of, size_of};
 
 use viso_render::scene::bounds::Bounds;
 use viso_render::scene::ids::{
-    BrushId, ClipChainId, ClipId, EffectChainId, GeometryId, ImageId, MaterialId, MeshId,
-    PaintChunkId, PathId, PrimitiveId, RenderChunkId, SceneId, TransformId,
+    ClipChainId, ClipId, EffectChainId, GeometryId, ImageId, MaterialId, MeshId, PaintChunkId,
+    PathId, PrimitiveId, RenderChunkId, SceneId, TransformId,
 };
 use viso_render::scene::revision::Revisions;
 
@@ -64,7 +64,6 @@ fn every_typed_id_is_a_transparent_scene_id() {
 
     assert_transparent!(PrimitiveId);
     assert_transparent!(TransformId);
-    assert_transparent!(BrushId);
     assert_transparent!(ClipId);
     assert_transparent!(ImageId);
     assert_transparent!(GeometryId);

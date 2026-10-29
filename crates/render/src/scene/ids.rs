@@ -93,11 +93,6 @@ scene_id!(
     TransformId
 );
 scene_id!(
-    /// A brush (fill/stroke paint) entry, separated so a recolor dirties the
-    /// paint plane alone.
-    BrushId
-);
-scene_id!(
     /// A clip-rect entry in the clip store.
     ClipId
 );

@@ -136,11 +136,6 @@ pub use viso_gpu::{AddressMode, BindGroupId, FilterMode, PipelineId, SamplerDesc
 use viso_text::{Direction, Shaper, rasterize_coverage};
 
 pub use batch::{BatchFamily, BatchItem, BatchKey, BatchTarget, RenderChunk, RenderChunkId};
-// The retained brush model: `Brush` names the fill a primitive
-// resolves to, and the gradient interpolation/extend policy is an explicit
-// color-space choice, never inferred from a texture format. Not in the
-// prelude yet — the widget layer promotes these once it consumes them.
-pub use scene::store::Brush;
 // The resolved clip-chain descriptor: nested clips pre-intersected once,
 // keyed so an unchanged chain skips re-resolution. Consumed by the render walk
 // and the widget layer, not by normal apps (not in the prelude).

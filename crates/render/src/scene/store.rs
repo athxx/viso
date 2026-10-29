@@ -37,7 +37,7 @@ use crate::primitive::{
 };
 
 use super::ids::{
-    BrushId, ClipChainId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId,
+    ClipChainId, ClipId, GeometryId, ImageId, MeshId, PathId, PrimitiveId, TransformId,
 };
 
 /// A retained solid/bordered quad: the resolved GPU instance. The instance is
@@ -2000,109 +2000,6 @@ impl TransformStore {
     }
 }
 
-/// The paint model a brush resolves to. A fill/stroke is one
-/// of these; the store diffs them by value so a recolor bumps the paint plane
-/// alone.
-///
-/// `Solid` is the wired steady-state path: its color is baked inline into each
-/// primitive's instance at lowering, and the brush store's entry mirrors it so
-/// the paint diff sees the change. The gradient variants name the fill's slot in
-/// the [`GradientStore`] (the gradient's lowered geometry + LUT live there),
-/// keeping the brush a pure paint identity: moving or recoloring the gradient
-/// still diffs its brush entry. [`Brush::ImagePattern`] and
-/// [`Brush::ShaderBrush`] are declared for the model but not yet lowered; their
-/// [`BrushStore::ingest`] path is an explicit `todo!`, never a silent no-op.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Brush {
-    /// A flat straight-linear RGBA fill — baked inline into the instance.
-    Solid([f32; 4]),
-    /// A linear gradient, resolved into the [`GradientStore`] slot `id`.
-    LinearGradient(GeometryId),
-    /// A radial gradient, resolved into the [`GradientStore`] slot `id`.
-    RadialGradient(GeometryId),
-    /// A sweep gradient, resolved into the [`GradientStore`] slot `id`.
-    SweepGradient(GeometryId),
-    /// A tiled/stretched image fill. Declared for the model; lowering is
-    /// deferred.
-    ImagePattern(ImageId),
-    /// A user shader fill. Declared for the model; lowering is deferred.
-    ShaderBrush,
-}
-
-/// A retained brush — a resolved fill/stroke paint. The store exists so
-/// the diff can bump paint independently, and so the freeze pins its shape.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BrushEntry {
-    /// The resolved paint this brush applies.
-    pub brush: Brush,
-}
-
-/// Dense store of brushes. Entries persist across frames.
-#[derive(Debug, Default)]
-pub struct BrushStore {
-    entries: Vec<BrushEntry>,
-    cursor: usize,
-}
-
-impl BrushStore {
-    /// Reset the cursor for a new frame, keeping entries.
-    pub fn begin_frame(&mut self) {
-        self.cursor = 0;
-    }
-
-    /// Trim entries the frame did not revisit. Returns whether a trim ran.
-    pub fn finish_frame(&mut self) -> bool {
-        if self.cursor < self.entries.len() {
-            self.entries.truncate(self.cursor);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Diff a brush against the retained entry at the cursor. A differing brush
-    /// (bit-exact for the solid color) bumps the paint plane; cold growth
-    /// appends. The deferred [`Brush::ImagePattern`]/[`Brush::ShaderBrush`]
-    /// paths are rejected explicitly rather than stored as no-ops.
-    pub fn ingest(&mut self, brush: Brush) -> (BrushId, bool) {
-        match brush {
-            Brush::ImagePattern(_) => {
-                todo!("ImagePattern brush lowering is not supported yet")
-            }
-            Brush::ShaderBrush => todo!("ShaderBrush lowering is not implemented"),
-            _ => {}
-        }
-        let index = self.cursor;
-        let changed = if index < self.entries.len() {
-            let changed = self.entries[index].brush != brush;
-            if changed {
-                self.entries[index] = BrushEntry { brush };
-            }
-            changed
-        } else {
-            self.entries.push(BrushEntry { brush });
-            true
-        };
-        self.cursor += 1;
-        (BrushId::new(index as u32), changed)
-    }
-
-    /// The entry at `id`, or `None` if out of range.
-    pub fn get(&self, id: BrushId) -> Option<&BrushEntry> {
-        self.entries.get(id.index() as usize)
-    }
-
-    /// Number of brushes this frame.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Whether the store holds no brushes.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
 /// Convenience: build a glyph instance iterator's worth of instances from a run
 /// draw's glyphs and color, matching `GlyphRunDraw::instance` exactly. Kept here
 /// so the store's glyph lowering stays paired with its consumers.
@@ -2470,66 +2367,5 @@ mod tests {
         store.resolve(&[rect(0.0, 0.0, 10.0, 10.0)], None, 1);
         assert!(store.finish_frame(), "one chain went unvisited → trimmed");
         assert_eq!(store.len(), 1);
-    }
-
-    /// The brush model, enumerated: six kinds, four lowered and two declared.
-    ///
-    /// Writing the match exhaustively is the point. A seventh brush cannot be
-    /// added without deciding here which side of the line it is on, and the two
-    /// unlowered kinds cannot be quietly turned into a silent no-op — the tests
-    /// below pin that they reject.
-    #[test]
-    fn the_brush_model_is_four_lowered_kinds_and_two_declared_ones() {
-        let lowered = |brush: Brush| {
-            let mut store = BrushStore::default();
-            store.begin_frame();
-            let (id, changed) = store.ingest(brush);
-            assert!(changed, "a cold brush is new");
-            assert_eq!(store.get(id).map(|e| e.brush), Some(brush));
-            // A second identical frame diffs to unchanged: a brush is retained
-            // state, not re-uploaded per frame.
-            store.begin_frame();
-            assert!(!store.ingest(brush).1);
-        };
-
-        for brush in [
-            Brush::Solid([1.0, 0.5, 0.25, 1.0]),
-            Brush::LinearGradient(GeometryId::new(0)),
-            Brush::RadialGradient(GeometryId::new(1)),
-            Brush::SweepGradient(GeometryId::new(2)),
-        ] {
-            match brush {
-                Brush::Solid(_)
-                | Brush::LinearGradient(_)
-                | Brush::RadialGradient(_)
-                | Brush::SweepGradient(_) => lowered(brush),
-                // Not reachable from this list, and the arm exists so that
-                // adding a kind breaks this test rather than passing silently.
-                Brush::ImagePattern(_) | Brush::ShaderBrush => {
-                    unreachable!("a deferred brush is not in the lowered set")
-                }
-            }
-        }
-    }
-
-    /// An image-pattern brush is declared but not lowered, and says so. The
-    /// failure mode this excludes is the quiet one: storing the brush, painting
-    /// nothing, and leaving the caller to wonder where the fill went.
-    #[test]
-    #[should_panic(expected = "ImagePattern brush lowering is not supported yet")]
-    fn an_image_pattern_brush_rejects_rather_than_painting_nothing() {
-        let mut store = BrushStore::default();
-        store.begin_frame();
-        store.ingest(Brush::ImagePattern(ImageId::new(0)));
-    }
-
-    /// Likewise a shader brush: the model has a place for it, the lowering does
-    /// not exist, and asking produces a diagnostic rather than a blank shape.
-    #[test]
-    #[should_panic(expected = "ShaderBrush lowering is not implemented")]
-    fn a_shader_brush_rejects_rather_than_painting_nothing() {
-        let mut store = BrushStore::default();
-        store.begin_frame();
-        store.ingest(Brush::ShaderBrush);
     }
 }

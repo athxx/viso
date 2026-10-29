@@ -2556,6 +2556,7 @@ fn asset_fit_or(value: &Value, unset: AssetFit) -> AssetFit {
         Some(0) => AssetFit::Contain,
         Some(1) => AssetFit::Cover,
         Some(2) => AssetFit::Fill,
+        Some(3) => AssetFit::Tile,
         _ => unset,
     }
 }

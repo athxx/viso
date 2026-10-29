@@ -679,7 +679,7 @@ PrimitiveStore
 ├── SolidQuadStore      ├── AnalyticShapeStore   ├── ImageStore
 ├── GlyphRunStore       ├── VectorPathStore      ├── MeshStore
 ├── ClipStore           ├── EffectStore          └── CustomStore
-TransformStore  BrushStore  GeometryStore  ImageRefStore
+TransformStore  GeometryStore  ImageRefStore
 ```
 
 Public 层可以对象化；Render hot storage 使用 dense typed arrays / indexed SoA / compact AoS。热字段紧凑，冷字段进入 side table（§21.1）。
@@ -945,15 +945,18 @@ Brush
 └── ShaderBrush   (custom shader 合同就绪后，§27.2；D2 不要求)
 ```
 
+每种 brush 是它自己的 primitive 族，各自的 store 按值 diff、在变化时 bump paint plane，不另设一份 brush store：Solid 烘进 quad / analytic instance，三种渐变是 `Gradient`，ImagePattern 是 `TiledImage` / repeat 采样的 `ImageDraw`（`ImageFit::tile`），ShaderBrush 是 `ShaderView` 的 `Shader` primitive（brush program）。
+
 GPU 内部使用 premultiplied alpha。
 
 ## 12.2 Gradient stops
 
 ```text
 2-stop common gradient                -> inline instance colors
-small stop count                      -> compact shared stop table
-many stops / expensive interpolation  -> cached 1D Gradient LUT atlas (persistent)
+3+ stops / expensive interpolation    -> cached 1D Gradient LUT atlas (persistent)
 ```
+
+不设 compact shared stop table 一档：在 shader 里逐像素遍历 3–8 个 stop 的 ALU 比一次 LUT 采样贵，而 LUT 行按 key 只 bake 一次、跨帧常驻，atlas 满时回收；省下的只是 atlas 行，换来的是每个像素更多的计算。
 
 - 不为每个 gradient 默认绑定独立 uniform buffer；禁止每个 gradient 每帧重新创建 texture；
 - LUT key 至少包含：stop colors、stop offsets、interpolation space、extend mode、target color profile class；静态 gradient 只 bake 一次。

@@ -302,7 +302,10 @@ export const show = {
   data: (v, name) => datum(v, name),
   num: (v) => (v === null ? undefined : String(v)),
   url,
-  fit: (v) => fits[Number(v ?? 0n)] || "contain",
+  fit: (v) => {
+    const fit = fits[Number(v ?? 0n)] || "contain";
+    return fit === "tile" ? "none" : fit;
+  },
   mode: (v) => holding(v)[0] ?? undefined,
   pattern: (v) => holding(v)[1] ?? undefined,
   cursor: (v) => cursor(v) || undefined,
@@ -316,10 +319,9 @@ export const show = {
   picker: P.picker,
   listed: P.listed,
   avatar: P.avatar,
-  maskSize: (v) => {
-    const fit = fits[Number(v ?? 0n)] || "contain";
-    return fit === "fill" ? "100% 100%" : fit;
-  },
+  maskSize: (v) => fitSize(fits[Number(v ?? 0n)] || "contain"),
+  maskRepeat: (v) => (fits[Number(v ?? 0n)] === "tile" ? "repeat" : "no-repeat"),
+  maskPosition: (v) => (fits[Number(v ?? 0n)] === "tile" ? "0 0" : "center"),
   mask: (href) => (href ? 'url("' + href + '")' : "none"),
   opacity: (v) => String(Math.min(Math.max(v ?? 1, 0), 1)),
   radius,

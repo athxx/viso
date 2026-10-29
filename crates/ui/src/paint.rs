@@ -35,9 +35,10 @@ use crate::style::BoxStyle;
 use crate::theme::Palette;
 use crate::transform::TransformTable;
 use viso_render::{
-    AnalyticEllipse, AnalyticRRect, AnalyticShadow, Border, Corners, GlyphInstanceData,
-    GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive, ProgramTextures, Quad,
-    Rect, Rgba, RoundMask, SamplerDesc, ShaderDraw, ShadowShape, TransformSlot,
+    AddressMode, AnalyticEllipse, AnalyticRRect, AnalyticShadow, Border, Corners,
+    GlyphInstanceData, GlyphRunDraw, ImageDraw, LayerClip, Path, PathCmd, Point, Primitive,
+    ProgramTextures, Quad, Rect, Rgba, RoundMask, SamplerDesc, ShaderDraw, ShadowShape,
+    TransformSlot,
 };
 
 /// The opaque white tint that passes a premultiplied color-atlas texel through
@@ -914,11 +915,19 @@ fn paint_asset(
     let scale = match fit {
         AssetFit::Contain => (world.w / natural.x).min(world.h / natural.y),
         AssetFit::Cover => (world.w / natural.x).max(world.h / natural.y),
-        AssetFit::Fill => 0.0,
+        AssetFit::Fill | AssetFit::Tile => 0.0,
     };
-    // The box the whole asset takes, centered on the node's.
+    // The box the whole asset takes, centered on the node's; a tile's
+    // first copy, at the node's top-left corner.
     let placed = if fit == AssetFit::Fill {
         world
+    } else if fit == AssetFit::Tile {
+        Rect {
+            x: world.x,
+            y: world.y,
+            w: natural.x,
+            h: natural.y,
+        }
     } else {
         let (w, h) = (natural.x * scale, natural.y * scale);
         Rect {
@@ -931,8 +940,17 @@ fn paint_asset(
     match draw {
         AssetDraw::Nothing | AssetDraw::Failed => {}
         AssetDraw::Raster(texture) => {
-            // A cover crops in the texture rather than drawing past the box.
-            let (rect, mut uv) = if fit == AssetFit::Cover {
+            // A cover crops in the texture rather than drawing past the box;
+            // a tile reads past it, the sampler wrapping it round.
+            let (rect, mut uv) = if fit == AssetFit::Tile {
+                let uv = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: world.w / natural.x,
+                    h: world.h / natural.y,
+                };
+                (world, uv)
+            } else if fit == AssetFit::Cover {
                 let (uw, uh) = (world.w / placed.w, world.h / placed.h);
                 let uv = Rect {
                     x: (1.0 - uw) * 0.5,
@@ -960,12 +978,19 @@ fn paint_asset(
                 uv,
                 tint: tint.unwrap_or(WHITE),
                 texture: *texture,
-                sampler: SamplerDesc::LINEAR_CLAMP,
+                sampler: if fit == AssetFit::Tile {
+                    SamplerDesc {
+                        address: AddressMode::Repeat,
+                        ..SamplerDesc::LINEAR_CLAMP
+                    }
+                } else {
+                    SamplerDesc::LINEAR_CLAMP
+                },
                 mask,
             }));
         }
         AssetDraw::Vector(scene) => {
-            let crop = fit == AssetFit::Cover;
+            let crop = matches!(fit, AssetFit::Cover | AssetFit::Tile);
             if crop {
                 out.push(Primitive::Layer(LayerClip {
                     clip: world,
@@ -974,7 +999,23 @@ fn paint_asset(
                     backdrop_sigma: 0.0,
                 }));
             }
-            out.extend(scene.place(placed, tint).map(Primitive::from));
+            if fit == AssetFit::Tile {
+                // A copy a cell, as many as reach into the box.
+                let columns = (world.w / natural.x).ceil() as u32;
+                let rows = (world.h / natural.y).ceil() as u32;
+                for row in 0..rows {
+                    for column in 0..columns {
+                        let cell = Rect {
+                            x: placed.x + column as f32 * natural.x,
+                            y: placed.y + row as f32 * natural.y,
+                            ..placed
+                        };
+                        out.extend(scene.place(cell, tint).map(Primitive::from));
+                    }
+                }
+            } else {
+                out.extend(scene.place(placed, tint).map(Primitive::from));
+            }
             if crop {
                 out.push(Primitive::LayerEnd);
             }
@@ -2167,6 +2208,67 @@ mod tests {
             }),
             Some(ProgramSlot(0))
         );
+    }
+
+    #[test]
+    fn a_tile_repeats_the_asset_at_its_natural_size_from_the_corner() {
+        use crate::asset::{AssetDraw, AssetFit};
+        use viso_render::TextureId;
+        let world = Rect {
+            x: 10.0,
+            y: 10.0,
+            w: 50.0,
+            h: 30.0,
+        };
+        let natural = Vec2::new(20.0, 10.0);
+        let mut out = Vec::new();
+        let draw = AssetDraw::Raster(TextureId::new(1));
+        paint_asset(
+            &draw,
+            natural,
+            AssetFit::Tile,
+            None,
+            false,
+            world,
+            None,
+            &mut out,
+        );
+        let [Primitive::Image(image)] = &out[..] else {
+            panic!("{out:?}");
+        };
+        assert_eq!(image.rect, world, "one draw covers the box");
+        assert_eq!(
+            (image.uv.x, image.uv.y, image.uv.w, image.uv.h),
+            (0.0, 0.0, 2.5, 3.0)
+        );
+        assert_eq!(image.sampler.address, AddressMode::Repeat);
+
+        let scene = Arc::new(viso_render::asset::VectorScene {
+            paths: Arc::from(vec![Path {
+                cmds: vec![PathCmd::MoveTo(Point::new(0.0, 0.0))],
+                fill: Some(WHITE),
+                stroke: None,
+                shadow: None,
+            }]),
+            size: [20.0, 10.0],
+        });
+        let mut out = Vec::new();
+        paint_asset(
+            &AssetDraw::Vector(scene),
+            natural,
+            AssetFit::Tile,
+            None,
+            false,
+            world,
+            None,
+            &mut out,
+        );
+        assert!(
+            matches!(out.first(), Some(Primitive::Layer(l)) if l.clip == world)
+                && matches!(out.last(), Some(Primitive::LayerEnd)),
+            "a vector's copies are clipped to the box"
+        );
+        assert_eq!(out.len(), 2 + 3 * 3, "a copy a cell reaching into the box");
     }
 
     #[test]

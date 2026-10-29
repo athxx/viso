@@ -4825,7 +4825,7 @@ view {
 }
 ```
 
-- `ImageFit { contain; cover; fill; }`：`contain` 保持比例完整放入盒子并居中；`cover` 保持比例铺满盒子，居中裁去溢出部分；`fill` 拉伸到盒子；
+- `ImageFit { contain; cover; fill; tile; }`：`contain` 保持比例完整放入盒子并居中；`cover` 保持比例铺满盒子，居中裁去溢出部分；`fill` 拉伸到盒子；`tile` 以固有尺寸从盒子左上角起重复铺满（图案；栅格图一次绘制、采样器 repeat，矢量图每格一份并裁到盒子；HTML 导出为重复的 `background-image`，有 `tint` 时为重复的 mask；`<img>` 不能重复，fit 在页面上才变成 `tile` 时显示一份固有尺寸的图）；
 - 固有尺寸是图像的像素尺寸（SVG 取其 `viewBox` 与 `width`/`height`），1 像素计为 `1dp`；布局属性给出的尺寸优先；
 - 解码不在帧路径上：解码完成前节点不绘制，已知尺寸即参与布局；资源的新内容（如热重载）解码并驻留前旧内容继续绘制，之后只脏显示该资源的节点：尺寸不变为 `PAINT`，改变为 `MEASURE|LAYOUT|PAINT`；
 - 以下情形报 `E3713`：`asset` 不是恰好一个参数；参数不是不含插值的字符串字面量（要在资源间选择，在 `asset("…")` 值之间分支）；路径越出 `assets/`；文件不存在（附最接近的已有路径作为 Fix）；文件不是位图、SVG 或视频；本次编译没有资源目录；以及 `ImageAsset`/`SvgAsset`/`VideoAsset` 的 Record 表达式；

@@ -214,12 +214,12 @@ pub(super) enum Prop {
     /// What a video plays and how: its `url`, `playing`, `looping`,
     /// `muted`, `volume` or `rate`, which the script gives its element.
     Media(&'static str),
-    /// An asset's source, as an image or as a mask.
+    /// An asset's source, as an image, a mask or a pattern.
     Source {
-        mask: bool,
+        shown: Showing,
     },
     Fit {
-        mask: bool,
+        shown: Showing,
     },
     /// A custom property of the element that its own rules read.
     Var {
@@ -623,6 +623,13 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             item => node.role.or(item.map(|(role, _)| role)).or(widget),
         };
         let masked = control.as_ref().is_some_and(|c| c.tint.is_some());
+        // An image tiled for good is a pattern its element's background or
+        // mask repeats; an `<img>` repeats nothing.
+        let tiled = matches!(node.type_name.as_str(), "Image" | "Svg")
+            && control.as_ref().and_then(|c| c.fit).is_some_and(|fit| {
+                let at = self.own(node.instance, node.origin);
+                matches!(self.fixed(fit, "the fit", at), Fixed::Value(v) if v.as_int() == Some(3))
+            });
         // A field that holds lines is a `<textarea>`, which one that turns
         // multi-line on the open page cannot become. A secure field holds
         // one line.
@@ -656,7 +663,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             ("Button" | "Chip", _) => "button",
             ("TextInput", _) if lines => "textarea",
             ("TextInput" | "NumberField" | "Toggle" | "CheckBox" | "Slider" | "Knob", _) => "input",
-            ("Image" | "Svg", _) if !masked => "img",
+            ("Image" | "Svg", _) if !masked && !tiled => "img",
             ("Video" | "CameraView", _) => "video",
             ("Text", _) => "span",
             ("LinkLabel", _) => "a",
@@ -683,6 +690,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (_, "Stepper") => "vx-stepper",
             (_, "Avatar") => "vx-avatar",
             (_, "Image" | "Svg") if masked => "vx-mask",
+            (_, "Image" | "Svg") if tiled => "vx-pattern",
             (_, "Image" | "Svg") => "vx-image",
             (_, "Video" | "CameraView") => "vx-video",
             _ => "vx-leaf",
@@ -1322,7 +1330,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             && let Some(fixed) = self.bind(
                 wires,
                 control.value,
-                Prop::Source { mask: false },
+                Prop::Source {
+                    shown: Showing::Src,
+                },
                 "the source",
                 at,
             )
@@ -1331,11 +1341,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             let url = self.asset(id);
             el.attr("src", &url);
         }
-        if let Some(fixed) = self.bind(wires, control.fit, Prop::Fit { mask: false }, "the fit", at)
-        {
+        if let Some(fixed) = self.bind(
+            wires,
+            control.fit,
+            Prop::Fit {
+                shown: Showing::Src,
+            },
+            "the fit",
+            at,
+        ) {
             let fit = fit(fixed.int().unwrap_or(0));
             if fit != "contain" {
-                decls.push(("object-fit", fit.into()));
+                decls.push(("object-fit", object_fit(fit).into()));
             }
         }
         if control.tint.is_some() {
@@ -1462,11 +1479,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         {
             el.attr("data-vx-mirror", if on != 0 { "1" } else { "0" });
         }
-        if let Some(fixed) = self.bind(wires, control.fit, Prop::Fit { mask: false }, "the fit", at)
-        {
+        if let Some(fixed) = self.bind(
+            wires,
+            control.fit,
+            Prop::Fit {
+                shown: Showing::Src,
+            },
+            "the fit",
+            at,
+        ) {
             let fit = fit(fixed.int().unwrap_or(0));
             if fit != "contain" {
-                decls.push(("object-fit", fit.into()));
+                decls.push(("object-fit", object_fit(fit).into()));
             }
         } else if control.fit.is_none() {
             decls.push(("object-fit", "cover".into()));
@@ -2040,7 +2064,11 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
     ) -> Option<i64> {
         let at = self.own(node.instance, node.origin);
         let mut selected = None;
-        let mask = el.tag != "img";
+        let shown = match (el.tag, el.base) {
+            ("img", _) => Showing::Src,
+            (_, "vx-pattern") => Showing::Pattern,
+            _ => Showing::Mask,
+        };
         match control.kind {
             ControlKind::Label | ControlKind::Button => {
                 match self.bind(
@@ -2466,12 +2494,21 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     None => control.url.is_some(),
                 };
                 if let Some(fixed) = url.filter(|_| by_url) {
-                    el.attr("src", &fixed.text());
+                    let url = fixed.text();
+                    match shown.image_properties() {
+                        [] => el.attr("src", &url),
+                        properties => {
+                            let quoted = url.replace('\\', "\\\\").replace('"', "\\\"");
+                            for property in properties {
+                                decls.push((property, format!("url(\"{quoted}\")")));
+                            }
+                        }
+                    }
                 } else if !by_url
                     && let Some(fixed) = self.bind(
                         wires,
                         control.value,
-                        Prop::Source { mask },
+                        Prop::Source { shown },
                         "the source",
                         at,
                     )
@@ -2479,21 +2516,33 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     match fixed.resource() {
                         Some(id) => {
                             let url = self.asset(id);
-                            el.asset = Some(Shown { id, url, mask });
+                            el.asset = Some(Shown { id, url, shown });
                         }
-                        None if !mask => el.attr("src", ""),
+                        None if shown == Showing::Src => el.attr("src", ""),
                         None => {}
                     }
                 }
                 if let Some(fixed) =
-                    self.bind(wires, control.fit, Prop::Fit { mask }, "the fit", at)
+                    self.bind(wires, control.fit, Prop::Fit { shown }, "the fit", at)
                 {
                     let fit = fit(fixed.int().unwrap_or(0));
-                    if mask {
-                        decls.push(("mask-size", mask_size(fit).into()));
-                        decls.push(("-webkit-mask-size", mask_size(fit).into()));
-                    } else if fit != "contain" {
-                        decls.push(("object-fit", fit.into()));
+                    match shown {
+                        Showing::Mask => {
+                            decls.push(("mask-size", mask_size(fit).into()));
+                            decls.push(("-webkit-mask-size", mask_size(fit).into()));
+                            if fit == "tile" {
+                                decls.push(("mask-repeat", "repeat".into()));
+                                decls.push(("-webkit-mask-repeat", "repeat".into()));
+                                decls.push(("mask-position", "0 0".into()));
+                                decls.push(("-webkit-mask-position", "0 0".into()));
+                            }
+                        }
+                        // A pattern is a tile, which its rule draws.
+                        Showing::Pattern => {}
+                        Showing::Src if fit != "contain" => {
+                            decls.push(("object-fit", object_fit(fit).into()));
+                        }
+                        Showing::Src => {}
                     }
                 }
                 if let Some(tint) = control.tint {
@@ -3701,14 +3750,22 @@ pub(super) fn fit(tag: i64) -> &'static str {
     match tag {
         1 => "cover",
         2 => "fill",
+        3 => "tile",
         _ => "contain",
     }
+}
+
+/// A fit as `object-fit`: an `<img>` repeats nothing, so a tile that
+/// becomes one only on the open page shows a copy at its natural size.
+pub(super) fn object_fit(fit: &str) -> &str {
+    if fit == "tile" { "none" } else { fit }
 }
 
 pub(super) fn mask_size(fit: &str) -> &'static str {
     match fit {
         "cover" => "cover",
         "fill" => "100% 100%",
+        "tile" => "auto",
         _ => "contain",
     }
 }
@@ -3782,7 +3839,32 @@ fn aria_role(role: Role, tag: &str, widget: &str) -> Option<&'static str> {
 pub(super) struct Shown {
     pub(super) id: u64,
     pub(super) url: String,
-    pub(super) mask: bool,
+    pub(super) shown: Showing,
+}
+
+/// How an element shows an asset: as its `src`, as the mask its tint
+/// shows through, or as a background pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Showing {
+    Src,
+    Mask,
+    Pattern,
+}
+
+impl Showing {
+    /// The code the page's script reads.
+    pub(super) fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// The CSS property an asset shown so names its image in, if any.
+    pub(super) fn image_properties(self) -> &'static [&'static str] {
+        match self {
+            Showing::Src => &[],
+            Showing::Mask => &["mask-image", "-webkit-mask-image"],
+            Showing::Pattern => &["background-image"],
+        }
+    }
 }
 
 /// An element as it is opened and closed.
@@ -3846,12 +3928,14 @@ impl Element {
         }
         let mut style = self.style.clone();
         if let Some(shown) = &self.asset {
-            if shown.mask {
+            let properties = shown.shown.image_properties();
+            if !properties.is_empty() {
                 let url = &shown.url;
-                style.insert(
-                    0,
-                    format!("mask-image: url(\"{url}\"); -webkit-mask-image: url(\"{url}\")"),
-                );
+                let images: Vec<String> = properties
+                    .iter()
+                    .map(|p| format!("{p}: url(\"{url}\")"))
+                    .collect();
+                style.insert(0, images.join("; "));
             } else {
                 out.push_str(" src=\"");
                 escape_attr(&shown.url, out);

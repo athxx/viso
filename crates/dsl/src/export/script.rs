@@ -444,8 +444,10 @@ fn mount(
                         Prop::Data(name) => format!("P.data({el}, {value}, \"{name}\")"),
                         Prop::Turn => format!("P.turn({el}, {value})"),
                         Prop::Media(name) => format!("P.media({el}, {value}, \"{name}\")"),
-                        Prop::Source { mask } => format!("P.source({el}, {value}, {mask})"),
-                        Prop::Fit { mask } => format!("P.fit({el}, {value}, {mask})"),
+                        Prop::Source { shown } => {
+                            format!("P.source({el}, {value}, {})", shown.code())
+                        }
+                        Prop::Fit { shown } => format!("P.fit({el}, {value}, {})", shown.code()),
                         Prop::Var { name, token } => match token {
                             VarToken::Color => format!("P.vcolor({el}, {value}, \"{name}\")"),
                             VarToken::Opacity => {

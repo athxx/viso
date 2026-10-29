@@ -37,7 +37,7 @@ use crate::primitive::{
 
 use super::bounds::Bounds;
 use super::ids::{ClipChainId, PrimitiveId};
-use super::store::{Brush, ClipChainDescriptor, ClipMaskKey, DirtyPlanes, ImageSource, StoreRef};
+use super::store::{ClipChainDescriptor, ClipMaskKey, DirtyPlanes, ImageSource, StoreRef};
 use super::{EmitContext, Scene};
 use crate::primitive::Primitive;
 
@@ -603,18 +603,6 @@ impl Scene {
         changed
     }
 
-    /// Fold a resolved fill/stroke brush into the brush store, bumping the paint
-    /// plane on a change. Returns whether the brush moved. The deferred
-    /// [`Brush::ImagePattern`]/[`Brush::ShaderBrush`] variants are rejected inside
-    /// the store rather than stored as no-ops.
-    pub fn ingest_brush(&mut self, brush: Brush) -> bool {
-        let (_id, changed) = self.brushes.ingest(brush);
-        if changed {
-            self.revisions.bump_paint();
-        }
-        changed
-    }
-
     /// Trim every store's tail past the frame's cursor (the scene shrank) and
     /// bump the visibility plane if any store lost entries. Called after the
     /// ingest walk by [`Scene::finish_frame`].
@@ -634,7 +622,6 @@ impl Scene {
         shrank |= self.clips.finish_frame();
         shrank |= self.clip_chains.finish_frame();
         shrank |= self.transforms.finish_frame();
-        shrank |= self.brushes.finish_frame();
         if shrank {
             self.revisions.bump_visibility();
         }

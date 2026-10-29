@@ -56,8 +56,8 @@ use ingest::IngestStats;
 use revision::Revisions;
 use store::{
     AnalyticCapsuleStore, AnalyticEllipseStore, AnalyticLineStore, AnalyticRRectStore,
-    AnalyticShadowStore, BrushStore, ClipChainStore, ClipStore, GlyphRunStore, GradientStore,
-    ImageStore, MeshStore, ShaderStore, SolidQuadStore, StoreRef, TransformStore, VectorPathStore,
+    AnalyticShadowStore, ClipChainStore, ClipStore, GlyphRunStore, GradientStore, ImageStore,
+    MeshStore, ShaderStore, SolidQuadStore, StoreRef, TransformStore, VectorPathStore,
 };
 
 /// Where an emitted primitive's geometry is routed and how it is offset — the
@@ -148,8 +148,6 @@ pub struct Scene {
     pub clip_chains: ClipChainStore,
     /// Transforms (identity-separated; a pure move bumps this plane alone).
     pub transforms: TransformStore,
-    /// Brushes (identity-separated; a recolor bumps this plane alone).
-    pub brushes: BrushStore,
     /// The seven independent revision planes.
     pub revisions: Revisions,
     /// One [`PaintEntry`] per emitted primitive, in paint order.
@@ -218,7 +216,6 @@ impl Scene {
         self.clips.begin_frame();
         self.clip_chains.begin_frame();
         self.transforms.begin_frame();
-        self.brushes.begin_frame();
         self.paint_order.clear();
         self.composites.clear();
         self.backdrops.clear();

@@ -15,11 +15,9 @@
 //! reintroducing a forbidden default — a `saveLayer` for group opacity, a blur layer
 //! for a drop shadow, a full-screen backdrop capture — fails here.
 //!
-//! Two items are not stateable from this crate and live where their subject does:
+//! One item is not stateable from this crate and lives where its subject does:
 //! "default UI does not globally enable MSAA" is asserted over the shipped pipeline
-//! manifest in `viso-shader`, and the brush model's explicit semantics — including
-//! that the two unlowered brushes reject rather than no-op — are asserted in
-//! `scene::store`, where `BrushStore` is reachable.
+//! manifest in `viso-shader`.
 
 use viso_gpu::{
     ColorSpace, CpuRaster, GpuBackend, RawWindowHandle, SurfaceId, TextureDesc, TextureFormat,

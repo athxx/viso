@@ -1328,9 +1328,14 @@ done nor already an item above. Not scheduled; each names the file and section i
 Device-only verification of what is built (secure text entry, `@persist` paths, game audio
 output, a live macOS session) is listed with the device runs of N8.
 
-- [ ] `Brush::ImagePattern` and `Brush::ShaderBrush` lowering in the renderer: both are declared
+- [x] `Brush::ImagePattern` and `Brush::ShaderBrush` lowering in the renderer: both are declared
   and reach a `todo!` panic (`todo_rendering.md` D2.1). A compact shared stop table between the
-  inline 2-stop and the 3+ stop LUT tiers.
+  inline 2-stop and the 3+ stop LUT tiers. Each brush is a primitive family of its own: the
+  `Brush`/`BrushStore` copy nothing fed was removed with its panics. A shader brush is a
+  `ShaderView`'s brush program, already drawn; an image pattern is now `ImageFit::tile` (one
+  repeat-sampled draw for a raster, a copy a cell clipped to the box for a vector; a repeating
+  `background-image`, or mask under a tint, in the HTML exports). No compact stop table: a stop
+  loop per pixel costs more than the LUT's one sample, and a LUT row bakes once.
 - [ ] `ResourceScope` beyond `component`: caches shared across instances (`todo_dsl.md` D7).
 - [ ] The CLI's preview of generated code runs its views on the preview host, under its
   restricted grant (`todo_dsl.md`, `E6103`).
