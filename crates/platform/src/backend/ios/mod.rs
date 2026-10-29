@@ -6,10 +6,12 @@
 //! arranges the next wake the handler asked for:
 //! - frames come from a `CADisplayLink` that runs only while a redraw is
 //!   pending, at up to the display's maximum rate;
+//! - [`ControlFlow::Poll`] means a frame is pending: the next display beat
+//!   runs it, whether or not anything else asked for one;
 //! - [`ControlFlow::WaitUntil`] arms a one-shot `NSTimer` that delivers
 //!   [`RawEvent::Wakeup`];
-//! - [`ControlFlow::Wait`] and [`ControlFlow::Poll`] leave the run loop idle
-//!   until the next input or frame.
+//! - [`ControlFlow::Wait`] leaves the run loop idle until the next input or
+//!   frame.
 //!
 //! The app has a single full-screen window. With a scene manifest in the
 //! Info.plist it is attached to the `UIWindowScene` the system connects
@@ -218,14 +220,17 @@ fn deliver(
     flow
 }
 
-/// Arm (or disarm) the one-shot timer behind [`ControlFlow::WaitUntil`].
+/// Arm the wake behind the handler's last answer: the next display beat for
+/// [`ControlFlow::Poll`], the one-shot timer for [`ControlFlow::WaitUntil`].
 /// iOS apps do not exit, so [`ControlFlow::Exit`] only idles the loop.
 fn schedule_wake(flow: ControlFlow) {
     if let Some(old) = LOOP.with(|l| l.wake_timer.take()) {
         old.invalidate();
     }
-    let ControlFlow::WaitUntil(deadline) = flow else {
-        return;
+    let deadline = match flow {
+        ControlFlow::WaitUntil(deadline) => deadline,
+        ControlFlow::Poll => return request_frame(),
+        ControlFlow::Wait | ControlFlow::Exit => return,
     };
     let Some(target) = LOOP.with(|l| l.target.borrow().clone()) else {
         return;

@@ -1221,7 +1221,11 @@ Rules (as for `todo_features.md`):
   - [ ] iOS touch gestures: the simulator's window is Xcode's Device Hub
     (`Xcode.app/Contents/Applications/DeviceHub.app`), whose Option-drag gives two fingers;
     it needs an unlocked, on-screen session to take mouse events (`simctl` has no touch
-    input), or a device.
+    input), or a device. One-finger pans and taps work there, including after the map goes
+    idle: the backend used to leave a pending frame (`ControlFlow::Poll`) to whatever asked
+    for the next beat, so once tiles and animations settled, input changed state but no frame
+    ran. Two fingers remain: synthetic Option comes through as a key while Device Hub
+    captures input, so the pinch, rotate and tilt need a hand on the Mac or a device.
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and
   cadence traces.
   - [x] Nothing caps a frame at 60 Hz. Built:
