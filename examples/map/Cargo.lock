@@ -2588,7 +2588,6 @@ dependencies = [
  "viso-macros",
  "viso-math",
  "viso-media",
- "viso-pdf",
  "viso-platform",
  "viso-render",
  "viso-runtime",
@@ -2639,9 +2638,14 @@ version = "0.0.0"
 dependencies = [
  "viso-ende",
  "viso-gpu-abi",
+ "viso-macros",
  "viso-math",
  "viso-schema",
 ]
+
+[[package]]
+name = "viso-diag"
+version = "0.0.0"
 
 [[package]]
 name = "viso-dir"
@@ -2663,6 +2667,7 @@ dependencies = [
  "toml_edit",
  "viso-behavior",
  "viso-dev-protocol",
+ "viso-diag",
  "viso-ende",
  "viso-lexer",
  "viso-math",
@@ -2703,6 +2708,7 @@ dependencies = [
  "bitflags",
  "block2 0.6.2",
  "js-sys",
+ "libloading",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
@@ -2754,6 +2760,7 @@ name = "viso-lexer"
 version = "0.0.0"
 dependencies = [
  "icu_properties",
+ "viso-diag",
 ]
 
 [[package]]
@@ -2831,15 +2838,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "viso-pdf"
-version = "0.0.0"
-dependencies = [
- "miniz_oxide",
- "viso-math",
- "viso-render",
 ]
 
 [[package]]
@@ -2931,6 +2929,7 @@ name = "viso-shader"
 version = "0.0.0"
 dependencies = [
  "naga",
+ "viso-diag",
  "viso-ende",
  "viso-gpu-abi",
 ]
@@ -2995,6 +2994,7 @@ dependencies = [
  "syn 2.0.119",
  "toml_edit",
  "viso-dsl",
+ "viso-shader",
 ]
 
 [[package]]
