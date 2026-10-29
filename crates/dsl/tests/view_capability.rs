@@ -62,8 +62,10 @@ fn view(granted: &[&str]) -> ViewBehavior {
 struct Board(Rc<RefCell<Option<String>>>);
 
 impl Clipboard for Board {
-    fn read_text(&mut self) -> Option<String> {
-        self.0.borrow().clone()
+    fn read_text(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>>>> {
+        Box::pin(std::future::ready(self.0.borrow().clone()))
     }
 
     fn write_text(&mut self, text: &str) {

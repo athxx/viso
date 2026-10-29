@@ -21,7 +21,9 @@ use viso_widgets::caption_bar;
 
 use super::access_keys::AccessKey;
 use super::surrounding;
-use super::{CARET_BLINK, CARET_IDLE, FieldKey, GpuState, LostGpu, SessionFonts, WindowState};
+use super::{
+    CARET_BLINK, CARET_IDLE, FieldKey, GpuState, LostGpu, PasteTo, SessionFonts, WindowState,
+};
 use crate::text_content::{self, ParagraphSlot, TextShaper};
 use crate::{
     WindowChrome, WindowConfig, app_menu, edit_menu, environment, footprint, playback, shaders,
@@ -1000,14 +1002,17 @@ impl WindowState {
     /// sweep, and a window with no caption registers nothing and returns instantly.
     /// The focused node's nearest text-edit control: the focused node itself or
     /// the closest ancestor that registered a buffer.
-    /// A fresh token for a paste that goes to `to`, or to the focused text
-    /// field with `None`, kept until its answer arrives.
-    pub(crate) fn paste_token(&mut self, to: Option<NodeId>) -> u32 {
+    /// A fresh token for a paste that goes to `to`, kept until its answer
+    /// arrives.
+    pub(crate) fn paste_token(&mut self, to: PasteTo) -> u32 {
         let token = self.next_paste;
         self.next_paste = self.next_paste.wrapping_add(1);
-        // A request the platform never answered is dropped, not kept.
-        if self.pastes.len() >= 64 {
-            self.pastes.remove(0);
+        // A request the platform never answered is dropped, not kept; a read
+        // waiting on it finishes empty.
+        if self.pastes.len() >= 64
+            && let (_, PasteTo::Read(read)) = self.pastes.remove(0)
+        {
+            read.answer(None);
         }
         self.pastes.push((token, to));
         token
@@ -1176,7 +1181,7 @@ impl WindowState {
                 (edit == edit_menu::Edit::Cut).then_some(text_edit::EditIntent::Cut)
             }
             edit_menu::Edit::Paste => {
-                let token = self.paste_token(None);
+                let token = self.paste_token(PasteTo::Field);
                 cx.request_paste(self.window, viso_ui::ClipboardKinds::TEXT, token);
                 None
             }

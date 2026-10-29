@@ -207,7 +207,9 @@ export component C {
 struct Broken;
 
 impl viso_behavior::native::Clipboard for Broken {
-    fn read_text(&mut self) -> Option<String> {
+    fn read_text(
+        &mut self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>>>> {
         panic!("the host clipboard is gone")
     }
 

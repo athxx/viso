@@ -12,7 +12,8 @@
 //! protocol, owned by the component instance's node ([`release_tasks`]); a
 //! `resource` loads through the same tasks, gated on its key like an effect.
 //! A component's `@persist` states load and store through the store the app
-//! installs ([`install_persistence`]).
+//! installs ([`install_persistence`]), and its `viso::clipboard` natives
+//! reach the clipboard the app installs ([`install_clipboard`]).
 //!
 //! A host is shared as `Rc<RefCell<ViewHost>>` by the `'static` handler boxes
 //! of every node of its view. The sharing is the point: the nodes of one view
@@ -22,6 +23,7 @@
 //! the cold event path, never during layout or paint.
 
 mod attach;
+mod clipboard;
 mod control;
 #[cfg(feature = "hot-reload")]
 pub mod dev;
@@ -52,6 +54,7 @@ mod widget;
 mod world_scene;
 
 pub use attach::{Route, attach, attach_node};
+pub use clipboard::{ClipboardRead, HostClipboard, install_clipboard};
 pub use control::{
     Control, ControlInput, ControlKind, LayoutSlot, Look, LookArm, NodeEntries, RustEntries,
     SOURCE_ROLES, SemanticEntries, Switched, TextEntries, When, source_live, source_name,

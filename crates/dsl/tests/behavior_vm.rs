@@ -556,8 +556,10 @@ fn an_unlinked_native_cannot_run() {
 fn an_ungranted_capability_faults_at_the_call() {
     struct Memory(Rc<std::cell::RefCell<String>>);
     impl Clipboard for Memory {
-        fn read_text(&mut self) -> Option<String> {
-            Some(self.0.borrow().clone())
+        fn read_text(
+            &mut self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>>>> {
+            Box::pin(std::future::ready(Some(self.0.borrow().clone())))
         }
         fn write_text(&mut self, text: &str) {
             *self.0.borrow_mut() = text.to_owned();

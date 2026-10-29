@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use js_sys::{Array, BigInt, Function, Object, Promise, Reflect};
-use viso_behavior::native::Timers;
+use viso_behavior::native::{Clipboard, Timers};
 use viso_behavior::{Aggregate, Fault, NodeAction, TaskPolicy, TaskStep, Value};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -62,9 +62,11 @@ pub async fn viso_dom(
         }),
     }
     .map_err(|e| JsError::new(&e))?;
-    page.borrow_mut()
-        .services_mut()
-        .insert::<Box<dyn Timers>>(Box::new(PageTimers));
+    let mut opened = page.borrow_mut();
+    let services = opened.services_mut();
+    services.insert::<Box<dyn Timers>>(Box::new(PageTimers));
+    services.insert::<Box<dyn Clipboard>>(Box::new(PageClipboard));
+    drop(opened);
     let inner = Rc::new(RefCell::new(Inner {
         page,
         opaques: Vec::new(),
@@ -471,6 +473,41 @@ fn from_js(js: &JsValue, inner: &Inner) -> Value {
 
 /// The page's timers: the browser's.
 struct PageTimers;
+
+/// The browser's clipboard, `navigator.clipboard`: a read the browser
+/// refuses (no permission, no focus) or a page without one reads nothing,
+/// and a refused write is dropped.
+struct PageClipboard;
+
+impl PageClipboard {
+    /// `navigator.clipboard.<method>(..args)`, the promise it returns.
+    fn call(method: &str, args: &[JsValue]) -> Option<Promise> {
+        let navigator = Reflect::get(&js_sys::global(), &"navigator".into()).ok()?;
+        let clipboard = Reflect::get(&navigator, &"clipboard".into()).ok()?;
+        let method = Reflect::get(&clipboard, &method.into())
+            .ok()?
+            .dyn_into::<Function>()
+            .ok()?;
+        let args: Array = args.iter().collect();
+        method.apply(&clipboard, &args).ok()?.dyn_into().ok()
+    }
+}
+
+impl Clipboard for PageClipboard {
+    fn read_text(&mut self) -> Pin<Box<dyn Future<Output = Option<String>>>> {
+        let read = PageClipboard::call("readText", &[]);
+        Box::pin(async move { JsFuture::from(read?).await.ok()?.as_string() })
+    }
+
+    fn write_text(&mut self, text: &str) {
+        if let Some(written) = PageClipboard::call("writeText", &[text.into()]) {
+            // A refusal is dropped rather than reported as unhandled.
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = JsFuture::from(written).await;
+            });
+        }
+    }
+}
 
 impl Timers for PageTimers {
     fn sleep(&mut self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {

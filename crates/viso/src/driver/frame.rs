@@ -22,7 +22,7 @@ use super::window_state::{
     drawn_menu_bar, native_handle, to_platform_config, wrap_root_in_safe_area,
     wrap_root_with_caption,
 };
-use super::{AppDriver, PANEL_ONLY, SessionFonts, WindowState};
+use super::{AppDriver, PANEL_ONLY, PasteTo, SessionFonts, WindowState};
 use crate::{
     Application, Lifecycle, accessibility, audio, edit_menu, environment, footprint, persist,
     services, shell,
@@ -562,12 +562,16 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         .iter()
                         .position(|(t, _)| *t == token)
                         .map(|at| ws.pastes.remove(at).1),
-                    None => Some(ws.paste_route(root).0),
+                    None => Some(match ws.paste_route(root).0 {
+                        Some(node) => PasteTo::Node(node),
+                        None => PasteTo::Field,
+                    }),
                 };
                 match to {
                     // An answer to no request still pending.
                     None => {}
-                    Some(Some(node)) => {
+                    Some(PasteTo::Read(read)) => read.answer(p.data.text),
+                    Some(PasteTo::Node(node)) => {
                         KeyRouter::route_paste(
                             &mut ws.store,
                             &mut ws.states,
@@ -580,7 +584,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // Pasted text routes to the focused control, which
                     // replaces its selection with it as one edit. A
                     // single-line buffer folds any line breaks in it.
-                    Some(None) => {
+                    Some(PasteTo::Field) => {
                         if let Some(text) = p.data.text {
                             KeyRouter::route_ime(
                                 &mut ws.store,
@@ -1558,7 +1562,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     ws.store.take_paste_asks(&mut ws.scratch_pastes);
                     for i in 0..ws.scratch_pastes.len() {
                         let (node, kinds) = ws.scratch_pastes[i];
-                        let token = ws.paste_token(Some(node));
+                        let token = ws.paste_token(PasteTo::Node(node));
                         cx.request_paste(ws.window, kinds, token);
                     }
                     if let Some(on) = ws.store.take_fullscreen_ask() {
@@ -1569,6 +1573,25 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     self.pending_opens.append(&mut ws.scratch_opens);
                     ws.store.take_window_closes(&mut ws.scratch_closes);
                     self.pending_closes.append(&mut ws.scratch_closes);
+                }
+                // What the views' clipboard natives wrote goes after the
+                // handlers' copies, the last write winning; their reads go
+                // through the launch window, any window reading the same
+                // clipboard.
+                if self.clipboard.is_pending() {
+                    if let Some(text) = self.clipboard.take_copied() {
+                        cx.set_clipboard(viso_ui::ClipboardData::text(text));
+                    }
+                    self.clipboard.take_reads(&mut self.clipboard_reads);
+                    for read in self.clipboard_reads.drain(..) {
+                        match self.windows.first_mut() {
+                            Some(ws) => {
+                                let token = ws.paste_token(PasteTo::Read(read));
+                                cx.request_paste(ws.window, viso_ui::ClipboardKinds::TEXT, token);
+                            }
+                            None => read.answer(None),
+                        }
+                    }
                 }
                 // Open each requested window through the shared bring-up path:
                 // create the OS window (bumping the scheduler's open count so the

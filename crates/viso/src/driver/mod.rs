@@ -79,6 +79,11 @@ pub(crate) struct AppDriver<A: Application> {
     /// Reusable scratch the flush phase drains each window's queued window-close
     /// requests into (raw ids from the UI tier), mirroring `pending_opens`.
     pub(crate) pending_closes: Vec<u32>,
+    /// What the views' `viso::clipboard` natives wrote and asked, handed to
+    /// the platform at the end of each frame.
+    pub(crate) clipboard: Rc<viso_view::HostClipboard>,
+    /// Reusable scratch the flush drains the views' clipboard reads into.
+    pub(crate) clipboard_reads: Vec<Rc<viso_view::ClipboardRead>>,
     /// The raw sfnt faces the app registered at init through `AppCx::load_font`,
     /// drained from the cx once after `Application::new`. Session-scoped: loaded
     /// into every window's shaper as the window opens (ahead of the system
@@ -166,6 +171,16 @@ pub(crate) struct FieldKey {
     pub(crate) node: NodeId,
     pub(crate) revision: viso_text::ime::Revision,
     pub(crate) sel: viso_text::selection::Selection,
+}
+
+/// Where the answer to a paste asked of the platform goes.
+pub(crate) enum PasteTo {
+    /// The focused text field.
+    Field,
+    /// The node that asked for it.
+    Node(NodeId),
+    /// A view's `viso::clipboard::read_text`, which takes its text.
+    Read(Rc<viso_view::ClipboardRead>),
 }
 
 pub(crate) struct WindowState {
@@ -434,9 +449,9 @@ pub(crate) struct WindowState {
     /// Reusable buffer the flush polls this window's woken tasks into: one
     /// entry per task that finished, its continuation if it writes back.
     pub(crate) continuations: Vec<Option<Continuation>>,
-    /// The pastes asked of the platform and not yet answered, by token: the
-    /// node each goes to, or the focused text field (`None`).
-    pub(crate) pastes: Vec<(u32, Option<NodeId>)>,
+    /// The pastes asked of the platform and not yet answered, by token, and
+    /// where each goes.
+    pub(crate) pastes: Vec<(u32, PasteTo)>,
     /// The token the next paste request carries.
     pub(crate) next_paste: u32,
     /// Reusable buffer the flush drains this window's paste asks into.
@@ -566,12 +581,16 @@ impl<A: Application> AppDriver<A> {
             footprint::workers()
         });
         shell::begin();
+        let clipboard = Rc::new(viso_view::HostClipboard::default());
+        viso_view::install_clipboard(Some(Rc::clone(&clipboard)));
         Self {
             app: None,
             cx: AppCx::__new(),
             windows: Vec::new(),
             pending_opens: Vec::new(),
             pending_closes: Vec::new(),
+            clipboard,
+            clipboard_reads: Vec::new(),
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),
             assets: assets::Assets::with_loader(A::image_loader()),

@@ -1359,9 +1359,13 @@ output, a live macOS session) is listed with the device runs of N8.
   file with the package, mounts its component alone in a headless run handed
   `VISO_HEADLESS_GRANT`, reports every fault the view raises as a diagnostic at its span
   (exit 5) and writes its `.png`/`.tree`.
-- [ ] No host installs the `Clipboard` service the `viso::clipboard` natives read: the app's
+- [x] No host installs the `Clipboard` service the `viso::clipboard` natives read: the app's
   view host and the headless harness both answer `E7106` (found with `viso preview`, its
-  `--grant clipboard.write` past `E6103`). The platform clipboard should back it.
+  `--grant clipboard.write` past `E6103`). The platform clipboard should back it. The facade
+  installs a `HostClipboard` every view host gets: a write goes to `set_clipboard` at the end
+  of its frame, `read_text` is now a task the facade answers through `request_paste`
+  (`clipboard_natives` test); a `web-dom` page uses `navigator.clipboard` (checked in headless
+  Chrome).
 - [x] A compile-fail test of a catalog error through `view!` (trybuild), and the dev session's
   catalog reload under a real watcher (`todo_dsl.md`, localization checks).
   `view_catalog_error` reads a fixture package's broken `i18n/en.toml` (a `Viso.toml` between

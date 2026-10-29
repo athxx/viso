@@ -251,8 +251,9 @@ fn wait_for(
 /// The host clipboard service natives read and write, installed on a
 /// [`Vm`](crate::Vm) as a `Box<dyn Clipboard>`.
 pub trait Clipboard {
-    /// The clipboard text, if it holds text.
-    fn read_text(&mut self) -> Option<String>;
+    /// The clipboard text, if it holds text, once the platform answers: a
+    /// read may wait on a permission prompt, so it never blocks the loop.
+    fn read_text(&mut self) -> Pin<Box<dyn Future<Output = Option<String>>>>;
 
     /// Replaces the clipboard contents with `text`.
     fn write_text(&mut self, text: &str);
@@ -264,8 +265,9 @@ pub static CLIPBOARD: NativeLibrary = NativeLibrary {
     path: "viso::clipboard",
     version: 1,
     functions: &[
-        crate::native!(action "read_text" |cx| -> Option<String> {
-            Ok(cx.service::<Box<dyn Clipboard>>()?.read_text())
+        crate::native!(task "read_text" async |cx| -> Option<String> {
+            let read = cx.service::<Box<dyn Clipboard>>()?.read_text();
+            Ok(async move { Ok(read.await) })
         })
         .requires(&["clipboard.read"]),
         crate::native!(action "write_text" |cx, text: String| -> () {
