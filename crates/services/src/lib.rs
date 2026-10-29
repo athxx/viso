@@ -25,7 +25,7 @@ mod unsupported;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use app_data::LocalStorage;
 #[cfg(not(target_arch = "wasm32"))]
-pub use app_data::app_data_dir;
+pub use app_data::{app_data_dir, documents_dir};
 pub use haptics::{Haptic, Haptics};
 pub use launcher::Launcher;
 pub use mock::{Call, Mock};

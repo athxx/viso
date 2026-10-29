@@ -175,6 +175,23 @@ unsafe fn load(env: *mut JNIEnv, activity: jobject) -> Option<Class> {
 /// The activity's files directory, `Context.getFilesDir()`: `None` without
 /// an activity (or off the app's thread).
 pub(in crate::system) fn files_dir() -> Option<PathBuf> {
+    activity_dir(c"getFilesDir", c"()Ljava/io/File;", &[])
+}
+
+/// The activity's primary external files directory,
+/// `Context.getExternalFilesDir(null)`, which the call creates, owned by the
+/// app, where `adb push` and file managers reach: `None` without an activity
+/// (or off the app's thread) or without shared storage.
+pub(in crate::system) fn external_files_dir() -> Option<PathBuf> {
+    activity_dir(
+        c"getExternalFilesDir",
+        c"(Ljava/lang/String;)Ljava/io/File;",
+        &[jvalue { l: ptr::null_mut() }],
+    )
+}
+
+/// The path of the `File` the activity's method `name` answers.
+fn activity_dir(name: &CStr, signature: &CStr, args: &[jvalue]) -> Option<PathBuf> {
     viso_platform::backend::android::with_activity(|env, activity| {
         // SAFETY: `env` is this thread's environment and `activity` a live
         // local reference, both valid for this closure; every method is
@@ -186,20 +203,25 @@ pub(in crate::system) fn files_dir() -> Option<PathBuf> {
                 clear(env);
                 return None;
             }
-            let call = |object: jobject, name: &CStr, signature: &CStr| -> jobject {
+            let call = |object: jobject, name: &CStr, signature: &CStr, args: &[jvalue]| {
                 let class = env_call!(env, GetObjectClass, object);
                 let method = env_call!(env, GetMethodID, class, name.as_ptr(), signature.as_ptr());
                 if !clear(env) || method.is_null() {
                     return ptr::null_mut();
                 }
-                let result = env_call!(env, CallObjectMethodA, object, method, ptr::null());
+                let args = if args.is_empty() {
+                    ptr::null()
+                } else {
+                    args.as_ptr()
+                };
+                let result = env_call!(env, CallObjectMethodA, object, method, args);
                 if clear(env) { result } else { ptr::null_mut() }
             };
-            let file = call(activity, c"getFilesDir", c"()Ljava/io/File;");
+            let file = call(activity, name, signature, args);
             let path = if file.is_null() {
                 None
             } else {
-                let path = call(file, c"getAbsolutePath", c"()Ljava/lang/String;");
+                let path = call(file, c"getAbsolutePath", c"()Ljava/lang/String;", &[]);
                 read_string(env, path).map(PathBuf::from)
             };
             env_call!(env, PopLocalFrame, ptr::null_mut());

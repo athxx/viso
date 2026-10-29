@@ -15,6 +15,17 @@ pub fn app_data_dir(app: &str) -> Option<PathBuf> {
     crate::system::app_data_dir(app)
 }
 
+/// The directory a person hands the app named `app` files in from outside
+/// it, which may not exist yet: the container's `Documents` on iOS (shown by
+/// Files and Finder's file sharing), the activity's external files directory
+/// on Android (created by the call, reached by `adb push` and file managers),
+/// `~/Documents/<app>` elsewhere. `None` where the OS names none, and on
+/// Android without an activity or off the app's thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn documents_dir(app: &str) -> Option<PathBuf> {
+    crate::system::documents_dir(app)
+}
+
 /// The page origin's `localStorage`, its keys prefixed by the app's name
 /// so apps sharing an origin keep apart. A blob is stored as a string of
 /// one UTF-16 unit a byte.
@@ -71,5 +82,12 @@ mod tests {
             dir.ends_with("Library/Application Support/tally"),
             "{dir:?}"
         );
+    }
+
+    #[test]
+    fn a_mac_app_takes_files_in_the_users_documents() {
+        let home = std::env::var_os("HOME").expect("a home");
+        let dir = super::documents_dir("tally").expect("a home");
+        assert_eq!(dir, std::path::Path::new(&home).join("Documents/tally"));
     }
 }

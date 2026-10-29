@@ -20,7 +20,7 @@ pub(crate) fn services(_app: &str) -> Services {
 
 struct Android;
 
-pub(super) use self::bridge::files_dir;
+pub(super) use self::bridge::{external_files_dir, files_dir};
 
 impl Launcher for Android {
     fn open_url(&self, url: &str) -> Reply<()> {

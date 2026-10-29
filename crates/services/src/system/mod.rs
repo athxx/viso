@@ -99,12 +99,46 @@ pub(crate) fn app_data_dir(app: &str) -> Option<std::path::PathBuf> {
     }
 }
 
+/// The directory a person hands the app files in; see
+/// [`crate::documents_dir`].
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn documents_dir(app: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let env = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    if cfg!(target_os = "ios") {
+        // The container's Documents, which file sharing and Files show.
+        Some(env("HOME")?.join("Documents"))
+    } else if cfg!(target_os = "android") {
+        android_external_files_dir()
+    } else if cfg!(target_os = "windows") {
+        Some(env("USERPROFILE")?.join("Documents").join(app))
+    } else if cfg!(unix) {
+        Some(env("HOME")?.join("Documents").join(app))
+    } else {
+        None
+    }
+}
+
 #[cfg(target_os = "android")]
 fn android_files_dir() -> Option<std::path::PathBuf> {
     android::files_dir()
 }
 
+#[cfg(target_os = "android")]
+fn android_external_files_dir() -> Option<std::path::PathBuf> {
+    android::external_files_dir()
+}
+
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 fn android_files_dir() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+fn android_external_files_dir() -> Option<std::path::PathBuf> {
     None
 }

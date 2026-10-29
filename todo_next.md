@@ -1208,6 +1208,14 @@ Rules (as for `todo_features.md`):
   - [ ] The jobs' first run on CI, and the examples rendering there.
 - [ ] The map on Android (emulator with an API 36 image, or a device) and touch gestures on iOS:
   pan, pinch, rotate and tilt against the desktop behavior.
+  - [x] Android: `examples/map` has a `Viso.toml` and runs through `viso run android` on the API 37
+    emulator (GLES, its Vulkan instance does not open). Its data was unreadable where `adb push`
+    put it: nothing had made the app's external files directory, so the shell owned it. The
+    new `viso::services::documents_dir` asks `getExternalFilesDir(null)`, which makes it the
+    app's; on iOS it is the container's `Documents`. With the Luxembourg data pushed there,
+    the map draws, and the emulator's gRPC touch input (two tracked fingers) pans it, pinches
+    it about the fingers' midpoint, rotates it with them (labels stay upright) and tilts it with
+    a two-finger slide up into the 3D buildings and the horizon, as on the desktop.
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and
   cadence traces.
   - [x] Nothing caps a frame at 60 Hz. Built:

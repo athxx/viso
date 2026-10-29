@@ -38,18 +38,11 @@ fn beside_app() -> String {
         let dir = page.rsplit_once('/').map_or(page, |(dir, _)| dir);
         format!("{dir}/{NAME}")
     }
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "android"))]
     {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{home}/Documents/{NAME}")
-    }
-    #[cfg(target_os = "android")]
-    {
-        // The process is named after the package.
-        let cmdline = std::fs::read("/proc/self/cmdline").unwrap_or_default();
-        let package =
-            String::from_utf8_lossy(cmdline.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
-        format!("/storage/emulated/0/Android/data/{package}/files/{NAME}")
+        viso::services::documents_dir("map")
+            .map(|dir| dir.join(NAME).display().to_string())
+            .unwrap_or_else(|| NAME.to_owned())
     }
     #[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "android")))]
     {
