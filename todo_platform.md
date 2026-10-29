@@ -199,8 +199,9 @@ Follow-ups carried forward:
       device or simulator.)
 - [ ] Examples launch and render on: macOS, iOS simulator, Android emulator, Chromium
       WebGPU, Linux X11 + Wayland (podman VM, lavapipe).
-      (Verified: macOS; `01-counter` on Chromium WebGPU. Not verified: iOS simulator,
-      Android emulator (the emulator image exposes no Vulkan), Linux X11/Wayland, Web text.)
+      (Verified: macOS; the map on the iOS simulator, the Android emulator (GLES, its
+      image opens no Vulkan) and Chromium WebGPU with its text. Not verified: Linux
+      X11/Wayland.)
 - [x] `cargo check --target` + `clippy -D warnings` for all eight installed targets
       (`cargo xtask check-targets`).
 - [x] ADR: GPU backend static selection per target (the code cites "ADR-007", which is the

@@ -954,8 +954,8 @@ and traced from the CLI and from Studio over the same services.
       frame carries the HUD's panel and its text run (`inspect frame`: 3 nodes and
       2 primitives beyond the tree, in their own quad and glyph batches); its
       layout is unit-tested.
-- [ ] A pixel golden of the HUD: its text changes every half second and a
-      headless run shapes no text, and this host grants no screen capture.
+- [x] A pixel golden of the HUD (`the_hud_draws_as_its_golden`: a capture's line shaped
+      with the fixture font on the CPU rasterizer, `tests/golden/profile_hud.bgra8`).
 - [x] `run --inspect`: the session follows its first runtime's first window over its
       own control endpoint, the same journal `inspect --attach` follows.
 - [x] Device profiles for mobile performance (simulator vs emulator caveats reported

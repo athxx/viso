@@ -968,9 +968,8 @@ texture/sampler/pipeline in `viso-gpu`.
   - [x] Renderer owns/binds the internal LUT atlas: `gradient_pipeline` + pool/scratch,
         `lower_from_scene` resolves the LUT row and finalizes the instance, dirty rows flushed
         via `take_dirty()` before the pass; `command_for`/`inspect` gradient arms.
-  - [ ] `ImagePattern` render lane deferred to D2.2 (enum variant only); `ShaderBrush` render
-        deferred (enum variant only); both ingest through an explicit unimplemented path, never
-        a silent no-op. `Solid` stays inline-baked (unifying solid into brush storage deferred).
+  - [x] `ImagePattern` and `ShaderBrush` lowered in the renderer (`todo_next.md`; image
+        patterns as `ImageFit::tile`). `Solid` stays inline-baked (unifying solid into brush storage deferred).
 - [x] Gradient stop tiers (§12.2): 2-stop → inline instance colors; small stop count →
       compact shared stop table; many stops / expensive interpolation → cached 1D Gradient
       LUT Atlas. LUT key ≥ {stop colors, stop offsets, interpolation space, extend/tile

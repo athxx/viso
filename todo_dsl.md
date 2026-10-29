@@ -988,7 +988,7 @@ timers (§104–§111).
         game kept on any failure.
   - [x] The game host's hot-reload wiring: watching `.vs` edits, recompiling,
         calling `swap` and reporting over the dev channel.
-- [ ] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
+- [x] `@probe` trace, input tape (binary and text forms), snapshot hash, headless sheet;
       `viso test game`, `viso game record`, `viso game peek` (§110.5, CLI §22.3).
   - [x] `InputTape`: header (seed, build, determinism, tick rate, ticks) and per-tick
         input as changes between ticks; versioned binary blob with bounded decoding;
@@ -1240,7 +1240,7 @@ timers (§104–§111).
         `body` reads `--typography-base-size` and `--typography-family`.
   - [x] `theme` read in theme expressions: the base's value; `E2111` in a theme
         without a base.
-- [ ] Runtime capability denial `E6103` (§95).
+- [x] Runtime capability denial `E6103` (§95).
   - [x] The package grant (`[package] capabilities`) travels in the compiled
         module, through the release package and hot reload; view hosts link
         with it.
@@ -1329,7 +1329,8 @@ timers (§104–§111).
           the module over the page's memory and renders each 128-frame block;
           stop/drop hand off through an atomic state (busy / stopped / closed).
           Verified headless: a 440 Hz sine arrives (peak and zero crossings),
-          pause, resume and drop, under `serve`'s CSP and a split shipping build.
+          pause, resume and drop, under `serve`'s CSP and a split shipping build;
+          heard in Chrome.
     - [x] A logic reload swaps the audio host on the running device without
           a gap (hand-off through a lock-free slot: `AudioSwap`, two atomic
           pointers).
@@ -1349,7 +1350,7 @@ timers (§104–§111).
         logic reload: every game of a dev session keeps one from its start
         (`keep_game_history`); `viso game replay` (`GameAsk::Replay`) replays
         every session of the file, and a logic-tier commit line names it.
-- [ ] Accessibility and localization checks `E3704`–`E3706`, `E3708` (U8.2, U10.3).
+- [x] Accessibility and localization checks `E3704`–`E3706`, `E3708` (U8.2, U10.3).
   - [x] An interactive non-widget node or component root without a role or name
         (`E3704`) or a keyboard path (`E3708`); warnings, errors under the
         profile's `a11y_strict`.
