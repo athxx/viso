@@ -104,7 +104,7 @@ static METHODS: [NativeFunction; 7] = [
 ];
 
 /// The navigator type, generic over its route type `R`.
-pub(crate) static NAV: NativeLibrary = NativeLibrary {
+pub static NAV: NativeLibrary = NativeLibrary {
     path: "viso::nav",
     version: 1,
     functions: &[],

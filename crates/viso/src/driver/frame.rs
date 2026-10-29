@@ -65,8 +65,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             // persists nothing unless it installs a store itself.
             persist::install(&app);
             // The games the views run play their audio on the default
-            // output device.
-            audio::install();
+            // output device. It links when a view mounts a game, and at once
+            // in a development session, whose reloads may mount one.
+            audio::allow();
+            #[cfg(feature = "hot-reload")]
+            audio::link();
         }
         // Open the initial window with the app's declared configuration
         // (`window_config`, defaulting to a self-drawn, captioned window). Later

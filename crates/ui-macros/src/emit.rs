@@ -136,7 +136,7 @@ pub fn emit_view(
                 quote! { (#slot, #tag, #system, #function) }
             });
             quote! {
-                ::viso::__private::viso_view::__link_game(cx, &__viso_host, __viso_root.id(), &[#(#reads),*]);
+                ::viso::__private::__link_game(cx, &__viso_host, __viso_root.id(), &[#(#reads),*]);
             }
         });
         let mount = regions.map(|behavior| {

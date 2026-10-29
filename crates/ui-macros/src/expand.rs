@@ -873,6 +873,7 @@ fn host_tokens(
         quote! { (#name, #value) }
     });
     let component = &behavior.component;
+    let standard = standard_libraries(behavior);
     let mirrors = behavior.slots.iter().filter_map(|(symbol, slot)| {
         let local = idents.get(symbol)?;
         let slot = *slot as usize;
@@ -887,6 +888,7 @@ fn host_tokens(
             __viso_module,
             #component,
             __viso_native,
+            #standard,
             #libraries,
             #widgets,
             ::std::vec![#(#given),*],
@@ -917,6 +919,23 @@ fn compile_linked(
         return Err(error);
     }
     Ok((linked.made, linked.packages))
+}
+
+/// The standard libraries the module calls, by their names under the
+/// facade: `&[&…::libraries::TEXT]`. The app links those alone.
+fn standard_libraries(behavior: &ViewBehavior) -> TokenStream {
+    let names: BTreeSet<&str> = behavior
+        .module
+        .natives()
+        .iter()
+        .filter_map(|import| viso_behavior::native::standard_name(&import.path))
+        .collect();
+    let names = names
+        .into_iter()
+        .map(|name| Ident::new(name, Span::call_site()));
+    quote! {
+        &[#(&::viso::__private::viso_behavior::native::libraries::#names),*]
+    }
 }
 
 /// The libraries of each of `packages` the module calls, as the crate names

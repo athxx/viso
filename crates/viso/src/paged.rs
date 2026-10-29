@@ -335,7 +335,7 @@ pub fn capture<T: 'static>(
     });
     ASKED.with(|asked| {
         let mut asked = asked.borrow_mut();
-        asked.jobs.push((paged, take));
+        asked.jobs.push(Box::new(Running::new(paged, take)));
         if let Some(waker) = &asked.waker {
             waker.wake();
         }
@@ -361,10 +361,19 @@ pub fn keep_together(node: Handle) {
 /// What runs on a capture once it is made, or on why it is not.
 type Take = Box<dyn FnOnce(Result<&mut Capture<'_>, ServiceError>)>;
 
+/// A capture being made, as the loop moves it on. Only [`capture`] makes
+/// one, so an app that captures nothing links none of the capture's code.
+pub(crate) trait Job {
+    /// Moves it on by a frame in `ws`; `true` once it is finished.
+    fn step(&mut self, ws: &mut WindowState) -> bool;
+    /// Gives it up for `error`.
+    fn fail(self: Box<Self>, error: ServiceError);
+}
+
 /// The captures asked for that the loop has not taken.
 #[derive(Default)]
 struct Asked {
-    jobs: Vec<(Paged, Take)>,
+    jobs: Vec<Box<dyn Job>>,
     waker: Option<LoopWaker>,
 }
 
@@ -386,7 +395,7 @@ pub(crate) fn launch(waker: LoopWaker) {
 }
 
 /// The captures asked for since the last call.
-pub(crate) fn take_asked() -> Vec<(Paged, Take)> {
+pub(crate) fn take_asked() -> Vec<Box<dyn Job>> {
     ASKED.with(|asked| std::mem::take(&mut asked.borrow_mut().jobs))
 }
 
@@ -405,7 +414,7 @@ struct Laid {
 }
 
 /// A capture being made.
-pub(crate) struct Running {
+struct Running {
     paged: Paged,
     take: Option<Take>,
     body: Option<Laid>,
@@ -417,8 +426,18 @@ pub(crate) struct Running {
     since: Instant,
 }
 
+impl Job for Running {
+    fn step(&mut self, ws: &mut WindowState) -> bool {
+        Running::step(self, ws)
+    }
+
+    fn fail(self: Box<Self>, error: ServiceError) {
+        Running::fail(*self, error);
+    }
+}
+
 impl Running {
-    pub(crate) fn new(paged: Paged, take: Take) -> Running {
+    fn new(paged: Paged, take: Take) -> Running {
         Running {
             paged,
             take: Some(take),
@@ -431,7 +450,7 @@ impl Running {
     }
 
     /// Fails it, when no window is there to build it in.
-    pub(crate) fn fail(mut self, error: ServiceError) {
+    fn fail(mut self, error: ServiceError) {
         if let Some(take) = self.take.take() {
             take(Err(error));
         }
@@ -452,7 +471,7 @@ impl Running {
     /// Moves it on by one frame in `ws`: builds, lays out, waits for its
     /// text and images, cuts its pages and hands them over. Returns whether
     /// it is done.
-    pub(crate) fn step(&mut self, ws: &mut WindowState) -> bool {
+    fn step(&mut self, ws: &mut WindowState) -> bool {
         if self.body.is_none() {
             let view = std::mem::replace(&mut self.paged.view, Box::new(|_| {}));
             let width = self.width();

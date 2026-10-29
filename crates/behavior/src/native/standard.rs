@@ -17,6 +17,36 @@ use super::{
 #[cfg(not(feature = "std"))]
 use crate::float::FloatMath as _;
 
+/// The Rust name of each standard library under
+/// [`libraries`](super::libraries), by its path.
+pub const STANDARD_NAMES: &[(&str, &str)] = &[
+    ("viso::text", "TEXT"),
+    ("viso::math", "MATH"),
+    ("viso::time", "TIME"),
+    ("viso::clipboard", "CLIPBOARD"),
+    ("viso::i18n", "I18N"),
+    ("viso::game", "GAME"),
+    ("viso::game::session", "SESSION"),
+    ("viso::event", "EVENT"),
+    ("viso::nav", "NAV"),
+    ("viso::game::quick", "QUICK"),
+    ("viso::game::kit", "KIT"),
+    ("viso::widgets", "WIDGETS"),
+];
+
+/// The standard library holding the native at `path`, by its Rust name: the
+/// one whose path is the longest prefix of it.
+pub fn standard_name(path: &str) -> Option<&'static str> {
+    STANDARD_NAMES
+        .iter()
+        .filter(|(library, _)| {
+            path.strip_prefix(library)
+                .is_some_and(|rest| rest.starts_with("::"))
+        })
+        .max_by_key(|(library, _)| library.len())
+        .map(|&(_, name)| name)
+}
+
 /// Every standard library.
 pub static STANDARD: &[&NativeLibrary] = &[
     &TEXT,
@@ -34,7 +64,7 @@ pub static STANDARD: &[&NativeLibrary] = &[
 ];
 
 /// Text functions; `len` counts Unicode scalar values.
-static TEXT: NativeLibrary = NativeLibrary {
+pub static TEXT: NativeLibrary = NativeLibrary {
     path: "viso::text",
     version: 1,
     functions: &[
@@ -63,7 +93,7 @@ static TEXT: NativeLibrary = NativeLibrary {
 /// the basic operations and `sqrt` round as IEEE 754 says, and the
 /// transcendentals are computed by [`libm`]'s software implementations, never
 /// the host's, so each Tier-1 target returns the same bits.
-static MATH: NativeLibrary = NativeLibrary {
+pub static MATH: NativeLibrary = NativeLibrary {
     path: "viso::math",
     version: 1,
     functions: &[
@@ -177,7 +207,7 @@ fn elapsed_ms(_stopwatch: &Stopwatch) -> f64 {
 }
 
 /// Clocks and waits. Reading a clock is an action: two reads differ.
-static TIME: NativeLibrary = NativeLibrary {
+pub static TIME: NativeLibrary = NativeLibrary {
     path: "viso::time",
     version: 1,
     functions: &[
@@ -230,7 +260,7 @@ pub trait Clipboard {
 
 /// The clipboard, behind the `clipboard.read` and `clipboard.write`
 /// capabilities.
-static CLIPBOARD: NativeLibrary = NativeLibrary {
+pub static CLIPBOARD: NativeLibrary = NativeLibrary {
     path: "viso::clipboard",
     version: 1,
     functions: &[

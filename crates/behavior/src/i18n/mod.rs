@@ -619,7 +619,7 @@ static I18N_FUNCTIONS: [crate::native::NativeFunction; 1] =
     })];
 
 /// `viso::i18n`: `tr` and `MessageKey`.
-pub(crate) static I18N: NativeLibrary = NativeLibrary {
+pub static I18N: NativeLibrary = NativeLibrary {
     path: "viso::i18n",
     version: 1,
     functions: &I18N_FUNCTIONS,

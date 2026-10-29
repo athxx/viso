@@ -98,9 +98,29 @@ impl GameAudioDevice for GameAudio {
     }
 }
 
+thread_local! {
+    /// Whether this thread's games may play on the default output device.
+    static ALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Lets the games this thread's views run play on the default output device,
+/// once a view mounting a game links it ([`link`]).
+pub(crate) fn allow() {
+    ALLOWED.set(true);
+}
+
+/// Starts the audio of the games this thread's views run on the default
+/// output device, if [`allow`]ed. Called where a game mounts, so only an app
+/// that can run a game links the audio host.
+pub(crate) fn link() {
+    if ALLOWED.get() {
+        install();
+    }
+}
+
 /// Starts the audio of the games this thread's views run on the default
 /// output device; a target without one plays them silent.
-pub(crate) fn install() {
+fn install() {
     viso_view::install_game_audio(Some(|module, natives, native| {
         match GameAudio::start(module, natives, native) {
             Ok(started) => Ok(

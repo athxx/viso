@@ -381,7 +381,7 @@ static TERRAIN_METHODS: [NativeFunction; 6] = [
 ];
 
 /// The Kit handle, its value types and its enums.
-pub(crate) static KIT: NativeLibrary = NativeLibrary {
+pub static KIT: NativeLibrary = NativeLibrary {
     path: "viso::game::kit",
     version: 1,
     functions: &[],

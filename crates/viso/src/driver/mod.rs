@@ -100,7 +100,7 @@ pub(crate) struct AppDriver<A: Application> {
     /// What the session shows in the desktop shell.
     pub(crate) shell: shell::Shown,
     /// The paged captures being made, each in the window it is built in.
-    pub(crate) captures: Vec<(WindowId, crate::paged::Running)>,
+    pub(crate) captures: Vec<(WindowId, Box<dyn crate::paged::Job>)>,
     /// The windows whose size and place are kept across launches.
     pub(crate) places: places::Places,
     /// The development session: the mounted views, their watched files and
@@ -610,8 +610,7 @@ impl<A: Application> AppDriver<A> {
     /// Moves each paged capture being made on by a frame, taking those
     /// asked for since the last; each is built in the first window.
     pub(crate) fn drive_captures(&mut self, cx: &mut RuntimeCx<'_>) {
-        for (paged, take) in crate::paged::take_asked() {
-            let job = crate::paged::Running::new(paged, take);
+        for job in crate::paged::take_asked() {
             match self.windows.first() {
                 Some(ws) => self.captures.push((ws.window, job)),
                 None => job.fail(services::ServiceError::Unsupported),

@@ -6,7 +6,7 @@ use super::NativeLibrary;
 pub use viso_schema::widgets::COMPONENT;
 
 /// The standard widget library.
-pub(super) static WIDGETS: NativeLibrary = NativeLibrary {
+pub static WIDGETS: NativeLibrary = NativeLibrary {
     path: "viso::widgets",
     version: 1,
     functions: &[],

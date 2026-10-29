@@ -114,6 +114,17 @@ pub mod __private {
     pub use viso_behavior;
     #[cfg(any(feature = "web-dom", feature = "web-hybrid"))]
     pub use viso_dom;
+
+    /// [`viso_view::__link_game`], with the games' audio linked first.
+    pub fn __link_game(
+        cx: &mut viso_ui::BuildCx<'_>,
+        host: &std::rc::Rc<std::cell::RefCell<viso_view::ViewHost>>,
+        root: viso_ui::NodeId,
+        reads: &[(usize, u8, &str, &str)],
+    ) {
+        crate::audio::link();
+        viso_view::__link_game(cx, host, root, reads);
+    }
     pub use viso_ende;
     pub use viso_platform;
     pub use viso_shader;

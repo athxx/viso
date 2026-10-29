@@ -44,7 +44,7 @@ impl EventControl {
 
 /// The actions an event's methods lower to: without an [`EventControl`]
 /// (nothing dispatches the handler) they do nothing.
-pub(crate) static EVENT: NativeLibrary = NativeLibrary {
+pub static EVENT: NativeLibrary = NativeLibrary {
     path: "viso::event",
     version: 1,
     functions: &[

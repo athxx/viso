@@ -186,6 +186,8 @@ impl Harness {
         let Some(package) = self.package.take() else {
             return;
         };
+        // The package may run a game.
+        crate::audio::link();
         let loaded = match load_view(
             &package,
             &mut ws.store,

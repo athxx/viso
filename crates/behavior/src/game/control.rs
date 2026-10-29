@@ -32,7 +32,7 @@ impl GameControl {
 
 /// The actions a view's `game` binding lowers to: without a [`GameControl`]
 /// (the view runs no game) they do nothing.
-pub(crate) static SESSION: NativeLibrary = NativeLibrary {
+pub static SESSION: NativeLibrary = NativeLibrary {
     path: "viso::game::session",
     version: 1,
     functions: &[

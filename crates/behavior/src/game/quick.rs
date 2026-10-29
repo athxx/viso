@@ -109,7 +109,7 @@ static QUICK_FRAME_METHODS: [NativeFunction; 8] = [
 
 /// The `QuickGame` trait and the contexts its hooks receive, borrowed for the
 /// call like the full profile's.
-pub(crate) static QUICK: NativeLibrary = NativeLibrary {
+pub static QUICK: NativeLibrary = NativeLibrary {
     path: "viso::game::quick",
     version: 1,
     functions: &[],

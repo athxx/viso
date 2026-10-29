@@ -61,7 +61,20 @@ pub use registry::{
     NativeEntry, NativeTraitEntry, NativeTypeEntry, NativeVariant, NativeWidgetEntry, Natives,
     SchemaConflict,
 };
-pub use standard::{Clipboard, STANDARD, Stopwatch};
+pub use standard::{Clipboard, STANDARD, STANDARD_NAMES, Stopwatch, standard_name};
+
+/// Each standard library by its Rust name ([`STANDARD_NAMES`]), for the code
+/// a view compiles into to name only the libraries its module calls.
+pub mod libraries {
+    pub use super::standard::{CLIPBOARD, MATH, TEXT, TIME};
+    pub use super::widgets::WIDGETS;
+    pub use crate::event::EVENT;
+    pub use crate::game::kit::KIT;
+    pub use crate::game::quick::QUICK;
+    pub use crate::game::{GAME, SESSION};
+    pub use crate::i18n::I18N;
+    pub use crate::nav::NAV;
+}
 pub use timers::Timers;
 #[cfg(feature = "std")]
 pub use timers::sleep;

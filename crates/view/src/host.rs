@@ -1752,8 +1752,9 @@ pub fn cell_value(value: &Value, witness: StateValue) -> Option<StateValue> {
 /// The host for an embedded, build-time-verified module, sharing one decoded
 /// module per thread across every mount of the same view, running `native`,
 /// the module compiled to Rust beside it, when the build carries it, and
-/// linked against the standard libraries and `libraries`, those of the native
-/// packages it calls. The module borrows `bytes` ([`Module::decode_static`]):
+/// linked against `standard`, the standard libraries it calls, and
+/// `libraries`, those of the native packages it calls. A development build
+/// links every standard library, for a reload to call any. The module borrows `bytes` ([`Module::decode_static`]):
 /// its names and string constants stay in the binary. Its nodes naming a
 /// Rust widget build it from `widgets`, those packages' implementations.
 ///
@@ -1767,6 +1768,7 @@ pub fn __embedded(
     bytes: &'static [u8],
     component: &str,
     native: Option<&'static NativeCode>,
+    standard: &[&'static NativeLibrary],
     libraries: &[&'static [&'static NativeLibrary]],
     widgets: &[&'static [crate::widget::WidgetImpl]],
     inputs: Vec<(&'static str, MountedInput)>,
@@ -1800,7 +1802,7 @@ pub fn __embedded(
         .zip(&inputs)
         .filter_map(|(slot, (_, input))| Some(((*slot)?, input.value.clone())))
         .collect();
-    let host = package_natives(libraries)
+    let host = embedded_natives(standard, libraries)
         .map_err(HostError::Link)
         .and_then(|natives| {
             ViewHost::linked_with(
@@ -1824,6 +1826,22 @@ pub fn __embedded(
         }
         Err(error) => panic!("an embedded view does not mount: {error}"),
     }
+}
+
+/// The registry of an embedded view calling `standard` and `packages`: just
+/// those, but every standard library in a development build.
+fn embedded_natives(
+    standard: &[&'static NativeLibrary],
+    packages: &[&'static [&'static NativeLibrary]],
+) -> Result<Arc<Natives>, SchemaConflict> {
+    if cfg!(feature = "hot-reload") {
+        return package_natives(packages);
+    }
+    let mut libraries = standard.to_vec();
+    for package in packages {
+        libraries.extend_from_slice(package);
+    }
+    Natives::exactly(&libraries)
 }
 
 /// The standard libraries and `packages`, each the libraries of a native

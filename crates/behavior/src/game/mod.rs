@@ -105,7 +105,7 @@ pub use audio::{
     EVENT_CAPACITY,
 };
 pub use clock::{Clock, TickOverrun};
-pub(crate) use control::SESSION;
+pub use control::SESSION;
 pub use control::{GameControl, PAUSE_PATH, RESUME_PATH};
 pub use history::{DEFAULT_HISTORY_SECONDS, ReplayError, Replayed};
 pub use input::{
@@ -361,7 +361,7 @@ static COLLISION_EVENT_METHODS: [NativeFunction; 6] = [
 /// The scheduler traits, the frame handles their hooks receive, the world and
 /// the typed input surface. The frame, world and input handles are borrowed:
 /// a hook reads them during its call and cannot keep them.
-pub(crate) static GAME: NativeLibrary = NativeLibrary {
+pub static GAME: NativeLibrary = NativeLibrary {
     path: "viso::game",
     version: 1,
     functions: &audio::AUDIO_FUNCTIONS,

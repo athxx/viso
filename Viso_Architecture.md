@@ -4166,6 +4166,14 @@ embedded-cpu（桌面窗口，CpuRaster）：二进制 6.92 MiB，空闲 footpri
 - RSS 含 AppKit / Metal 共享页，跨框架比较以 footprint 为准。
 - 真实硬件板卡（Cortex-A 级 CPU、硬件 GPU 驱动）上的首帧与 embedded-gpu 不含驱动的 RSS：目前的板卡是 Apple M4 上的 vkms 虚拟机与 llvmpipe。
 
+#### 50A.5.2 按用链接
+
+一个可选的子系统只在 app 用到它时才被链接：它的代码只从用到它的调用（view 展开、authoring API）可达，driver 与 runtime 经这一调用接上的指针或 trait object 驱动它，从不直接引用。没有用到时，链接器把它整段丢掉，运行时不付分支以外的代价。
+- **native**：`view!` 展开把模块调用到的标准 Library 逐个按名交给 Host（`viso_behavior::native::libraries`，`standard_name` 按路径取最长前缀），Host 以 `Natives::exactly` 只链接这些与调用到的包；dev 构建（`hot-reload`）链接全部标准 Library，reload 可调用任何一个。运行时加载的 View Package 与 Game 仍以 `Natives::standard` / `shared` 链接全部。
+- **游戏音频**：driver 在启动时只放行（`audio::allow`）；音频 host 由挂载 game 的 view 接上（展开调用 facade 的 `__link_game`，headless 加载 package 与 dev 构建同样接上）。
+- **分页捕获**：`paged::capture` 把捕获作为 `Job` trait object 排队，driver 只经 trait 推进它。
+- **图像与模型解码**：见 §51（动图播放、glTF）。
+
 ### 50A.6 MCU-ready 不变量（1.0 必须守住）
 
 1. `viso-math`、`viso-ende`、`viso-schema`、`viso-behavior` 是 `#![no_std]`（math 不需要 `alloc`，其余需要）。`viso-text` 的 shaping / segmentation 路径和 `viso-ui` 的 arena / reactive / layout 模块不直接使用 `std::thread`、`std::time`、`std::fs`、`std::sync::Mutex`：时间经注入的 `Clock`，并发与唤醒经 runtime trait。CI 用 `thumbv7em-none-eabihf` 做交叉编译 smoke check，逐个 crate 推进：`cargo xtask mcu-smoke` 以 `--no-default-features` 检查 `viso-math`、`viso-ende`、`viso-schema`、`viso-behavior`（另含 `interpreter` feature 的 `viso-behavior`）与 `viso-glyph-a8`。

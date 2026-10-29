@@ -189,39 +189,69 @@ impl Natives {
     /// # Errors
     ///
     /// As [`Natives::with`].
-    #[cfg(feature = "std")]
     pub fn shared(libraries: &[&'static NativeLibrary]) -> Result<Arc<Natives>, SchemaConflict> {
-        type Shared = Vec<(Vec<*const NativeLibrary>, Arc<Natives>)>;
+        if libraries.is_empty() {
+            return Ok(Natives::standard());
+        }
+        Natives::cached(libraries, true)
+    }
+
+    /// A registry of exactly `libraries`, standard ones included only when
+    /// listed, one per set shared by every caller. A view compiled into the
+    /// app links this with the libraries its module calls, so the standard
+    /// libraries it does not call are not linked into the app.
+    ///
+    /// # Errors
+    ///
+    /// As [`Natives::with`].
+    pub fn exactly(libraries: &[&'static NativeLibrary]) -> Result<Arc<Natives>, SchemaConflict> {
+        Natives::cached(libraries, false)
+    }
+
+    /// The registry of `libraries`, after the standard ones if `standard`,
+    /// built once per set.
+    #[cfg(feature = "std")]
+    fn cached(
+        libraries: &[&'static NativeLibrary],
+        standard: bool,
+    ) -> Result<Arc<Natives>, SchemaConflict> {
+        type Shared = Vec<(bool, Vec<*const NativeLibrary>, Arc<Natives>)>;
         struct Registries(std::sync::Mutex<Shared>);
         // SAFETY: the pointers are only compared, never dereferenced; they
         // name `'static` libraries.
         unsafe impl Sync for Registries {}
         static SHARED: Registries = Registries(std::sync::Mutex::new(Vec::new()));
-        if libraries.is_empty() {
-            return Ok(Natives::standard());
-        }
         let key: Vec<*const NativeLibrary> =
             libraries.iter().map(|l| core::ptr::from_ref(*l)).collect();
         let mut shared = SHARED.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((_, natives)) = shared.iter().find(|(k, _)| *k == key) {
+        if let Some((_, _, natives)) = shared.iter().find(|(s, k, _)| *s == standard && *k == key) {
             return Ok(Arc::clone(natives));
         }
-        let natives = Arc::new(Natives::with(libraries)?);
-        shared.push((key, Arc::clone(&natives)));
+        let natives = Arc::new(Natives::build(libraries, standard)?);
+        shared.push((standard, key, Arc::clone(&natives)));
         Ok(natives)
     }
 
-    /// [`Natives::with`] `libraries`. Without `std` each call builds its own.
-    ///
-    /// # Errors
-    ///
-    /// As [`Natives::with`].
+    /// The registry of `libraries`, after the standard ones if `standard`.
+    /// Without `std` each call builds its own.
     #[cfg(not(feature = "std"))]
-    pub fn shared(libraries: &[&'static NativeLibrary]) -> Result<Arc<Natives>, SchemaConflict> {
-        if libraries.is_empty() {
-            return Ok(Natives::standard());
+    fn cached(
+        libraries: &[&'static NativeLibrary],
+        standard: bool,
+    ) -> Result<Arc<Natives>, SchemaConflict> {
+        Natives::build(libraries, standard).map(Arc::new)
+    }
+
+    fn build(
+        libraries: &[&'static NativeLibrary],
+        standard: bool,
+    ) -> Result<Natives, SchemaConflict> {
+        if standard {
+            return Natives::with(libraries);
         }
-        Natives::with(libraries).map(Arc::new)
+        let mut natives = Natives::new();
+        natives.extend(libraries)?;
+        Ok(natives)
     }
 
     /// Registers every library of `libraries`.
