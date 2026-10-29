@@ -452,9 +452,25 @@ pub fn provisioning(profile: &Path, scratch: &Path) -> Result<Provisioning, Stri
         )
         .map(|value| value.trim().to_owned())
     };
+    // iOS names the app `application-identifier`, macOS
+    // `com.apple.application-identifier`.
+    let allowed = io(&entitlements, std::fs::read_to_string(&entitlements))?;
+    let allowed = plist::read(&allowed, 0).map_err(|e| {
+        format!(
+            "the provisioning profile's entitlements do not read: {}",
+            e.message
+        )
+    })?;
+    let app_id = ["application-identifier", MACOS_APP_ID]
+        .iter()
+        .find_map(|key| match allowed.get(key) {
+            Some(Value::String(id)) => Some(id.clone()),
+            _ => None,
+        })
+        .ok_or("the provisioning profile names no app")?;
     Ok(Provisioning {
         team: raw("TeamIdentifier.0")?,
-        app_id: raw("Entitlements.application-identifier")?,
+        app_id,
         entitlements,
     })
 }
@@ -609,6 +625,67 @@ pub fn simulated_entitlements(entitlements: &Dict, dir: &Path) -> Result<Vec<Str
     Ok(args)
 }
 
+/// The entitlements a macOS app signed under a provisioning profile names
+/// itself and its team by.
+const MACOS_APP_ID: &str = "com.apple.application-identifier";
+const MACOS_TEAM_ID: &str = "com.apple.developer.team-identifier";
+
+/// What a macOS app signed under the Developer ID provisioning `profile`
+/// is entitled to: `entitlements`, those of the hardened runtime, and what
+/// the entitlements `fragments` ask for that only a profile allows, each
+/// with the profile's value, beside the app and team identifiers. The
+/// profile must allow each; `app` embeds it. Decoded under `scratch`.
+pub fn macos_provisioned(
+    app: &Path,
+    profile: &Path,
+    mut entitlements: Dict,
+    fragments: &[Fragment],
+    scratch: &Path,
+) -> Result<Dict, String> {
+    let embedded = app.join("Contents/embedded.provisionprofile");
+    io(profile, std::fs::copy(profile, &embedded))?;
+    let provisioning = provisioning(profile, scratch)?;
+    let file = &provisioning.entitlements;
+    let allowed = plist::read(&io(file, std::fs::read_to_string(file))?, 0).map_err(|e| {
+        format!(
+            "the provisioning profile's entitlements do not read: {}",
+            e.message
+        )
+    })?;
+    provisioned_macos(&mut entitlements, &allowed, fragments, &provisioning.app_id)?;
+    Ok(entitlements)
+}
+
+/// Adds to `entitlements` what `fragments` ask for that only a profile
+/// allows, with `allowed`'s values, and the app and team identifiers.
+fn provisioned_macos(
+    entitlements: &mut Dict,
+    allowed: &Dict,
+    fragments: &[Fragment],
+    app_id: &str,
+) -> Result<(), String> {
+    let mut asked = Dict::default();
+    fragment::merge_plist(&mut asked, GENERATED_ENTITLEMENTS, fragments)
+        .map_err(|problem| problem.to_string())?;
+    for entry in asked.0.iter().filter(|e| restricted(&e.key)) {
+        let Some(value) = allowed.get(&entry.key) else {
+            return Err(format!(
+                "the provisioning profile does not allow `{}`, which `{}` needs: enable its \
+                 capability for `{app_id}` and download the profile again",
+                entry.key,
+                fragments[entry.from - 1].package
+            ));
+        };
+        entitlements.set(&entry.key, value.clone());
+    }
+    for key in [MACOS_APP_ID, MACOS_TEAM_ID] {
+        if let Some(value) = allowed.get(key) {
+            entitlements.set(key, value.clone());
+        }
+    }
+    Ok(())
+}
+
 /// Whether `key` is an entitlement only a provisioning profile allows.
 fn restricted(key: &str) -> bool {
     key.starts_with("com.apple.developer.") || key == "aps-environment"
@@ -671,6 +748,99 @@ pub fn sign_macos(
         }
     }
     run(codesign.arg(path))
+}
+
+/// Who submits to Apple's notary service, never holding a secret: a
+/// keychain profile `xcrun notarytool store-credentials` saved, or an App
+/// Store Connect API key, its private key a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notary {
+    Profile(String),
+    ApiKey {
+        key: PathBuf,
+        key_id: String,
+        issuer: String,
+    },
+}
+
+impl Notary {
+    /// The `notarytool` arguments that authenticate as it.
+    fn args(&self, notarytool: &mut Command) {
+        match self {
+            Notary::Profile(profile) => {
+                notarytool.arg("--keychain-profile").arg(profile);
+            }
+            Notary::ApiKey {
+                key,
+                key_id,
+                issuer,
+            } => {
+                notarytool
+                    .arg("--key")
+                    .arg(key)
+                    .args(["--key-id", key_id, "--issuer", issuer]);
+            }
+        }
+    }
+
+    fn notarytool(&self, args: &[&str]) -> Command {
+        let mut notarytool = Command::new("xcrun");
+        notarytool.arg("notarytool").args(args);
+        self.args(&mut notarytool);
+        notarytool
+    }
+}
+
+/// Notarizes `path`, an app or a disk image signed with a Developer ID
+/// identity, and staples the ticket to it, so Gatekeeper opens it on any
+/// Mac, offline too. An app is submitted zipped, staged under `scratch`.
+pub fn notarize(path: &Path, notary: &Notary, scratch: &Path) -> Result<(), String> {
+    let app = path.extension().is_some_and(|x| x == "app");
+    let submitted = if app {
+        io(scratch, std::fs::create_dir_all(scratch))?;
+        let zip = scratch.join("notarize.zip");
+        let _ = std::fs::remove_file(&zip);
+        run(Command::new("ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(path)
+            .arg(&zip))?;
+        zip
+    } else {
+        path.to_owned()
+    };
+    let mut submit = notary.notarytool(&["submit", "--output-format", "plist"]);
+    let id = submission(&output(submit.arg(&submitted))?, "id")?;
+    if app {
+        let _ = std::fs::remove_file(&submitted);
+    }
+    // `wait` fails on a rejected submission as on a lost connection; `info`
+    // tells which.
+    let waited = run(&mut notary.notarytool(&["wait", &id]));
+    let mut info = notary.notarytool(&["info", &id, "--output-format", "plist"]);
+    let status = submission(&output(&mut info)?, "status")?;
+    if status != "Accepted" {
+        let log = output(&mut notary.notarytool(&["log", &id])).unwrap_or_default();
+        let waited = waited.err().map(|e| format!(" ({e})")).unwrap_or_default();
+        return Err(format!(
+            "the notary service answered `{status}` for the submission `{id}`{waited}\n{}",
+            log.trim()
+        ));
+    }
+    run(Command::new("xcrun").args(["stapler", "staple"]).arg(path))
+}
+
+/// The string `key` of the property list `notarytool` wrote.
+fn submission(text: &str, key: &str) -> Result<String, String> {
+    let dict = plist::read(text.trim(), 0).map_err(|e| {
+        format!(
+            "notarytool wrote what does not read as a property list: {}",
+            e.message
+        )
+    })?;
+    match dict.get(key) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        _ => Err(format!("notarytool's answer has no `{key}`")),
+    }
 }
 
 /// Whether the Info.plist and entitlements fragments of an app described
@@ -762,6 +932,64 @@ pub fn ipa(app: &Path, out: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notarytool_answers_read_for_their_id_and_status() {
+        let answer = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>id</key>
+	<string>2efe2717-52ef-43a5-96dc-0797e4ca1041</string>
+	<key>message</key>
+	<string>Successfully uploaded file</string>
+	<key>status</key>
+	<string>Invalid</string>
+</dict>
+</plist>
+"#;
+        assert_eq!(
+            submission(answer, "id").unwrap(),
+            "2efe2717-52ef-43a5-96dc-0797e4ca1041"
+        );
+        assert_eq!(submission(answer, "status").unwrap(), "Invalid");
+        assert!(submission(answer, "name").is_err());
+        assert!(submission("Error: HTTP status code: 401", "id").is_err());
+    }
+
+    #[test]
+    fn a_notary_authenticates_by_its_profile_or_its_key() {
+        let args = |notary: &Notary| -> Vec<String> {
+            notary
+                .notarytool(&["info", "x"])
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args(&Notary::Profile("viso".into())),
+            ["notarytool", "info", "x", "--keychain-profile", "viso"]
+        );
+        let key = Notary::ApiKey {
+            key: "AuthKey_ABC.p8".into(),
+            key_id: "ABC".into(),
+            issuer: "69a6de7e".into(),
+        };
+        assert_eq!(
+            args(&key),
+            [
+                "notarytool",
+                "info",
+                "x",
+                "--key",
+                "AuthKey_ABC.p8",
+                "--key-id",
+                "ABC",
+                "--issuer",
+                "69a6de7e"
+            ]
+        );
+    }
 
     fn notes() -> Info {
         Info {
@@ -976,7 +1204,8 @@ mod tests {
                 .contains("Associated Domains")
         );
 
-        // A macOS package embeds no profile: what only one allows is left out.
+        // Without a profile, what only one allows is left out of a macOS
+        // package.
         let mac = [fragment(
             "viso-push",
             "macos/entitlements.plist",
@@ -997,6 +1226,36 @@ mod tests {
                 "com.apple.developer.aps-environment".to_owned(),
                 "viso-push".to_owned()
             )]
+        );
+        // Under one, it is signed with the profile's value, beside the app's
+        // and the team's identifiers.
+        let allowed = Dict::of(vec![
+            (
+                "com.apple.developer.aps-environment",
+                Value::string("production"),
+            ),
+            (MACOS_APP_ID, Value::string("T.com.example.notes")),
+            (MACOS_TEAM_ID, Value::string("T")),
+            (
+                "keychain-access-groups",
+                Value::Array(vec![Value::string("T.*")]),
+            ),
+        ]);
+        let mut signed = dict.clone();
+        provisioned_macos(&mut signed, &allowed, &mac, "T.com.example.notes").unwrap();
+        assert_eq!(
+            signed.get("com.apple.developer.aps-environment"),
+            Some(&Value::string("production"))
+        );
+        assert_eq!(signed.get(MACOS_TEAM_ID), Some(&Value::string("T")));
+        assert!(signed.get("keychain-access-groups").is_none());
+        assert!(signed.get("com.apple.security.device.camera").is_some());
+        let mut refused = dict;
+        let lacking = Dict::of(vec![(MACOS_APP_ID, Value::string("T.com.example.notes"))]);
+        let why = provisioned_macos(&mut refused, &lacking, &mac, "T.com.example.notes");
+        assert!(
+            why.unwrap_err()
+                .contains("does not allow `com.apple.developer.aps-environment`")
         );
     }
 

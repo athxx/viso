@@ -107,6 +107,8 @@ pub const KEYS: &[&str] = &[
     "package.android.key_alias",
     "package.android.abis",
     "package.macos.identity",
+    "package.macos.notary_profile",
+    "package.macos.provisioning_profile",
     "package.windows.identity",
     "package.windows.timestamp_url",
     "package.windows.publisher",
@@ -276,6 +278,18 @@ pub fn settings(project: &Project, config: &ResolvedConfig, env: &Env) -> Vec<En
         &mut push,
         "package.macos.identity",
         &package.macos.identity,
+        None,
+    );
+    push_text(
+        &mut push,
+        "package.macos.notary_profile",
+        &package.macos.notary_profile,
+        None,
+    );
+    push_text(
+        &mut push,
+        "package.macos.provisioning_profile",
+        &package.macos.provisioning_profile,
         None,
     );
     let windows = &package.windows;

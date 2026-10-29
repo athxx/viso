@@ -240,6 +240,13 @@ pub struct MacosPackage {
     /// The signing identity, as the keychain names it; a Developer ID one
     /// found there when absent.
     pub identity: Option<Spanned<String>>,
+    /// The keychain profile `xcrun notarytool store-credentials` saved, which
+    /// notarizes what the identity signs.
+    pub notary_profile: Option<Spanned<String>>,
+    /// The Developer ID provisioning profile the app embeds, relative to the
+    /// project root: what allows the entitlements only one allows, such as
+    /// push notifications.
+    pub provisioning_profile: Option<Spanned<String>>,
 }
 
 /// `[package.windows]`: how the Windows executable is signed. The
@@ -1642,9 +1649,23 @@ impl<'a> Reader<'a> {
                     },
                     macos: match self.table(t, "macos") {
                         Some(macos) => {
-                            self.deny_unknown(macos, &["identity"], "package.macos");
+                            self.deny_unknown(
+                                macos,
+                                &["identity", "notary_profile", "provisioning_profile"],
+                                "package.macos",
+                            );
                             MacosPackage {
                                 identity: self.string(macos, "identity", "package.macos"),
+                                notary_profile: self.string(
+                                    macos,
+                                    "notary_profile",
+                                    "package.macos",
+                                ),
+                                provisioning_profile: self.string(
+                                    macos,
+                                    "provisioning_profile",
+                                    "package.macos",
+                                ),
                             }
                         }
                         None => MacosPackage::default(),

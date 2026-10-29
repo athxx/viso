@@ -97,21 +97,34 @@ pub fn make(
             )
             .map_err(package)?;
             let access: Vec<_> = info.usage.iter().map(|(a, _)| *a).collect();
-            let identity = match &plan.signing.signer {
-                Signer::Apple { identity } => Some(identity.as_str()),
-                _ => None,
+            let (identity, notary, profile) = match &plan.signing.signer {
+                Signer::Apple {
+                    identity,
+                    notary,
+                    profile,
+                } => (Some(identity.as_str()), notary.as_ref(), profile.as_deref()),
+                _ => (None, None, None),
             };
-            let (entitlements, left_out) =
+            let (mut entitlements, left_out) =
                 apple::macos_entitlements(&access, &built.fragments.entitlements)
                     .map_err(|problem| package(problem.to_string()))?;
-            if identity.is_some() {
+            if let Some(profile) = profile {
+                entitlements = apple::macos_provisioned(
+                    &app.path,
+                    profile,
+                    entitlements,
+                    &built.fragments.entitlements,
+                    &scratch,
+                )
+                .map_err(sign)?;
+            } else if identity.is_some() {
                 for (key, by) in left_out {
                     sink(CargoEvent::Log {
                         level: "warn",
                         line: format!(
                             "`{by}` asks for the entitlement `{key}`, which only a provisioning \
-                             profile allows and a macOS package does not embed: the app is \
-                             signed without it"
+                             profile allows: the app is signed without it; name a Developer ID \
+                             profile in `[package.macos] provisioning_profile` to sign with it"
                         ),
                     });
                 }
@@ -119,10 +132,18 @@ pub fn make(
             if plan.signing.signer != Signer::None {
                 apple::sign_macos(&app.path, identity, &entitlements, &scratch).map_err(sign)?;
             }
+            // The app carries its own ticket for the copy dragged out of the
+            // disk image, and the image one for itself.
+            if let Some(notary) = notary {
+                apple::notarize(&app.path, notary, &scratch).map_err(sign)?;
+            }
             let dmg = path("dmg");
             apple::dmg(&app.path, &dmg, &metadata.display_name, &scratch).map_err(package)?;
             if identity.is_some() {
                 apple::sign_macos(&dmg, identity, &Default::default(), &scratch).map_err(sign)?;
+            }
+            if let Some(notary) = notary {
+                apple::notarize(&dmg, notary, &scratch).map_err(sign)?;
             }
             Ok(vec![("app-bundle", app.path), ("dmg", dmg)])
         }

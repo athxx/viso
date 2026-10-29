@@ -403,6 +403,11 @@ pub fn read(project: &Project, platform: Platform) -> (Option<Metadata>, Vec<Con
                 diagnostics.extend(named_file(profile, "package.ios.provisioning_profile"));
             }
         }
+        Platform::MacOs => {
+            if let Some(profile) = &package.macos.provisioning_profile {
+                diagnostics.extend(named_file(profile, "package.macos.provisioning_profile"));
+            }
+        }
         Platform::Android => {
             let android = &package.android;
             if let Some(keystore) = &android.keystore {

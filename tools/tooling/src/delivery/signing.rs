@@ -41,8 +41,13 @@ pub enum Signer {
     None,
     /// A macOS signature with no identity, valid on the Mac that made it.
     AdHoc,
-    /// A macOS identity, under the hardened runtime.
-    Apple { identity: String },
+    /// A macOS identity, under the hardened runtime: who notarizes what it
+    /// signs, and the Developer ID provisioning profile the app embeds.
+    Apple {
+        identity: String,
+        notary: Option<apple::Notary>,
+        profile: Option<PathBuf>,
+    },
     /// An iOS identity and the provisioning profile it signs under.
     Provisioned { identity: String, profile: PathBuf },
     /// A release keystore and the key in it.
@@ -75,7 +80,7 @@ impl Signer {
     /// Who signs, when it is someone: the identity, or the keystore and key.
     pub fn identity(&self, root: &std::path::Path) -> Option<String> {
         match self {
-            Signer::Apple { identity }
+            Signer::Apple { identity, .. }
             | Signer::Provisioned { identity, .. }
             | Signer::Authenticode { identity, .. } => Some(identity.clone()),
             Signer::Keystore { keystore, alias } => Some(format!(
@@ -100,9 +105,19 @@ impl Signer {
         match self {
             Signer::None => "not at all".to_owned(),
             Signer::AdHoc => "ad hoc".to_owned(),
-            Signer::Apple { identity } => {
-                format!("with `{identity}` under the hardened runtime")
-            }
+            Signer::Apple {
+                identity,
+                notary,
+                profile,
+            } => format!(
+                "with `{identity}` under the hardened runtime{}{}",
+                profile
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map(|n| format!(" and `{}`", n.to_string_lossy()))
+                    .unwrap_or_default(),
+                if notary.is_some() { ", notarized" } else { "" }
+            ),
             Signer::Provisioned { identity, profile } => format!(
                 "with `{identity}` under `{}`",
                 profile.file_name().map_or_else(
@@ -171,7 +186,8 @@ pub struct Machine<'a> {
     /// The keychain's code signing identities.
     pub identities: &'a dyn Fn() -> Result<Vec<String>, String>,
     /// Whether an environment variable is set.
-    pub env: &'a dyn Fn(&str) -> bool,
+    /// An environment variable, when it is set and not empty.
+    pub env: &'a dyn Fn(&str) -> Option<String>,
     /// `signtool`.
     pub signtool: &'a dyn Fn() -> Option<PathBuf>,
     /// What a provisioning profile allows.
@@ -183,7 +199,7 @@ impl Machine<'static> {
     pub fn this() -> Machine<'static> {
         Machine {
             identities: &apple::identities,
-            env: &|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()),
+            env: &|name| std::env::var(name).ok().filter(|v| !v.is_empty()),
             signtool: &windows::signtool,
             provisioning: &|profile| {
                 let scratch =
@@ -194,6 +210,66 @@ impl Machine<'static> {
             },
         }
     }
+}
+
+/// The environment variables an App Store Connect API key notarizes by:
+/// its private key's file, the key's ID and its issuer.
+pub const NOTARY_KEY_ENV: &str = "VISO_NOTARY_KEY";
+pub const NOTARY_KEY_ID_ENV: &str = "VISO_NOTARY_KEY_ID";
+pub const NOTARY_ISSUER_ENV: &str = "VISO_NOTARY_ISSUER";
+
+const NOTARY_ADVICE: &str = "save the notary credentials in the keychain with `xcrun notarytool \
+                             store-credentials <profile>` and name the profile in \
+                             `[package.macos] notary_profile`, or set VISO_NOTARY_KEY, \
+                             VISO_NOTARY_KEY_ID and VISO_NOTARY_ISSUER to an App Store Connect \
+                             API key";
+
+/// Who notarizes a macOS app: the keychain profile `[package.macos]` names,
+/// else the API key the environment gives.
+fn notary(macos: &viso_project::MacosPackage, machine: &Machine<'_>) -> Option<apple::Notary> {
+    if let Some(profile) = &macos.notary_profile {
+        return Some(apple::Notary::Profile(profile.value.clone()));
+    }
+    let env = |name| (machine.env)(name);
+    Some(apple::Notary::ApiKey {
+        key: env(NOTARY_KEY_ENV)?.into(),
+        key_id: env(NOTARY_KEY_ID_ENV)?,
+        issuer: env(NOTARY_ISSUER_ENV)?,
+    })
+}
+
+/// Whether the provisioning `profile` signs `metadata`'s app, of `team`
+/// when one is named.
+fn allows(
+    machine: &Machine<'_>,
+    profile: &std::path::Path,
+    metadata: &Metadata,
+    team: Option<&str>,
+) -> Result<(), Problem> {
+    let allowed = (machine.provisioning)(profile)
+        .map_err(|why| Problem::new(format!("cannot read the provisioning profile: {why}"), &[]))?;
+    let id = metadata.id.as_deref().unwrap_or_default();
+    if !allowed.allows(id) {
+        return Err(Problem::new(
+            format!(
+                "the provisioning profile signs `{}`, not `{id}`",
+                allowed.app_id
+            ),
+            &["make a profile for the app's `package.bundle_id`"],
+        ));
+    }
+    if let Some(team) = team
+        && team != allowed.team
+    {
+        return Err(Problem::new(
+            format!(
+                "the provisioning profile is the team `{}`'s, not `{team}`'s",
+                allowed.team
+            ),
+            &["`package.ios.team_id` and the profile name the same team"],
+        ));
+    }
+    Ok(())
 }
 
 /// The identities the keychain holds whose names start with one of
@@ -250,7 +326,45 @@ pub fn resolve(
             let advice = "sign it with a Developer ID Application identity: name it in \
                           `[package.macos] identity`, or add its certificate to the keychain";
             match identity {
-                Some(identity) => Ok(signing(Signer::Apple { identity }, None)),
+                Some(identity) => {
+                    let profile = match &package.macos.provisioning_profile {
+                        Some(profile) => {
+                            let profile = project.root.join(&profile.value);
+                            allows(machine, &profile, metadata, None)?;
+                            Some(profile)
+                        }
+                        None => None,
+                    };
+                    let notary = notary(&package.macos, machine);
+                    let shortfall = match &notary {
+                        Some(_) => None,
+                        None if !identity.starts_with("Developer ID Application:") => {
+                            Some(Problem::new(
+                                format!(
+                                    "the app is signed with `{identity}`, which Apple does not \
+                                     notarize: Gatekeeper refuses it on other Macs"
+                                ),
+                                &[advice],
+                            ))
+                        }
+                        None => Some(Problem::new(
+                            "the app is signed but not notarized: Gatekeeper refuses it on other \
+                             Macs once it is downloaded",
+                            &[NOTARY_ADVICE],
+                        )),
+                    };
+                    match shortfall {
+                        Some(short) if policy == Policy::Required => Err(short),
+                        shortfall => Ok(signing(
+                            Signer::Apple {
+                                identity,
+                                notary,
+                                profile,
+                            },
+                            shortfall,
+                        )),
+                    }
+                }
                 None if policy == Policy::Required => Err(Problem::new(
                     "no Developer ID Application identity to sign the app with",
                     &[advice],
@@ -285,30 +399,8 @@ pub fn resolve(
                 .map(|p| project.root.join(&p.value));
             match (identity, profile) {
                 (Some(identity), Some(profile)) => {
-                    let allowed = (machine.provisioning)(&profile).map_err(|why| {
-                        Problem::new(format!("cannot read the provisioning profile: {why}"), &[])
-                    })?;
-                    let id = metadata.id.as_deref().unwrap_or_default();
-                    if !allowed.allows(id) {
-                        return Err(Problem::new(
-                            format!(
-                                "the provisioning profile signs `{}`, not `{id}`",
-                                allowed.app_id
-                            ),
-                            &["make a profile for the app's `package.bundle_id`"],
-                        ));
-                    }
-                    if let Some(team) = &package.ios.team_id
-                        && team.value != allowed.team
-                    {
-                        return Err(Problem::new(
-                            format!(
-                                "the provisioning profile is the team `{}`'s, not `{}`'s",
-                                allowed.team, team.value
-                            ),
-                            &["`package.ios.team_id` and the profile name the same team"],
-                        ));
-                    }
+                    let team = package.ios.team_id.as_ref().map(|t| t.value.as_str());
+                    allows(machine, &profile, metadata, team)?;
                     Ok(signing(Signer::Provisioned { identity, profile }, None))
                 }
                 (identity, profile) => {
@@ -340,7 +432,7 @@ pub fn resolve(
         }
         Platform::Android => match (&package.android.keystore, &package.android.key_alias) {
             (Some(keystore), Some(alias)) => {
-                if !(machine.env)(KEYSTORE_PASSWORD_ENV) {
+                if (machine.env)(KEYSTORE_PASSWORD_ENV).is_none() {
                     return Err(Problem {
                         message: format!(
                             "the keystore's password is not in `{KEYSTORE_PASSWORD_ENV}`"
@@ -455,15 +547,11 @@ mod tests {
     use crate::delivery::metadata;
 
     fn project(manifest: &str) -> (Project, Metadata) {
-        // A directory of each manifest's own, as the tests run at once.
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            manifest.hash(&mut h);
-            h.finish()
-        };
-        let dir =
-            std::env::temp_dir().join(format!("viso-signing-{}-{key:016x}", std::process::id(),));
+        // A directory of each call's own, as the tests run at once, some with
+        // the same manifest.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("viso-signing-{}-{call}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Viso.toml"), manifest).unwrap();
         for file in ["k.jks", "p.mobileprovision"] {
@@ -492,7 +580,7 @@ mod tests {
 
     fn machine<'a>(
         identities: &'a dyn Fn() -> Result<Vec<String>, String>,
-        env: &'a dyn Fn(&str) -> bool,
+        env: &'a dyn Fn(&str) -> Option<String>,
     ) -> Machine<'a> {
         Machine {
             identities,
@@ -521,8 +609,9 @@ mod tests {
                 "Developer ID Application: Example (ABCDE12345)".to_owned(),
             ])
         };
-        let env = |_: &str| false;
+        let env = |_: &str| None;
 
+        // Signed, and short of notarized.
         let s = resolve(
             Policy::Auto,
             Platform::MacOs,
@@ -532,7 +621,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.signer.status(), "signed");
-        assert!(s.shortfall.is_none());
+        assert!(s.shortfall.unwrap().message.contains("not notarized"));
+        let refused = resolve(
+            Policy::Required,
+            Platform::MacOs,
+            &p,
+            &m,
+            &machine(&developer, &env),
+        );
+        assert!(refused.unwrap_err().message.contains("not notarized"));
 
         let s = resolve(Policy::Auto, Platform::MacOs, &p, &m, &machine(&none, &env)).unwrap();
         assert_eq!(s.signer, Signer::AdHoc);
@@ -574,7 +671,7 @@ mod tests {
     #[test]
     fn ios_needs_an_identity_and_a_profile_for_the_app() {
         let distribution = || Ok(vec!["Apple Distribution: Example (ABCDE12345)".to_owned()]);
-        let env = |_: &str| false;
+        let env = |_: &str| None;
         let (p, m) = project(&manifest(
             "[package.ios]\nprovisioning_profile = \"p.mobileprovision\"\n",
         ));
@@ -612,7 +709,7 @@ mod tests {
         let (p, m) = project(&manifest(
             "[package.android]\nkeystore = \"k.jks\"\nkey_alias = \"upload\"\n",
         ));
-        let unset = |_: &str| false;
+        let unset = |_: &str| None;
         let refused = resolve(
             Policy::Auto,
             Platform::Android,
@@ -621,7 +718,7 @@ mod tests {
             &machine(&none, &unset),
         );
         assert!(refused.unwrap_err().message.contains(KEYSTORE_PASSWORD_ENV));
-        let set = |name: &str| name == KEYSTORE_PASSWORD_ENV;
+        let set = |name: &str| (name == KEYSTORE_PASSWORD_ENV).then(|| "secret".to_owned());
         let s = resolve(
             Policy::Required,
             Platform::Android,
@@ -663,10 +760,119 @@ mod tests {
     }
 
     #[test]
+    fn a_developer_id_app_is_notarized_by_its_profile_else_the_api_key() {
+        let developer = || {
+            Ok(vec![
+                "Developer ID Application: Example (ABCDE12345)".to_owned(),
+            ])
+        };
+        let unset = |_: &str| None;
+        let (p, m) = project(&manifest("[package.macos]\nnotary_profile = \"viso\"\n"));
+        let s = resolve(
+            Policy::Required,
+            Platform::MacOs,
+            &p,
+            &m,
+            &machine(&developer, &unset),
+        )
+        .unwrap();
+        assert_eq!(
+            s.signer,
+            Signer::Apple {
+                identity: "Developer ID Application: Example (ABCDE12345)".into(),
+                notary: Some(apple::Notary::Profile("viso".into())),
+                profile: None,
+            }
+        );
+        assert!(s.shortfall.is_none());
+        assert!(s.signer.describe().ends_with("notarized"));
+
+        let key = |name: &str| {
+            let value = match name {
+                NOTARY_KEY_ENV => "/keys/AuthKey_ABC.p8",
+                NOTARY_KEY_ID_ENV => "ABC",
+                NOTARY_ISSUER_ENV => "69a6de7e",
+                _ => return None,
+            };
+            Some(value.to_owned())
+        };
+        let (p, m) = project(&manifest(""));
+        let s = resolve(
+            Policy::Required,
+            Platform::MacOs,
+            &p,
+            &m,
+            &machine(&developer, &key),
+        )
+        .unwrap();
+        let Signer::Apple {
+            notary: Some(apple::Notary::ApiKey { key_id, .. }),
+            ..
+        } = s.signer
+        else {
+            panic!("notarized by the API key: {:?}", s.signer);
+        };
+        assert_eq!(key_id, "ABC");
+
+        // A Developer ID profile is embedded when it signs the app.
+        let (p, m) = project(&manifest(
+            "[package.macos]\nnotary_profile = \"viso\"\nprovisioning_profile = \"p.mobileprovision\"\n",
+        ));
+        let s = resolve(
+            Policy::Required,
+            Platform::MacOs,
+            &p,
+            &m,
+            &machine(&developer, &unset),
+        )
+        .unwrap();
+        let Signer::Apple {
+            profile: Some(profile),
+            ..
+        } = &s.signer
+        else {
+            panic!("under the profile: {:?}", s.signer);
+        };
+        assert!(profile.ends_with("p.mobileprovision"));
+        assert!(
+            s.signer
+                .describe()
+                .contains("and `p.mobileprovision`, notarized")
+        );
+        let elsewhere = Machine {
+            provisioning: &|_: &Path| {
+                Ok(apple::Provisioning {
+                    team: "ABCDE12345".into(),
+                    app_id: "ABCDE12345.com.other.app".into(),
+                    entitlements: PathBuf::new(),
+                })
+            },
+            ..machine(&developer, &unset)
+        };
+        let refused = resolve(Policy::Auto, Platform::MacOs, &p, &m, &elsewhere);
+        assert!(refused.unwrap_err().message.contains("not `com.example.a`"));
+
+        // An identity Apple does not notarize falls short however it is set.
+        let development = || Ok(vec!["Apple Development: Example (ABCDE12345)".to_owned()]);
+        let (p, m) = project(&manifest(
+            "[package.macos]\nidentity = \"Apple Development: Example (ABCDE12345)\"\n",
+        ));
+        let s = resolve(
+            Policy::Auto,
+            Platform::MacOs,
+            &p,
+            &m,
+            &machine(&development, &unset),
+        )
+        .unwrap();
+        assert!(s.shortfall.unwrap().message.contains("does not notarize"));
+    }
+
+    #[test]
     fn a_signed_msix_names_its_publisher() {
         let signtool = || Some(PathBuf::from("signtool"));
         let none = || Ok(Vec::new());
-        let unset = |_: &str| false;
+        let unset = |_: &str| None;
         let machine = Machine {
             signtool: &signtool,
             ..machine(&none, &unset)

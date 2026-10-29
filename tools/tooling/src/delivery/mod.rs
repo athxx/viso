@@ -176,12 +176,25 @@ impl Plan {
                     steps.push("render the icon at 16 to 1024 pixels".to_owned());
                 }
                 steps.push(format!("bundle {}", output("app-bundle")));
+                let notarized = matches!(
+                    self.signing.signer,
+                    Signer::Apple {
+                        notary: Some(_),
+                        ..
+                    }
+                );
                 if signed {
                     steps.push(format!("sign it {sign}"));
+                }
+                if notarized {
+                    steps.push("notarize it and staple the ticket".to_owned());
                 }
                 steps.push(format!("make the disk image {}", output("dmg")));
                 if matches!(self.signing.signer, Signer::Apple { .. }) {
                     steps.push(format!("sign the disk image {sign}"));
+                }
+                if notarized {
+                    steps.push("notarize the disk image and staple the ticket".to_owned());
                 }
             }
             Platform::Windows => {

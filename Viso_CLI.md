@@ -2261,7 +2261,7 @@ off       不签
 
 | 平台 | 身份来源 | `auto` 无身份时 |
 |---|---|---|
-| macOS | `[package.macos] identity`，否则 keychain 中第一个 `Developer ID Application:`；hardened runtime + 按权限生成 entitlements + timestamp，`.dmg` 同样签名 | ad-hoc（只在本机可运行） |
+| macOS | `[package.macos] identity`，否则 keychain 中第一个 `Developer ID Application:`；hardened runtime + 按权限生成 entitlements + timestamp，`.dmg` 同样签名。Developer ID 签名后公证：`[package.macos] notary_profile`（`xcrun notarytool store-credentials <profile>` 存进 keychain 的 profile），否则环境中的 App Store Connect API key（`VISO_NOTARY_KEY` 为 `.p8` 文件路径，`VISO_NOTARY_KEY_ID`、`VISO_NOTARY_ISSUER`）；`.app` 压缩后提交、`notarytool wait` 后以 `info` 取结果，`Accepted` 之外附 `notarytool log` 失败，通过后 `stapler staple`，再做 `.dmg`、签名、公证并 staple（拖出镜像的 app 与镜像各带 ticket，离线也能过 Gatekeeper）。签了未公证（或身份不是 Developer ID）时 `auto` 警告，`required` 为 PACKAGE_SIGNING。`[package.macos] provisioning_profile`（Developer ID provisioning profile，相对项目根）须覆盖 `bundle_id`，嵌入为 `Contents/embedded.provisionprofile`：fragment 要的受限 entitlement（如 push 的 `com.apple.developer.aps-environment`）取 profile 的值，并带上 app 与 team 标识，profile 不允许即失败；没有 profile 时这些 entitlement 被略去并警告 | ad-hoc（只在本机可运行） |
 | iOS | `[package.ios] identity`（否则 keychain 中 Apple/iPhone Distribution，再 Development）+ `provisioning_profile`；profile 必须覆盖 `bundle_id`，`team_id` 若配置须与 profile 一致 | 不签 |
 | Android | `[package.android] keystore` + `key_alias`；密码只从 `VISO_ANDROID_KEYSTORE_PASSWORD`（key 不同则 `VISO_ANDROID_KEY_PASSWORD`）由 `apksigner`/`jarsigner` 自己读取（`env:` 形式），缺失即 PACKAGE_SIGNING | debug keystore |
 | Windows | `[package.windows] identity`（证书 subject 或 SHA-1 thumbprint，在系统证书库）+ 可选 `timestamp_url`，`signtool`；先签 executable，再签 MSIX。有图标（即有 MSIX）时还须 `publisher`（证书的完整 subject），否则 PACKAGE_SIGNING——Windows 只安装 publisher 与签名证书 subject 相同的包 | 不签；MSIX 的 publisher 为 `publisher`（缺省 `CN=<display_name>`）加 unsigned 标记 `OID.2.25.311729368913984317654407730594956997722=1`，可用 `Add-AppxPackage -AllowUnsigned` 安装 |
@@ -3018,6 +3018,8 @@ Simulator development 不需要 signing。`team_id`、provisioning/signing metad
 ```toml
 [package.macos]
 identity = "Developer ID Application: Example (ABCDE12345)"
+notary_profile = "example-notary"
+provisioning_profile = "signing/notes-developer-id.provisionprofile"
 
 [package.android]
 keystore = "signing/release.jks"

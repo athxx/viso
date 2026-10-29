@@ -1174,6 +1174,27 @@ Rules (as for `todo_features.md`):
   MSIX. Verify on a Windows machine.
 - [ ] Apple: a Developer ID signature, notarized; a device APNs token. Verify on real
   credentials.
+  - [x] Notarized. Built:
+    - `[package.macos] notary_profile` (a `notarytool store-credentials` keychain profile), or
+      an App Store Connect API key in `VISO_NOTARY_KEY`, `VISO_NOTARY_KEY_ID` and
+      `VISO_NOTARY_ISSUER`.
+    - The package flow: sign the `.app` → notarize and staple it → build the dmg → sign → notarize
+      and staple the dmg.
+    - `notarytool submit`, then `wait`, then `info` gives the status; anything but `Accepted`
+      fails with the `log`.
+    - `auto` warns on a signed but unnotarized app, or on an identity Apple does not notarize;
+      `required` refuses both.
+  - [x] A Developer ID provisioning profile for macOS. Built:
+    - `[package.macos] provisioning_profile` is checked against `bundle_id` and embedded as
+      `Contents/embedded.provisionprofile`.
+    - The restricted entitlements the fragments ask for (push's
+      `com.apple.developer.aps-environment`) are signed with the profile's values, plus the app
+      and team identifiers. Without a profile they are left out, with a warning naming the key.
+  - Verified: notarytool's answers parse; the notary arguments; resolution by profile, by API
+    key, refused and short; the provisioned entitlements (allowed and refused).
+  - [ ] On real credentials: `viso package macos --signing required` with a Developer ID
+    identity and a notary profile, then `spctl -a -vv` and `stapler validate` on the `.app`
+    and the dmg. A push token on an iOS device and on macOS under the profile.
 - [ ] CI emulator and simulator jobs: boot, install, hot reload, and the examples rendering on the
   iOS simulator, the Android emulator and Chromium (open lines in `todo_hotreload.md` and
   `todo_platform.md`).
