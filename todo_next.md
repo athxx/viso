@@ -1237,7 +1237,10 @@ Rules (as for `todo_features.md`):
     (a desktop panel).
 - [ ] Device runs of what is built and only compile- or headless-checked (carried over by N9):
   - secure text entry on each platform (`todo_dsl.md`);
-  - `@persist` storage: Android `getFilesDir`, the iOS sandbox, the web's `localStorage`;
+  - `@persist` storage in the iOS sandbox. Verified on Android (the API 37 emulator: three
+    taps on `examples/persist`, home, force-stop, relaunch reads "3 in all, 0 this run") and
+    on the web (`web-gpu` in headless Chrome: three clicks store `viso/tally.count`, a new
+    page reads 3, as `viso inspect tree` on the session shows);
   - game audio output: WASAPI, ALSA, AAudio, iOS RemoteIO;
   - a live macOS session: cursors, IME candidate placement, appearance and key-window
     notifications, memory pressure (`todo_platform.md`);
