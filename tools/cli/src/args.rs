@@ -135,6 +135,8 @@ pub enum Command {
     New(NewArgs),
     /// Build the app as its platform ships it, signed: an `.app` and `.dmg`, an `.ipa`, an APK and app bundle, an archive and an MSIX.
     Package(PackageArgs),
+    /// Show generated `.vs` code alone in a sandboxed headless run: only the preview grant, a native outside it faulting `E6103`.
+    Preview(PreviewArgs),
     /// Sample the frames the running app draws: their time, phase by phase, and the work they count.
     Profile(ProfileArgs),
     /// Build a dev artifact and run it, hot reloading edits as they are saved.
@@ -1328,6 +1330,25 @@ pub struct SnapshotArgs {
     pub target: Option<TestTarget>,
 }
 
+/// What `viso preview` shows.
+#[derive(Debug, Args)]
+pub struct PreviewArgs {
+    /// The `.vs` file of the generated code, compiled with the project's
+    /// package as the module its name gives.
+    #[arg(value_name = "FILE", value_hint = ValueHint::FilePath)]
+    pub file: PathBuf,
+    /// The component it shows, `Name`; the one the file exports when omitted.
+    #[arg(value_name = "COMPONENT")]
+    pub component: Option<String>,
+    /// A capability granted beside `ui.basic`, `gpu.draw.sandboxed` and
+    /// `asset.read.package`; repeatable.
+    #[arg(long = "grant", value_name = "CAPABILITY")]
+    pub grants: Vec<String>,
+    /// Write the snapshot into DIR instead of `target/viso/preview/`.
+    #[arg(long, value_name = "DIR", value_hint = ValueHint::DirPath)]
+    pub output: Option<PathBuf>,
+}
+
 /// What `viso snapshot capture` captures.
 #[derive(Debug, Args)]
 pub struct CaptureArgs {
@@ -1452,6 +1473,7 @@ impl Command {
             Command::Lsp(_) => "lsp",
             Command::New(_) => "new",
             Command::Package(_) => "package",
+            Command::Preview(_) => "preview",
             Command::Profile(_) => "profile",
             Command::Run(_) => "run",
             Command::Schema(_) => "schema",

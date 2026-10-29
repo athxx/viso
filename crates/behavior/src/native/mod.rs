@@ -269,13 +269,13 @@ pub struct Param {
 /// values, in parameter order and already checked against the schema types.
 pub type Thunk = fn(&mut NativeCx<'_>, &[Value]) -> Result<Value, NativeError>;
 
-/// A native function or handle method.
-///
-/// A method's first parameter is its receiver when its type is the owning
 /// The capabilities a preview of AI-generated code is granted by default;
 /// network, filesystem, process and clipboard access need an explicit grant.
 pub const PREVIEW_CAPABILITIES: &[&str] = &["asset.read.package", "gpu.draw.sandboxed", "ui.basic"];
 
+/// A native function or handle method.
+///
+/// A method's first parameter is its receiver when its type is the owning
 /// handle type; such a method is called as `value.method(..)`, any other as
 /// `Type::method(..)`.
 #[derive(Clone, Copy)]

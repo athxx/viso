@@ -1249,8 +1249,9 @@ timers (§104–§111).
   - [x] A preview host grants only `ui.basic`, `gpu.draw.sandboxed`,
         `asset.read.package`, whatever the manifest says
         (`ViewHost::with_capabilities`, `PREVIEW_CAPABILITIES`).
-  - [ ] The CLI's preview of generated code runs its views on the preview host
-        (with the CLI).
+  - [x] The CLI's preview of generated code runs its views on the preview host
+        (with the CLI): `viso preview <file> [<component>] [--grant ..]` mounts it alone
+        headless with the preview grant and reports each fault at its source.
 - [ ] `@persist`: load before `start`, tick-boundary writes, suspend flush, migration;
       `E9106` (§106.8).
   - [x] System state: key, Snapshot type and `storage.persist` grant

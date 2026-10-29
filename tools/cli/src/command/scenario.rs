@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use viso_dev_protocol::headless::GRANT_ENV;
 use viso_dev_protocol::headless::{
     Action, CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, Expectation, FRAMES_ENV, GAME_SHEET_ENV, GameSheet,
     HeadlessSurface, REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV,
@@ -55,6 +56,7 @@ const POLL: Duration = Duration::from_millis(10);
 /// The variables a run must not inherit: the launch of a headless run, and
 /// a dev session's.
 const WITHHELD: &[&str] = &[
+    GRANT_ENV,
     SURFACE_ENV,
     FRAMES_ENV,
     SCRIPT_ENV,
@@ -175,6 +177,10 @@ pub(super) struct Case {
     pub events: bool,
     /// Whether its run writes the samples of every frame it draws.
     pub profile: bool,
+    /// The capabilities its component is granted beside the preview grant,
+    /// in place of the package's, when it runs as a preview of generated
+    /// code, whose faults the run reports.
+    pub grant: Option<Vec<String>>,
     pub kind: Kind,
 }
 
@@ -249,6 +255,7 @@ impl Case {
             detail: false,
             events: false,
             profile: false,
+            grant: None,
             kind: Kind::Scenario,
         })
     }
@@ -275,6 +282,7 @@ impl Case {
             detail: false,
             events: false,
             profile: false,
+            grant: None,
             kind: Kind::Component {
                 path: component,
                 view,
@@ -298,6 +306,7 @@ impl Case {
             detail: false,
             events: false,
             profile: false,
+            grant: None,
             kind: Kind::Bare,
         }
     }
@@ -348,6 +357,14 @@ pub(super) struct Shot {
     pub line: u32,
 }
 
+/// A fault the component of a granted case raised: its diagnostic code,
+/// message and, when in code, the byte range of its source.
+pub(super) struct Fault {
+    pub code: String,
+    pub message: String,
+    pub span: Option<(u32, u32)>,
+}
+
 /// A case's run, and what it wrote.
 pub(super) struct Played {
     index: usize,
@@ -358,6 +375,8 @@ pub(super) struct Played {
     pub dir: PathBuf,
     /// The snapshots it took, in step order.
     pub shots: Vec<Shot>,
+    /// The faults its granted component raised, in order.
+    pub faults: Vec<Fault>,
 }
 
 impl Played {
@@ -630,6 +649,7 @@ fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played
         output,
         dir: dir.clone(),
         shots,
+        faults: Vec::new(),
     };
     if *stop.lock().unwrap() {
         return played(Ended::Stopped, String::new(), Vec::new());
@@ -700,6 +720,9 @@ fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played
     if let Some((path, _)) = &view {
         command.env(VIEW_ENV, path);
     }
+    if let Some(grant) = &case.grant {
+        command.env(GRANT_ENV, grant.join(","));
+    }
     if let Some(sources) = at.sources {
         command.env(SOURCES_ENV, sources);
     }
@@ -753,21 +776,34 @@ fn run(at: &Launch<'_>, index: usize, case: &Case, stop: &Mutex<bool>) -> Played
             }
         }
     };
-    let (ended, shots) = ended(&read(&report), status);
-    played(ended, read(&log), shots)
+    let (ended, shots, faults) = ended(&read(&report), status);
+    Played {
+        faults,
+        ..played(ended, read(&log), shots)
+    }
 }
 
-/// How a run that exited with `status` ended, by its report, and the
-/// snapshots it took.
-fn ended(report: &str, status: ExitStatus) -> (Ended, Vec<Shot>) {
+/// How a run that exited with `status` ended, by its report, the snapshots
+/// it took and the faults it reported.
+fn ended(report: &str, status: ExitStatus) -> (Ended, Vec<Shot>, Vec<Fault>) {
     let mut failed = None;
     let mut finished = false;
     let mut shots = Vec::new();
+    let mut faults = Vec::new();
     for line in report.lines() {
         match Reported::from_line(line) {
             Some(Reported::Failed { line, message }) => failed = Some((line, message)),
             Some(Reported::Done { .. }) => finished = true,
             Some(Reported::Snapshot { line, name, .. }) => shots.push(Shot { name, line }),
+            Some(Reported::Fault {
+                code,
+                message,
+                span,
+            }) => faults.push(Fault {
+                code,
+                message,
+                span,
+            }),
             Some(Reported::Passed { .. } | Reported::Skipped { .. }) | None => {}
         }
     }
@@ -781,7 +817,7 @@ fn ended(report: &str, status: ExitStatus) -> (Ended, Vec<Shot>) {
             "the run exited with {status} before it played every step"
         )),
     };
-    (ended, shots)
+    (ended, shots, faults)
 }
 
 fn read(path: &Path) -> String {
@@ -820,8 +856,14 @@ mod tests {
     #[test]
     fn a_run_ends_as_its_report_says() {
         let passed = format!(
-            "{}\n{}\n{}\n",
+            "{}\n{}\n{}\n{}\n",
             Reported::Passed { line: 1 }.to_line(),
+            Reported::Fault {
+                code: "E6103".into(),
+                message: "denied".into(),
+                span: Some((3, 9)),
+            }
+            .to_line(),
             Reported::Snapshot {
                 line: 2,
                 name: "home".into(),
@@ -831,11 +873,18 @@ mod tests {
             .to_line(),
             Reported::Done { frames: 9 }.to_line()
         );
-        let (ended_as, shots) = ended(&passed, exited(0));
-        assert!(matches!(ended_as, Ended::Passed));
+        let (ended_as, shots, faults) = ended(&passed, exited(0));
+        assert!(matches!(ended_as, Ended::Passed), "a fault fails no step");
         assert_eq!(
             shots.iter().map(|s| (&*s.name, s.line)).collect::<Vec<_>>(),
             [("home", 2)]
+        );
+        assert_eq!(
+            faults
+                .iter()
+                .map(|f| (&*f.code, f.span))
+                .collect::<Vec<_>>(),
+            [("E6103", Some((3, 9)))]
         );
         let failed = format!(
             "{}\n{}\n",

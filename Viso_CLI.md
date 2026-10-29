@@ -2006,6 +2006,22 @@ viso snapshot capture HomePage --target ios --device iphone-local
 - `update [--filter <pattern>]`：只写回缺失或不一致的 golden（名字包含 pattern 的），每个写回文件一条 `artifact`；没有 Scenario 取的 golden 为 warning；人类输出末行 `<n> snapshots updated; <m> unchanged`；
 - Scenario 的失败步骤 `TEST_EXPECTATION`（exit 1）、snapshot 步骤本身失败 `RUN_SNAPSHOT_FAILED`（5）、runner 崩溃 `RUN_TEST_CRASHED`（5），该 Scenario 不写 golden；没有 Scenario 取 snapshot `ENV_TEST_INPUT`（3）；`--target` 非 `headless` `ENV_SNAPSHOT_TARGET`（3）；写 golden 或比较结果失败 `ENV_SNAPSHOT_WRITE`（3）。
 
+### 23.7 `viso preview`
+
+```bash
+viso preview gen/card.vs
+viso preview gen/card.vs Card --grant clipboard.write
+viso preview gen/card.vs --output out --json
+```
+
+单独预览生成的 `.vs` 代码，运行在受限授权下：
+
+- `<file>` 与 project 的 package 一起编译。属于 package 的文件沿用其 module path，其他文件以文件名为 module；`<component>` 省略时取该文件 export 的组件。组件按 §23.6 的方式单独挂载，读取 input 默认值，用 app 的字体与 assets；
+- 视图的授权固定为 `ui.basic`、`gpu.draw.sandboxed`、`asset.read.package` 三项（`PREVIEW_CAPABILITIES`），加上每个 `--grant` 指定的项，不读清单里的授权。headless run 从 `VISO_HEADLESS_GRANT` 读入这些额外授权；
+- 调用授权之外的 Native 时报 `E6103`，该 Transaction 回滚，视图继续运行。每个运行时 fault（`E61xx`/`E71xx`）都在其源码位置报为 error 诊断，`--json` 下为 `diagnostic` 事件，exit 5；
+- 每次运行把 `<component>.png` 与 `.tree` 写入 `target/viso/preview/` 或 `--output`，每个文件一条 `artifact` 事件（`kind: snapshot|manifest`）；
+- 文件读不到时报 `ENV_SOURCE_UNREADABLE`（3）；没有该组件，或组件不能单独挂载，报 `TEST_INPUT_INVALID`（1）；编译诊断 exit 1；snapshot 失败报 `RUN_SNAPSHOT_FAILED`（5）；runner 崩溃报 `RUN_TEST_CRASHED`（5）；写文件失败报 `ENV_SNAPSHOT_WRITE`（3）。
+
 ---
 
 ## 24. `viso inspect`
@@ -3894,6 +3910,7 @@ viso dump <ast|hir|ui-ir|reactive-ir|behavior-ir|shader-ir|system-ir|module-grap
 viso lsp [--stdio]
 viso test [unit|ui|game|web|all] [--target <t>] [--device <id>]
 viso snapshot <capture|compare|update> [<component>] [--target <t>] [--device <id>]
+viso preview <file> [<component>] [--grant <capability>]... [--output <dir>]
 viso inspect [query <selector>] [--run] [--target <t>]
 viso studio [--target <t>]
 ```

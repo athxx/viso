@@ -44,6 +44,12 @@ pub const SNAPSHOT_ENV: &str = "VISO_HEADLESS_SNAPSHOTS";
 /// the app's view, as a tool captures one component.
 pub const VIEW_ENV: &str = "VISO_HEADLESS_VIEW";
 
+/// The environment variable that runs the view [`VIEW_ENV`] names as a
+/// preview of generated code: with the preview grant, and the capabilities
+/// this passes, separated by commas (none when empty), in place of its
+/// package's grant; each fault it raises is reported ([`Reported::Fault`]).
+pub const GRANT_ENV: &str = "VISO_HEADLESS_GRANT";
+
 /// The environment variable the path of a
 /// [`SourceTable`](crate::inspect::SourceTable) is passed in: what the nodes
 /// of the views the build mounts are in their source, which a scenario's
@@ -651,6 +657,15 @@ pub enum Reported {
     /// The step on `line` was not played here, and why: a snapshot on a
     /// target without the software raster.
     Skipped { line: u32, message: String },
+    /// The view a granted run mounts ([`GRANT_ENV`]) faulted with the
+    /// diagnostic `code`: the transaction rolled back and the view ran on.
+    /// `span` is where in its source, as byte offsets, when the fault was in
+    /// code.
+    Fault {
+        code: String,
+        message: String,
+        span: Option<(u32, u32)>,
+    },
     /// The run played every step it could, in `frames` frames.
     Done { frames: u64 },
 }
@@ -700,6 +715,24 @@ impl Reported {
                 w.name("height");
                 w.uint(u64::from(*height));
             }
+            Reported::Fault {
+                code,
+                message,
+                span,
+            } => {
+                w.name("status");
+                w.string("fault");
+                w.name("code");
+                w.string(code);
+                w.name("message");
+                w.string(message);
+                if let Some((start, end)) = span {
+                    w.name("start");
+                    w.uint(u64::from(*start));
+                    w.name("end");
+                    w.uint(u64::from(*end));
+                }
+            }
             Reported::Done { frames } => {
                 w.name("done");
                 w.uint(*frames);
@@ -715,6 +748,19 @@ impl Reported {
         if let Some(frames) = value.get("done").and_then(JsonValue::as_f64) {
             return Some(Reported::Done {
                 frames: frames as u64,
+            });
+        }
+        if value.get("status")?.as_str()? == "fault" {
+            let offset = |name| {
+                value
+                    .get(name)
+                    .and_then(JsonValue::as_f64)
+                    .map(|v| v as u32)
+            };
+            return Some(Reported::Fault {
+                code: value.get("code")?.as_str()?.to_owned(),
+                message: value.get("message")?.as_str()?.to_owned(),
+                span: offset("start").zip(offset("end")),
             });
         }
         let line = value.get("line")?.as_f64()? as u32;
@@ -1087,6 +1133,16 @@ mod tests {
                 name: "home".into(),
                 width: 2560,
                 height: 1440,
+            },
+            Reported::Fault {
+                code: "E6103".into(),
+                message: "`clipboard::write_text` needs `clipboard.write`".into(),
+                span: Some((120, 151)),
+            },
+            Reported::Fault {
+                code: "E7105".into(),
+                message: "internal behavior fault".into(),
+                span: None,
             },
             Reported::Done { frames: 412 },
         ] {

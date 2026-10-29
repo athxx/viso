@@ -2146,6 +2146,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                 self.drive_captures(cx);
                 #[cfg(feature = "headless")]
                 if let (Some(script), Some(ws)) = (&mut self.script, self.windows.first()) {
+                    if let Some(fault) = self.harness.fault() {
+                        script.report(fault);
+                    }
                     let mounts = self.harness.mounts();
                     let assets = &self.assets;
                     script.after_frame(

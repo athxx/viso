@@ -22,7 +22,7 @@ const GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "TEST / DEBUG",
-        &["test", "snapshot", "inspect", "profile", "game"],
+        &["test", "snapshot", "preview", "inspect", "profile", "game"],
     ),
     ("DELIVERY", &["package", "export"]),
     ("MAINTENANCE", &["clean", "completion"]),
@@ -518,10 +518,6 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         "profile",
         &[
             (
-                "viso profile",
-                "five seconds of the `viso run` app's frames",
-            ),
-            (
                 "viso profile ios --device iphone --frames 600 --chrome trace.json",
                 "600 frames on the simulator, also as a Chrome trace",
             ),
@@ -718,6 +714,23 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
             (
                 "viso snapshot update --filter settings --json",
                 "rewrite the departed goldens named `*settings*`, as JSON events",
+            ),
+        ],
+    ),
+    (
+        "preview",
+        &[
+            (
+                "viso preview gen/card.vs",
+                "show the component `gen/card.vs` exports, sandboxed",
+            ),
+            (
+                "viso preview gen/card.vs Card --grant clipboard.write",
+                "show `Card`, its clipboard writes granted",
+            ),
+            (
+                "viso preview gen/card.vs --output out --json",
+                "into `out/`, its faults and files as JSON events",
             ),
         ],
     ),

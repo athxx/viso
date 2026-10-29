@@ -4002,7 +4002,7 @@ asset.read.package
 
 网络、文件系统、进程和剪贴板均需显式授权。
 
-当前实现：包的授权（`Viso.toml [package] capabilities`，`viso check` 与 `view!`/`component!` 宏读取同一字段）随编译结果写入 Module 及其线格式；视图宿主按 Module 携带的授权链接 Native，Release 包与内嵌模块因此带着构建时的授权运行。热重载的候选不读清单，替换后的宿主沿用被替换宿主的授权与已安装的宿主服务，编辑源文件不能扩大授权。Handler 调用未授权的 Native 时报 `E6103`（指出 Native 与缺少的 Capability），该 Transaction 的状态写入与事件全部丢弃，视图继续处理后续事件。预览宿主以指定授权链接、忽略包的授权，默认授权为上述三项（`PREVIEW_CAPABILITIES`）；CLI 的预览命令尚未接入。
+当前实现：包的授权（`Viso.toml [package] capabilities`，`viso check` 与 `view!`/`component!` 宏读取同一字段）随编译结果写入 Module 及其线格式；视图宿主按 Module 携带的授权链接 Native，Release 包与内嵌模块因此带着构建时的授权运行。热重载的候选不读清单，替换后的宿主沿用被替换宿主的授权与已安装的宿主服务，编辑源文件不能扩大授权。Handler 调用未授权的 Native 时报 `E6103`（指出 Native 与缺少的 Capability），该 Transaction 的状态写入与事件全部丢弃，视图继续处理后续事件。预览宿主以指定授权链接、忽略包的授权，默认授权为上述三项（`PREVIEW_CAPABILITIES`）。`viso preview <file> [<component>] [--grant <capability>]...`（CLI §23.7）单独挂载生成的组件，在 headless 预览宿主上运行，授权为这三项加上 `--grant` 指定的项。每个 fault 都在其源码位置报告，`E6103` 也在其中。
 
 ---
 

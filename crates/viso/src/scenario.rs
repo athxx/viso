@@ -346,6 +346,13 @@ impl ScriptRunner {
         }
     }
 
+    /// Reports `reported` beside the steps: a fault of the view the run
+    /// mounts.
+    #[cfg(feature = "headless")]
+    pub(crate) fn report(&mut self, reported: Reported) {
+        self.write(reported);
+    }
+
     fn write(&mut self, reported: Reported) {
         match &mut self.report {
             #[cfg(feature = "headless")]

@@ -97,8 +97,42 @@ pub(in crate::command) fn find(
     }
 }
 
+/// The component of `source`, the text of `file` as module `module`, that
+/// `wanted` names, else the one it exports, else the first it declares.
+pub(in crate::command) fn in_source(
+    file: PathBuf,
+    source: String,
+    module: Vec<String>,
+    wanted: Option<&str>,
+) -> Option<Found> {
+    let declared = declared_components(&source);
+    let chosen = match wanted {
+        Some(name) => declared.into_iter().find(|c| c.name == name)?,
+        None => {
+            let first_exported = declared.iter().position(|c| c.exported).unwrap_or(0);
+            declared.into_iter().nth(first_exported)?
+        }
+    };
+    let start = chosen.range.start().to_usize().min(source.len());
+    let line = source[..start].matches('\n').count() as u32 + 1;
+    let joined = module.join("::");
+    Some(Found {
+        path: if joined.is_empty() {
+            chosen.name.clone()
+        } else {
+            format!("{joined}::{}", chosen.name)
+        },
+        name: chosen.name,
+        module,
+        file,
+        source,
+        line,
+        required: chosen.required,
+    })
+}
+
 /// Why a component cannot be compiled to capture alone.
-pub(super) enum Unbuilt {
+pub(in crate::command) enum Unbuilt {
     /// Diagnostics of the component's own source.
     Source(Vec<Diagnostic>),
     /// Why mounting it alone fails.
@@ -107,7 +141,7 @@ pub(super) enum Unbuilt {
 
 /// The view package mounting `found` alone, compiled with `profile`, the
 /// one the app's views are compiled with.
-pub(super) fn package(
+pub(in crate::command) fn package(
     found: &Found,
     package: &str,
     language: Option<String>,

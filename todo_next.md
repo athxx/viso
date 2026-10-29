@@ -1347,8 +1347,15 @@ output, a live macOS session) is listed with the device runs of N8.
   resources; wrapping the view in a `Column` works).
 - [ ] The `renderer_steady_state` bench stops at its decorated-cards gate: 496 draws where it
   asserts 512 (two per card), so no bench of it runs.
-- [ ] The CLI's preview of generated code runs its views on the preview host, under its
+- [x] The CLI's preview of generated code runs its views on the preview host, under its
   restricted grant (`todo_dsl.md`, `E6103`).
+  `viso preview <file> [<component>] [--grant <capability>].. [--output <dir>]` compiles the
+  file with the package, mounts its component alone in a headless run handed
+  `VISO_HEADLESS_GRANT`, reports every fault the view raises as a diagnostic at its span
+  (exit 5) and writes its `.png`/`.tree`.
+- [ ] No host installs the `Clipboard` service the `viso::clipboard` natives read: the app's
+  view host and the headless harness both answer `E7106` (found with `viso preview`, its
+  `--grant clipboard.write` past `E6103`). The platform clipboard should back it.
 - [x] A compile-fail test of a catalog error through `view!` (trybuild), and the dev session's
   catalog reload under a real watcher (`todo_dsl.md`, localization checks).
   `view_catalog_error` reads a fixture package's broken `i18n/en.toml` (a `Viso.toml` between

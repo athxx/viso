@@ -20,7 +20,10 @@
 //!
 //! A run handed a view package ([`VIEW_ENV`]) mounts it alone in its first
 //! window, with no caption and none of the app's own view, so a tool
-//! captures one component as the app's fonts and assets draw it.
+//! captures one component as the app's fonts and assets draw it. Handed a
+//! grant too ([`GRANT_ENV`]), it runs the view as a preview of generated
+//! code, with the preview grant and what the launch adds in place of its
+//! package's, and reports each fault the view raises.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -31,13 +34,13 @@ use viso_platform::backend::headless::HeadlessApp;
 use viso_runtime::{FixedStepClock, Scheduler};
 use viso_ui::{DirtyClass, NodeId};
 use viso_view::headless::{
-    CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, FRAMES_ENV, GAME_SHEET_ENV, HeadlessSurface, REPORT_ENV,
-    SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
+    CENSUS_ENV, DETAIL_ENV, EVENTS_ENV, FRAMES_ENV, GAME_SHEET_ENV, GRANT_ENV, HeadlessSurface,
+    REPORT_ENV, Reported, SCRIPT_ENV, SNAPSHOT_ENV, SOURCES_ENV, SURFACE_ENV, VIEW_ENV,
 };
 use viso_view::inspect::{self, CensusView, WindowCensus, static_nodes};
 use viso_view::profile::{PROFILE_ENV, Trace};
 use viso_view::tape::{TAPE_ENV, UiTape};
-use viso_view::{MountRecord, ViewHost, load_view, take_mounts};
+use viso_view::{MountRecord, ViewHost, ViewLoad, load_view_with, take_mounts};
 
 use crate::driver::{AppDriver, WindowState};
 use crate::scenario::{Input, Outputs, ScriptRunner};
@@ -147,6 +150,9 @@ pub(crate) fn run<A: Application>() {
 pub(crate) struct Harness {
     package: Option<Vec<u8>>,
     host: Option<Rc<RefCell<ViewHost>>>,
+    /// Whether the view runs with a grant of its own, whose faults are
+    /// reported.
+    reports_faults: bool,
     first: Option<WindowId>,
     mounts: Vec<MountRecord>,
 }
@@ -175,6 +181,23 @@ impl Harness {
         &self.mounts
     }
 
+    /// The fault the view raised since the last call, when it runs with a
+    /// grant of its own.
+    pub(crate) fn fault(&self) -> Option<Reported> {
+        if !self.reports_faults {
+            return None;
+        }
+        let fault = self.host.as_ref()?.try_borrow_mut().ok()?.take_fault()?;
+        Some(Reported::Fault {
+            code: fault.kind.code().to_owned(),
+            message: fault.message,
+            span: fault
+                .at
+                .filter(|at| at.span.end > at.span.start)
+                .map(|at| (at.span.start, at.span.end)),
+        })
+    }
+
     /// Whether a view waits to be mounted in place of the app's.
     pub(crate) fn is_pending(&self) -> bool {
         self.package.is_some()
@@ -188,12 +211,27 @@ impl Harness {
         };
         // The package may run a game.
         crate::audio::link();
-        let loaded = match load_view(
+        let grant = viso_platform::launch_var(GRANT_ENV);
+        let grant: Option<Vec<&str>> = grant.as_deref().map(|added| {
+            let mut grant = viso_behavior::native::PREVIEW_CAPABILITIES.to_vec();
+            for capability in added.split(',').map(str::trim) {
+                if !capability.is_empty() && !grant.contains(&capability) {
+                    grant.push(capability);
+                }
+            }
+            grant
+        });
+        self.reports_faults = grant.is_some();
+        let loaded = match load_view_with(
             &package,
             &mut ws.store,
             &mut ws.states,
             &mut ws.bindings,
             &mut ws.virtual_lists,
+            ViewLoad {
+                grant: grant.as_deref(),
+                ..ViewLoad::default()
+            },
         ) {
             Ok(loaded) => loaded,
             Err(error) => {

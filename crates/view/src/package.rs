@@ -92,6 +92,11 @@ pub struct ViewLoad<'a> {
     /// Given the host before the view mounts, to install the services its
     /// natives and `@persist` states use.
     pub setup: Option<&'a mut dyn FnMut(&mut ViewHost)>,
+    /// The capabilities the view runs with in place of those its package is
+    /// granted: a preview of generated code passes
+    /// [`PREVIEW_CAPABILITIES`](viso_behavior::native::PREVIEW_CAPABILITIES)
+    /// and what its user adds.
+    pub grant: Option<&'a [&'a str]>,
 }
 
 impl fmt::Debug for ViewLoad<'_> {
@@ -101,6 +106,7 @@ impl fmt::Debug for ViewLoad<'_> {
             .field("libraries", &self.libraries.len())
             .field("widgets", &self.widgets.len())
             .field("setup", &self.setup.is_some())
+            .field("grant", &self.grant)
             .finish()
     }
 }
@@ -205,12 +211,12 @@ fn mount<'a>(
         );
         let natives = package_natives(load.libraries)
             .map_err(|conflict| ViewLoadError::Host(HostError::Link(conflict)))?;
-        let grant: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
+        let granted: Vec<&str> = module.capabilities().iter().map(|c| &**c).collect();
         let mut host = ViewHost::linked(
             Rc::clone(&module),
             view.component,
             natives,
-            &grant,
+            load.grant.unwrap_or(&granted),
             load.native,
         )
         .map_err(ViewLoadError::Host)?;
