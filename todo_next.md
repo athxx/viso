@@ -1348,8 +1348,11 @@ output, a live macOS session) is listed with the device runs of N8.
   mount keeps the states, a node outside the tree it frees with its content owns the effects
   and tasks (`MOUNT` anchor), anchored `env` resolves at the node the mount sits under; the
   `web-dom` content keeps the instance the same way (checked in headless Chrome).
-- [ ] The `renderer_steady_state` bench stops at its decorated-cards gate: 496 draws where it
-  asserts 512 (two per card), so no bench of it runs.
+- [x] The `renderer_steady_state` bench stops at its decorated-cards gate: 496 draws where it
+  asserts 512 (two per card), so no bench of it runs. The planner moves draws past
+  neighbouring cards they do not overlap, which the gate predates; it now asserts `2N`
+  instances in more than `3N/2` and at most `2N` draws, a batch and a switch each. All 36
+  benches pass `--test`.
 - [x] The CLI's preview of generated code runs its views on the preview host, under its
   restricted grant (`todo_dsl.md`, `E6103`).
   `viso preview <file> [<component>] [--grant <capability>].. [--output <dir>]` compiles the

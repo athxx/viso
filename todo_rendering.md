@@ -1589,9 +1589,11 @@ instancing/coverage integration + mask/blur caching in `viso-render`; blur targe
         baseline the fusion is measured against. Timing bench `decorated_cards_upload_steady`.
   - [x] `assert_decorated_fusion_gate` pins the structure the decision turns on: shadow
         and rrect are different families and strictly alternate in paint order, so the
-        planner cannot merge across the per-card barrier — the separate path is `2N` draws,
-        `2N` batches, a pipeline switch on every draw. A fused `DecoratedShape` family would
-        collapse that to `N` mergeable draws with a single switch.
+        planner cannot merge a card's shadow with its rrect — the separate path is `2N`
+        instances in up to `2N` draws (the planner moves a draw past a neighbour whose quads it
+        does not overlap: 496 for 256 cards), a batch and a pipeline switch on every draw. A
+        fused `DecoratedShape` family would collapse that to `N` mergeable draws with a single
+        switch.
   - [x] Overdraw proxy measured (not asserted as a verdict): the shadow's expanded instance
         quad (`3σ + spread + |offset|` pad) is materially larger than the tight fill quad
         (proxy ratio > 2×), so a fused fragment would shade the whole `shadow + fill + border`

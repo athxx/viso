@@ -1584,23 +1584,29 @@ fn assert_decorated_fusion_gate() {
 
     let stats = h.renderer.frame_stats();
 
-    // Separate-draw structure: one shadow + one rrect per card, neither mergeable
-    // into the other's family, and the two families strictly alternate in paint
-    // order — so every draw is a family transition.
+    // Separate-draw structure: one shadow + one rrect instance per card, the
+    // two never merged within a card (they overlap, and are different
+    // families). The planner may move a draw past a neighbouring card whose
+    // quads it does not overlap, so a few cards at the grid's edges share a
+    // draw with their neighbour; the rest stay separate, well above the `N`
+    // draws a fused family would take, and every draw is a family transition.
     assert_eq!(
-        stats.draw_calls,
+        stats.instances,
         DECORATED_CARDS * 2,
-        "decorated cards draw as separate shadow + rrect draws (a fused family \
-         would be {DECORATED_CARDS})"
+        "one shadow and one rrect instance per card"
+    );
+    assert!(
+        stats.draw_calls > DECORATED_CARDS * 3 / 2 && stats.draw_calls <= DECORATED_CARDS * 2,
+        "decorated cards draw as separate shadow + rrect draws, {} for {DECORATED_CARDS} \
+         cards (a fused family would be {DECORATED_CARDS})",
+        stats.draw_calls
     );
     assert_eq!(
-        stats.batches,
-        DECORATED_CARDS * 2,
-        "the shadow/rrect family barrier blocks merging: 2 batches per card"
+        stats.batches, stats.draw_calls,
+        "the shadow/rrect family barrier: a batch a draw"
     );
     assert_eq!(
-        stats.pipeline_switches,
-        (DECORATED_CARDS * 2) as u32,
+        stats.pipeline_switches as usize, stats.draw_calls,
         "alternating families switch the pipeline on every draw (a fused family \
          would switch once)"
     );
