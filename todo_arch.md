@@ -201,7 +201,7 @@ Phase 2 — a frame that changes shape:
 - [x] A paint-order entry carries only what is read: bounds are `world` + `paint`, a composite's instance and a backdrop's rect live in per-frame side tables, pass indices are `u32` (entry 216 → 104 bytes, `StoreRef` 64 → 12)
 - [x] The stream's primitive shrinks: the rare large variants (frosted material, path, shader, color effect) move out of line (152 → 72 bytes, its widest leaf beside its tag)
 - [x] Lowering joins a draw to the open segment without building batch items when kind, bind group, clip, target and space match
-- [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did
+- [x] Surface draw keys and pass sums skip the hash work an unchanged entry already did — measured and declined: dropping the hash entirely leaves `upload_100k_steady` within noise, and caching each entry's inputs (56 bytes an entry) made it 5–20% slower; the reasoning is in `Viso_Rendering.md`
 - [x] Splice: a subtree whose shape changed replaces its span of the stream, and the renderer re-ingests and re-lowers only that span (a virtual list mounting a row, a text edit)
   - [x] Store entries drop the positional transform/brush ids nothing read
   - [x] Renderer `splice`: runs of leaves in the surface pass outside a folded group splice the paint order and every leaf store, later entries moving their stream index and slot; the frame is re-lowered, synced and keyed; differential tests against a whole upload, store by store, and on present

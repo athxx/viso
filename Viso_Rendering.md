@@ -809,6 +809,8 @@ Chunk 记录：order range、bounds、primitive ranges、pipeline/material summa
 4. 各 family 的改写位置本就按 paint order 升序，经同一个 dirty-range coalescer 只上传这些 slot。
 5. 改写过的 entry 重算 surface draw key。offscreen pass 的内容 key 是各 entry key 按位置混合后的和，一项变化就地加减，再沿 composite 向上直到 surface draw。自上次 present 以来位移没变（`Transforms` 的 epoch 相同）时，damage 直接比较这些 draw 新旧 key，不再整表 diff。
 
+整份上传仍为每个 entry 重算 key 与 pass 内容和，不按 entry 缓存。实测（100k tile 的稳态整份上传）把 key 的 hash 整个去掉，耗时落在噪声内：这一步的时间花在读 paint order、写 surface draw 的内存流上，hash 的乘法链与访存重叠；而为未变 entry 记下 key 的输入（content key、origin、space、clip 与折叠到一半的 key）每项要 56 字节，多出的内存流让同一测量慢了 5–20%。
+
 **Fade patch（已实现）**。opacity 在 (0, 1) 内变化而 layer 的 plan 不变（同样的 reason 被同样的 rung 消除）时，`Layer` primitive 也是一个可 patch 的位置。upload 时每个 layer 记下它的 stream 区间、请求给 planner 的 `LayerRequest`、父级 fold 和绘制方式（in-pass / fold / offscreen pass）。patch 用新 opacity 重新跑 planner，`requested` / `eliminated` / `surviving` 任一变化就拒绝；clip、blur、backdrop 也必须不变。
 
 - offscreen layer（没有 color op、没有 advanced blend）：改 pass 的 opacity 与 pass key，把 composite instance 的 alpha 换成新值，按记录的 image scratch slot 重新 lower，只上传这一个 slot，并沿 composite 换 surface draw key。

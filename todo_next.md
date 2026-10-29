@@ -1357,7 +1357,7 @@ output, a live macOS session) is listed with the device runs of N8.
   resize frame p50/p95 7.8/9.0 ms, GPU 0.14/0.20 ms; rescale 7.7/65 ms (a drawable of another
   size each frame), GPU 0.08/0.20 ms; recreate 0.9/1.6 ms, GPU 0.19/0.20 ms, nothing laid out
   or painted again and 48 bytes uploaded.
-- [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did
+- [x] Surface draw keys and pass sums skip the hash work an unchanged entry already did — measured and declined: dropping the hash entirely leaves `upload_100k_steady` within noise, and caching each entry's inputs (56 bytes an entry) made it 5–20% slower; the reasoning is in `Viso_Rendering.md`
   (`todo_arch.md`).
 - [ ] An opt-in disk cache of dev snapshots, once the DSL can mark a state sensitive
   (`todo_hotreload.md`).
