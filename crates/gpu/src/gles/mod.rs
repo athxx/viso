@@ -2014,43 +2014,59 @@ impl GpuBackend for Gles3Backend {
             },
             _ => config_format(egl, d.display, d.config),
         };
-        // An 8-bit window encodes in the sRGB colorspace where EGL offers it.
-        let format = match linear.srgb() {
-            Some(srgb) if d.srgb_colorspace => srgb,
-            _ => linear,
+        // An 8-bit window encodes in the sRGB colorspace where EGL offers it
+        // for this window, else in linear values the last pass encodes.
+        let srgb = match linear.srgb() {
+            Some(srgb) if d.srgb_colorspace => Some(srgb),
+            _ => None,
         };
-        let colorspace = if format.is_srgb() {
-            [EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SRGB_KHR]
-        } else {
-            [EGL_NONE, EGL_NONE]
-        };
-        let egl_surface = if matches!(native, Native::Pbuffer) {
-            let attribs = [
-                EGL_WIDTH,
-                w,
-                EGL_HEIGHT,
-                h,
-                colorspace[0],
-                colorspace[1],
-                EGL_NONE,
-            ];
-            // SAFETY: a pbuffer of the display's config; attributes
-            // terminated.
-            unsafe { (egl.eglCreatePbufferSurface)(d.display, d.config, attribs.as_ptr()) }
-        } else {
-            let attribs = [
-                colorspace[0] as EGLAttrib,
-                colorspace[1] as EGLAttrib,
-                EGL_NONE as EGLAttrib,
-            ];
-            // SAFETY: `window` is the platform's native window for this
-            // display (a `wl_egl_window`, an `xcb_window_t*`, an
-            // `ANativeWindow`, a `gbm_surface`), alive until the surface is
-            // destroyed; the attribute list is terminated.
-            unsafe {
-                (egl.eglCreatePlatformWindowSurface)(d.display, d.config, window, attribs.as_ptr())
+        let make = |srgb: bool| {
+            let colorspace = if srgb {
+                [EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SRGB_KHR]
+            } else {
+                [EGL_NONE, EGL_NONE]
+            };
+            if matches!(native, Native::Pbuffer) {
+                let attribs = [
+                    EGL_WIDTH,
+                    w,
+                    EGL_HEIGHT,
+                    h,
+                    colorspace[0],
+                    colorspace[1],
+                    EGL_NONE,
+                ];
+                // SAFETY: a pbuffer of the display's config; attributes
+                // terminated.
+                unsafe { (egl.eglCreatePbufferSurface)(d.display, d.config, attribs.as_ptr()) }
+            } else {
+                let attribs = [
+                    colorspace[0] as EGLAttrib,
+                    colorspace[1] as EGLAttrib,
+                    EGL_NONE as EGLAttrib,
+                ];
+                // SAFETY: `window` is the platform's native window for this
+                // display (a `wl_egl_window`, an `xcb_window_t*`, an
+                // `ANativeWindow`, a `gbm_surface`), alive until the surface
+                // is destroyed; the attribute list is terminated.
+                unsafe {
+                    (egl.eglCreatePlatformWindowSurface)(
+                        d.display,
+                        d.config,
+                        window,
+                        attribs.as_ptr(),
+                    )
+                }
             }
         };
+        let mut egl_surface = make(srgb.is_some());
+        let mut format = srgb.unwrap_or(linear);
+        // A driver may list the colorspace yet refuse it for this window (a
+        // GBM surface on some): the window is made linear instead.
+        if egl_surface.is_null() && srgb.is_some() {
+            egl_surface = make(false);
+            format = linear;
+        }
         assert!(
             !egl_surface.is_null(),
             "eglCreate*Surface failed: {:#x}",

@@ -232,6 +232,7 @@ pub(crate) enum Chore {
     /// Read what the clipboard holds of `kinds` and deliver it as a `Paste`
     /// to the window, carrying `token`: always for a request, only when it
     /// holds some for a gesture (no token).
+    #[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
     Paste {
         window: WindowId,
         kinds: crate::ClipboardKinds,

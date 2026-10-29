@@ -150,6 +150,8 @@ pub struct MacApp {
     next_window_id: u32,
     windows: Vec<MacWindow>,
     launched: bool,
+    /// A window stands in for an embedded panel, which the app owns whole.
+    emulating: bool,
     /// Kept alive: `setDelegate` holds only a weak reference.
     _app_delegate: Retained<AppDelegate>,
     /// Kept alive: each custom menu item's `-[NSMenuItem setTarget:]` holds only
@@ -253,6 +255,7 @@ impl MacApp {
             next_window_id: 1,
             windows: Vec::new(),
             launched: false,
+            emulating: false,
             _app_delegate: app_delegate,
             menu_targets: Vec::new(),
             status_item: None,
@@ -536,6 +539,12 @@ fn report_appearance(shared: &Shared, mtm: MainThreadMarker) {
 }
 
 impl PlatformApp for MacApp {
+    /// An emulated panel is no desktop window: the app draws no caption on
+    /// it, as on the panel.
+    fn framed_windows(&self) -> bool {
+        !self.emulating
+    }
+
     fn create_window(&mut self, config: WindowConfig) -> Result<WindowId, PlatformError> {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
@@ -549,6 +558,7 @@ impl PlatformApp for MacApp {
             (free.width * 0.9, free.height * 0.9)
         });
         let emulated = emulation(config.cpu_frames, backing, room);
+        self.emulating |= emulated.is_some();
         let (w, h) = match &emulated {
             Some(e) => panel_points(e.size, e.zoom, backing),
             None => config.logical_size,
@@ -627,15 +637,12 @@ impl PlatformApp for MacApp {
         // surface. Installing it as the content view replaces AppKit's default
         // one; the Metal backend later attaches a `CAMetalLayer` to it.
         let view = VisoContentView::new(self.mtm, id, self.shared.clone(), content_rect);
-        window.setContentView(Some(&view));
         // A CPU-drawn window shows its frames as the content view layer's
-        // image.
+        // image. They are installed before the view joins the window, so the
+        // geometry it reports as it takes the window's backing scale is the
+        // frames' (an emulated panel's, not the screen's).
+        let backing = window.backingScaleFactor();
         let pixels = config.cpu_frames.then(|| {
-            let backing = window.backingScaleFactor();
-            if let Some(e) = &emulated {
-                let (w, h) = panel_points(e.size, e.zoom, backing);
-                window.setContentSize(NSSize::new(w, h));
-            }
             Rc::new(match &emulated {
                 Some(e) => LayerScanout::new(&view, e.format, backing, e.zoom, Some(e.scale)),
                 None => LayerScanout::new(&view, ScanoutFormat::Xrgb8888, backing, 1.0, None),
@@ -645,6 +652,11 @@ impl PlatformApp for MacApp {
             view.ivars().logical.set(pixels.logical_per_point());
             view.ivars().pixels.replace(Some(pixels.clone()));
             delegate.ivars().pixels.replace(Some(pixels.clone()));
+        }
+        window.setContentView(Some(&view));
+        if let (Some(e), Some(_)) = (&emulated, &pixels) {
+            let (w, h) = panel_points(e.size, e.zoom, backing);
+            window.setContentSize(NSSize::new(w, h));
         }
         window.makeFirstResponder(Some(&view));
         let access = MacAccess::attach(&view, id, self.access_sink());

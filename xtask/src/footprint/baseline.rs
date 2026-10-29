@@ -14,6 +14,8 @@ pub(super) struct Meta {
     pub(super) machine: String,
     pub(super) rustc: String,
     pub(super) makepad: Option<String>,
+    /// The board the `-board` rows ran on, when they were measured.
+    pub(super) board: Option<String>,
     pub(super) build: String,
     pub(super) runs: u32,
 }
@@ -41,6 +43,7 @@ impl Meta {
                 .unwrap_or_default();
                 Some(format!("{rev} ({date})"))
             }),
+            board: None,
             build: build::profile_settings(),
             runs,
         }
@@ -138,6 +141,9 @@ pub(super) fn markdown(meta: &Meta, rows: &[Row]) -> String {
     if let Some(makepad) = &meta.makepad {
         out.push_str(&format!("- Makepad: {makepad}\n"));
     }
+    if let Some(board) = &meta.board {
+        out.push_str(&format!("- Board (the `-board` rows): {board}\n"));
+    }
     out.push_str(&format!("- Build: {}\n", meta.build));
     out.push_str(&format!(
         "- Each value: the median of {} runs after one warm-up\n",
@@ -210,6 +216,9 @@ fn json(meta: &Meta, rows: &[Row]) -> String {
     if let Some(makepad) = &meta.makepad {
         out.push_str(&format!("  \"makepad\": {},\n", quoted(makepad)));
     }
+    if let Some(board) = &meta.board {
+        out.push_str(&format!("  \"board\": {},\n", quoted(board)));
+    }
     out.push_str(&format!("  \"build\": {},\n", quoted(&meta.build)));
     out.push_str(&format!("  \"runs\": {},\n", meta.runs));
     out.push_str("  \"rows\": [");
@@ -253,13 +262,14 @@ pub(super) struct Recorded {
     machine: String,
     rustc: String,
     makepad: Option<String>,
+    board: Option<String>,
     rows: Vec<Row>,
 }
 
 impl Recorded {
     /// The baseline with `rows` measured anew: each replaces the row of its
-    /// subject in place, a new one goes last. Makepad's revision is kept for
-    /// its rows when this run measured none of them.
+    /// subject in place, a new one goes last. Makepad's revision and the
+    /// board are kept for their rows when this run measured none of them.
     pub(super) fn merge(self, mut meta: Meta, rows: Vec<Row>) -> (Meta, Vec<Row>) {
         let mut merged = self.rows;
         for row in rows {
@@ -270,6 +280,9 @@ impl Recorded {
         }
         if meta.makepad.is_none() && merged.iter().any(|r| r.framework == "makepad") {
             meta.makepad = self.makepad;
+        }
+        if meta.board.is_none() && merged.iter().any(|r| r.profile.ends_with("-board")) {
+            meta.board = self.board;
         }
         (meta, merged)
     }
@@ -312,6 +325,7 @@ fn parse(text: &str) -> Result<Recorded, String> {
         machine: string(&value, "machine").unwrap_or_default(),
         rustc: string(&value, "rustc").unwrap_or_default(),
         makepad: string(&value, "makepad"),
+        board: string(&value, "board"),
         rows,
     })
 }
@@ -404,6 +418,7 @@ mod tests {
             machine: "Test CPU".into(),
             rustc: "rustc 1.0".into(),
             makepad: Some("abc (2026-09-12)".into()),
+            board: None,
             build: build::profile_settings(),
             runs: 3,
         }
@@ -427,6 +442,7 @@ mod tests {
         fresh.set("binary_bytes", Some(1.0));
         let this_run = Meta {
             makepad: None,
+            board: None,
             ..meta()
         };
         let (meta, merged) = recorded.merge(this_run, vec![row("viso", 4.0, 2.0), fresh]);

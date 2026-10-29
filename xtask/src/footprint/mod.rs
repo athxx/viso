@@ -16,6 +16,12 @@
 //!   settles idle, the CPU time and idle wakeups of three idle seconds, the
 //!   GPU memory the OS charges to it (`GPU (OS)`), and the counted heap
 //!   ([`window`]).
+//! - A board subject is cross-built for a board (`--board <ssh destination>`,
+//!   `--board-triple`, `aarch64-unknown-linux-gnu` by default) and watched
+//!   there on its display: the startup, the idle CPU and wakeups and the
+//!   resident set from `/proc`, and the counted heap ([`board`]).
+//!   `--board-shell` is the command running a script there (`sh -s`), and
+//!   each `--board-env NAME=value` a variable the app runs with.
 //! - A headless subject plays scenarios (button clicks that change the
 //!   count's text; wheel scrolls of the list) and reports each frame's
 //!   UI-thread time, its heap and the device bytes its memory budget counts
@@ -42,6 +48,7 @@
 //! taken elsewhere can.
 
 mod baseline;
+mod board;
 mod build;
 mod headless;
 mod window;
@@ -50,7 +57,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const USAGE: &str = "cargo xtask footprint [--check | --record | --against <rev>] [--runs <n>] \
-                     [--makepad <dir> | --no-makepad] [--only <subject>]...";
+                     [--makepad <dir> | --no-makepad] [--only <subject>]... \
+                     [--board <ssh destination> [--board-triple <triple>] \
+                     [--board-shell <command>] [--board-env NAME=value]...]";
 
 /// What a metric counts, which decides how it is printed.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,7 +122,7 @@ impl Metric {
 /// between runs while the heap holds).
 const METRICS: &[Metric] = &[
     metric("binary_bytes", "binary", Unit::Bytes, 0.03, 16.0 * KIB).paired(0.01, 4.0 * KIB),
-    metric("text_bytes", "__TEXT", Unit::Bytes, 0.03, 16.0 * KIB).paired(0.01, 4.0 * KIB),
+    metric("text_bytes", "text", Unit::Bytes, 0.03, 16.0 * KIB).paired(0.01, 4.0 * KIB),
     metric("data_bytes", "data", Unit::Bytes, 0.05, 4.0 * KIB).paired(0.02, KIB),
     metric("bss_bytes", "bss", Unit::Bytes, 0.05, 4.0 * KIB).paired(0.02, KIB),
     metric("startup_ms", "first frame (ms)", Unit::Millis, 0.5, 20.0),
@@ -266,6 +275,8 @@ enum Mode {
     Headless,
     /// Only built: its size is all that is taken.
     Size,
+    /// Runs on the board's display and is watched there.
+    Board,
 }
 
 /// One build of an app to measure.
@@ -291,6 +302,17 @@ const EMBEDDED_CPU_ENV: &[(&str, &str)] = &[
 
 const RELEASE_ENV: &[(&str, &str)] = &[("VISO_PROFILE", "release")];
 
+/// The facade features of the embedded-gpu profile on GLES.
+const EMBEDDED_GPU: &[&str] = &["viso/gles", "viso/kms", "viso/rasterizer"];
+
+/// The variables of an embedded-gpu release build, its font subset to the
+/// embedded-cpu one's.
+const EMBEDDED_GPU_ENV: &[(&str, &str)] = &[
+    ("VISO_PROFILE", "release"),
+    ("VISO_FOOTPRINT", "embedded-gpu"),
+    ("VISO_FONT_CHARSET", "ascii"),
+];
+
 /// The Viso subjects: each profile `viso build` makes for this host, with a
 /// window and headless.
 fn viso_subjects() -> Vec<Subject> {
@@ -298,6 +320,7 @@ fn viso_subjects() -> Vec<Subject> {
         features,
         default_features: defaults,
         env,
+        triple: None,
     };
     vec![
         Subject {
@@ -327,6 +350,30 @@ fn viso_subjects() -> Vec<Subject> {
                 false,
                 EMBEDDED_CPU_ENV,
             ),
+        },
+    ]
+}
+
+/// The board subjects: each embedded profile, cross-built for `triple`.
+fn board_subjects(triple: &str) -> Vec<Subject> {
+    let app = |features, env| build::Build::Viso {
+        features,
+        default_features: false,
+        env,
+        triple: Some(triple.to_owned()),
+    };
+    vec![
+        Subject {
+            framework: "viso",
+            profile: "embedded-cpu-board",
+            mode: Mode::Board,
+            build: app(EMBEDDED_CPU, EMBEDDED_CPU_ENV),
+        },
+        Subject {
+            framework: "viso",
+            profile: "embedded-gpu-board",
+            mode: Mode::Board,
+            build: app(EMBEDDED_GPU, EMBEDDED_GPU_ENV),
         },
     ]
 }
@@ -361,6 +408,7 @@ struct Options {
     runs: u32,
     makepad: Option<PathBuf>,
     only: Vec<String>,
+    board: Option<board::Board>,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -374,8 +422,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
             .map(PathBuf::from)
             .or_else(|| Some(root.join("../makepad"))),
         only: Vec::new(),
+        board: None,
     };
     let mut explicit_makepad = false;
+    let (mut host, mut triple, mut shell, mut env) = (None, None, None, Vec::new());
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || {
@@ -399,8 +449,34 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--no-makepad" => options.makepad = None,
             "--only" => options.only.push(value()?),
+            "--board" => host = Some(value()?),
+            "--board-triple" => triple = Some(value()?),
+            "--board-shell" => shell = Some(value()?),
+            "--board-env" => {
+                let pair = value()?;
+                if !pair.contains('=') {
+                    return Err(format!("--board-env takes NAME=value\nusage: {USAGE}"));
+                }
+                env.push(pair);
+            }
             other => return Err(format!("unknown argument {other:?}\nusage: {USAGE}")),
         }
+    }
+    match host {
+        Some(host) => {
+            options.board = Some(board::Board {
+                host,
+                shell: shell.unwrap_or_else(|| "sh -s".to_owned()),
+                triple: triple.unwrap_or_else(|| "aarch64-unknown-linux-gnu".to_owned()),
+                env,
+            });
+        }
+        None if triple.is_some() || shell.is_some() || !env.is_empty() => {
+            return Err(format!(
+                "the --board-* options need --board\nusage: {USAGE}"
+            ));
+        }
+        None => {}
     }
     let modes = [options.check, options.record, options.against.is_some()];
     if modes.iter().filter(|&&on| on).count() > 1 {
@@ -447,6 +523,9 @@ fn run(options: &Options) -> Result<(), String> {
         .as_deref()
         .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.to_owned()));
     let mut subjects = viso_subjects();
+    if let Some(board) = &options.board {
+        subjects.extend(board_subjects(&board.triple));
+    }
     if let Some(dir) = &makepad {
         subjects.extend(makepad_subjects(dir));
     }
@@ -458,7 +537,8 @@ fn run(options: &Options) -> Result<(), String> {
     };
     let _ = std::fs::remove_dir_all(&scratch);
     let (rows, base) = measured?;
-    let meta = baseline::Meta::collect(makepad.as_deref(), options.runs);
+    let mut meta = baseline::Meta::collect(makepad.as_deref(), options.runs);
+    meta.board = options.board.as_ref().and_then(board::Board::describe);
     println!("{}", baseline::markdown(&meta, &rows));
     let dir = root.join("benches/footprint");
     if let (Some(rev), Some(base)) = (&options.against, base) {
@@ -564,6 +644,10 @@ fn measure(
                 Mode::Headless => {
                     headless::measure(binary, scene, options.runs, scratch, &mut row)?
                 }
+                Mode::Board => {
+                    let board = options.board.as_ref().expect("board subjects need a board");
+                    board.measure(binary, scene, options.runs, &mut row)?
+                }
             }
             rows.push(row);
             if subject.mode == Mode::Size {
@@ -636,6 +720,19 @@ mod tests {
         assert!(args(&["--runs"]).is_err());
         assert!(args(&["--makepad", "/nonexistent/makepad"]).is_err());
         assert!(args(&["--fast"]).is_err());
+        let o = args(&["--board", "pi", "--board-env", "VISO_KMS_MODE=800x480"]).unwrap();
+        let board = o.board.unwrap();
+        assert_eq!(
+            (
+                board.host.as_str(),
+                board.triple.as_str(),
+                board.shell.as_str()
+            ),
+            ("pi", "aarch64-unknown-linux-gnu", "sh -s")
+        );
+        assert_eq!(board.env, ["VISO_KMS_MODE=800x480"]);
+        assert!(args(&["--board-triple", "armv7-unknown-linux-gnueabihf"]).is_err());
+        assert!(args(&["--board", "pi", "--board-env", "MODE"]).is_err());
     }
 
     #[test]

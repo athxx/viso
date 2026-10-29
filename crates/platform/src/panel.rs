@@ -5,6 +5,10 @@
 //! target's `display`, which `viso build` sets); else the display's own. The
 //! KMS backend applies them to the card, and desktop emulation shapes a
 //! window like the panel.
+//!
+//! With `VISO_SCANOUT_CAPTURE` naming a file, each CPU-drawn frame either
+//! presents is written there as a PNG, replacing the one before, so that a
+//! board's frames can be compared pixel for pixel with the emulated panel's.
 
 #![cfg_attr(test, allow(dead_code))]
 
@@ -16,6 +20,60 @@ pub(crate) fn setting(name: &str, built: Option<&'static str>) -> Option<String>
     std::env::var(name)
         .ok()
         .or_else(|| built.map(str::to_owned))
+}
+
+/// Where presented CPU frames are written (`VISO_SCANOUT_CAPTURE`).
+pub(crate) struct Capture(std::path::PathBuf);
+
+impl Capture {
+    /// The capture the environment asks for, if any.
+    pub(crate) fn configured() -> Option<Capture> {
+        std::env::var_os("VISO_SCANOUT_CAPTURE")
+            .filter(|path| !path.is_empty())
+            .map(|path| Capture(path.into()))
+    }
+
+    /// Writes the frame `pixels`, `width` pixels in `format` a row and
+    /// `stride` bytes apart. The file is replaced whole, never left half
+    /// written.
+    pub(crate) fn frame(&self, format: ScanoutFormat, width: u32, pixels: &[u8], stride: usize) {
+        let height = (pixels.len() / stride.max(1)) as u32;
+        let png =
+            crate::clipboard::png::encode(width, height, &rgba(format, width, pixels, stride));
+        let part = self.0.with_extension("part");
+        if std::fs::write(&part, png).is_ok() {
+            let _ = std::fs::rename(&part, &self.0);
+        }
+    }
+}
+
+/// Opaque RGBA8 of `pixels` in `format`; an RGB565 channel widened by
+/// repeating its high bits.
+fn rgba(format: ScanoutFormat, width: u32, pixels: &[u8], stride: usize) -> Vec<u8> {
+    let width = width as usize;
+    let mut out = Vec::with_capacity(width * 4 * (pixels.len() / stride.max(1)));
+    for row in pixels.chunks_exact(stride) {
+        match format {
+            ScanoutFormat::Xrgb8888 => {
+                for px in row[..width * 4].as_chunks::<4>().0 {
+                    out.extend_from_slice(&[px[2], px[1], px[0], 255]);
+                }
+            }
+            ScanoutFormat::Rgb565 => {
+                for px in row[..width * 2].as_chunks::<2>().0 {
+                    let v = u16::from_le_bytes([px[0], px[1]]);
+                    let (r, g, b) = ((v >> 11) as u8, ((v >> 5) & 63) as u8, (v & 31) as u8);
+                    out.extend_from_slice(&[
+                        (r << 3) | (r >> 2),
+                        (g << 2) | (g >> 4),
+                        (b << 3) | (b >> 2),
+                        255,
+                    ]);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A mode: `1280x720`, or `1280x720@60` with its refresh rate.
@@ -69,6 +127,20 @@ mod tests {
         assert_eq!(parse_mode("0x480"), None);
         assert_eq!(parse_mode("800"), None);
         assert_eq!(parse_mode("800xabc"), None);
+    }
+
+    #[test]
+    fn a_frame_is_captured_as_opaque_rgba() {
+        let xrgb = [1, 2, 3, 9, 4, 5, 6, 9, 0, 0, 0, 0];
+        assert_eq!(
+            rgba(ScanoutFormat::Xrgb8888, 2, &xrgb, 12),
+            [3, 2, 1, 255, 6, 5, 4, 255]
+        );
+        let white_red = [0xff, 0xff, 0x00, 0xf8];
+        assert_eq!(
+            rgba(ScanoutFormat::Rgb565, 2, &white_red, 4),
+            [255, 255, 255, 255, 255, 0, 0, 255]
+        );
     }
 
     #[test]

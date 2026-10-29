@@ -257,7 +257,7 @@ Viso 必须做到：
 10. Studio/Inspector 只能通过 public/internal-tools API 观察系统，不能反向污染 runtime 核心。
 11. CLI / Studio / IDE / CI 复用同一套 compiler、build、inspection 与 packaging service，不复制实现。
 12. 性能回归进入 CI，不能只依靠人工感知。
-13. 资源占用回归同样进入 CI：每个 Footprint Profile 记录二进制体积、静态内存、峰值 heap、空闲 RSS 与首帧时间（§50A.5）。度量与基线已有（`cargo xtask footprint`，目前覆盖 desktop、embedded-cpu 与 headless）；CI 接入与 mobile/web/embedded-gpu 的度量是目标（尚未实现）。
+13. 资源占用回归同样进入 CI：每个 Footprint Profile 记录二进制体积、静态内存、峰值 heap、空闲 RSS 与首帧时间（§50A.5）。度量、基线与 CI 门禁已有（`cargo xtask footprint`，覆盖 desktop、embedded-cpu、headless 与两种板卡 subject）；mobile/web 的度量是目标（尚未实现）。
 14. Damage-driven present：任何 Device Class 上的局部变化都只重绘、只上屏受影响区域（§30.3）。
 
 ### 3.2 非目标
@@ -4118,16 +4118,21 @@ fonts   = { charset = ["latin", "gb2312"] }
 
 ### 50A.5 Footprint 指标与 CI 预算
 
-每个 profile 记录（`cargo xtask footprint`；尚未接入 CI）：stripped + LTO 二进制体积、静态内存（`.data` + `.bss`）、峰值与空闲 RSS / memory footprint、GPU 内存、heap 驻留与峰值、冷启动到首帧时间、空闲 CPU 与 wakeup 次数、headless 每帧 UI 线程时间。每帧 damage 像素由 frame profile 计数（§55.1）。
+每个 profile 记录（`cargo xtask footprint`，CI 的 `cost` job）：stripped + LTO 二进制体积、静态内存（`.data` + `.bss`）、峰值与空闲 RSS / memory footprint、GPU 内存、heap 驻留与峰值、冷启动到首帧时间、空闲 CPU 与 wakeup 次数、headless 每帧 UI 线程时间。每帧 damage 像素由 frame profile 计数（§55.1）。
 
-初始预算如下。这些数字是**假设**，需要用第一批板卡的 benchmark 校准（AGENTS §7.3）：
+预算按第一批板卡实测校准（2026-10-28，AGENTS §7.3）。板卡是 aarch64 Linux 6.16 的 vkms 虚拟机（5 核、1.9 GiB，宿主 Apple M4），面板 1024×768 xrgb8888 @1；embedded-gpu 用 GBM 上的 Mesa llvmpipe（软件 GLES）。真实 Cortex-A 板卡更慢，所以首帧预算保留余量：
 
-| 场景 | embedded-gpu | embedded-cpu |
-|---|---|---|
-| `01-counter` 二进制 | ≤ 4 MB | ≤ 2.5 MB |
-| `01-counter` 空闲 RSS（不含 GPU 驱动） | ≤ 12 MB | ≤ 6 MB |
-| 冷启动到首帧 | ≤ 250 ms | ≤ 400 ms |
-| 空闲 wakeup | 0 次/s | 0 次/s |
+| 场景 | embedded-gpu 预算 | 实测 | embedded-cpu 预算 | 实测 |
+|---|---|---|---|---|
+| `01-counter` 二进制 | ≤ 4.5 MB | 7.41 MiB（超） | ≤ 4 MB | 6.88 MiB（超） |
+| `01-counter` 空闲 RSS（不含 GPU 驱动） | ≤ 16 MB | 驱动未分离：143 MiB 含 llvmpipe，app heap 6.74 MiB | ≤ 16 MB（1024×768） | 13.79 MiB，heap 5.18 MiB（含 3 MiB 帧缓冲） |
+| 冷启动到首帧 | ≤ 250 ms | 130 ms | ≤ 400 ms | 30 ms |
+| 空闲 wakeup | 0 次/s | 0 | 0 次/s | 0 |
+
+- 初始假设是 4 MB / 2.5 MB 二进制与 12 MB / 6 MB RSS。2.5 MB 装不下文字 shaping（rustybuzz 与 ttf-parser 约 350 KiB）、CpuRaster 与 std；6 MB RSS 装不下 1024×768 的 3 MiB 帧缓冲加已驻留的代码页。所以预算按面板缩放：RSS 是帧缓冲（宽 × 高 × 每像素字节）加 13 MB 以内。
+- **二进制目前超预算**：app 的 view 按名字取 widget、按名字取 native，所以每个 widget、game kit（约 164 KiB）、scene3d（约 99 KiB）、全部图片解码器（约 480 KiB）与 svg（约 198 KiB）都链接进 counter。按 app 实际用到的部分链接是下一步（`todo_next.md` N8）。
+- 嵌入式之外的二进制在 10-18 到 10-28 之间同样增长：desktop counter 从 5.00 MiB 到 8.91 MiB，embedded-cpu 从 4.58 MiB 到 6.92 MiB。CI 的 `cost` 只与上一个提交成对比较，单个提交都在容差内，累计增长没有门禁。
+- embedded-gpu 的 RSS 在真实 GPU 板卡上另测：llvmpipe 的 LLVM JIT 与光栅线程占了 RSS 的绝大部分，不代表硬件驱动。
 
 Desktop / Mobile 不设绝对上限，只做趋势回归（§59.1）。同时与 Makepad 的同等示例在同一台机器上对比二进制体积、RSS、首帧时间和空闲 CPU，作为「比 Makepad 更省资源」的可度量依据（AGENTS §38.6）。
 
@@ -4136,27 +4141,30 @@ Desktop / Mobile 不设绝对上限，只做趋势回归（§59.1）。同时与
 - **参照 app**：`benches/footprint`，`counter` 是一个 label 加一个使计数加一的按钮（`.vs`），`list` 再加一个 10 000 行的 `VirtualList`（每行一个 label）；字体为包内 Noto Sans Latin。Makepad 侧是 `benches/footprint/makepad`：`counter` 即 Makepad `examples/counter`，`list` 按 `examples/portallist_hit` 的 `PortalList` 写法；它们对 Makepad checkout（`--makepad`、`$MAKEPAD_DIR` 或 workspace 旁的 `../makepad`）在独立 crate 中构建，沿用 checkout 的 `Cargo.lock` 与 `.cargo/config.toml`，另量 Makepad 原样 `examples/counter` 的体积。两侧装同一种计数 allocator（Viso 为 `viso::alloc::Counting`），经 stdin 报告 heap。
 - **构建**：共用 `CARGO_TARGET_DIR`，命令行定义的 `footprint` Cargo profile（opt-level 3、thin LTO、1 个 codegen unit、strip、unwind），不受两个 workspace 与用户 `[profile.release]` 影响。Viso 各 profile 的 feature 与 `viso build` 相同：desktop 为默认 feature；embedded-cpu 为 `--no-default-features --features viso/cpu,viso/kms,viso/rasterizer`，`VISO_FOOTPRINT=embedded-cpu`、`VISO_FONT_CHARSET=ascii`；两者各加 `viso/headless` 即 headless subject。
 - **窗口 subject**（macOS）：在 `/usr/bin/time -l` 下运行，首帧为 spawn 到 app 报告首帧提交（Viso `VISO_DEBUG`，Makepad `MAKEPAD_TOTAL_DRAWCALLS_DEBUG` 的首个 pass）；首帧 2 s 后 `top` 计 3 s 空闲的 CPU 时间与 idle wakeup，`ps` 取 RSS，`footprint` 取 memory footprint 与其中 `IOAccelerator`/`IOSurface`（GPU (OS)）；峰值 RSS 与峰值 footprint 取自 `time -l`。
+- **板卡 subject**（`--board <ssh 目的地>`）：embedded-cpu 与 embedded-gpu（`viso/gpu,viso/kms`，GLES）两个 feature 集为 `--board-triple`（缺省 `aarch64-unknown-linux-gnu`）交叉构建，上传后经 `--board-shell`（缺省 `sh -s`，可换成在板卡容器里运行的命令）运行，`--board-env NAME=value` 是 app 的运行时变量。首帧为启动到 `VISO_DEBUG` 报告首帧提交，两端都读 `/proc/uptime`（10 ms 粒度）；首帧 2 s 后 3 s 的 utime+stime 计空闲 CPU，所有线程的自愿上下文切换计 wakeup，其后从 `/proc/<pid>/status` 取 RSS（`VmRSS`）与峰值（`VmHWM`）；heap 来自同一计数 allocator。体积从 ELF section 头读（`SHF_ALLOC`：`NOBITS` 为 bss，可写为 data，其余为 text），不需要目标平台的 binutils。baseline 另记板卡（model、CPU 数、内存、内核与 triple）。
+- **板卡与仿真逐字节比较**：`VISO_SCANOUT_CAPTURE=<文件>` 让 KMS 输出与 macOS 仿真窗口把每个上屏的 CPU 帧写成不透明 RGBA PNG（整文件替换，不留半写）。同一面板（`VISO_KMS_MODE`、`VISO_KMS_FORMAT`、`VISO_SCALE`）下 counter、list 与 rgb565 的 counter 在 vkms 板卡与仿真上逐字节相同。
 - **headless subject**：播放 scenario（120 次点击按钮，`list` 另 120 次滚轮，每次 36 px），读 `VISO_HEADLESS_PROFILE` 中每帧 UI 线程时间（含 raster）的 p50/p95，与 `VISO_HEADLESS_DETAIL` 的 `budget` 组（heap、GPU (budget)）。不改变任何东西的输入不运行帧，所以没有可计时的「空闲帧」：空闲成本即窗口 subject 的空闲 CPU 与 wakeup。
 - 每个值取一次 warm-up 之后 3 次运行的中位数。`--record` 写 `benches/footprint/baseline.json` 与 `baseline.md`（机器、rustc、日期、Makepad 版本）；`--check` 只量 Viso，任一指标超过 baseline 的容差（体积 3–5%，RSS 20%，footprint 50%，时间 50%，各带绝对下限）即失败，用于 CI 趋势报告。
 
-当前数字（`benches/footprint/baseline.md`：2026-10-18 记录，桌面窗口行其后重录；Apple M4 16 GiB，macOS 27.0.1，rustc 1.99.1，Makepad `70c90b7c0bc0`），桌面窗口：
+当前数字（`benches/footprint/baseline.md`：Viso 行 2026-10-28 记录，Makepad 行 2026-10-18；Apple M4 16 GiB，macOS 27.0.1，rustc 1.99.1，Makepad `70c90b7c0bc0`），桌面窗口：
 
 | | Viso counter | Makepad counter | Viso list | Makepad list |
 |---|---:|---:|---:|---:|
-| 二进制（stripped） | 5.00 MiB | 12.24 MiB（原样示例 11.67） | 5.00 MiB | 12.29 MiB |
-| 首帧提交 | 108 ms | 2179 ms | 98 ms | 2232 ms |
-| 峰值 / 空闲 RSS | 81 / 77 MiB | 346 / 282 MiB | 81 / 71 MiB | 348 / 285 MiB |
-| 峰值 / 空闲 footprint | 76 / 26 MiB | 319 / 166 MiB | 81 / 31 MiB | 326 / 172 MiB |
+| 二进制（stripped） | 8.91 MiB | 12.24 MiB（原样示例 11.67） | 8.91 MiB | 12.29 MiB |
+| 首帧提交 | 94 ms | 2179 ms | 94 ms | 2232 ms |
+| 峰值 / 空闲 RSS | 85 / 84 MiB | 346 / 282 MiB | 85 / 85 MiB | 348 / 285 MiB |
+| 峰值 / 空闲 footprint | 77 / 40 MiB | 319 / 166 MiB | 82 / 32 MiB | 326 / 172 MiB |
 | GPU (OS) | 5.3 MiB | 18.9 MiB | 10.2 MiB | 21.4 MiB |
-| heap 驻留 / 峰值 | 1.5 / 1.5 MiB | 103 / 138 MiB | 1.6 / 1.6 MiB | 104 / 138 MiB |
-| 空闲 CPU / wakeup | 0 ms/s / 0.3 次/s | 3.3 ms/s / 0.3 次/s | 0 / 0 | 0 / 0.3 |
+| heap 驻留 / 峰值 | 1.5 / 1.5 MiB | 103 / 138 MiB | 1.7 / 1.7 MiB | 104 / 138 MiB |
+| 空闲 CPU / wakeup | 0 ms/s / 0 次/s | 3.3 ms/s / 0.3 次/s | 0 / 0 | 0 / 0.3 |
 
-embedded-cpu（桌面窗口，CpuRaster）：二进制 4.58 MiB，空闲 footprint 24 / 40 MiB（counter / list），heap 驻留 3.7 / 8.7 MiB、峰值 5.1 / 12.5 MiB（含 CPU 帧缓冲）。headless（CpuRaster，420×600@1）：点击帧 p50 18–25 µs，滚动帧 p50 149–152 µs、p95 174–178 µs（desktop 与 embedded-cpu 两种 feature 集相同量级）；heap 3.0 / 4.0 MiB（desktop feature 集，counter / list），其中 GPU (budget) 1.07 MiB（1024² 的 glyph coverage atlas）；embedded-cpu feature 集 heap 1.5 / 2.5 MiB，GPU (budget) 326–337 KiB（mask page 按需分页，三个 9×9 图标只占一页 128²）。全部 subject 见 `benches/footprint/baseline.md`。
+embedded-cpu（桌面窗口，CpuRaster）：二进制 6.92 MiB，空闲 footprint 26 / 41 MiB（counter / list），heap 驻留 5.0 / 10.1 MiB、峰值 6.4 / 14.0 MiB（含 CPU 帧缓冲）。headless（CpuRaster，420×600@1）：点击帧 p50 20–26 µs，滚动帧 p50 27–31 µs、p95 278–284 µs（desktop 与 embedded-cpu 两种 feature 集相同量级）；heap 3.0 / 4.2 MiB（desktop feature 集，counter / list），其中 GPU (budget) 1.07–1.12 MiB（1024² 的 glyph coverage atlas）；embedded-cpu feature 集 heap 2.8 / 4.0 MiB，GPU (budget) 329–376 KiB（mask page 按需分页）。板卡（vkms，1024×768@1）：embedded-cpu 二进制 6.88 MiB，首帧 30 ms，空闲 RSS 13.8 / 14.1 MiB，heap 5.2 / 5.4 MiB；embedded-gpu（llvmpipe）7.41 MiB，首帧 130 ms，RSS 143 MiB（含 llvmpipe），heap 6.7 / 7.0 MiB；两者空闲 CPU 与 wakeup 为 0。全部 subject 见 `benches/footprint/baseline.md`。
 
 尚未测到的：
 - 桌面窗口的逐帧 CPU 时间（两侧都没有向真实窗口注入输入的手段；Viso 的逐帧数字来自 headless）；Makepad 的逐帧时间（其 headless 是 `--cfg headless` 加运行时 JIT 编译 shader 的另一条路径，输入只能经 Studio 远程协议注入，与 Viso 不等价）。
 - Viso 桌面的首帧提交时 text 尚未 shape（shaping 在 worker 上，文字在下一帧出现），故桌面 Viso 的「首个含文字帧」约晚一帧；Makepad 首帧前的约 2 s 是主线程在其自身代码中的 CPU 时间（stripped 构建，未进一步归因）。
-- RSS 含 AppKit / Metal 共享页，跨框架比较以 footprint 为准；嵌入式板卡上的 RSS、首帧与 wakeup 需板卡实测（§50A.5 预算仍是假设）。
+- RSS 含 AppKit / Metal 共享页，跨框架比较以 footprint 为准。
+- 真实硬件板卡（Cortex-A 级 CPU、硬件 GPU 驱动）上的首帧与 embedded-gpu 不含驱动的 RSS：目前的板卡是 Apple M4 上的 vkms 虚拟机与 llvmpipe。
 
 ### 50A.6 MCU-ready 不变量（1.0 必须守住）
 

@@ -953,6 +953,8 @@ mod tests {
     }
 
     #[test]
+    // `Ioctl` is a `c_ulong` with glibc and a `c_int` with musl.
+    #[allow(clippy::unnecessary_cast)]
     fn ioctl_numbers_match_the_kernel_headers() {
         assert_eq!(MODE_GETRESOURCES as u64, 0xc040_64a0);
         assert_eq!(MODE_ADDFB2 as u64, 0xc068_64b8);

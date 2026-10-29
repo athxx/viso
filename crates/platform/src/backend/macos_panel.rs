@@ -69,6 +69,9 @@ pub(crate) struct LayerScanout {
     /// The last frame, B, G, R, X, kept so a frame that redraws part of the
     /// window changes only that part.
     frame: RefCell<Frame>,
+    /// Where each frame is also written.
+    #[cfg(feature = "emulate")]
+    capture: Option<crate::panel::Capture>,
 }
 
 #[derive(Default)]
@@ -106,6 +109,8 @@ impl LayerScanout {
             scale: Cell::new(backing / zoom),
             app_scale,
             frame: RefCell::new(Frame::default()),
+            #[cfg(feature = "emulate")]
+            capture: crate::panel::Capture::configured(),
         }
     }
 
@@ -237,6 +242,10 @@ impl Scanout for LayerScanout {
     }
 
     fn present_pixels(&self, pixels: &[u8], stride: usize, damage: &[(u32, u32, u32, u32)]) {
+        #[cfg(feature = "emulate")]
+        if let Some(capture) = &self.capture {
+            capture.frame(self.format, self.size().0, pixels, stride);
+        }
         self.take(pixels, stride, damage);
         self.show();
     }

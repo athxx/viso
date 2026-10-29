@@ -341,6 +341,10 @@ impl PasteReply {
     target_os = "dragonfly",
     test
 ))]
+#[cfg_attr(
+    all(not(target_os = "ios"), not(any(feature = "x11", feature = "wayland"))),
+    allow(dead_code)
+)]
 pub(crate) fn html_text(bytes: &[u8]) -> String {
     let wide = |le: bool| {
         let units: Vec<u16> = bytes[2..]

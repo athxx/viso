@@ -233,8 +233,8 @@ impl Seat {
                 libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
                 libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
             }
-            // SAFETY: as above.
             return Ok(Device {
+                // SAFETY: as above.
                 fd: unsafe { OwnedFd::from_raw_fd(fd) },
                 id: Some(id),
             });
@@ -244,8 +244,8 @@ impl Seat {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: a fresh descriptor nothing else owns.
         Ok(Device {
+            // SAFETY: a fresh descriptor nothing else owns.
             fd: unsafe { OwnedFd::from_raw_fd(fd) },
             id: None,
         })

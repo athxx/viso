@@ -649,6 +649,7 @@ pub(crate) fn session_order(
 }
 
 /// What a tray menu entry is, as `com.canonical.dbusmenu` types it.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrayNodeKind {
     /// The menu itself, id 0.
@@ -659,6 +660,7 @@ pub(crate) enum TrayNodeKind {
 }
 
 /// One entry of the tray menu, its id its index in [`TrayMenu::nodes`].
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TrayNode {
     pub(crate) kind: TrayNodeKind,
@@ -671,11 +673,13 @@ pub(crate) struct TrayNode {
 
 /// The tray menu laid out as `com.canonical.dbusmenu` serves it: a tree of
 /// entries numbered from the root's 0, in the order they show.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TrayMenu {
     pub(crate) nodes: Vec<TrayNode>,
 }
 
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 impl TrayMenu {
     pub(crate) fn build(items: &[Menu]) -> TrayMenu {
         let mut menu = TrayMenu {
@@ -745,6 +749,7 @@ impl TrayMenu {
 }
 
 /// A system action's title where the desktop has no standard one.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 fn system_label(action: SystemAction) -> &'static str {
     match action {
         SystemAction::Quit => "Quit",
@@ -760,6 +765,7 @@ fn system_label(action: SystemAction) -> &'static str {
 /// The `application://` URI docks know the app's launcher by: its desktop
 /// entry's id — the entry it was launched from (`GIO_LAUNCHED_DESKTOP_FILE`),
 /// else its Flatpak id, else the executable's name — plus `.desktop`.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn launcher_uri(
     launched_from: Option<&str>,
     flatpak_id: Option<&str>,
@@ -783,14 +789,17 @@ pub(crate) fn launcher_uri(
 
 /// The heights the tray icon is offered at besides its own, for the host to
 /// pick the one nearest the panel's.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 const TRAY_PIXMAP_HEIGHTS: [u32; 3] = [22, 32, 48];
 
 /// The longest side the icon is offered at.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 const TRAY_PIXMAP_MAX: u32 = 256;
 
 /// `icon` as the `(width, height, ARGB32 in network byte order)` pixmaps a
 /// StatusNotifierItem offers, smallest first: its own size (capped) and the
 /// smaller panel heights.
+#[cfg_attr(not(any(feature = "x11", feature = "wayland")), allow(dead_code))]
 pub(crate) fn tray_pixmaps(icon: &IconImage) -> Vec<(i32, i32, Vec<u8>)> {
     let (w, h) = (icon.width(), icon.height());
     let fit = |height: u32| {

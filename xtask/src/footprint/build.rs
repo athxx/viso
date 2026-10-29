@@ -39,6 +39,8 @@ pub(super) enum Build {
         features: &'static [&'static str],
         default_features: bool,
         env: &'static [(&'static str, &'static str)],
+        /// The triple it is cross-built for; the host's when `None`.
+        triple: Option<String>,
     },
     /// `benches/footprint/makepad` against the checkout.
     Makepad { checkout: PathBuf },
@@ -120,9 +122,17 @@ pub(super) fn build(
             features,
             default_features,
             env,
+            triple,
         } => {
             let mut command = cargo(root, target);
             command.args(["-p", "viso-footprint"]);
+            let out = match triple {
+                Some(triple) => {
+                    command.args(["--target", triple]);
+                    target.join(triple).join(PROFILE)
+                }
+                None => out,
+            };
             if !default_features {
                 command.arg("--no-default-features");
             }
@@ -133,11 +143,14 @@ pub(super) fn build(
             status(command, "the reference app")?;
             // Every profile's build is uplifted to the same path: keep this
             // one apart until it is measured.
-            let name: String = features
+            let mut name: String = features
                 .iter()
                 .map(|f| f.trim_start_matches("viso/"))
                 .collect::<Vec<_>>()
                 .join("-");
+            if let Some(triple) = triple {
+                name = format!("{name}-{triple}");
+            }
             let kept = scratch.join(format!("viso-footprint-{name}"));
             std::fs::copy(out.join("viso-footprint"), &kept)
                 .map_err(|e| format!("cannot keep the reference app: {e}"))?;
@@ -215,20 +228,20 @@ pub(super) fn sizes(binary: &Path, row: &mut Row) -> Result<(), String> {
         .map_err(|e| format!("cannot read {}: {e}", binary.display()))?
         .len();
     row.set("binary_bytes", Some(bytes as f64));
-    let mach_o = cfg!(target_os = "macos");
-    let output = Command::new("size")
-        .arg(if mach_o { "-m" } else { "-A" })
-        .arg(binary)
-        .output();
-    if let Ok(output) = output
-        && output.status.success()
-    {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let sections = if mach_o {
-            mach_o_sections(&text)
-        } else {
-            elf_sections(&text)
-        };
+    let file =
+        std::fs::read(binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?;
+    let sections = if file.starts_with(b"\x7fELF") {
+        elf_sections(&file)
+    } else {
+        Command::new("size")
+            .arg("-m")
+            .arg(binary)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| mach_o_sections(&String::from_utf8_lossy(&o.stdout)))
+    };
+    if let Some(sections) = sections {
         row.set("text_bytes", Some(sections.text as f64));
         row.set("data_bytes", Some(sections.data as f64));
         row.set("bss_bytes", Some(sections.bss as f64));
@@ -281,27 +294,58 @@ fn mach_o_sections(text: &str) -> Sections {
     sections
 }
 
-/// The sections `size -A` lists for an ELF executable.
-fn elf_sections(text: &str) -> Sections {
+/// An ELF executable's allocated sections, read from its section headers
+/// as `size` counts them: read-only ones (code, constants, unwind tables) as
+/// text, writable ones as data, those the loader zero-fills as bss. `None`
+/// for a header that does not parse (a big-endian ELF among them).
+fn elf_sections(file: &[u8]) -> Option<Sections> {
+    const SHT_NOBITS: u32 = 8;
+    const SHF_WRITE: u64 = 1;
+    const SHF_ALLOC: u64 = 2;
+    let wide = match file.get(4)? {
+        1 => false,
+        2 => true,
+        _ => return None,
+    };
+    if *file.get(5)? != 1 {
+        return None;
+    }
+    let u16_at = |at: usize| Some(u16::from_le_bytes(file.get(at..at + 2)?.try_into().ok()?));
+    let u32_at = |at: usize| Some(u32::from_le_bytes(file.get(at..at + 4)?.try_into().ok()?));
+    let u64_at = |at: usize| Some(u64::from_le_bytes(file.get(at..at + 8)?.try_into().ok()?));
+    let word = |at: usize| {
+        if wide {
+            u64_at(at)
+        } else {
+            u32_at(at).map(u64::from)
+        }
+    };
+    let (shoff, shentsize, shnum) = if wide {
+        (u64_at(0x28)?, u16_at(0x3a)?, u16_at(0x3c)?)
+    } else {
+        (u64::from(u32_at(0x20)?), u16_at(0x2e)?, u16_at(0x30)?)
+    };
     let mut sections = Sections::default();
-    for line in text.lines() {
-        let mut words = line.split_whitespace();
-        let (Some(name), Some(size)) = (words.next(), words.next()) else {
-            continue;
+    for k in 0..usize::from(shnum) {
+        let at = usize::try_from(shoff).ok()? + k * usize::from(shentsize);
+        let kind = u32_at(at + 4)?;
+        let (flags, size) = if wide {
+            (u64_at(at + 8)?, u64_at(at + 32)?)
+        } else {
+            (word(at + 8)?, word(at + 20)?)
         };
-        let Ok(size) = size.parse::<u64>() else {
+        if flags & SHF_ALLOC == 0 {
             continue;
-        };
-        match name {
-            ".text" | ".rodata" | ".eh_frame" | ".eh_frame_hdr" => sections.text += size,
-            ".data" | ".data.rel.ro" | ".init_array" | ".fini_array" | ".got" => {
-                sections.data += size
-            }
-            ".bss" | ".tbss" => sections.bss += size,
-            _ => {}
+        }
+        if kind == SHT_NOBITS {
+            sections.bss += size;
+        } else if flags & SHF_WRITE != 0 {
+            sections.data += size;
+        } else {
+            sections.text += size;
         }
     }
-    sections
+    Some(sections)
 }
 
 #[cfg(test)]
@@ -329,15 +373,29 @@ mod tests {
                 bss: 512 + 12624,
             }
         );
-        let elf = "app  :\nsection   size   addr\n.text  1000  0\n.rodata 200 0\n.data 30 0\n.bss 7 0\nTotal 1237\n";
+        // A 64-bit ELF of three allocated sections, code, data and bss, and
+        // one that is not loaded.
+        let mut elf = vec![0u8; 64];
+        elf[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        elf[0x28..0x30].copy_from_slice(&64u64.to_le_bytes());
+        elf[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes());
+        elf[0x3c..0x3e].copy_from_slice(&4u16.to_le_bytes());
+        for (kind, flags, size) in [(1u32, 6u64, 1200u64), (1, 3, 30), (8, 3, 7), (1, 0, 99)] {
+            let mut header = [0u8; 64];
+            header[4..8].copy_from_slice(&kind.to_le_bytes());
+            header[8..16].copy_from_slice(&flags.to_le_bytes());
+            header[32..40].copy_from_slice(&size.to_le_bytes());
+            elf.extend_from_slice(&header);
+        }
         assert_eq!(
-            elf_sections(elf),
-            Sections {
+            elf_sections(&elf),
+            Some(Sections {
                 text: 1200,
                 data: 30,
                 bss: 7,
-            }
+            })
         );
+        assert_eq!(elf_sections(b"\x7fELF"), None);
     }
 
     #[test]

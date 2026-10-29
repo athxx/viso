@@ -420,6 +420,8 @@ pub(super) struct Output {
     /// A flip completed since the loop last asked.
     flipped: Cell<bool>,
     gbm: OnceCell<Option<Gbm>>,
+    /// Where each CPU-drawn frame is also written.
+    capture: Option<crate::panel::Capture>,
 }
 
 /// Each named property's id, from an object's property list.
@@ -650,6 +652,7 @@ impl Output {
             0
         };
         let output = Output {
+            capture: crate::panel::Capture::configured(),
             connector: connector.id,
             crtc,
             plane,
@@ -1617,6 +1620,9 @@ impl Scanout for Output {
     }
 
     fn present_pixels(&self, pixels: &[u8], stride: usize, damage: &[Rect]) {
+        if let Some(capture) = &self.capture {
+            capture.frame(self.format, self.logical_size().0, pixels, stride);
+        }
         let mut s = self.s.borrow_mut();
         let s = &mut *s;
         self.wait_flip(s);

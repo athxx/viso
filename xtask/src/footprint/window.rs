@@ -336,7 +336,7 @@ fn footprint_report(text: &str) -> Option<(f64, f64)> {
 }
 
 /// The live and peak heap of a `footprint: heap live=<n> peak=<n>` line.
-fn heap(line: &str) -> (Option<f64>, Option<f64>) {
+pub(super) fn heap(line: &str) -> (Option<f64>, Option<f64>) {
     let field = |name: &str| {
         line.split_whitespace()
             .find_map(|word| word.strip_prefix(name))

@@ -1092,9 +1092,32 @@ Rules (as for `todo_features.md`):
 
 ## N8 — Devices and verification
 
-- [ ] Run `01-counter` on one Embedded-GPU and one Embedded-CPU board, record the results into the
+- [x] Run `01-counter` on one Embedded-GPU and one Embedded-CPU board, record the results into the
   footprint baseline, and compare CpuRaster output bit-exact with desktop emulation. Verify the
   §50A.5 budgets or record recalibrated ones.
+  — Built:
+  - `cargo xtask footprint --board <ssh>` (`--board-triple`, `--board-shell`, `--board-env`)
+    cross-builds the embedded-cpu and embedded-gpu subjects and measures them on the board from
+    `/proc`. Sizes are read from ELF section headers, and the baseline records the board.
+  - `VISO_SCANOUT_CAPTURE` writes each presented CPU frame as a PNG, from the KMS output and from
+    the macOS emulated panel.
+  - An emulated panel's window no longer has a caption. Its scanout is in place before the view's
+    first backing-scale report, so the frame keeps the panel's size instead of the backing's.
+  - A GLES window falls back to linear when the driver refuses the sRGB colorspace (GBM on Mesa).
+  Verified on a vkms aarch64 VM, 1024×768:
+  - Counter, list and rgb565 counter frames are byte-identical PNGs on the board and in emulation.
+  - CPU board: 6.88 MiB, first frame 30 ms, RSS 13.8 MiB, idle 0.
+  - GPU board (llvmpipe): 7.41 MiB, 130 ms, heap 6.7 MiB, idle 0.
+  - Budgets recalibrated: RSS is scaled to the panel, and the first-frame budgets are kept. The
+    binary is over budget, which is the next item.
+- [ ] Link only what an app uses. A counter's binary carries every control kind, the game kit,
+  scene3d, every image decoder (~480 KiB) and svg (~198 KiB), because views name widgets and
+  natives at run time. The build already knows the compiled views, so it can tell the facade
+  which control kinds, natives and asset formats they reach (the `VISO_GPU`-style build cfg).
+  Also gate cumulative size growth: desktop counter went from 5.00 MiB to 8.91 MiB between 10-18
+  and 10-28 while each paired check passed. Verify with §50A.5's binary budgets (embedded-cpu
+  ≤ 4 MB, embedded-gpu ≤ 4.5 MB) on the board subjects, and that an app using a pruned control
+  still builds and draws it.
 - [x] Android chooses its GPU API at run time: `[target.android] gpu = "auto"` (the default)
   draws with Vulkan where the device opens it and with GLES 3 otherwise; `vulkan` / `gles` pin
   one (ADR 0062). GLES imports video without copying. Built: `AndroidBackend` (an enum, one
