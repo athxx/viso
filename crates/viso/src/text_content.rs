@@ -539,6 +539,11 @@ struct TextSlot {
     sizing: Option<TextSizing>,
     drawn: Option<Committed>,
     staged: Option<Committed>,
+    /// What drew before `drawn`, when `drawn` was laid out unconstrained
+    /// this frame: the frame's layout may give the run a width it wraps at,
+    /// and the old lines then draw until the wrapped ones land, rather than
+    /// one line running past the box. `Some(None)` when nothing drew.
+    prior: Option<Option<Committed>>,
     /// Layouts sent to the worker and not yet returned, oldest first.
     laying: Vec<(u64, LayoutTarget)>,
     committed_seq: u64,
@@ -562,6 +567,7 @@ impl TextSlot {
             sizing: None,
             drawn: None,
             staged: None,
+            prior: None,
             laying: Vec::new(),
             committed_seq: 0,
             queued: false,
@@ -626,6 +632,9 @@ pub(crate) struct TextShaper {
     slots: HashMap<ParagraphSlot, TextSlot>,
     /// Slots whose target changed since the last dispatch.
     pending: Vec<ParagraphSlot>,
+    /// Slots holding the layout they drew before the one committed this
+    /// frame, until the frame's layout settles.
+    priors: Vec<ParagraphSlot>,
     worker: TextWorker,
     /// Faces whose bytes the worker holds.
     worker_faces: HashSet<FontFaceId>,
@@ -751,6 +760,7 @@ impl TextShaper {
             next_asset: 0,
             slots: HashMap::new(),
             pending: Vec::new(),
+            priors: Vec::new(),
             worker: TextWorker::spawn(budgets.shaping_cache_bytes, crate::footprint::workers() > 0),
             worker_faces: HashSet::new(),
             outbox: Vec::new(),
@@ -948,6 +958,7 @@ impl TextShaper {
     /// Close the frame: fold the pages drawn this frame into page recency once
     /// (not once per glyph draw) and zero the per-frame counters.
     pub(crate) fn end_frame(&mut self) {
+        self.settle_priors();
         self.residency.advance_epoch();
         self.faces.advance_epoch();
         self.drop_evicted_faces();
@@ -1639,6 +1650,18 @@ impl TextShaper {
                 BaseDirection::Auto
             },
         };
+        let mut stale = stale;
+        // Laid out unconstrained this frame to be measured, the run now asks
+        // for the width layout gave it: what drew before draws until those
+        // lines land.
+        if let Some(entry) = stale.as_mut()
+            && bound.is_some()
+            && !entry.target.matches(&request.text, locale, key, &rich)
+            && let Some(before) = entry.prior.take()
+            && let Some(old) = std::mem::replace(&mut entry.drawn, before)
+        {
+            self.unpin(&old.faces);
+        }
         let mut entry = match stale {
             Some(entry) if entry.target.matches(&request.text, locale, key, &rich) => entry,
             stale => {
@@ -2014,10 +2037,32 @@ impl TextShaper {
             return false;
         }
         let staged = entry.staged.take();
-        if let Some(old) = std::mem::replace(&mut entry.drawn, staged) {
+        let measured = staged.as_ref().is_some_and(|s| s.placing.width.is_none());
+        let old = std::mem::replace(&mut entry.drawn, staged);
+        if measured {
+            // The oldest of the frame is the one that drew.
+            if entry.prior.is_none() {
+                entry.prior = Some(old);
+                self.priors.push(at);
+                return true;
+            }
+        } else if let Some(Some(prior)) = entry.prior.take() {
+            self.unpin(&prior.faces);
+        }
+        if let Some(old) = old {
             self.unpin(&old.faces);
         }
         true
+    }
+
+    /// Lets go of the layouts kept for a frame whose layout settled: what
+    /// was committed this frame draws from now on.
+    pub(crate) fn settle_priors(&mut self) {
+        for at in std::mem::take(&mut self.priors) {
+            if let Some(Some(old)) = self.slots.get_mut(&at).and_then(|e| e.prior.take()) {
+                self.unpin(&old.faces);
+            }
+        }
     }
 
     fn unpin(&mut self, faces: &[FontFaceId]) {
@@ -4809,6 +4854,63 @@ mod tests {
         assert_eq!(shaper.counters().reshapes(), 0);
         assert_eq!(shaper.counters().shaped_runs(), 0);
         assert_eq!(shaper.counters().rasters(), 0);
+    }
+
+    #[test]
+    fn a_run_measured_unwrapped_never_draws_past_the_width_it_wraps_at() {
+        let mut gpu = headless();
+        let mut shaper = shaper();
+        let short = "Loading";
+        let long = "No routing: the server answered 404 for the road graph it asked for";
+        let width = 160.0;
+        // A short run never wraps, so it shapes unconstrained.
+        settle(&mut shaper, &mut gpu, slot(0), &wrapped(short), None);
+        shaper.end_frame();
+
+        // Its new text lands unconstrained, to be measured; layout then
+        // gives it a width it wraps at, and the short lines draw meanwhile.
+        shaper.shape_at(&mut gpu, slot(0), &wrapped(long), 1.0, None);
+        drain(&mut shaper, &mut gpu);
+        let Content::Text { natural, .. } =
+            shaper.shape_at(&mut gpu, slot(0), &wrapped(long), 1.0, None)
+        else {
+            panic!("text content");
+        };
+        assert!(natural.x > width, "measured on one line");
+        let Content::Text { natural, .. } =
+            shaper.shape_at(&mut gpu, slot(0), &wrapped(long), 1.0, Some(width))
+        else {
+            panic!("text content");
+        };
+        assert_eq!(drawn_text(&shaper, slot(0)), short);
+        assert!(natural.x <= width);
+        shaper.settle_priors();
+        drain(&mut shaper, &mut gpu);
+        let Content::Text { natural, .. } =
+            shaper.shape_at(&mut gpu, slot(0), &wrapped(long), 1.0, Some(width))
+        else {
+            panic!("text content");
+        };
+        assert_eq!(drawn_text(&shaper, slot(0)), long);
+        assert!(natural.x <= width && lines_of(&shaper, slot(0)).len() > 1);
+
+        // A new run draws nothing until its wrapped lines land.
+        shaper.shape_at(&mut gpu, slot(1), &wrapped(long), 1.0, None);
+        drain(&mut shaper, &mut gpu);
+        shaper.shape_at(&mut gpu, slot(1), &wrapped(long), 1.0, Some(width));
+        assert!(shaper.slots[&slot(1)].drawn.is_none());
+        drain(&mut shaper, &mut gpu);
+        shaper.shape_at(&mut gpu, slot(1), &wrapped(long), 1.0, Some(width));
+        assert_eq!(lines_of(&shaper, slot(1)), lines_of(&shaper, slot(0)));
+
+        // One that keeps its unconstrained layout draws it once the frame
+        // settles.
+        shaper.shape_at(&mut gpu, slot(2), &wrapped(long), 1.0, None);
+        drain(&mut shaper, &mut gpu);
+        shaper.settle_priors();
+        shaper.shape_at(&mut gpu, slot(2), &wrapped(long), 1.0, Some(width));
+        assert_eq!(drawn_text(&shaper, slot(2)), long);
+        assert_eq!(lines_of(&shaper, slot(2)).len(), 1);
     }
 
     #[test]

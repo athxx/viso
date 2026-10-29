@@ -419,9 +419,11 @@ impl WindowState {
         }
     }
 
-    /// Hand the text worker every layout this frame asked for, in one batch.
+    /// Hand the text worker every layout this frame asked for, in one batch;
+    /// what layout settled on draws from now on.
     pub(crate) fn dispatch_text_work(&mut self) {
         if let Some(text) = self.text.as_mut() {
+            text.settle_priors();
             text.dispatch();
         }
     }

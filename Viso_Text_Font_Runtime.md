@@ -1582,6 +1582,8 @@ read retained CaretMap/HitTestMap
 
 复杂文本 worker 尚未完成时，Runtime 不能阻塞 frame 等待 paragraph 重算。
 
+一段可换行文字若从未按盒宽断过行，它的新文字先不限宽排一次，供 layout 量出自然宽度；若同一帧的 layout 给出的宽度让它需要换行，这份不限宽的结果不画出，仍画上一份 last-good（新节点则留空），直到按宽度断行的结果提交。因此一行文字不会有一帧越出它的盒。
+
 ```text
 new text revision
     ↓

@@ -1382,9 +1382,12 @@ output, a live macOS session) is listed with the device runs of N8.
   - [x] `threads`: `on` builds a shared-memory module on nightly `-Z build-std`; the
     work pool's workers run on module Workers of the glue, a page-thread lock spins
     instead of waiting, and a worker's wake reaches the page as a message.
-- [ ] The map's route card shows `…: the server answered 404` on one line past the card's
+- [x] The map's route card shows `…: the server answered 404` on one line past the card's
   edge in the frame it first appears, wrapped only later (found with the split; the
-  unsplit bundle does the same).
+  unsplit bundle does the same). New text lays out unconstrained on the worker so layout
+  can measure it; when that frame's layout then gives the run a width it wraps at, the
+  unconstrained lines are not drawn and the last good ones draw until the wrapped ones land
+  (`text_reflow`: 474 px in a 180 px box before, never past it now).
 - [ ] Per-target availability of natives, and the capability table rows it gives; lands with the
   first native missing on some target (`todo_cli.md` C1.5, C4.4).
 - [x] A pixel golden of the frame-profile HUD (`todo_cli.md` C6). `the_hud_draws_as_its_golden`
