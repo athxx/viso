@@ -2204,6 +2204,18 @@ impl NodeStore {
         id
     }
 
+    /// Allocates a node outside the tree that owns what a mount keeps without
+    /// a node of its own (effects, tasks): nothing lays it out, paints it or
+    /// hits it, and [`free_tree`](Self::free_tree) frees it with what it owns.
+    pub fn alloc_owner(&mut self) -> NodeId {
+        self.alloc(
+            LayoutInput::Leaf {
+                size: Sizing::fixed(0.0, 0.0),
+            },
+            BoxStyle::NONE,
+        )
+    }
+
     /// Allocate a bare leaf node of a given size, unattached. A leaf measures to
     /// its `Sizing` request against any content payload attached with
     /// [`Self::set_content_payload`] (a `Fit` axis resolves to the content's

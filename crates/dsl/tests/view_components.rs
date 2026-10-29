@@ -408,7 +408,13 @@ impl Rt {
     /// Clicks the tally at `y` and returns the count it reports.
     fn tally(&mut self, y: f32) -> Option<Value> {
         self.click(5.0, y);
-        assert!(!self.faulted());
+        if let Some(fault) = self
+            .view
+            .as_ref()
+            .and_then(|h| h.borrow().last_fault().cloned())
+        {
+            panic!("{fault:?}");
+        }
         self.state("last")
     }
 }
@@ -546,4 +552,58 @@ fn an_inlined_view_binds_the_mounted_sources_it_reads() {
     let mut expected = vec![symbol("amount"), symbol("Label#0.hovered")];
     expected.sort();
     assert_eq!(bound, expected);
+}
+
+/// A component whose view root is a `match`: no node of its own, its
+/// state anchored in the region's item.
+const REGION_ROOT: &str = r#"
+component Flip {
+    input seed: I64;
+    event flipped(value: I64);
+    state n = seed;
+    view {
+        match n % 2 {
+            0 => { Text { width: 20dp; height: 20dp; on click { n += 1; emit flipped(n); } } },
+            _ => { Text { width: 30dp; height: 20dp; on click { n += 1; emit flipped(n); } } },
+        }
+    }
+}
+
+export component App {
+    state show = true;
+    state last = 0;
+    view {
+        Column {
+            width: 400dp;
+            height: 300dp;
+            Text { width: 20dp; height: 20dp; on click { show = !show; } }
+            Column {
+                width: 400dp;
+                height: 20dp;
+                Flip { seed: 10; on flipped(event) { last = event.value; } }
+            }
+            Column {
+                width: 400dp;
+                height: 20dp;
+                if show {
+                    Flip { seed: 20; on flipped(event) { last = event.value; } }
+                }
+            }
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_component_whose_root_is_a_region_keeps_its_state_static_and_in_region_content() {
+    for mut rt in [Rt::reloaded(REGION_ROOT), Rt::packaged(REGION_ROOT)] {
+        assert_eq!(rt.tally(25.0), Some(Value::Int(11)));
+        assert_eq!(rt.tally(25.0), Some(Value::Int(12)));
+        assert_eq!(rt.tally(45.0), Some(Value::Int(21)));
+        assert_eq!(rt.tally(45.0), Some(Value::Int(22)));
+        rt.click(5.0, 5.0);
+        assert!(rt.region(2).is_empty());
+        rt.click(5.0, 5.0);
+        assert_eq!(rt.tally(45.0), Some(Value::Int(21)), "a fresh instance");
+    }
 }

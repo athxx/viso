@@ -546,15 +546,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
     ) {
         let key = self.key;
         self.key += 1;
-        let regional = self.eval.as_deref().is_some_and(|eval| {
-            eval.layout
-                .regional
-                .iter()
-                .any(|r| r.instance == node.instance)
-        });
-        if regional && self.claimed.insert(node.instance) {
-            out.instances.push(node.instance);
-        }
+        self.claim(node.instance, out);
         let control = self.vb.and_then(|vb| vb.control(NodeKey(key)));
         let routes: Vec<_> = self
             .vb
@@ -3226,6 +3218,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         }
     }
 
+    /// Makes `out` keep the instance `instance` when region content mounts
+    /// it and no earlier piece claimed it.
+    fn claim(&mut self, instance: u32, out: &mut Content) {
+        let regional = self
+            .eval
+            .as_deref()
+            .is_some_and(|eval| eval.layout.regional.iter().any(|r| r.instance == instance));
+        if regional && self.claimed.insert(instance) {
+            out.instances.push(instance);
+        }
+    }
+
     /// Lowers a region among the children of a node laid out as `parent`.
     fn region(
         &mut self,
@@ -3235,12 +3239,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         depth: u32,
         out: &mut Content,
     ) {
-        let origin = match item {
-            UiItem::If(r) => r.origin,
-            UiItem::For(r) => r.origin,
-            UiItem::Match(r) => r.origin,
+        let (origin, instance) = match item {
+            UiItem::If(r) => (r.origin, r.instance),
+            UiItem::For(r) => (r.origin, r.instance),
+            UiItem::Match(r) => (r.origin, r.instance),
             UiItem::Node(_) => unreachable!("a node is not a region"),
         };
+        // An instance whose view root is this region has no element of its
+        // own: the content keeps it, as the region's key may read its states.
+        self.claim(instance, out);
         if self.static_only {
             let what = match item {
                 UiItem::If(_) => "an `if`",

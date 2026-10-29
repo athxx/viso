@@ -16,8 +16,8 @@ use viso_behavior::ComponentEffect;
 use viso_schema::StateKey;
 use viso_schema::view::{
     ArmTemplate, CellRef, Control, EffectTemplate, EnvTemplate, GroupTemplate, ItemTemplate,
-    ListLanes, LocalTemplate, RegionKind, RegionTemplate, Route, SlotTemplate, StarterTemplate,
-    ViewRegions,
+    ListLanes, LocalTemplate, MOUNT, RegionKind, RegionTemplate, Route, SlotTemplate,
+    StarterTemplate, ViewRegions,
 };
 
 use crate::aot::{aot_node, terms_of};
@@ -575,60 +575,27 @@ impl Builder<'_> {
         starters: &mut Vec<StarterTemplate>,
     ) {
         let UiItem::Node(node) = item else {
+            // An instance whose view root is this region has no node of its
+            // own here: the mount keeps it, as its key may read its states.
+            let instance = match item {
+                UiItem::If(region) => region.instance,
+                UiItem::For(region) => region.instance,
+                UiItem::Match(region) => region.instance,
+                UiItem::Node(_) => unreachable!(),
+            };
+            self.claim(instance, MOUNT, locals, env, effects, starters);
             let region = self.region(item, list);
             out.push(ItemTemplate::Region(region));
             return;
         };
-        // Region content mounts the instances declared in it; an instance
-        // whose own view has the region is the root's.
-        let mounted = self
-            .layout
-            .regional
-            .iter()
-            .any(|r| r.instance == node.instance);
-        if mounted && self.claimed.insert(node.instance) {
-            let anchor = out.len() as u32;
-            if self.layout.starters.contains(&node.instance) {
-                starters.push(StarterTemplate {
-                    instance: node.instance,
-                    anchor,
-                });
-            }
-            effects.extend(
-                self.layout
-                    .effects
-                    .iter()
-                    .filter(|effect| effect.instance == node.instance)
-                    .map(|effect| EffectTemplate {
-                        effect: ComponentEffect {
-                            deps: effect.deps,
-                            body: effect.body,
-                            run: effect.run,
-                            resource: effect.resource,
-                        },
-                        anchor,
-                    }),
-            );
-            let states = self
-                .layout
-                .regional
-                .iter()
-                .find(|r| r.instance == node.instance);
-            if let Some(states) = states {
-                let anchor = out.len() as u32;
-                for (at, &init) in states.inits.iter().enumerate() {
-                    let slot = states.base + at as u32;
-                    match self.layout.env.iter().find(|env| env.slot == slot) {
-                        Some(read) => env.push(EnvTemplate {
-                            slot,
-                            field: read.field,
-                            anchor,
-                        }),
-                        None => locals.push(LocalTemplate { slot, init }),
-                    }
-                }
-            }
-        }
+        self.claim(
+            node.instance,
+            out.len() as u32,
+            locals,
+            env,
+            effects,
+            starters,
+        );
         let key = NodeKey(self.key);
         self.key += 1;
         let edges = self
@@ -671,6 +638,56 @@ impl Builder<'_> {
         }
         if let ItemTemplate::Node { node: template, .. } = &mut out[at] {
             template.child_count = node.children.len() as u32;
+        }
+    }
+
+    /// Collects the states, `env` reads, effects and task starters of
+    /// `instance` when region content mounts it and no earlier item claimed
+    /// them, anchored at the item `anchor` (or [`MOUNT`]); an instance whose
+    /// own view has the region is the root's.
+    fn claim(
+        &mut self,
+        instance: u32,
+        anchor: u32,
+        locals: &mut Vec<LocalTemplate>,
+        env: &mut Vec<EnvTemplate>,
+        effects: &mut Vec<EffectTemplate>,
+        starters: &mut Vec<StarterTemplate>,
+    ) {
+        let Some(states) = self.layout.regional.iter().find(|r| r.instance == instance) else {
+            return;
+        };
+        if !self.claimed.insert(instance) {
+            return;
+        }
+        if self.layout.starters.contains(&instance) {
+            starters.push(StarterTemplate { instance, anchor });
+        }
+        effects.extend(
+            self.layout
+                .effects
+                .iter()
+                .filter(|effect| effect.instance == instance)
+                .map(|effect| EffectTemplate {
+                    effect: ComponentEffect {
+                        deps: effect.deps,
+                        body: effect.body,
+                        run: effect.run,
+                        resource: effect.resource,
+                    },
+                    anchor,
+                }),
+        );
+        for (at, &init) in states.inits.iter().enumerate() {
+            let slot = states.base + at as u32;
+            match self.layout.env.iter().find(|env| env.slot == slot) {
+                Some(read) => env.push(EnvTemplate {
+                    slot,
+                    field: read.field,
+                    anchor,
+                }),
+                None => locals.push(LocalTemplate { slot, init }),
+            }
         }
     }
 

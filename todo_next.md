@@ -1341,10 +1341,13 @@ output, a live macOS session) is listed with the device runs of N8.
   not loaded again, its result settles every instance waiting on it, `keep_latest` cancels a
   load once none waits, and the pool's loads and expiries are the view root's, outliving the
   instance that started them. The VM host, the release package and both web exports run it.
-- [ ] A component whose view root is a region (`view { match .. }`), mounted in region content,
+- [x] A component whose view root is a region (`view { match .. }`), mounted in region content,
   shows nothing and faults on its region entries: its states, effects and starters are claimed
   at its first node, and a region item has none to anchor them (found with the shared
-  resources; wrapping the view in a `Column` works).
+  resources; wrapping the view in a `Column` works). Now the region item claims them: the
+  mount keeps the states, a node outside the tree it frees with its content owns the effects
+  and tasks (`MOUNT` anchor), anchored `env` resolves at the node the mount sits under; the
+  `web-dom` content keeps the instance the same way (checked in headless Chrome).
 - [ ] The `renderer_steady_state` bench stops at its decorated-cards gate: 496 draws where it
   asserts 512 (two per card), so no bench of it runs.
 - [x] The CLI's preview of generated code runs its views on the preview host, under its

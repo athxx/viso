@@ -65,7 +65,7 @@ pub(crate) use rows::key_hash;
 
 pub use viso_schema::view::regions::{
     ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate, HALF_OPEN,
-    ItemTemplate, LocalTemplate, RegionKind, RegionTemplate, SlotTemplate, StarterTemplate,
+    ItemTemplate, LocalTemplate, MOUNT, RegionKind, RegionTemplate, SlotTemplate, StarterTemplate,
     ViewRegions,
 };
 
@@ -396,6 +396,9 @@ struct Frag {
     scope: Scope,
     /// The instance states this mount keeps.
     own: Option<Rc<Locals>>,
+    /// The node outside the tree owning the effects and tasks of an instance
+    /// whose view root is a region, with no node of its own here.
+    owner: Option<NodeId>,
     /// The nodes this `for` item names, when its content names any.
     named: Option<Rc<NamedNodes>>,
     /// Each node with handlers, and its item index in the arm template.
@@ -990,6 +993,9 @@ impl Patch<'_, '_> {
         let mut roots = Vec::new();
         let mut groups = Vec::new();
         let mut built = Vec::new();
+        let owner = (template.effects.iter().any(|e| e.anchor == MOUNT)
+            || template.starters.iter().any(|s| s.anchor == MOUNT))
+        .then(|| self.cx.store.alloc_owner());
         self.cx.bindings.begin_instance(
             &self.templates[region as usize][arm as usize],
             self.cx.store,
@@ -1016,7 +1022,7 @@ impl Patch<'_, '_> {
             }
         }
         self.cx.store.mark_dirty(parent, relayout());
-        let own = self.keep(template, scope, extra, &built);
+        let own = self.keep(template, scope, extra, &built, parent, owner);
         let region_names = matches!(
             regions.regions[region as usize].kind,
             RegionKind::For { .. } | RegionKind::Virtual { .. }
@@ -1024,8 +1030,7 @@ impl Patch<'_, '_> {
         let named = region_names.then(|| Rc::new(NamedNodes::default()));
         let frag_scope = frag_scope(scope, extra, own.as_ref(), named.as_ref());
         for effect in &template.effects {
-            let anchor = effect.anchor as usize;
-            if let Some(&(id, _)) = built.iter().find(|&&(_, index)| index == anchor) {
+            if let Some(id) = anchored(&built, effect.anchor, owner) {
                 mount_effect(
                     self.cx.store,
                     self.host,
@@ -1090,6 +1095,7 @@ impl Patch<'_, '_> {
             groups,
             scope: frag_scope,
             own,
+            owner,
             named,
             routed,
             shown,
@@ -1099,13 +1105,18 @@ impl Patch<'_, '_> {
     /// The instance states and `env` slots a new mount of `arm` in `scope`,
     /// with the binding `extra`, keeps: the states' initial values and a
     /// revision cell each, and for each `env` slot the field's cell, anchored
-    /// at the mounted node `built` holds for its anchor item.
+    /// at the mounted node `built` holds for its anchor item, or at `parent`
+    /// for the mount's; the tasks of each starter are owned by its anchor
+    /// node, or `owner` for the mount's.
+    #[allow(clippy::too_many_arguments)]
     fn keep(
         &mut self,
         arm: &ArmTemplate,
         scope: &Scope,
         extra: Option<&Value>,
         built: &[(NodeId, usize)],
+        parent: NodeId,
+        owner: Option<NodeId>,
     ) -> Option<Rc<Locals>> {
         let pulse = self.pulse.filter(|_| {
             !arm.locals.is_empty() || !arm.env.is_empty() || !arm.starters.is_empty()
@@ -1144,14 +1155,11 @@ impl Patch<'_, '_> {
             let (cell, anchor) = if read.field.anchored() {
                 let anchor = match anchors.iter().find(|(item, _)| *item == read.anchor) {
                     Some(&(_, anchor)) => Some(anchor),
-                    None => built
-                        .iter()
-                        .find(|&&(_, item)| item == read.anchor as usize)
-                        .map(|&(node, _)| {
-                            let anchor = self.cx.states.anchor_env(node, Some(pulse));
-                            anchors.push((read.anchor, anchor));
-                            anchor
-                        }),
+                    None => anchored(built, read.anchor, Some(parent)).map(|node| {
+                        let anchor = self.cx.states.anchor_env(node, Some(pulse));
+                        anchors.push((read.anchor, anchor));
+                        anchor
+                    }),
                 };
                 let cell = anchor.and_then(|anchor| self.cx.states.anchor_cell(anchor, read.field));
                 (cell, anchor)
@@ -1174,12 +1182,7 @@ impl Patch<'_, '_> {
         let owners = arm
             .starters
             .iter()
-            .filter_map(|starter| {
-                let &(node, _) = built
-                    .iter()
-                    .find(|&&(_, item)| item == starter.anchor as usize)?;
-                Some((starter.instance, node))
-            })
+            .filter_map(|starter| Some((starter.instance, anchored(built, starter.anchor, owner)?)))
             .collect();
         let kept = Rc::new(Locals {
             slots: slots.into(),
@@ -1305,6 +1308,12 @@ impl Patch<'_, '_> {
         self.freed = true;
         if let Some(own) = &frag.own {
             own.release(self.cx.states);
+        }
+        // Outside the tree, so a list row's nodes never held it.
+        if let Some(owner) = frag.owner {
+            self.cx
+                .store
+                .free_tree(owner, &mut *self.cx.effects, &mut *self.scratch);
         }
         for slot in frag.roots {
             self.drop_slot(slot, nodes);
@@ -1573,6 +1582,18 @@ impl Census<'_> {
             }
         }
     }
+}
+
+/// The node the item `anchor` of an arm mounted, among `built`, or `mount`
+/// for [`MOUNT`].
+fn anchored(built: &[(NodeId, usize)], anchor: u32, mount: Option<NodeId>) -> Option<NodeId> {
+    if anchor == MOUNT {
+        return mount;
+    }
+    built
+        .iter()
+        .find(|&&(_, item)| item == anchor as usize)
+        .map(|&(node, _)| node)
 }
 
 fn build_item(

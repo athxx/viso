@@ -145,9 +145,16 @@ pub struct EnvTemplate {
     pub slot: u32,
     /// The field.
     pub field: EnvField,
-    /// The node its anchored fields resolve at, by item index in the arm.
+    /// The node its anchored fields resolve at, by item index in the arm;
+    /// [`MOUNT`] for the node the mount is placed under.
     pub anchor: u32,
 }
+
+/// The anchor of an instance whose view root is a region, so it has no node
+/// of its own in the arm: the mount itself. Its effects and tasks belong to
+/// a node outside the tree the mount frees with its content, and its anchored
+/// `env` fields resolve at the node the mount is placed under.
+pub const MOUNT: u32 = u32::MAX;
 
 /// An effect of a component instance an arm mounts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +162,7 @@ pub struct EffectTemplate {
     /// Its entries and run policy.
     pub effect: ComponentEffect,
     /// The node it is mounted on, the instance's root, by item index in the
-    /// arm: freeing the node cancels it.
+    /// arm, or [`MOUNT`]: freeing the node cancels it.
     pub anchor: u32,
 }
 
@@ -164,8 +171,8 @@ pub struct EffectTemplate {
 pub struct StarterTemplate {
     /// The inlined instance.
     pub instance: u32,
-    /// The instance's root, by item index in the arm: it owns the tasks, so
-    /// freeing it cancels them.
+    /// The instance's root, by item index in the arm, or [`MOUNT`]: it owns
+    /// the tasks, so freeing it cancels them.
     pub anchor: u32,
 }
 
@@ -630,20 +637,22 @@ impl ViewRegions {
                     arm.locals
                         .binary_search_by_key(&env.slot, |l| l.slot)
                         .is_err()
-                        && matches!(
-                            arm.items.get(env.anchor as usize),
-                            Some(ItemTemplate::Node { .. })
-                        )
+                        && (env.anchor == MOUNT
+                            || matches!(
+                                arm.items.get(env.anchor as usize),
+                                Some(ItemTemplate::Node { .. })
+                            ))
                 }))?;
                 let anchors = arm.effects.iter().map(|effect| effect.anchor);
                 check(
                     anchors
                         .chain(arm.starters.iter().map(|starter| starter.anchor))
                         .all(|anchor| {
-                            matches!(
-                                arm.items.get(anchor as usize),
-                                Some(ItemTemplate::Node { .. })
-                            )
+                            anchor == MOUNT
+                                || matches!(
+                                    arm.items.get(anchor as usize),
+                                    Some(ItemTemplate::Node { .. })
+                                )
                         }),
                 )?;
                 // The children still owed to the open nodes; an item owed to

@@ -1448,7 +1448,7 @@ effect persist_theme when (theme_name) run EffectRun::change {
 - Effect Body 中的 Component `action` 调用同样只能写在 `transaction { ... }` 内（§81），Native 调用不受此限；
 - Effect Cycle 必须被检测并报告依赖链。
 
-当前实现：`when (...)` 编译为一个返回各依赖值列表的纯 Region Entry，Body 编译为一个 Effect Chunk，返回 `cleanup` 闭包（没有 `cleanup` 时返回 `None`）；二者随组件布局写入 Module（`Component::effects`），由控制流区域挂载的组件实例的 Effect 写入所在分支的模板。依赖覆盖：Body 在 `untracked(..)` 之外读取的 State、Input 与 Computed，若不被 `when` 中的表达式读取，且（对 Computed）其底层 State 与 Input 不全被 `when` 直接读取，报 `E4201`；`when` 中读取的 Computed 不覆盖其底层值，因为它可能在底层变化时保持不变。`when` 中的表达式按 Computed 的调用权检查（副作用报 `E2502`）；System 中的 `effect` 报 `E9109`。视图的 Effect 挂在视图根节点上，区域内实例的 Effect 挂在该实例的根节点上，每次挂载各自运行；运行时语义见 §91。热重载在替换代码前取消旧 Module 的全部 Effect，各 Cleanup 以创建它的旧代码运行恰好一次，替换后重新挂载新 Module 的 Effect：`mount` 与 `mount_and_change` 重新运行一次，`change` 等待下一次变化。Body 中的 `return` 发生在 `cleanup` 求值之前时，该次运行没有 Cleanup。
+当前实现：`when (...)` 编译为一个返回各依赖值列表的纯 Region Entry，Body 编译为一个 Effect Chunk，返回 `cleanup` 闭包（没有 `cleanup` 时返回 `None`）；二者随组件布局写入 Module（`Component::effects`），由控制流区域挂载的组件实例的 Effect 写入所在分支的模板。依赖覆盖：Body 在 `untracked(..)` 之外读取的 State、Input 与 Computed，若不被 `when` 中的表达式读取，且（对 Computed）其底层 State 与 Input 不全被 `when` 直接读取，报 `E4201`；`when` 中读取的 Computed 不覆盖其底层值，因为它可能在底层变化时保持不变。`when` 中的表达式按 Computed 的调用权检查（副作用报 `E2502`）；System 中的 `effect` 报 `E9109`。视图的 Effect 挂在视图根节点上，区域内实例的 Effect 挂在该实例的根节点上（View 的根本身是控制流区域、没有自己的节点时，挂在该次挂载持有的树外节点上，随挂载释放），每次挂载各自运行；运行时语义见 §91。热重载在替换代码前取消旧 Module 的全部 Effect，各 Cleanup 以创建它的旧代码运行恰好一次，替换后重新挂载新 Module 的 Effect：`mount` 与 `mount_and_change` 重新运行一次，`change` 等待下一次变化。Body 中的 `return` 发生在 `cleanup` 求值之前时，该次运行没有 Cleanup。
 
 `EffectRun` 是标准库 Enum，不是 Parser 特例；Parser 只解析 Path。
 
@@ -4074,7 +4074,7 @@ env.locale            : Locale            // §U10.3
 
 `env` 整体类型为 Prelude 的 `Environment` 记录，字段顺序即上表顺序；`env.<field>` 的类型即该字段类型。`env` 只读：以 `env` 为根的赋值报 `E2110`。同名局部绑定（参数、`let`、Pattern）遮蔽 `env`。`display_features` 与 `env` 的其余部分一样只读，因而用普通 `List`。
 
-每个 Component 实例各自读取 `env`：`window`、`safe_area` 等窗口级字段对全部实例相同；`constraints`、`size_class` 与 `layout_direction` 锚定在读取它的 Component 实例的根节点——`constraints` 是该根节点收到的 incoming constraints，`size_class` 来自该根节点自身或其最近祖先中的 Adaptive Scope，`layout_direction` 来自其最近的设定了方向的 Adaptive Scope，没有时为窗口的方向。
+每个 Component 实例各自读取 `env`：`window`、`safe_area` 等窗口级字段对全部实例相同；`constraints`、`size_class` 与 `layout_direction` 锚定在读取它的 Component 实例的根节点——`constraints` 是该根节点收到的 incoming constraints，`size_class` 来自该根节点自身或其最近祖先中的 Adaptive Scope，`layout_direction` 来自其最近的设定了方向的 Adaptive Scope，没有时为窗口的方向。View 的根是控制流区域的实例没有自己的根节点：静态实例锚定在视图根节点，区域内的实例锚定在该次挂载所在的父节点。
 
 典型类型：
 

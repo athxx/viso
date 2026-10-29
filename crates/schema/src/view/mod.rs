@@ -17,7 +17,7 @@ pub use package::{
 };
 pub use regions::{
     ArmTemplate, CLOSED, CellRef, EffectTemplate, EnvTemplate, GroupTemplate, HALF_OPEN,
-    ItemTemplate, ListLanes, LocalTemplate, RegionKind, RegionTemplate, SlotTemplate,
+    ItemTemplate, ListLanes, LocalTemplate, MOUNT, RegionKind, RegionTemplate, SlotTemplate,
     StarterTemplate, ViewRegions,
 };
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS, Route};

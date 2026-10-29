@@ -511,3 +511,45 @@ fn the_shared_cache_outlives_the_instance_that_loaded_it() {
     assert_eq!(cards(&mut rt), ["20", "10"]);
     assert_eq!(rt.fault(), None);
 }
+
+/// [`board`] with the card's view root its `match`, no node of its own.
+fn bare_board(policy: &str) -> String {
+    board(policy)
+        .replacen(
+            "    view {\n        Column {\n            match r.state {",
+            "    view {\n            match r.state {",
+            1,
+        )
+        .replacen(
+            "            }\n        }\n    }\n}\n\nexport",
+            "            }\n    }\n}\n\nexport",
+            1,
+        )
+}
+
+#[test]
+fn a_card_whose_view_root_is_its_match_loads_shares_and_drops_its_load() {
+    let source = bare_board("ResourcePolicy::keep_latest");
+    assert!(!source.contains("    view {\n        Column {\n            match"));
+    for mount in [Rt::mount, Rt::packaged] {
+        let mut rt = mount(&source);
+        assert_eq!(cards(&mut rt), ["...", "..."]);
+        rt.click(1);
+        assert_eq!(cards(&mut rt), ["...", "...", "..."]);
+        assert_eq!(rt.store.task_count(), 1, "the third card joins key 1");
+        rt.ring();
+        assert_eq!(cards(&mut rt), ["10", "10", "10"]);
+        rt.click(0);
+        rt.ring();
+        assert_eq!(cards(&mut rt), ["20", "10", "10"]);
+        rt.click(1);
+        assert_eq!(cards(&mut rt), ["20", "10"]);
+        rt.click(0);
+        assert_eq!(rt.store.task_count(), 1, "the first card's key 3");
+        rt.click(1);
+        rt.click(1);
+        rt.ring();
+        assert_eq!(rt.fault(), None);
+        assert_eq!(rt.store.task_count(), 0);
+    }
+}
