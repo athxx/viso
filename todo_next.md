@@ -1350,8 +1350,13 @@ output, a live macOS session) is listed with the device runs of N8.
 - [x] A pixel golden of the frame-profile HUD (`todo_cli.md` C6). `the_hud_draws_as_its_golden`
   shapes a capture's line with the fixture font, draws the HUD over a grey window on the CPU
   rasterizer and compares `tests/golden/profile_hud.bgra8`.
-- [ ] Recorded acceptance scenarios: resize, DPI change and surface recreate, with GPU frame time
-  per scenario (`todo_rendering.md` D0.4).
+- [x] Recorded acceptance scenarios: resize, DPI change and surface recreate, with GPU frame time
+  per scenario (`todo_rendering.md` D0.4). `viso profile --drive resize|rescale|recreate`: the
+  runtime posts itself the geometry or surface events a step each frame while it is sampled
+  and puts the window back after. Recorded on macOS (Metal), `examples/images`, 120 frames:
+  resize frame p50/p95 7.8/9.0 ms, GPU 0.14/0.20 ms; rescale 7.7/65 ms (a drawable of another
+  size each frame), GPU 0.08/0.20 ms; recreate 0.9/1.6 ms, GPU 0.19/0.20 ms, nothing laid out
+  or painted again and 48 bytes uploaded.
 - [ ] Surface draw keys and pass sums skip the hash work an unchanged entry already did
   (`todo_arch.md`).
 - [ ] An opt-in disk cache of dev snapshots, once the DSL can mark a state sensitive

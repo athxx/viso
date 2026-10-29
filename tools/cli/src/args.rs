@@ -888,6 +888,32 @@ pub struct ProfileArgs {
     /// omitted.
     #[arg(long, value_name = "NAME")]
     pub scenario: Option<String>,
+    /// Puts the app's launch window through a change a step each frame while
+    /// it is sampled, so the frames are what it costs: its size
+    /// (`resize`), its scale factor (`rescale`) or its surface, lost and
+    /// made again (`recreate`). Not for `headless`, whose surface is a
+    /// buffer and whose GPU nothing times.
+    #[arg(long, value_enum, value_name = "CHANGE")]
+    pub drive: Option<ProfileDriveArg>,
+}
+
+/// What `viso profile --drive` puts the launch window through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ProfileDriveArg {
+    Resize,
+    Rescale,
+    Recreate,
+}
+
+impl ProfileDriveArg {
+    pub fn drive(self) -> viso_dev_protocol::profile::ProfileDrive {
+        use viso_dev_protocol::profile::ProfileDrive;
+        match self {
+            Self::Resize => ProfileDrive::Resize,
+            Self::Rescale => ProfileDrive::Rescale,
+            Self::Recreate => ProfileDrive::Recreate,
+        }
+    }
 }
 
 /// A `--seconds` value: positive, at most an hour.

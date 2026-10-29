@@ -21,6 +21,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use viso_dev_protocol::inspect::{InspectAsk, InspectorCaps};
+use viso_dev_protocol::profile::ProfileDrive;
 use viso_dev_protocol::wire::{
     DEV_PROTOCOL_VERSION, GameAsk, MAX_RECORD_TICKS, Message, RecordSpan, WireError, read_frame,
     same_token, write_frame,
@@ -74,8 +75,13 @@ pub enum ControlAsk {
     Scenario { script: String },
     /// For the samples of the next `frames` frames the app draws, or of
     /// those it draws in the next `millis`, whichever ends first; 0 bounds
-    /// neither.
-    Profile { frames: u32, millis: u64 },
+    /// neither. With `drive`, the app's launch window goes through that
+    /// change a step each frame while it is sampled.
+    Profile {
+        frames: u32,
+        millis: u64,
+        drive: Option<ProfileDrive>,
+    },
 }
 
 /// The session's answer.
@@ -291,10 +297,15 @@ impl Message for ControlRequest {
                 enc.write_u8(4);
                 return write_string(enc, script);
             }
-            ControlAsk::Profile { frames, millis } => {
+            ControlAsk::Profile {
+                frames,
+                millis,
+                drive,
+            } => {
                 enc.write_u8(5);
                 enc.write_varint(u64::from(*frames));
-                return enc.write_varint(*millis);
+                enc.write_varint(*millis);
+                return enc.write_u8(ProfileDrive::to_u8(*drive));
             }
             ControlAsk::Game { game, ask } => (game, ask),
         };
@@ -379,6 +390,8 @@ impl Message for ControlRequest {
                     ask: ControlAsk::Profile {
                         frames,
                         millis: dec.read_varint()?,
+                        drive: ProfileDrive::from_u8(dec.read_u8()?)
+                            .ok_or_else(|| malformed(dec))?,
                     },
                 });
             }
@@ -722,6 +735,7 @@ mod tests {
                 ask: ControlAsk::Profile {
                     frames: 600,
                     millis: 0,
+                    drive: Some(ProfileDrive::Recreate),
                 },
             },
             ControlRequest {

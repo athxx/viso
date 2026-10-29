@@ -34,7 +34,7 @@ pub use crate::patch::{
     RetypePlan, StateAction, StatePlan, StructuralOp, SystemPatch, UiPatch, ViewPatch,
 };
 use crate::patch::{read_systems, read_tier, read_ui, write_systems, write_tier, write_ui};
-use crate::profile::{FrameSample, read_frames, write_frames};
+use crate::profile::{FrameSample, ProfileDrive, read_frames, write_frames};
 pub use crate::query::{
     GameAnswer, GameAsk, GameQuery, GameRefusal, GameReply, MAX_RECORD_TICKS, RecordSpan,
 };
@@ -47,7 +47,7 @@ use crate::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_schema::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 23;
+pub const DEV_PROTOCOL_VERSION: u16 = 24;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -878,10 +878,12 @@ pub enum HostMessage {
     /// `viso run --profile-frame`, until [`HostMessage::ProfileEnd`]; with
     /// `hud`, the frame time is drawn over each window. The samples come back
     /// as [`RuntimeMessage::Profile`] batches repeating `id`. A capture
-    /// started ends the one running.
+    /// started ends the one running. With `drive`, the app puts its launch
+    /// window through that change a step each frame while it is sampled.
     Profile {
         id: u32,
         hud: bool,
+        drive: Option<ProfileDrive>,
     },
     /// Ends the capture `id`: the runtime sends what it holds of it, done.
     ProfileEnd {
@@ -1725,10 +1727,11 @@ impl Message for HostMessage {
                     None => enc.write_u8(0),
                 }
             }
-            HostMessage::Profile { id, hud } => {
+            HostMessage::Profile { id, hud, drive } => {
                 enc.write_u8(HOST_PROFILE);
                 enc.write_varint(u64::from(*id));
                 enc.write_u8(u8::from(*hud));
+                enc.write_u8(ProfileDrive::to_u8(*drive));
             }
             HostMessage::ProfileEnd { id } => {
                 enc.write_u8(HOST_PROFILE_END);
@@ -1833,6 +1836,7 @@ impl Message for HostMessage {
                     1 => true,
                     _ => return Err(malformed(dec)),
                 },
+                drive: ProfileDrive::from_u8(dec.read_u8()?).ok_or_else(|| malformed(dec))?,
             }),
             HOST_PROFILE_END => Ok(HostMessage::ProfileEnd { id: read_u32(dec)? }),
             _ => Err(malformed(dec)),
@@ -2292,7 +2296,11 @@ mod tests {
                     after: u64::MAX - 1,
                 },
             },
-            HostMessage::Profile { id: 6, hud: true },
+            HostMessage::Profile {
+                id: 6,
+                hud: true,
+                drive: Some(ProfileDrive::Rescale),
+            },
             HostMessage::ProfileEnd { id: 6 },
             HostMessage::Scenario {
                 id: 4,

@@ -11,7 +11,9 @@
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use viso_dev_protocol::profile::{Count, FrameSample, MAX_FRAMES, Span, Trace, Unit, summarize};
+use viso_dev_protocol::profile::{
+    Count, FrameSample, MAX_FRAMES, ProfileDrive, Span, Trace, Unit, summarize,
+};
 use viso_dev_protocol::wire::HostMessage;
 use viso_ende::JsonWriter;
 
@@ -30,6 +32,8 @@ pub(super) struct Capture {
     ending: bool,
     /// The frames of the stream's current second, for its human line.
     second: Vec<FrameSample>,
+    /// What it puts the app's launch window through.
+    drive: Option<ProfileDrive>,
 }
 
 /// A `viso profile` waiting for frames.
@@ -55,7 +59,11 @@ impl DevSession {
         let runtime = &mut self.runtimes[at];
         if runtime
             .writer
-            .send(HostMessage::Profile { id, hud: true })
+            .send(HostMessage::Profile {
+                id,
+                hud: true,
+                drive: None,
+            })
             .is_ok()
         {
             runtime.capture = Some(Capture {
@@ -64,13 +72,21 @@ impl DevSession {
                 waiting: Vec::new(),
                 ending: false,
                 second: Vec::new(),
+                drive: None,
             });
         }
     }
 
     /// Waits for the next `frames` frames the first runtime draws, or those
-    /// it draws in the next `millis`, to answer `reply` with.
-    pub(super) fn profile(&mut self, frames: u32, millis: u64, reply: Sender<ControlReply>) {
+    /// it draws in the next `millis`, to answer `reply` with; with `drive`,
+    /// frames of the launch window going through that change.
+    pub(super) fn profile(
+        &mut self,
+        frames: u32,
+        millis: u64,
+        drive: Option<ProfileDrive>,
+        reply: Sender<ControlReply>,
+    ) {
         let refuse = |reply: Sender<ControlReply>| {
             let _ = reply.send(ControlReply::refused(
                 control::ENV_NO_DEV_SESSION,
@@ -93,17 +109,22 @@ impl DevSession {
             samples: Vec::new(),
             dropped: 0,
         };
-        // A capture already ending is not joined: a new one ends it.
+        // A capture already ending is not joined, nor one that drives the
+        // window otherwise: a new one ends it.
         let running = self.runtimes[0]
             .capture
             .as_ref()
-            .is_some_and(|capture| !capture.ending);
+            .is_some_and(|capture| !capture.ending && capture.drive == drive);
         if !running {
             let id = self.query_id();
             let runtime = &mut self.runtimes[0];
             if runtime
                 .writer
-                .send(HostMessage::Profile { id, hud: false })
+                .send(HostMessage::Profile {
+                    id,
+                    hud: false,
+                    drive,
+                })
                 .is_err()
             {
                 return refuse(wait.reply);
@@ -117,6 +138,7 @@ impl DevSession {
                 waiting: Vec::new(),
                 ending: false,
                 second: Vec::new(),
+                drive,
             });
         }
         if let Some(capture) = &mut self.runtimes[0].capture {

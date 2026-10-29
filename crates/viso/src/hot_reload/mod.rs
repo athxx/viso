@@ -339,8 +339,14 @@ struct HeldLaunch {
 /// A capture the host started or ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProfileAsk {
-    Start { id: u32, hud: bool },
-    End { id: u32 },
+    Start {
+        id: u32,
+        hud: bool,
+        drive: Option<viso_view::profile::ProfileDrive>,
+    },
+    End {
+        id: u32,
+    },
 }
 
 /// One mount of a file in a window.
@@ -1091,7 +1097,9 @@ impl HotReloadSession {
                     self.inspects.push((id, ask));
                     changed = true;
                 }
-                Incoming::Profile { id, hud } => self.profiles.push(ProfileAsk::Start { id, hud }),
+                Incoming::Profile { id, hud, drive } => {
+                    self.profiles.push(ProfileAsk::Start { id, hud, drive })
+                }
                 Incoming::ProfileEnd(id) => self.profiles.push(ProfileAsk::End { id }),
                 Incoming::Scenario {
                     id,

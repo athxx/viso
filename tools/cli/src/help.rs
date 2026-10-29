@@ -529,6 +529,10 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
                 "viso profile headless --scenario scroll --json",
                 "every frame of the `scroll` scenario, headless, as JSON events",
             ),
+            (
+                "viso profile --drive resize --frames 120",
+                "what 120 frames of resizing the window cost, the GPU's time with them",
+            ),
         ],
     ),
     (

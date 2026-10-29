@@ -59,6 +59,13 @@ pub fn run(ctx: &Context<'_>, args: &ProfileArgs, out: &mut Output) -> u8 {
             &[],
         );
     }
+    if headless && args.drive.is_some() {
+        return out.failure(
+            CLI_USAGE,
+            "`--drive` changes a live window: profile the `viso run` session",
+            &[],
+        );
+    }
     if !headless && args.scenario.is_some() {
         return out.failure(
             CLI_USAGE,
@@ -107,7 +114,11 @@ fn session(
     let millis = seconds.map_or(0, |s| (s * 1000.0).round() as u64);
     let frames = args.frames.unwrap_or(0);
     let wait = seconds.map(|s| Duration::from_secs_f64(s) + ANSWER_GRACE);
-    let ask = ControlAsk::Profile { frames, millis };
+    let ask = ControlAsk::Profile {
+        frames,
+        millis,
+        drive: args.drive.map(|d| d.drive()),
+    };
     interrupt::catch();
     let (answered, answer) = mpsc::channel();
     thread::spawn(move || {
@@ -293,6 +304,11 @@ fn report(
                 Some(device) => w.string(device),
                 None => w.null(),
             }
+            w.name("drive");
+            match args.drive {
+                Some(drive) => w.string(drive.drive().as_str()),
+                None => w.null(),
+            }
             w.name("frames");
             w.uint(trace.frames.len() as u64);
             w.name("duration_ms");
@@ -315,7 +331,7 @@ fn report(
             w.end_array();
             w.end_object();
         },
-        || Some(table(trace, &metrics, &unavailable, &caveats)),
+        || Some(table(trace, args, &metrics, &unavailable, &caveats)),
     );
     for (kind, path, bytes) in &written {
         let shown = if path.starts_with(root) {
@@ -369,9 +385,15 @@ fn write_metrics(w: &mut JsonWriter, metrics: &[Metric]) {
 
 /// The summary as a person reads it: a line on the capture, a row per
 /// metric, then what it could not measure and what its times mean.
-fn table(trace: &Trace, metrics: &[Metric], unavailable: &[&str], caveats: &[String]) -> String {
+fn table(
+    trace: &Trace,
+    args: &ProfileArgs,
+    metrics: &[Metric],
+    unavailable: &[&str],
+    caveats: &[String],
+) -> String {
     let mut text = format!(
-        "Profiled {} frames in {:.1} s ({}{})\n",
+        "Profiled {} frames in {:.1} s ({}{}{})\n",
         trace.frames.len(),
         trace.nanos as f64 / 1e9,
         trace.target,
@@ -379,6 +401,9 @@ fn table(trace: &Trace, metrics: &[Metric], unavailable: &[&str], caveats: &[Str
             .device
             .as_deref()
             .map(|d| format!(", {d}"))
+            .unwrap_or_default(),
+        args.drive
+            .map(|d| format!(", the window driven: {}", d.drive().as_str()))
             .unwrap_or_default(),
     );
     if trace.frames.is_empty() {

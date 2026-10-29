@@ -2115,7 +2115,10 @@ viso profile
 ```bash
 viso profile --frames 600
 viso profile ios --device iphone-local --seconds 10
+viso profile --drive resize --frames 120
 ```
+
+`--drive resize|rescale|recreate`：采样期间 runtime 每帧让启动窗口走一步该变化，采到的就是它的代价（验收场景 resize / DPI change / surface recreate，含 GPU 帧时间）：`resize` 在原尺寸与其四分之三之间交替，`rescale` 在原 scale factor 与另一档（`1` 与 `2`）之间交替（物理尺寸随之），`recreate` 每帧丢掉 surface 再建；结束时窗口回到原状。事件以 runtime 投给自己的 `Resized` / `ScaleFactorChanged` / `SurfaceDestroyed`+`SurfaceCreated` 走与平台事件相同的路径（swapchain 重配、relayout、重画）；平台窗口本身不动。不用于 `headless`。驱动的采集不与未驱动的共用；`--json` 的 `profile` payload 带 `drive`（未驱动为 `null`）。
 
 ### 25.2 指标
 
@@ -2169,7 +2172,7 @@ viso profile --chrome trace.json
 
 Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版本，之后为 `app`、`target`、`device`、`started_ms`（UTC 毫秒）、`nanos`（采集时长）、`dropped`、每帧 `{frame, at, nanos, spans[9], gpu, counts[21]}`（时间为 ns，`at` 相对首帧，缺失的 span/计数以位掩码省略）。不带 `--output` 时写到 `target/viso/traces/profile-YYYYMMDD-HHMMSS-mmm.ende`（UTC），只保留最新 20 个。Chrome trace 为 trace-event JSON：每帧一个 `frame` X event、每个 span 一个 X event（tid 1 "UI"），计数与 `gpu_ms` 为 C event，可在 Perfetto/`chrome://tracing` 打开。文件经临时文件 + rename 写出。
 
-`--json`：采样期间 `progress`，结束时一条 `profile`（`payload: {target, device, frames, duration_ms, dropped, metrics: {<§25.2 指标>: {p50, p95, max}}, unavailable, caveats}`，时间以 ms、计数以整数）、每个写出的文件一条 `artifact`（`kind: "trace" | "chrome-trace"`，带 sha256）、`summary`。Human 输出为一行概要、每个指标一行 p50/p95/max、未测量项与 caveat。
+`--json`：采样期间 `progress`，结束时一条 `profile`（`payload: {target, device, drive, frames, duration_ms, dropped, metrics: {<§25.2 指标>: {p50, p95, max}}, unavailable, caveats}`，时间以 ms、计数以整数）、每个写出的文件一条 `artifact`（`kind: "trace" | "chrome-trace"`，带 sha256）、`summary`。Human 输出为一行概要、每个指标一行 p50/p95/max、未测量项与 caveat。
 
 ```json
 {"type":"profile","payload":{"target":"macos","device":null,"frames":238,"duration_ms":2004.1,"dropped":0,

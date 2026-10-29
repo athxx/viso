@@ -18,6 +18,47 @@ pub const PROFILE_ENV: &str = "VISO_HEADLESS_PROFILE";
 /// The most frames a capture keeps.
 pub const MAX_FRAMES: usize = 100_000;
 
+/// What a capture puts its app's launch window through, a step each frame,
+/// so the frames it samples are what that change costs: the acceptance
+/// scenarios a live backend records, its GPU timing them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ProfileDrive {
+    /// The window's size, between its own and three quarters of it.
+    Resize = 1,
+    /// Its scale factor, between its own and another (`1` and `2`): what
+    /// moving it between a standard and a high-density display does.
+    Rescale = 2,
+    /// Its surface, lost and made again.
+    Recreate = 3,
+}
+
+impl ProfileDrive {
+    pub const ALL: [ProfileDrive; 3] = [Self::Resize, Self::Rescale, Self::Recreate];
+
+    /// Its name, as the CLI takes and reports it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Resize => "resize",
+            Self::Rescale => "rescale",
+            Self::Recreate => "recreate",
+        }
+    }
+
+    /// The drive a wire byte names: `0` for none.
+    pub fn from_u8(byte: u8) -> Option<Option<Self>> {
+        match byte {
+            0 => Some(None),
+            byte => Self::ALL.into_iter().find(|d| *d as u8 == byte).map(Some),
+        }
+    }
+
+    /// The wire byte of `drive`, `0` for none.
+    pub fn to_u8(drive: Option<Self>) -> u8 {
+        drive.map_or(0, |d| d as u8)
+    }
+}
+
 /// A stretch of a frame on the UI thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

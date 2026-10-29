@@ -888,15 +888,15 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             self.hot_reload.wakeup(cx, &self.windows);
             for ask in self.hot_reload.take_profiles() {
                 match ask {
-                    crate::hot_reload::ProfileAsk::Start { id, hud } => {
-                        self.start_profile(id, hud, true);
+                    crate::hot_reload::ProfileAsk::Start { id, hud, drive } => {
+                        self.start_profile(id, hud, true, drive, cx);
                         if hud {
                             for ws in &self.windows {
                                 cx.request_redraw(ws.window);
                             }
                         }
                     }
-                    crate::hot_reload::ProfileAsk::End { id } => self.end_profile(id),
+                    crate::hot_reload::ProfileAsk::End { id } => self.end_profile(id, cx),
                 }
                 if !self.profiler.hud() {
                     self.show_hud(None, cx);

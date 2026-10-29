@@ -1345,7 +1345,11 @@ impl DevSession {
             ControlAsk::Game { game, ask } => self.game(&game, ask, call.reply, out),
             ControlAsk::Inspect(ask) => self.inspect(ask, call.reply),
             ControlAsk::Scenario { script } => self.play(&script, call.reply),
-            ControlAsk::Profile { frames, millis } => self.profile(frames, millis, call.reply),
+            ControlAsk::Profile {
+                frames,
+                millis,
+                drive,
+            } => self.profile(frames, millis, drive, call.reply),
         }
     }
 

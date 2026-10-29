@@ -102,6 +102,7 @@ pub(crate) enum Incoming {
     Profile {
         id: u32,
         hud: bool,
+        drive: Option<viso_view::profile::ProfileDrive>,
     },
     ProfileEnd(u32),
     /// A scenario to play, its text and source table as their blobs
@@ -236,7 +237,7 @@ fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
         Ok(HostMessage::Game(query)) => Incoming::Game(query),
         Ok(HostMessage::Snapshot) => Incoming::Snapshot,
         Ok(HostMessage::Inspect { id, ask }) => Incoming::Inspect { id, ask },
-        Ok(HostMessage::Profile { id, hud }) => Incoming::Profile { id, hud },
+        Ok(HostMessage::Profile { id, hud, drive }) => Incoming::Profile { id, hud, drive },
         Ok(HostMessage::ProfileEnd { id }) => Incoming::ProfileEnd(id),
         Ok(HostMessage::Scenario {
             id,

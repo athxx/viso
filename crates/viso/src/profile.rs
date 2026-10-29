@@ -39,6 +39,8 @@ mod live {
     use std::time::Duration;
 
     use viso_platform::Instant;
+    #[cfg(feature = "hot-reload")]
+    use viso_view::profile::ProfileDrive;
     use viso_view::profile::{Count, FrameSample, MAX_FRAMES, Span, Timed};
 
     use viso_gpu::GpuBackend;
@@ -110,6 +112,63 @@ mod live {
     #[derive(Default)]
     pub(crate) struct Profiler {
         capture: Option<Capture>,
+        /// What the capture puts the launch window through.
+        #[cfg(feature = "hot-reload")]
+        driving: Option<Driving>,
+    }
+
+    /// A capture's drive of the launch window: a step a frame between how
+    /// the window was and the change, back to how it was at the end.
+    #[cfg(feature = "hot-reload")]
+    struct Driving {
+        drive: ProfileDrive,
+        steps: u64,
+        /// The window's scale factor and physical size as the capture began.
+        home: (f32, u32, u32),
+    }
+
+    #[cfg(feature = "hot-reload")]
+    impl Driving {
+        /// Posts the events that take `window` to the change when `away`,
+        /// back home otherwise; a surface is lost and made again either way.
+        fn post(&self, window: viso_platform::WindowId, away: bool, cx: &mut RuntimeCx<'_>) {
+            use viso_platform::RawEvent;
+            let (scale, w, h) = self.home;
+            match self.drive {
+                ProfileDrive::Resize => {
+                    let (width, height) = if away {
+                        ((w * 3 / 4).max(1), (h * 3 / 4).max(1))
+                    } else {
+                        (w, h)
+                    };
+                    cx.post_event(RawEvent::Resized {
+                        window,
+                        width,
+                        height,
+                    });
+                }
+                ProfileDrive::Rescale => {
+                    let to = if !away {
+                        scale
+                    } else if scale >= 1.5 {
+                        1.0
+                    } else {
+                        2.0
+                    };
+                    let k = to / scale;
+                    cx.post_event(RawEvent::ScaleFactorChanged {
+                        window,
+                        scale: f64::from(to),
+                        width: ((w as f32 * k).round() as u32).max(1),
+                        height: ((h as f32 * k).round() as u32).max(1),
+                    });
+                }
+                ProfileDrive::Recreate => {
+                    cx.post_event(RawEvent::SurfaceDestroyed { window });
+                    cx.post_event(RawEvent::SurfaceCreated { window });
+                }
+            }
+        }
     }
 
     struct Capture {
@@ -479,6 +538,12 @@ mod live {
             if let Some(line) = self.profiler.hud_line() {
                 self.show_hud(Some(&line), cx);
             }
+            #[cfg(feature = "hot-reload")]
+            if let (Some(driving), Some(ws)) = (&mut self.profiler.driving, self.windows.first()) {
+                driving.steps += 1;
+                driving.post(ws.window, driving.steps % 2 == 1, cx);
+                cx.request_redraw(ws.window);
+            }
             #[cfg(not(feature = "hot-reload"))]
             let _ = cx;
         }
@@ -495,22 +560,54 @@ mod live {
             }
         }
 
-        /// Starts the capture `id`, ending the one under way.
+        /// Starts the capture `id`, ending the one under way; with `drive`,
+        /// it puts the launch window through that change.
         #[cfg(feature = "hot-reload")]
-        pub(crate) fn start_profile(&mut self, id: u32, hud: bool, stream: bool) {
+        pub(crate) fn start_profile(
+            &mut self,
+            id: u32,
+            hud: bool,
+            stream: bool,
+            drive: Option<ProfileDrive>,
+            cx: &mut RuntimeCx<'_>,
+        ) {
+            self.stop_driving(cx);
             let baseline = self.profile_baseline();
             if let Some(ended) = self.profiler.start(id, hud, stream, baseline) {
                 self.hand_over(ended, true);
+            }
+            if let (Some(drive), Some(ws)) = (drive, self.windows.first()) {
+                let (w, h) = ws.surface_size;
+                self.profiler.driving = Some(Driving {
+                    drive,
+                    steps: 0,
+                    home: (ws.dpi.max(f32::MIN_POSITIVE), w, h),
+                });
+                cx.request_redraw(ws.window);
+            }
+        }
+
+        /// Takes the launch window back to how it was before a capture drove
+        /// it.
+        #[cfg(feature = "hot-reload")]
+        fn stop_driving(&mut self, cx: &mut RuntimeCx<'_>) {
+            if let (Some(driving), Some(ws)) = (self.profiler.driving.take(), self.windows.first())
+            {
+                if driving.drive != ProfileDrive::Recreate {
+                    driving.post(ws.window, false, cx);
+                }
+                cx.request_redraw(ws.window);
             }
         }
 
         /// Ends the capture `id`, handing over what it holds; a capture not
         /// under way ends with nothing.
         #[cfg(feature = "hot-reload")]
-        pub(crate) fn end_profile(&mut self, id: u32) {
+        pub(crate) fn end_profile(&mut self, id: u32, cx: &mut RuntimeCx<'_>) {
             if self.profiler.id() != Some(id) {
                 return self.hand_over((id, Vec::new(), 0), true);
             }
+            self.stop_driving(cx);
             if let Some(gpu) = self.windows.first_mut().and_then(|ws| ws.gpu.as_mut()) {
                 gpu.backend.time_frames(false);
             }
