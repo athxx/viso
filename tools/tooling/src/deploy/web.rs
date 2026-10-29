@@ -468,7 +468,7 @@ fn route<'a>(path: &'a str, prefixes: &[&str]) -> Route<'a> {
 
 /// The headers that isolate a page across origins, which a module sharing
 /// its memory needs.
-const ISOLATED: &str =
+pub(crate) const ISOLATED: &str =
     "Cross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: require-corp\r\n";
 
 /// The page that lists the lanes served under `prefixes`.
@@ -1186,7 +1186,18 @@ pub fn open_headless(
     url: &str,
     profile: &std::path::Path,
 ) -> io::Result<std::process::Child> {
-    Command::new(browser)
+    headless_command(browser, url, profile).launch()
+}
+
+/// The command opening `url` in `browser` with no window, its profile kept
+/// in `profile`, WebGPU on.
+pub fn headless_command(
+    browser: &std::path::Path,
+    url: &str,
+    profile: &std::path::Path,
+) -> Command {
+    let mut command = Command::new(browser);
+    command
         .args([
             "--headless=new",
             "--no-first-run",
@@ -1197,8 +1208,8 @@ pub fn open_headless(
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .launch()
+        .stderr(Stdio::null());
+    command
 }
 
 /// Opens `url` in `browser` (`chrome`, `safari`, `firefox`), or in the

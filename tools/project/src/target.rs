@@ -515,11 +515,13 @@ impl WebOptimize {
     pub const ALL: [WebOptimize; 3] = [WebOptimize::None, WebOptimize::Speed, WebOptimize::Size];
 }
 
-/// A web build feature the build turns on where the target supports it.
+/// A web build feature: on, off, or decided by the build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Auto {
-    /// On where supported.
+    /// The build decides, from the profile and the tools at hand.
     Auto,
+    /// On; the build fails without what it needs.
+    On,
     /// Off.
     Off,
 }
@@ -529,12 +531,13 @@ impl Auto {
     pub const fn as_str(self) -> &'static str {
         match self {
             Auto::Auto => "auto",
+            Auto::On => "on",
             Auto::Off => "off",
         }
     }
 
     /// Every value, for parsing and messages.
-    pub const ALL: [Auto; 2] = [Auto::Auto, Auto::Off];
+    pub const ALL: [Auto; 3] = [Auto::Auto, Auto::On, Auto::Off];
 }
 
 /// Optimization level, mapping onto the backend's own scale.

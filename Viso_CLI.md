@@ -1374,8 +1374,8 @@ strip        bool              默认随该 profile 的 strip（及其来源）
 source_maps  bool              默认随该 profile 的 source_maps（及其来源）
 brotli       bool              shipping true，其余 false
 gzip         bool              shipping true，其余 false
-split        auto|off          auto
-threads      auto|off          auto
+split        auto|on|off       auto
+threads      auto|on|off       auto
 ```
 
 - `VISO_STRIP`/`VISO_SOURCE_MAPS` 仍优先于 web 子表（§10 的层序）；
@@ -1383,7 +1383,8 @@ threads      auto|off          auto
 - `optimize` 经 `wasm-opt`（`-O3`/`-Oz`，启用 Rust 默认产生的 bulk-memory、mutable-globals、nontrapping-float-to-int、sign-ext、reference-types、multivalue）；保留 names/debug info 时加 `-g`。`wasm-opt` 缺失：dev/release 输出 `log{level:"warn"}` 并保留未优化模块，shipping 以 `ENV_TOOL`（exit 3）失败；
 - 模块与 glue 按内容命名（`<bin>_bg.<hash>.wasm`、`<bin>.<hash>.js`，`<hash>` 为文件 SHA-256 的前 16 位十六进制），`index.html` 不带 hash，以 `init({ module_or_path })` 加载该模块，服务端可对带 hash 的文件永久缓存、对页面每次重新验证；链接的 package 带 `web/worker.js` 时另有不带 hash 的 `sw.js`（§27.1 platform fragments），页面先注册它；
 - `brotli`/`gzip` 在每个 `.wasm`/`.js`/`.html` 旁写 `.br`（quality 11、window 24）与 `.gz`（level 9），各文件并行压缩；
-- `split`/`threads` 的 `auto` 当前解析为不拆分、单线程（拆分与 shared-memory 线程模块见 C4.2）。
+- `split`：把模块拆成启动部分和懒加载部分。`wasm-split`（Binaryen）先插桩模块，页面在 loopback 上由 headless Chrome/Chromium/Edge（`VISO_CHROME`）加载，app 运行 3 s 后回传它调用过的函数（训练运行，app 照常启动，会发出它启动时的请求）。这些函数留在主模块 `<bin>_bg.<hash>.wasm`，其余移入 `<bin>_lazy.<hash>.wasm`。glue 在 `__wbg_get_imports` 处补上 `wasm-split` 留下的占位函数，在 `__wbindgen_start` 前交出主模块的 exports。页面加载时以低优先级 fetch 懒加载部分并在后台编译，主模块与它都就绪后立刻实例化（共享主模块的 memory 和 table）；在此之前调用到其中的函数会落到占位函数上，当场加载（字节未到时用同步请求）后转发调用。`auto` 只拆 shipping 且不保留 debug info（`source_maps` 关）的构建：缺 `wasm-split` 或浏览器，或训练运行失败（60 s 内没回传 profile），都输出 `log{level:"warn"}` 并发布整个模块；`on` 每个 profile 都拆，缺这些时以 `ENV_TOOL`（exit 3）失败；`off` 不拆。地图示例的 shipping 构建：启动下载 brotli 1.86 MiB → 1.19 MiB，启动要编译的代码 3.66 MiB → 1.44 MiB；
+- `threads` 的 `auto` 当前解析为单线程（shared-memory 线程模块见 C4.2）。
 
 ### 14.4 Artifact summary
 

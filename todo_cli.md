@@ -671,10 +671,16 @@ alternative.
       the page naming them) so a server can cache them forever. (16 hex digits of
       each file's SHA-256 after `wasm-opt`; the page passes the module to `init`, so
       the generated glue is not rewritten; `index.html` keeps its name.)
-- [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
-      shared-memory threaded module (`auto` resolves to off until then); with threads
-      on, `serve` sends COOP `same-origin` and COEP `require-corp`. (The serve half is
-      in: a lane whose module shares its memory gets both headers.)
+- [x] `[profile.<name>.web] split`: a startup/lazy module split. (`auto|on|off`; a
+      training run in a headless browser profiles the module `wasm-split`
+      instrumented, the functions it called stay in the primary part, the rest load
+      in the background, a call before then loads them on the spot; `auto` splits a
+      shipping build without debug info when `wasm-split` and a browser are found.
+      The map's shipping startup download: 1.86 → 1.19 MiB brotli.)
+- [ ] `[profile.<name>.web] threads`: a shared-memory threaded module (`auto`
+      resolves to off until then); with threads on, `serve` sends COOP `same-origin`
+      and COEP `require-corp`. (The serve half is in: a lane whose module shares its
+      memory gets both headers.)
 - [x] `serve` security headers of §15.3 (CSP, `nosniff`, correct MIME for `.wasm`),
       served precompressed when the client accepts it. (The page is the bundle's own
       `index.html` with the launch scripts ahead of `</head>`; a per-response nonce on

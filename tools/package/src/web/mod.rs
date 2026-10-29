@@ -7,6 +7,8 @@ use std::process::Command;
 
 use crate::{io, run};
 
+pub mod lazy;
+
 /// The Rust target.
 pub const TRIPLE: &str = "wasm32-unknown-unknown";
 
@@ -210,6 +212,102 @@ impl WasmReader<'_> {
         None
     }
 
+    /// The contents of each section of the module `wasm`, by id; `None` for
+    /// what does not read as a module.
+    fn sections(wasm: &[u8]) -> Option<Vec<(u8, &[u8])>> {
+        if !wasm.starts_with(b"\0asm") {
+            return None;
+        }
+        let mut read = WasmReader { bytes: wasm, at: 8 };
+        let mut sections = Vec::new();
+        while read.at < wasm.len() {
+            let id = read.byte()?;
+            let size = read.leb()? as usize;
+            let end = read.at.checked_add(size).filter(|&e| e <= wasm.len())?;
+            sections.push((id, &wasm[read.at..end]));
+            read.at = end;
+        }
+        Some(sections)
+    }
+
+    /// The exports of the module `wasm`: each its name, kind and index.
+    fn exports(wasm: &[u8]) -> Option<Vec<(String, u8, u32)>> {
+        let mut exports = Vec::new();
+        for (_, contents) in Self::sections(wasm)?.into_iter().filter(|(id, _)| *id == 7) {
+            let mut read = WasmReader {
+                bytes: contents,
+                at: 0,
+            };
+            for _ in 0..read.leb()? {
+                let name = read.name()?;
+                let kind = read.byte()?;
+                let index = u32::try_from(read.leb()?).ok()?;
+                exports.push((name, kind, index));
+            }
+        }
+        Some(exports)
+    }
+
+    /// The modules the module `wasm` imports from, each once, in order.
+    fn import_modules(wasm: &[u8]) -> Option<Vec<String>> {
+        let mut modules: Vec<String> = Vec::new();
+        for (_, contents) in Self::sections(wasm)?.into_iter().filter(|(id, _)| *id == 2) {
+            let mut read = WasmReader {
+                bytes: contents,
+                at: 0,
+            };
+            for _ in 0..read.leb()? {
+                let module = read.name()?;
+                read.skip_name()?;
+                read.skip_import()?;
+                if !modules.contains(&module) {
+                    modules.push(module);
+                }
+            }
+        }
+        Some(modules)
+    }
+
+    /// A name: its length, then its UTF-8.
+    fn name(&mut self) -> Option<String> {
+        let len = self.leb()? as usize;
+        let end = self
+            .at
+            .checked_add(len)
+            .filter(|&e| e <= self.bytes.len())?;
+        let name = std::str::from_utf8(&self.bytes[self.at..end])
+            .ok()?
+            .to_owned();
+        self.at = end;
+        Some(name)
+    }
+
+    /// What an import imports, after its names.
+    fn skip_import(&mut self) -> Option<()> {
+        match self.byte()? {
+            // A function: its type.
+            0x00 => drop(self.leb()?),
+            // A table: its element type, then its limits.
+            0x01 => {
+                self.byte()?;
+                self.limits_shared()?;
+            }
+            0x02 => drop(self.limits_shared()?),
+            // A global: its value type and mutability.
+            0x03 => {
+                self.byte()?;
+                self.byte()?;
+            }
+            // A tag: its attribute and type.
+            0x04 => {
+                self.byte()?;
+                self.leb()?;
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
     fn skip_name(&mut self) -> Option<()> {
         let len = self.leb()? as usize;
         self.at = self
@@ -235,29 +333,13 @@ impl WasmReader<'_> {
         for _ in 0..self.leb()? {
             self.skip_name()?;
             self.skip_name()?;
-            match self.byte()? {
-                // A function or a tag: its type.
-                0x00 => drop(self.leb()?),
-                0x04 => {
-                    self.byte()?;
-                    self.leb()?;
+            if self.bytes.get(self.at) == Some(&0x02) {
+                self.at += 1;
+                if self.limits_shared()? {
+                    return Some(true);
                 }
-                // A table: its element type, then its limits.
-                0x01 => {
-                    self.byte()?;
-                    self.limits_shared()?;
-                }
-                0x02 => {
-                    if self.limits_shared()? {
-                        return Some(true);
-                    }
-                }
-                // A global: its value type and mutability.
-                0x03 => {
-                    self.byte()?;
-                    self.byte()?;
-                }
-                _ => return None,
+            } else {
+                self.skip_import()?;
             }
         }
         Some(false)

@@ -1,8 +1,9 @@
 //! The web bundle of a build, as its profile's web settings shape it: the
 //! glue `wasm-bindgen` generates, keeping the module's debug info for source
 //! maps or removing its name and producers sections for a stripped build;
-//! the module optimized by `wasm-opt` for speed or size; the module and its
-//! glue named by their content (`<bin>_bg.<hash>.wasm`, `<bin>.<hash>.js`)
+//! the module optimized by `wasm-opt` for speed or size, then split into a
+//! startup and a lazy part when the profile asks for it ([`super::split`]);
+//! the module and its glue named by their content (`<bin>_bg.<hash>.wasm`, `<bin>.<hash>.js`)
 //! so a server can cache them forever, and the page that loads them, which
 //! keeps its name; and a Brotli and a gzip copy of each file beside it, for a
 //! server to hand out precompressed.
@@ -31,7 +32,7 @@ const WASM_OPT_INSTALL: &str = "install Binaryen (`brew install binaryen`, or it
 
 /// The WebAssembly features Rust's `wasm32-unknown-unknown` emits by
 /// default, which the optimized module may keep using.
-const FEATURES: &[&str] = &[
+pub(super) const FEATURES: &[&str] = &[
     "--enable-bulk-memory",
     "--enable-mutable-globals",
     "--enable-nontrapping-float-to-int",
@@ -125,7 +126,8 @@ pub fn bundle(
         }
     }
 
-    fingerprint(dir, bin, worker, page, profile)?;
+    let lazy = super::split::split(dir, bin, page, profile, web, false, cancelled, sink)?;
+    fingerprint(dir, bin, worker, page, profile, lazy)?;
 
     let mut files = listed(dir)?;
     let compress: Vec<(&str, bool)> = vec![("br", web.brotli.value), ("gz", web.gzip.value)];
@@ -147,12 +149,15 @@ const FINGERPRINT: usize = 16;
 /// `page` with its stylesheet, its script, its assets and, in a dev build,
 /// its module, each named by its content too — and the service worker
 /// `worker`, which keeps its name, as a browser updates a worker at its URL.
+/// A split module's lazy part is named by its content too, and the glue
+/// loads it.
 fn fingerprint(
     dir: &Path,
     bin: &str,
     worker: Option<&str>,
     page: Option<&WebPage>,
     profile: Profile,
+    lazy: Option<bundle::lazy::Lazy>,
 ) -> Result<(), BuildFailure> {
     let rename = |stem: &str, extension: &str| -> Result<String, BuildFailure> {
         let from = dir.join(format!("{stem}.{extension}"));
@@ -167,6 +172,20 @@ fn fingerprint(
         Ok(name)
     };
     let module = rename(&format!("{bin}_bg"), "wasm")?;
+    if let Some(lazy) = lazy {
+        let lazy = bundle::lazy::Lazy {
+            module: rename(&format!("{bin}_lazy"), "wasm")?,
+            ..lazy
+        };
+        let path = dir.join(format!("{bin}.js"));
+        let glue = std::fs::read_to_string(&path).map_err(|error| {
+            BuildFailure::Package(format!("cannot read `{}`: {error}", path.display()))
+        })?;
+        let patched = bundle::lazy::glue(&glue, &lazy).map_err(BuildFailure::Package)?;
+        std::fs::write(&path, patched).map_err(|error| {
+            BuildFailure::Package(format!("cannot write `{}`: {error}", path.display()))
+        })?;
+    }
     let glue = rename(bin, "js")?;
     match page {
         Some(page) => write_dom_page(dir, &glue, &module, worker, page, profile),
@@ -340,7 +359,7 @@ fn compressed(path: &Path, out: &Path, extension: &str) -> std::io::Result<()> {
 /// Runs the tool `name` until it ends or `cancelled` fires: not installed is
 /// [`BuildFailure::Spawn`] with how to install it (`install`), a failure
 /// [`BuildFailure::Package`] with what it wrote.
-fn tool(
+pub(super) fn tool(
     command: &mut Command,
     name: &str,
     install: &str,
@@ -425,6 +444,43 @@ mod tests {
     }
 
     #[test]
+    fn a_split_modules_lazy_part_is_named_by_its_content_and_the_glue_loads_it() {
+        let dir = std::env::temp_dir().join(format!("viso-web-lazy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("app_bg.wasm"), "\0asm primary").unwrap();
+        std::fs::write(dir.join("app_lazy.wasm"), "\0asm lazy").unwrap();
+        std::fs::write(
+            dir.join("app.js"),
+            "function __wbg_get_imports() {\n    return {};\n}\nlet wasm;\nfunction __wbg_finalize_init(instance) {\n    wasm = instance.exports;\n    wasm.__wbindgen_start();\n}\n",
+        )
+        .unwrap();
+        let lazy = bundle::lazy::Lazy {
+            module: "app_lazy.wasm".to_owned(),
+            namespace: "lazy.deferred".to_owned(),
+            table: "%a".to_owned(),
+        };
+        fingerprint(&dir, "app", None, None, Profile::Shipping, Some(lazy)).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let named = |prefix: &str, ext: &str| {
+            names
+                .iter()
+                .find(|n| n.starts_with(prefix) && n.ends_with(ext))
+                .unwrap_or_else(|| panic!("{prefix}*{ext} in {names:?}"))
+                .clone()
+        };
+        let (lazy, glue) = (named("app_lazy.", ".wasm"), named("app.", ".js"));
+        assert_eq!(lazy.len(), "app_lazy..wasm".len() + FINGERPRINT);
+        let glue = std::fs::read_to_string(dir.join(glue)).unwrap();
+        assert!(glue.contains(&format!("new URL(\"./{lazy}\", import.meta.url)")));
+        assert!(glue.contains("__visoLazy.ready(wasm);"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_module_and_its_glue_are_named_by_their_content_and_the_page_by_none() {
         let dir = std::env::temp_dir().join(format!("viso-web-names-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -432,7 +488,7 @@ mod tests {
         let write = |wasm: &str| {
             std::fs::write(dir.join("app_bg.wasm"), wasm).unwrap();
             std::fs::write(dir.join("app.js"), "export default function init() {}").unwrap();
-            fingerprint(&dir, "app", None, None, Profile::Release).unwrap();
+            fingerprint(&dir, "app", None, None, Profile::Release, None).unwrap();
             let mut names: Vec<String> = std::fs::read_dir(&dir)
                 .unwrap()
                 .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

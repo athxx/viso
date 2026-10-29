@@ -1365,6 +1365,13 @@ output, a live macOS session) is listed with the device runs of N8.
   `AudioProcess`), which needs the threaded web build below.
 - [ ] `[profile.<name>.web] split` and `threads`: a startup/lazy module split and a
   shared-memory threaded module (`todo_cli.md` C4.2).
+  - [x] `split`: profile-guided by a headless training run (`wasm-split`), the lazy part
+    compiled in the background and loaded on the spot by a call that comes first. The
+    map's shipping startup: 1.86 → 1.19 MiB brotli, 3.66 → 1.44 MiB of code to compile.
+  - [ ] `threads`.
+- [ ] The map's route card shows `…: the server answered 404` on one line past the card's
+  edge in the frame it first appears, wrapped only later (found with the split; the
+  unsplit bundle does the same).
 - [ ] Per-target availability of natives, and the capability table rows it gives; lands with the
   first native missing on some target (`todo_cli.md` C1.5, C4.4).
 - [x] A pixel golden of the frame-profile HUD (`todo_cli.md` C6). `the_hud_draws_as_its_golden`

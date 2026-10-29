@@ -26,6 +26,7 @@
 pub mod cargo;
 pub mod fonts;
 pub mod images;
+mod split;
 pub mod web;
 
 use std::ffi::OsString;
