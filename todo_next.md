@@ -1225,7 +1225,12 @@ Rules (as for `todo_features.md`):
     idle: the backend used to leave a pending frame (`ControlFlow::Poll`) to whatever asked
     for the next beat, so once tiles and animations settled, input changed state but no frame
     ran. Two fingers remain: synthetic Option comes through as a key while Device Hub
-    captures input, so the pinch, rotate and tilt need a hand on the Mac or a device.
+    captures input, so the pinch, rotate and tilt need a hand on the Mac or a device. A
+    trackpad's pinch and rotation (an iPad's, and Device Hub's if it passes the Mac's on)
+    now arrive as the trackpad gesture, as on the Mac. The Android emulator's Command-drag
+    reports the second finger's landing at a stale point; a second finger whose first move
+    leaps is now measured from where it moves, so the spread zooms in as it should. The
+    emulator passes no trackpad pinch on at all.
 - [ ] High-refresh frame pacing (120, 144, 240 Hz) on presenting devices. Verify with GPU-time and
   cadence traces.
   - [x] Nothing caps a frame at 60 Hz. Built:

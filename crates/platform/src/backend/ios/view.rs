@@ -29,22 +29,26 @@ use std::cell::{Cell, RefCell};
 
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyClass, AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
+};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
-    NSArray, NSComparisonResult, NSDate, NSDictionary, NSRange, NSSet, NSString, NSTimer, NSValue,
+    NSArray, NSComparisonResult, NSDate, NSDictionary, NSNumber, NSRange, NSSet, NSString, NSTimer,
+    NSValue,
 };
 use objc2_ui_kit::{
     UIDropInteraction, UIDropInteractionDelegate, UIDropProposal, UIDropSession,
     UIEditMenuConfiguration, UIEditMenuInteraction, UIEditMenuInteractionAnimating,
     UIEditMenuInteractionDelegate, UIEvent, UIEventButtonMask, UIGestureRecognizer,
-    UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput, UIKeyboardType,
-    UIPanGestureRecognizer, UIPress, UIPressesEvent, UIResponder, UIReturnKeyType,
-    UIScrollTypeMask, UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput,
-    UITextInputDelegate, UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits,
-    UITextPosition, UITextRange, UITextSelectionRect, UITextSmartDashesType,
-    UITextSmartInsertDeleteType, UITextSmartQuotesType, UITextSpellCheckingType, UITouch,
-    UITouchPhase, UITouchType, UITraitCollection, UITraitEnvironment, UIView,
+    UIGestureRecognizerDelegate, UIGestureRecognizerState, UIHoverGestureRecognizer, UIKeyInput,
+    UIKeyboardType, UIPanGestureRecognizer, UIPinchGestureRecognizer, UIPress, UIPressesEvent,
+    UIResponder, UIReturnKeyType, UIRotationGestureRecognizer, UIScrollTypeMask,
+    UITextAutocapitalizationType, UITextAutocorrectionType, UITextInput, UITextInputDelegate,
+    UITextInputStringTokenizer, UITextInputTokenizer, UITextInputTraits, UITextPosition,
+    UITextRange, UITextSelectionRect, UITextSmartDashesType, UITextSmartInsertDeleteType,
+    UITextSmartQuotesType, UITextSpellCheckingType, UITouch, UITouchPhase, UITouchType,
+    UITraitCollection, UITraitEnvironment, UIView,
 };
 
 use super::{clipboard, drive, push, report_appearance};
@@ -111,7 +115,14 @@ pub(super) struct ViewIvars {
     arrival: RefCell<Option<(crate::DropKinds, crate::DropReply)>>,
     /// A drop whose contents are loading.
     landing: RefCell<Option<drop::Landing>>,
+    /// The trackpad's gestures under way: a pinch, a rotation, as bits.
+    gestures: Cell<u8>,
 }
+
+/// The pinch among a view's trackpad gestures.
+const PINCH: u8 = 1;
+/// The rotation among them.
+const ROTATE: u8 = 2;
 
 define_class!(
     // SAFETY: UIView has no subclassing requirements beyond calling its
@@ -259,6 +270,24 @@ define_class!(
             });
         }
 
+        #[unsafe(method(pinch:))]
+        fn pinch(&self, recognizer: &UIPinchGestureRecognizer) {
+            super::guarded(|| {
+                let scale = recognizer.scale();
+                recognizer.setScale(1.0);
+                self.gesture(recognizer, PINCH, scale, 0.0);
+            });
+        }
+
+        #[unsafe(method(rotate:))]
+        fn rotate(&self, recognizer: &UIRotationGestureRecognizer) {
+            super::guarded(|| {
+                let turn = recognizer.rotation();
+                recognizer.setRotation(0.0);
+                self.gesture(recognizer, ROTATE, 1.0, turn);
+            });
+        }
+
         #[unsafe(method(pressesBegan:withEvent:))]
         fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
             let mut forward = Vec::new();
@@ -346,6 +375,18 @@ define_class!(
         #[unsafe(method_id(inputView))]
         fn input_view(&self) -> Option<Retained<UIView>> {
             self.keyboard_stand_in()
+        }
+    }
+
+    unsafe impl UIGestureRecognizerDelegate for VisoView {
+        // A trackpad's pinch and rotation run together, as one gesture.
+        #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
+        fn simultaneous(&self, a: &UIGestureRecognizer, b: &UIGestureRecognizer) -> bool {
+            let transform = |r: &UIGestureRecognizer| {
+                r.isKindOfClass(UIPinchGestureRecognizer::class())
+                    || r.isKindOfClass(UIRotationGestureRecognizer::class())
+            };
+            transform(a) && transform(b)
         }
     }
 
@@ -842,6 +883,7 @@ impl VisoView {
             loupe: RefCell::new(None),
             arrival: RefCell::new(None),
             landing: RefCell::new(None),
+            gestures: Cell::new(0),
         });
         // SAFETY: `initWithFrame:` is UIView's designated initializer.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
@@ -873,6 +915,33 @@ impl VisoView {
         scroll.setAllowedScrollTypesMask(UIScrollTypeMask::All);
         scroll.setCancelsTouchesInView(false);
         view.addGestureRecognizer(&scroll);
+        // A trackpad's pinch and rotation: the indirect pointer only, since
+        // fingers on the screen arrive as touches.
+        let pointer_only =
+            NSArray::from_retained_slice(&[NSNumber::new_isize(UITouchType::IndirectPointer.0)]);
+        let delegate = ProtocolObject::<dyn UIGestureRecognizerDelegate>::from_ref(&*view);
+        // SAFETY: as for `hover`.
+        let pinch = unsafe {
+            UIPinchGestureRecognizer::initWithTarget_action(
+                UIPinchGestureRecognizer::alloc(mtm),
+                Some(&view),
+                Some(sel!(pinch:)),
+            )
+        };
+        // SAFETY: as for `hover`.
+        let rotate = unsafe {
+            UIRotationGestureRecognizer::initWithTarget_action(
+                UIRotationGestureRecognizer::alloc(mtm),
+                Some(&view),
+                Some(sel!(rotate:)),
+            )
+        };
+        for recognizer in [&**pinch, &**rotate] {
+            recognizer.setAllowedTouchTypes(&pointer_only);
+            recognizer.setCancelsTouchesInView(false);
+            recognizer.setDelegate(Some(delegate));
+            view.addGestureRecognizer(recognizer);
+        }
         if AnyClass::get(c"UIEditMenuInteraction").is_some() {
             let delegate = ProtocolObject::<dyn UIEditMenuInteractionDelegate>::from_ref(&*view);
             let interaction = UIEditMenuInteraction::initWithDelegate(
@@ -1128,6 +1197,39 @@ impl VisoView {
                 height: size.1,
             });
         }
+    }
+
+    /// Report a sample of the trackpad gesture `which`: one gesture while
+    /// either the pinch or the rotation runs.
+    fn gesture(&self, recognizer: &UIGestureRecognizer, which: u8, scale: f64, rotation: f64) {
+        use crate::GesturePhase;
+        let ivars = self.ivars();
+        let before = ivars.gestures.get();
+        let now = match gesture_state(recognizer) {
+            UIGestureRecognizerState::Began => before | which,
+            UIGestureRecognizerState::Changed => before,
+            _ => before & !which,
+        };
+        ivars.gestures.set(now);
+        let phase = match (before, now) {
+            (0, 0) => return,
+            (0, _) => GesturePhase::Began,
+            (_, 0) => GesturePhase::Ended,
+            _ => GesturePhase::Changed,
+        };
+        let p = recognizer.locationInView(Some(self));
+        push(RawEvent::Gesture(crate::RawGesture {
+            window: ivars.window,
+            x: p.x,
+            y: p.y,
+            scale,
+            rotation,
+            dx: 0.0,
+            dy: 0.0,
+            modifiers: modifiers(recognizer.modifierFlags().0),
+            phase,
+        }));
+        drive();
     }
 
     fn touches(&self, touches: &NSSet<UITouch>, event: Option<&UIEvent>, phase: PointerPhase) {

@@ -36,6 +36,10 @@ pub const WHEEL_PINCH_REST: Duration = Duration::from_millis(150);
 /// How far (pt) a wheel turns to zoom by a factor of `e`.
 const WHEEL_ZOOM: f32 = 100.0;
 
+/// How many slops a second finger's first move spans to count as its having
+/// landed somewhere else.
+const LEAP_SLOPS: f32 = 4.0;
+
 /// Which sample of a pinch is under dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinchPhase {
@@ -85,6 +89,8 @@ struct Pinch {
     node: NodeId,
     source: Source,
     started: bool,
+    /// The second finger landed and has not moved since.
+    landed: bool,
     /// The fingers' spread, angle and middle as the second landed.
     spread: f32,
     angle: f32,
@@ -101,6 +107,7 @@ impl Pinch {
             node,
             source,
             started: false,
+            landed: false,
             spread: 0.0,
             angle: 0.0,
             scale: 1.0,
@@ -261,6 +268,7 @@ impl NodeStore {
                     && !pinch.started
                 {
                     *second = Some((pointer, at));
+                    pinch.landed = true;
                     let (spread, angle, focal) = span(first.1, at);
                     pinch.spread = spread;
                     pinch.angle = angle;
@@ -294,15 +302,30 @@ impl NodeStore {
         let i = self.pinches.of(pointer)?;
         let live = self.arena().is_live(self.pinches.pinches[i].node);
         let pinch = &mut self.pinches.pinches[i];
+        let mut leapt = 0.0f32;
         if let Source::Touch(fingers) = &mut pinch.source {
             for finger in fingers.iter_mut().flatten() {
                 if finger.0 == pointer {
+                    leapt = (at[0] - finger.1[0]).hypot(at[1] - finger.1[1]);
                     finger.1 = at;
                 }
             }
         }
         let [a, b] = pinch.fingers()?;
         let (spread, angle, focal) = span(a.1, b.1);
+        // A second finger whose first move leaps landed where it was not:
+        // some systems (an emulator's) report the landing at a stale point.
+        // The pinch is measured from where it really is.
+        let first_move = pinch.landed && b.0 == pointer;
+        if first_move {
+            pinch.landed = false;
+        }
+        if first_move && !pinch.started && leapt > LEAP_SLOPS * slop {
+            pinch.spread = spread;
+            pinch.angle = angle;
+            pinch.focal = focal;
+            return Some(PinchStep::Moved);
+        }
         let scale = spread / pinch.spread;
         let rotation = pinch.rotation + wrapped(angle - pinch.angle - pinch.rotation);
         if pinch.started {
@@ -638,6 +661,23 @@ mod tests {
         store.settle_pinch(a);
         assert!(!store.pinching(node));
         assert!(store.pinch_sample(b).is_none(), "the pinch is gone");
+    }
+
+    #[test]
+    fn a_second_finger_that_landed_at_a_stale_point_is_measured_from_where_it_moves() {
+        let (mut store, node) = store();
+        let (a, b) = (PointerId(1), PointerId(2));
+        store.arm_pinch(a, node, [90.0, 100.0]);
+        store.arm_pinch(b, node, [400.0, 900.0]);
+        assert!(matches!(
+            store.step_pinch(b, [110.0, 100.0], 8.0),
+            Some(PinchStep::Moved)
+        ));
+        assert!(!store.pinching(node), "the leap is no pinch");
+        store.step_pinch(b, [150.0, 100.0], 8.0);
+        let start = store.pinch_sample(b).unwrap();
+        assert_eq!(start.phase, PinchPhase::Start);
+        assert_eq!(start.scale, 3.0, "spreading from 20 to 60 apart");
     }
 
     #[test]
