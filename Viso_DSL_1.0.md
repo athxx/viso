@@ -3965,6 +3965,19 @@ fn positive(old: I64) -> Bool { old > 0 }
 - 结构保持的编辑原地复用所有节点，上述状态不动；
 - Region 挂载的节点同样迁移：旧节点与新节点由同一模板节点（经结构 Diff 保留）构建、且外层每个 `for` 的 Item Key 相同时配对；`if`/`match` 只迁移当前所选分支的节点，切走并保留（`preserve`）的分支随重建丢弃；
 
+### 94.3 Sensitive State
+
+`@sensitive` 标在 Component 的 `state` 上，表示它的值不得落盘：`viso run --keep-state`（CLI §11）在会话停止时写入磁盘的 Dev Snapshot 不含它。被内联的子 Component 的 `@sensitive` 状态同样排除（`for` Region 中的实例也是）。标在其他成员或 System 的状态上报 `E5105`。
+
+```viso
+component Login {
+    @sensitive state token = "";
+    state user = "";
+}
+```
+
+当前实现：编译结果记下每个 `@sensitive` 状态（`CandidatePlan::sensitive`），以及读取它们的属性所在的静态节点（`sensitive_nodes`）。落盘的快照由宿主按 App 运行的版本请求：每个文件的这些状态的 Cell 与链接到它们的槽位、这些节点的编辑文本，以及有敏感状态的文件中 Region 节点的文本都被省去；所有 `secure` 输入框的文本一律省去；宿主不知道版本的文件省去全部状态与文本。内存中的 Warm Restart 快照照旧完整。Rust 状态 Cell 与扩展（`AppCx::dev_state`）按原样写入。
+
 ---
 
 ## 95. Capability 与执行预算运行时
@@ -9326,6 +9339,7 @@ RecordPatternField
 | E5102  | Hot Reload Stable ID 冲突（拒绝 reload）                |
 | E5103  | Game Hot Reload 层级：编译器按 Stable ID Diff 选择的重载层与各项改动（提示，§110） |
 | E5104  | 同模块内两个声明/成员的 `@stable("id")` 取值相同（kind 相同时会铸出同一 `SymbolId`）（§88） |
+| E5105  | `@sensitive` 不在 Component 的 `state` 上（§94.3） |
 | E6101  | Native Schema 版本冲突；手写 Native 声明与 Registry 不符或使用非 Schema 类型（§47.2） |
 | E6102  | Native Ownership/Thread Domain 违规                     |
 | E6103  | Capability Denied（运行时）                             |

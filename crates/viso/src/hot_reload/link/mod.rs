@@ -42,8 +42,8 @@ use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::wire::{
     BlobRef, Blobs, BuildId, DEV_BUILD_ENV, DEV_PROTOCOL_VERSION, DEV_SESSION_ENV, DEV_TOKEN_ENV,
     DevSessionId, Domains, FileId, GameQuery, HostMessage, Message, PatchBundle, PatchSection,
-    RestoreBundle, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage, RuntimeSessionId,
-    RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError, blob_chunks,
+    Redaction, RestoreBundle, Revision, RuntimeHello, RuntimeIdentity, RuntimeMessage,
+    RuntimeSessionId, RuntimeTarget, SchemaFingerprint, WindowGeometry, WireError, blob_chunks,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use viso_view::dev::wire::{
@@ -90,8 +90,9 @@ pub(crate) enum Incoming {
     },
     /// A question about a running game.
     Game(GameQuery),
-    /// The host asks for the app's snapshot.
-    Snapshot,
+    /// The host asks for the app's snapshot, redacted for the disk with
+    /// `Some`.
+    Snapshot(Option<Vec<Redaction>>),
     /// The host asks the app's inspector `ask`, for its question `id`.
     Inspect {
         id: u32,
@@ -235,7 +236,7 @@ fn host_frame(body: &[u8], blobs: &mut Blobs) -> Frame {
         }
         Ok(HostMessage::Failure { file, lines }) => Incoming::Failure { file, lines },
         Ok(HostMessage::Game(query)) => Incoming::Game(query),
-        Ok(HostMessage::Snapshot) => Incoming::Snapshot,
+        Ok(HostMessage::Snapshot(redactions)) => Incoming::Snapshot(redactions),
         Ok(HostMessage::Inspect { id, ask }) => Incoming::Inspect { id, ask },
         Ok(HostMessage::Profile { id, hud, drive }) => Incoming::Profile { id, hud, drive },
         Ok(HostMessage::ProfileEnd { id }) => Incoming::ProfileEnd(id),

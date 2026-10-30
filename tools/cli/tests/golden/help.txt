@@ -884,6 +884,7 @@ Options:
       --device <ID>      The simulator or emulator profile (`ios` and `android` only)
       --browser <NAME>   The browser to open (`web-*` only): `chrome`, `safari`, `firefox`, or `none` to only serve
       --no-hot-reload    Keep the dev session up but apply no edit to the app: each is compiled and reported, not sent
+      --keep-state       Keep the app's state when the session stops, and restore it into the next session's app that keeps state: written under `target/viso/dev/` for this user alone, every `@sensitive` state and secure field's text left out
       --profile-frame    Draw the frame time over the app's windows, and report every frame it draws: a `profile` event each under `--json`, a line a second otherwise
       --inspect          Follow what happens in the app's first window, as `viso inspect` does: an `inspect` event each under `--json`, a line each otherwise
       --open             Open the page in a browser (`web-*` only), under `--json` too

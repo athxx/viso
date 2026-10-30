@@ -1415,8 +1415,8 @@ output, a live macOS session) is listed with the device runs of N8.
   or painted again and 48 bytes uploaded.
 - [x] Surface draw keys and pass sums skip the hash work an unchanged entry already did — measured and declined: dropping the hash entirely leaves `upload_100k_steady` within noise, and caching each entry's inputs (56 bytes an entry) made it 5–20% slower; the reasoning is in `Viso_Rendering.md`
   (`todo_arch.md`).
-- [ ] An opt-in disk cache of dev snapshots, once the DSL can mark a state sensitive
-  (`todo_hotreload.md`).
+- [x] An opt-in disk cache of dev snapshots (`todo_hotreload.md`): `viso run --keep-state`, with
+  `@sensitive` states, the text reading them and secure fields' text left out of what is written.
 - [ ] A published `viso` on a registry, so a project made without `--framework` resolves without
   a `[patch]` (`todo_cli.md` C1.2).
 - [ ] Usability: timed sessions with people, and real-model prompt sets and generation runs

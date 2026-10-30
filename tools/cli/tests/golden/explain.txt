@@ -196,6 +196,7 @@ E5101                         State Reset on Hot Reload
 E5102                         Stable Identity Collision on Reload
 E5103                         Game Reload Tier
 E5104                         Duplicate Stable Id
+E5105                         Misplaced Sensitive Attribute
 E6101                         Native Declaration Does Not Match the Schema
 E6102                         Native Ownership or Thread Domain Violation
 E6103                         Capability Denied

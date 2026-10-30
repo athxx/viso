@@ -1230,6 +1230,7 @@ Release / Shipping artifact:
 --device <id>           # ios/android simulator/emulator only
 --browser <name>        # web only
 --no-hot-reload         # Dev session diagnostic switch
+--keep-state            # keep the app's state for the next session
 --inspect
 --profile-frame
 --open                  # web convenience
@@ -1273,6 +1274,7 @@ Exit code：首次 build 失败按 §7（1/3/4）；app 正常退出 0；app cra
 - Dev Runtime transport 是 loopback TCP：CLI 绑定 `127.0.0.1` 的临时端口，经 `VISO_DEV_RUNTIME`（地址）、`VISO_DEV_TOKEN`（每 session 随机 128-bit token）、`VISO_DEV_SESSION`（dev session id）与 `VISO_DEV_BUILD`（所启动 artifact 的 build id）交给 app。app 只连 loopback 地址，先发 `RuntimeHello`（`Viso_Hot_Reload.md` §34）；token 不符、首帧不是 hello 或 5 秒内没有首帧的连接被丢弃且不回应，protocol version、session、build 或编译器 schema 不符的连接收到带原因的 `Reject`；两种情况都记一条 `log{level:"warn", source:"tool"}`（protocol/build/schema 不符时提示 rebuild）。接受时 CLI 回 `HostHello`；app 报告它挂载的文件（mount inventory），CLI 按所报 `source_hash` 找到 build 编译的版本并编译为 last-good，在 host 上编译每个 batch 的编辑，输出 `diagnostic` 与 `dev`，把编译通过的对 last-good 算出 typed patch 发送（ACK 后它成为新的 last-good）、把被拒编辑的错误行发给 app 显示，app 回 ACK/NACK；app 的 log 与丢弃计数也经此 channel；帧为 u32 LE 长度 + ende 二进制 body，上限 4 MiB；
 - `--json` 下 app 与 cargo 的 stdout/stderr 逐行成为 `log`（app stdout 为 `info`、app stderr 为 `warn`；cargo 行按前缀 `error`/`warning` 定级，编译诊断按其 level）；human mode 下它们直通终端，每次 reload 在 stderr 打一行摘要；
 - `--no-hot-reload`：session 照常建立、watch、编译并报告诊断，但不向 app 发送 patch 与失败 overlay；编译通过的 candidate 输出 `dev{outcome:"held"}`；
+- `--keep-state`：session 停止（Ctrl-C）时先向每个 lane 的 app 请求落盘用的 DevSnapshot（至多等 3 s 再关闭 app），写入 `target/viso/dev/kept/<target>.state`（目录 0700、文件 0600，先写临时文件再 rename），连同 app 运行的每个 `.vs` 的文本与窗口位置；下一个带 `--keep-state` 的 session 取走并删除该文件，以 `VISO_DEV_RESTORE` 启动第一个有保存状态的 lane，按其 mount 编译保存的文本、规划到新 build 的视图后恢复（同 warm restart）。落盘的快照不含 `@sensitive` 状态（DSL §94.3）、读取它们的节点文本与任何 `secure` 输入框的文本，宿主不知道运行版本的文件不含任何状态；保存的文件不可读、来自其他版本的 `viso` 或无法恢复时 app 照常全新启动并给出警告。窗口被用户关闭而结束的 session 不保存；
 - Rust 改动在后台重新 build Dev artifact（`Viso_Hot_Reload.md` §6、§25），旧 app 保持运行：失败输出 `dev{outcome:"rejected", stage:"warm-restart"}`；成功则 warm restart：旧 app 交出 DevSnapshot 后退出，新 build 以 `VISO_DEV_RESTORE` 启动并在第一帧之前恢复状态，输出 `dev{outcome:"warm_restarted", patch_class:"WARM_RESTART_REQUIRED"}`；`--no-hot-reload` 下输出 `dev{outcome:"held"}`、不重启；
 - Ctrl-C/SIGTERM：第一次杀掉进行中的 build（整棵进程树）并请 app 退出（Unix 上 SIGTERM），第二次强制结束 app；exit 130，`summary{status:"cancelled"}`；
 - `viso run ios|android|web-gpu`（§13.2、§13.3）走同一 dev session，只有 build target、打包、部署与 transport 不同（`Viso_Hot_Reload.md` §5、§27、§28）：

@@ -47,7 +47,7 @@ use crate::resource::{read_chunk, read_resources, write_chunk, write_resources};
 pub use viso_schema::Rebuild;
 
 /// The dev channel protocol version.
-pub const DEV_PROTOCOL_VERSION: u16 = 24;
+pub const DEV_PROTOCOL_VERSION: u16 = 25;
 
 /// The environment variable `viso run` passes the dev channel's loopback
 /// address in.
@@ -461,6 +461,20 @@ impl PatchSection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FileId(pub u32);
 
+/// What a snapshot written to disk leaves out of one file's mounts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Redaction {
+    pub file: FileId,
+    /// The cells of its `@sensitive` states, by durable key.
+    pub states: Vec<StateKey>,
+    /// Its static nodes a property of which reads one, by static index;
+    /// a node a region mounts loses its text when `states` is not empty.
+    pub nodes: Vec<u32>,
+}
+
+/// The most entries a [`Redaction`] lists of each kind.
+pub const MAX_REDACTED: usize = 1 << 16;
+
 /// A mounted `.vs` file, as the runtime reports it once its first mount is
 /// adopted: what the host needs to compile the file's edits exactly as the
 /// build compiled it, and which version of it the runtime runs.
@@ -853,9 +867,11 @@ pub enum HostMessage {
     /// Bytes of an asset the next patch replaces, or of the snapshot the
     /// next restore carries.
     Blob(BlobChunk),
-    /// Asks for the app's dev snapshot at
-    /// the next frame boundary.
-    Snapshot,
+    /// Asks for the app's dev snapshot at the next frame boundary: all of
+    /// it for the host's memory with `None`, or with `Some` one written to
+    /// disk, which leaves out every secure field's text, what each
+    /// [`Redaction`] names and every state of a file none names.
+    Snapshot(Option<Vec<Redaction>>),
     /// The state a process launched to restore starts from.
     Restore(Box<RestoreBundle>),
     /// Asks the app's inspector `ask` at the next frame boundary, for
@@ -1698,7 +1714,25 @@ impl Message for HostMessage {
                 enc.write_u8(HOST_BLOB);
                 write_chunk(enc, chunk);
             }
-            HostMessage::Snapshot => enc.write_u8(HOST_SNAPSHOT),
+            HostMessage::Snapshot(redactions) => {
+                enc.write_u8(HOST_SNAPSHOT);
+                enc.write_bool(redactions.is_some());
+                if let Some(redactions) = redactions {
+                    enc.write_varint(redactions.len() as u64);
+                    for redaction in redactions {
+                        enc.write_varint(u64::from(redaction.file.0));
+                        enc.write_varint(redaction.states.len() as u64);
+                        for key in &redaction.states {
+                            enc.write_u64(key.hi);
+                            enc.write_u64(key.lo);
+                        }
+                        enc.write_varint(redaction.nodes.len() as u64);
+                        for &node in &redaction.nodes {
+                            enc.write_varint(u64::from(node));
+                        }
+                    }
+                }
+            }
             HostMessage::Restore(restore) => {
                 enc.write_u8(HOST_RESTORE);
                 restore.dev_session.encode(enc);
@@ -1809,7 +1843,21 @@ impl Message for HostMessage {
             }),
             HOST_GAME => Ok(HostMessage::Game(read_query(dec)?)),
             HOST_BLOB => Ok(HostMessage::Blob(read_chunk(dec)?)),
-            HOST_SNAPSHOT => Ok(HostMessage::Snapshot),
+            HOST_SNAPSHOT => {
+                if !dec.read_bool()? {
+                    return Ok(HostMessage::Snapshot(None));
+                }
+                let redactions = read_list(dec, MAX_FILES, "redacted files", |dec| {
+                    Ok(Redaction {
+                        file: read_file(dec)?,
+                        states: read_list(dec, MAX_REDACTED, "redacted states", |dec| {
+                            Ok(StateKey::from_parts(dec.read_u64()?, dec.read_u64()?))
+                        })?,
+                        nodes: read_list(dec, MAX_REDACTED, "redacted nodes", read_u32)?,
+                    })
+                })?;
+                Ok(HostMessage::Snapshot(Some(redactions)))
+            }
             HOST_RESTORE => Ok(HostMessage::Restore(Box::new(RestoreBundle {
                 dev_session: DevSessionId::decode(dec)?,
                 target_runtime: RuntimeSessionId::decode(dec)?,
@@ -2273,7 +2321,12 @@ mod tests {
                 offset: (MAX_ASSET - 3) as u32,
                 bytes: vec![0; 3],
             }),
-            HostMessage::Snapshot,
+            HostMessage::Snapshot(None),
+            HostMessage::Snapshot(Some(vec![Redaction {
+                file: FileId(2),
+                states: vec![StateKey::from_parts(7, 9)],
+                nodes: vec![0, 4],
+            }])),
             HostMessage::Inspect {
                 id: 3,
                 ask: InspectAsk::Census,

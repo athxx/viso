@@ -73,6 +73,9 @@ pub struct CandidatePlan {
     /// The package's other modules the source imports, which a change to
     /// recompiles it.
     pub imported: Vec<crate::frontend::Imported>,
+    /// The states marked `@sensitive`: the view's own and those of the
+    /// instances it inlines, a region's among them.
+    pub sensitive: Vec<SymbolId>,
 }
 
 /// A `@migrate(from: "T")` function of a candidate.
@@ -108,6 +111,25 @@ impl CandidatePlan {
     pub fn declaration(&self, symbol: SymbolId) -> Option<(&Ty, TextRange)> {
         let index = self.sources.iter().position(|s| *s == symbol)?;
         Some((self.types.get(index)?, *self.declared.get(index)?))
+    }
+
+    /// The static nodes, by static index, a property of which reads a
+    /// `@sensitive` state.
+    pub fn sensitive_nodes(&self) -> Vec<u32> {
+        if self.sensitive.is_empty() {
+            return Vec::new();
+        }
+        let statics = crate::view_regions::StaticNodes::of(&self.tree);
+        let mut nodes: Vec<u32> = self
+            .bindings
+            .edges
+            .iter()
+            .filter(|edge| self.sensitive.contains(&edge.source))
+            .filter_map(|edge| statics.ordinal(edge.node))
+            .collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
     }
 
     /// The behavior function computing field `index` of record `record`'s
@@ -227,6 +249,21 @@ pub fn plan_compiled(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic
             .collect::<Vec<_>>()
     })?;
     let migrators = migrators(&compiled);
+    let sensitive = compiled
+        .sources
+        .iter()
+        .chain(&compiled.regional)
+        .filter(|source| {
+            matches!(
+                source.kind,
+                SourceKind::State {
+                    sensitive: true,
+                    ..
+                }
+            )
+        })
+        .map(|source| source.symbol)
+        .collect();
     let mut sources = Vec::with_capacity(compiled.sources.len());
     let mut source_names = Vec::with_capacity(compiled.sources.len());
     let mut initials = Vec::with_capacity(compiled.sources.len());
@@ -238,6 +275,7 @@ pub fn plan_compiled(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic
                 initial,
                 ty,
                 declared,
+                ..
             } => (initial.as_ref().and_then(state_value), ty, declared),
             _ => (None, Ty::Unknown, fallback),
         };
@@ -267,6 +305,7 @@ pub fn plan_compiled(compiled: Compiled) -> Result<CandidatePlan, Vec<Diagnostic
         imported: compiled.imported,
         game: (compiled.component.is_some() && !compiled.behavior.systems.is_empty())
             .then_some(compiled.behavior),
+        sensitive,
     })
 }
 

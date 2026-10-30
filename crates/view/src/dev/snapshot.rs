@@ -155,9 +155,48 @@ fn plain(value: &Value) -> bool {
     }
 }
 
+/// What a capture leaves out of a view mount, for a snapshot written to
+/// disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Redact<'a> {
+    /// Nothing.
+    #[default]
+    None,
+    /// Every secure field's text, the cells `states` (by durable key) with
+    /// the slots linked to them, the text of the static nodes `nodes`, and
+    /// with any state named, every region node's text.
+    Listed {
+        states: &'a [StateKey],
+        nodes: &'a [u32],
+    },
+    /// Every state and every node's text: what the view holds is not known.
+    All,
+}
+
+impl Redact<'_> {
+    fn drops_state(self, key: StateKey) -> bool {
+        match self {
+            Redact::None => false,
+            Redact::Listed { states, .. } => states.contains(&key),
+            Redact::All => true,
+        }
+    }
+
+    fn drops_text(self, at: NodeRef, secure: bool) -> bool {
+        match (self, at) {
+            (Redact::None, _) => false,
+            (Redact::All, _) => true,
+            _ if secure => true,
+            (Redact::Listed { nodes, .. }, NodeRef::Static(index)) => nodes.contains(&index),
+            (Redact::Listed { states, .. }, NodeRef::Region { .. }) => !states.is_empty(),
+        }
+    }
+}
+
 /// The development state of the view mount `mount`: `nodes` its live static
 /// nodes by static index, `cells` its cells by durable key, `host` the
-/// behavior its nodes dispatch into.
+/// behavior its nodes dispatch into, less what `redact` leaves out.
+#[allow(clippy::too_many_arguments)]
 pub fn capture_view(
     store: &NodeStore,
     states: &StateStore,
@@ -166,6 +205,7 @@ pub fn capture_view(
     nodes: &[Option<NodeId>],
     cells: &[(StateKey, StateId)],
     mount: MountRef,
+    redact: Redact<'_>,
 ) -> ViewSnapshot {
     let mut snapshot = ViewSnapshot {
         mount,
@@ -173,22 +213,33 @@ pub fn capture_view(
     };
     snapshot.cells = cells
         .iter()
+        .filter(|&&(key, _)| !redact.drops_state(key))
         .filter_map(|&(key, id)| Some((key, states.get(id)?)))
         .collect();
     snapshot
         .cells
         .sort_unstable_by_key(|&(key, _)| (key.hi, key.lo));
     if let Some(host) = host {
+        let dropped = |slot: usize| match redact {
+            Redact::None => false,
+            Redact::All => true,
+            Redact::Listed { .. } => host.linked_cell(slot).is_some_and(|id| {
+                cells
+                    .iter()
+                    .any(|&(key, cell)| cell == id && redact.drops_state(key))
+            }),
+        };
         let mut slot = 0;
         while host.state(slot).is_some() {
             let value = host.current(slot, states).filter(plain);
-            snapshot.states.push(value);
+            snapshot.states.push(value.filter(|_| !dropped(slot)));
             slot += 1;
         }
     }
     for (index, node) in nodes.iter().enumerate() {
+        let at = NodeRef::Static(index as u32);
         if let Some(node) = *node
-            && let Some(state) = node_state(store, text_edits, node, NodeRef::Static(index as u32))
+            && let Some(state) = node_state(store, text_edits, node, at, redact)
         {
             snapshot.nodes.push(state);
         }
@@ -200,7 +251,7 @@ pub fn capture_view(
                 arm: region.arm,
                 item: region.item,
             };
-            if let Some(mut state) = node_state(store, text_edits, region.node, at) {
+            if let Some(mut state) = node_state(store, text_edits, region.node, at, redact) {
                 state.path = Some(region.path);
                 snapshot.nodes.push(state);
             }
@@ -209,13 +260,14 @@ pub fn capture_view(
     snapshot
 }
 
-/// What live node `node`, `at` in its view, holds, `None` when it holds
-/// nothing a snapshot keeps.
+/// What live node `node`, `at` in its view, holds less what `redact` leaves
+/// out, `None` when it holds nothing a snapshot keeps.
 fn node_state(
     store: &NodeStore,
     text_edits: &TextEdits,
     node: NodeId,
     at: NodeRef,
+    redact: Redact<'_>,
 ) -> Option<NodeState> {
     let scroll = store.scroll(node);
     let children = { store.arena().children(node).count() };
@@ -226,6 +278,7 @@ fn node_state(
         scroll: (scroll != Vec2::ZERO).then_some(scroll),
         text: text_edits
             .get(node)
+            .filter(|buffer| !redact.drops_text(at, buffer.look.secure))
             .map(|buffer| (buffer.text.clone(), buffer.sel)),
         active_child: (children > 1).then(|| active_child(store, node)).flatten(),
     };

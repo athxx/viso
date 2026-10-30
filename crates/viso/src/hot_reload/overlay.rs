@@ -264,7 +264,7 @@ mod tests {
         // Shaping runs on a worker: the first ask starts it, the second
         // reads what it shaped.
         let slot = ParagraphSlot::from(text);
-        shaper.shape(&mut gpu, slot, &request, sizing.clone(), 1.0, None);
+        shaper.shape(&mut gpu, slot, &request, sizing, 1.0, None);
         shaper.wait_idle();
         let _ = shaper.pump(
             &mut gpu,

@@ -494,21 +494,24 @@ impl Sources {
         else {
             return Err("the version the app runs is not one the session read".into());
         };
-        let profile = mount.profile(catalogs, &self.assets);
-        let manifest = native_package::manifest_of(&view.path);
-        let compiled = native_package::compile_linked(manifest.as_deref(), |natives| {
-            compile_file_for(text, &mount.origin, natives, profile.clone())
-        });
-        let plan = plan_compiled(compiled.made).map_err(|errors| {
-            let codes: Vec<&str> = errors.iter().map(|d| d.code).collect();
-            format!(
-                "the version the app runs does not compile on the host ({})",
-                codes.join(", ")
-            )
+        let plan = compile(view, mount, catalogs, &self.assets, text).map_err(|codes| {
+            format!("the version the app runs does not compile on the host ({codes})")
         })?;
         mount.imports = self.imports(&plan.imported);
         mount.last_good = Some(plan);
         Ok(())
+    }
+
+    /// `text`, a version of view `at`, compiled as its mount in `mounts`
+    /// compiles it; `Err` with the codes that stop it.
+    pub fn compile_as(
+        &self,
+        mounts: &Mounts,
+        at: usize,
+        text: &str,
+    ) -> Result<CandidatePlan, String> {
+        let mount = mounts.views.get(&at).ok_or("the view is not mounted")?;
+        compile(&self.views[at], mount, &self.catalogs, &self.assets, text)
     }
 
     /// The views of the modules `imported` names, and the hash of their
@@ -833,6 +836,26 @@ impl Mount {
 
 /// `dir` canonical, or its parent's canonical path and its name while it does
 /// not exist yet.
+/// `text`, a version of `view`, compiled as `mount` compiles it; `Err` with
+/// the codes that stop it.
+fn compile(
+    view: &View,
+    mount: &Mount,
+    catalogs: &[Catalog],
+    assets: &[AssetDir],
+    text: &str,
+) -> Result<CandidatePlan, String> {
+    let profile = mount.profile(catalogs, assets);
+    let manifest = native_package::manifest_of(&view.path);
+    let compiled = native_package::compile_linked(manifest.as_deref(), |natives| {
+        compile_file_for(text, &mount.origin, natives, profile.clone())
+    });
+    plan_compiled(compiled.made).map_err(|errors| {
+        let codes: Vec<&str> = errors.iter().map(|d| d.code).collect();
+        codes.join(", ")
+    })
+}
+
 fn canonical_dir(dir: &Path) -> PathBuf {
     if let Ok(canonical) = dir.canonicalize() {
         return canonical;

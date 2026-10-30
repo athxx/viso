@@ -26,7 +26,7 @@ use viso_view::ViewHost;
 use viso_view::dev::commit::Candidate;
 use viso_view::dev::commit::{CommitReport, restore};
 use viso_view::dev::snapshot::{
-    DevSnapshot, MountRef, RustCell, ViewSnapshot, WindowCells, capture_view,
+    DevSnapshot, MountRef, Redact, RustCell, ViewSnapshot, WindowCells, capture_view,
 };
 
 const SCROLLED: &str = "width: 100dp; height: 50dp;";
@@ -157,6 +157,11 @@ impl Live {
 
     /// The mount as a snapshot captures it.
     fn capture(&self) -> ViewSnapshot {
+        self.capture_with(Redact::None)
+    }
+
+    /// The mount as a snapshot captures it, less what `redact` leaves out.
+    fn capture_with(&self, redact: Redact<'_>) -> ViewSnapshot {
         let package = emit_view_package(&self.last_good);
         let cells: Vec<_> = package
             .states
@@ -176,6 +181,7 @@ impl Live {
                 window: 0,
                 mount: 0,
             },
+            redact,
         )
     }
 
@@ -217,6 +223,85 @@ fn carried(snapshot: ViewSnapshot) -> ViewSnapshot {
     let read = DevSnapshot::decode(&bytes).expect("the snapshot decodes");
     assert_eq!(read, whole);
     read.views.into_iter().next().unwrap()
+}
+
+#[test]
+fn a_snapshot_for_the_disk_leaves_out_sensitive_states_and_secure_text() {
+    let source = "component Card {
+        state count = 3;
+        @sensitive state pin = 1234;
+        @sensitive state token = \"\";
+        view {
+            Column {
+                width: 200dp;
+                height: 300dp;
+                TextInput { width: 100dp; height: 20dp; secure: true; }
+                TextInput { width: 100dp; height: 20dp; }
+                Text { width: 100dp; height: 20dp; text: format(\"{} {}\", pin, token); }
+                Text { width: 100dp; height: 20dp; text: format(\"{}\", count); }
+            }
+        }
+    }";
+    let mut live = Live::mount(source);
+    live.states.set(
+        live.states.id_for_key(live.key("pin")).unwrap(),
+        StateValue::Int(4321),
+    );
+    live.set_value("token", Value::Str(Rc::new("t0ken".into())));
+    let selection = Selection {
+        anchor: TextPosition::upstream(TextOffset(0)),
+        focus: TextPosition::upstream(TextOffset(0)),
+    };
+    // Column, the secure field, the plain field, the two texts.
+    live.text_edits
+        .editing(live.node(1))
+        .restore("password".into(), selection);
+    live.text_edits
+        .editing(live.node(2))
+        .restore("plain".into(), selection);
+
+    let plan = &live.last_good;
+    let keys: Vec<StateKey> = plan
+        .sensitive
+        .iter()
+        .map(|symbol| StateKey::from_parts(symbol.hi, symbol.lo))
+        .collect();
+    let nodes = plan.sensitive_nodes();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(nodes, [3], "the text reading them");
+    let text = |snapshot: &ViewSnapshot, index: u32| {
+        snapshot
+            .nodes
+            .iter()
+            .find(|n| n.node == viso_view::dev::wire::NodeRef::Static(index))
+            .and_then(|n| n.text.as_ref().map(|(text, _)| text.clone()))
+    };
+    let slot = |name: &str| {
+        let host = live.view.as_ref().unwrap().borrow();
+        host.state_slot(name).unwrap()
+    };
+
+    let whole = live.capture();
+    assert_eq!(whole.cell(live.key("pin")), Some(StateValue::Int(4321)));
+    assert_eq!(text(&whole, 1).as_deref(), Some("password"), "in memory");
+    assert!(whole.states[slot("token")].is_some());
+
+    let disk = carried(live.capture_with(Redact::Listed {
+        states: &keys,
+        nodes: &nodes,
+    }));
+    assert_eq!(disk.cell(live.key("pin")), None);
+    assert_eq!(disk.cell(live.key("count")), Some(StateValue::Int(3)));
+    assert_eq!(disk.states[slot("pin")], None);
+    assert_eq!(disk.states[slot("token")], None);
+    assert!(disk.states[slot("count")].is_some());
+    assert_eq!(text(&disk, 1), None, "a secure field's text");
+    assert_eq!(text(&disk, 2).as_deref(), Some("plain"));
+
+    let unknown = live.capture_with(Redact::All);
+    assert!(unknown.cells.is_empty());
+    assert!(unknown.states.iter().all(Option::is_none));
+    assert!(unknown.nodes.iter().all(|n| n.text.is_none()));
 }
 
 #[test]

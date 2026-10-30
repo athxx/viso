@@ -39,6 +39,7 @@ pub fn run(ctx: &Context<'_>, args: &ServeArgs, out: &mut Output) -> u8 {
         device: None,
         browser: None,
         no_hot_reload: args.no_hot_reload,
+        keep_state: false,
         profile_frame: false,
         inspect: false,
         open: false,

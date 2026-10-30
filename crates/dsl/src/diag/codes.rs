@@ -3158,6 +3158,34 @@ state taps = 0;
         reserved: false,
     },
     CodeInfo {
+        code: "E5105",
+        severity: Severity::Error,
+        stage: Stage::Resolve,
+        title: "Misplaced Sensitive Attribute",
+        explanation: "`@sensitive` marks a component `state` whose value a dev snapshot written to \
+            disk leaves out: `viso run --keep-state` keeps the app's state for the next session, \
+            but never a token, a password or what else the state holds that must not reach the \
+            disk. Only a component's `state` holds such a value; a system's states belong to its \
+            game, and an input, a computed or a function holds none of its own.",
+        example: Example::Source(
+            r#"export component Login {
+    @sensitive
+    input token: String;
+
+    view { Text { text: token; } }
+}
+"#,
+        ),
+        fix: "Mark the `state` the value is kept in.",
+        fixed: Some(
+            r#"@sensitive
+state token = "";
+"#,
+        ),
+        commands: &["viso check"],
+        reserved: false,
+    },
+    CodeInfo {
         code: "E6101",
         severity: Severity::Error,
         stage: Stage::Native,

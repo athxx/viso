@@ -187,6 +187,9 @@ struct Lane {
     app: Option<App>,
     ended: Option<std::io::Result<Ended>>,
     restart: Option<Restart>,
+    /// Since when its app is asked for its state to keep, as the session
+    /// stops.
+    keeping: Option<Instant>,
     /// A build whose restart waits for another lane's to land.
     waiting: Option<Build>,
     /// When a `web-dom` lane lowers its page again, after an edit.
@@ -910,6 +913,7 @@ pub(super) fn session(
             app: None,
             ended: None,
             restart: None,
+            keeping: None,
             waiting: None,
             page_due: None,
             views: Vec::new(),
@@ -927,6 +931,9 @@ pub(super) fn session(
     });
     if args.profile_frame {
         dev.stream_profiles();
+    }
+    if args.keep_state {
+        dev.keep_state(layout.dev());
     }
     // `viso game` finds the endpoint in every lane's lock; a session without
     // one still runs, and says why `viso game` cannot reach it.
@@ -979,6 +986,7 @@ pub(super) fn session(
     };
     let mut threads = Vec::new();
     let mut network_warned = false;
+    let mut restoring = false;
     for ((lane, exe), channel_ip) in lanes.iter_mut().zip(&exes).zip(channels) {
         lane.builds.launched(exe);
         if let Deploy::Emulator { device, .. } = &mut lane.deploy {
@@ -1039,10 +1047,15 @@ pub(super) fn session(
             build_id: &lane.build_id,
             env: &args.env,
         };
+        // The session holds one snapshot to restore: the state kept for the
+        // first lane that has any.
+        let restore = !restoring && dev.restore_kept(lane.wire, lane.target.as_str(), out);
+        restoring |= restore;
+        let window = restore.then(|| dev.launch_window()).flatten();
         let mut app =
             match lane
                 .deploy
-                .launch(exe, &args.app_args, &vars, false, None, ctx.global.json)
+                .launch(exe, &args.app_args, &vars, restore, window, ctx.global.json)
             {
                 Ok(app) => app,
                 Err(why) => {
@@ -1123,7 +1136,9 @@ pub(super) fn session(
                     if let Some(restart) = lane.restart.take() {
                         restart.into_exe();
                     }
-                    if let Some(app) = &lane.app {
+                    if dev.keep_on_stop(lane.wire, lane.target.as_str()) {
+                        lane.keeping = Some(Instant::now());
+                    } else if let Some(app) = &lane.app {
                         app.close();
                     }
                 }
@@ -1139,10 +1154,11 @@ pub(super) fn session(
             interrupts = caught;
         }
         let closing = lanes.iter().any(|lane| {
-            matches!(
-                lane.restart,
-                Some(Restart::Prewarm { .. } | Restart::Closing { .. })
-            )
+            lane.keeping.is_some()
+                || matches!(
+                    lane.restart,
+                    Some(Restart::Prewarm { .. } | Restart::Closing { .. })
+                )
         });
         let poll = if closing { CLOSING_POLL } else { POLL };
         let wait = std::iter::once(dev.deadline())
@@ -1181,6 +1197,12 @@ pub(super) fn session(
             let Some(app) = &mut lane.app else {
                 continue;
             };
+            if let Some(since) = lane.keeping
+                && (dev.kept(lane.wire) || since.elapsed() >= SNAPSHOT_WAIT)
+            {
+                lane.keeping = None;
+                app.close();
+            }
             lane.restart = match lane.restart.take() {
                 Some(Restart::Prewarm {
                     exe,

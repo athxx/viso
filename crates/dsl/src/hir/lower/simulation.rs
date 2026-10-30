@@ -266,6 +266,9 @@ impl Domains {
                         .unwrap_or_default();
                     for member in system.members() {
                         let node = member.syntax().clone();
+                        if let Some(attr) = has_attribute(&node, "sensitive") {
+                            misplaced_sensitive(&attr, diagnostics);
+                        }
                         let local = has_attribute(&node, "local");
                         let probe = has_attribute(&node, "probe");
                         let persist = has_attribute(&node, "persist");
@@ -402,6 +405,11 @@ impl Domains {
                         }
                         if let Some(attr) = has_attribute(member.syntax(), "probe") {
                             misplaced_probe(&attr, diagnostics);
+                        }
+                        if let Some(attr) = has_attribute(member.syntax(), "sensitive")
+                            && !matches!(member, Member::State(_))
+                        {
+                            misplaced_sensitive(&attr, diagnostics);
                         }
                         let Some(attr) = has_attribute(member.syntax(), "persist") else {
                             continue;
@@ -1063,6 +1071,14 @@ fn misplaced_persist(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
         "E9106",
         attr.text_range(),
         "`@persist` marks a `state` of a `system` or a `component`",
+    ));
+}
+
+fn misplaced_sensitive(attr: &SyntaxNode, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.push(Diagnostic::error(
+        "E5105",
+        attr.text_range(),
+        "`@sensitive` marks a `state` of a `component`",
     ));
 }
 

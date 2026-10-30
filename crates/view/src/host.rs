@@ -621,6 +621,15 @@ impl ViewHost {
         self.instance.states().get(slot)
     }
 
+    /// The cell linked to state slot `slot`: the one holding its value or
+    /// tracking its revision.
+    pub fn linked_cell(&self, slot: usize) -> Option<StateId> {
+        match self.mirror.get(slot)?.as_ref()? {
+            Link::Mirror(id) | Link::Track(id) => Some(*id),
+            Link::Env(_) | Link::Game(_) => None,
+        }
+    }
+
     /// The authoritative value of state slot `slot`: its mirrored cell's in
     /// `cells`, or the instance's for a slot no cell mirrors.
     pub fn current(&self, slot: usize, cells: &dyn StateCells) -> Option<Value> {

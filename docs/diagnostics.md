@@ -105,9 +105,11 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E5102](#e5102) | Stable Identity Collision on Reload | error | hot_reload |
 | [E5103](#e5103) | Game Reload Tier | note | hot_reload |
 | [E5104](#e5104) | Duplicate Stable Id | error | resolve |
+| [E5105](#e5105) | Misplaced Sensitive Attribute | error | resolve |
 | [E6101](#e6101) | Native Declaration Does Not Match the Schema | error | native |
 | [E6102](#e6102) | Native Ownership or Thread Domain Violation | error | native |
 | [E6103](#e6103) | Capability Denied | error | runtime |
+| [E6104](#e6104) | Native Unavailable on the Target | error | native |
 | [E7101](#e7101) | Execution Budget Exceeded | error | runtime |
 | [E7102](#e7102) | Memory Budget Exceeded | error | runtime |
 | [E7103](#e7103) | Arithmetic Fault | error | runtime |
@@ -2519,6 +2521,30 @@ state taps = 0;
 
 See also: `viso check`
 
+## E5105
+
+**Misplaced Sensitive Attribute** — error, resolve
+
+`@sensitive` marks a component `state` whose value a dev snapshot written to disk leaves out: `viso run --keep-state` keeps the app's state for the next session, but never a token, a password or what else the state holds that must not reach the disk. Only a component's `state` holds such a value; a system's states belong to its game, and an input, a computed or a function holds none of its own.
+
+```vs
+export component Login {
+    @sensitive
+    input token: String;
+
+    view { Text { text: token; } }
+}
+```
+
+Fix: Mark the `state` the value is kept in.
+
+```vs
+@sensitive
+state token = "";
+```
+
+See also: `viso check`
+
 ## E6101
 
 **Native Declaration Does Not Match the Schema** — error, native
@@ -2599,6 +2625,31 @@ capabilities = ["clipboard.write"]
 ```
 
 See also: `viso config show`
+
+## E6104
+
+**Native Unavailable on the Target** — error, native
+
+A native package may limit a native to the platforms it has an implementation on (`NativeFunction::only_on`: macos, windows, linux, ios, android, web). When the package is checked or built for a target, every call to a native that does not exist on that target's platform is this error, at the call, naming the platforms it does exist on. Every web target is `web`, an embedded board `linux`; a headless run and a check without a target check no platform.
+
+```text
+A dependency's native exists on phones alone:
+
+    crate::native!(action "vibrate" |cx, ms: i64| -> () { ... }).only_on(&["ios", "android"])
+
+and a view calls it:
+
+    import haptics;
+    export component Bell {
+        view { Text { text: "ring"; on click { haptics::vibrate(30); } } }
+    }
+
+`viso check web-gpu` reports E6104 at the call: `haptics::vibrate` does not exist on web.
+```
+
+Fix: Keep the call to the targets that have the native, or offer what it does another way where it is missing (a web API, another native).
+
+See also: `viso check <target>`, `viso schema --list natives`
 
 ## E7101
 

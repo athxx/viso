@@ -1171,6 +1171,12 @@ pub struct RunArgs {
     /// and reported, not sent.
     #[arg(long)]
     pub no_hot_reload: bool,
+    /// Keep the app's state when the session stops, and restore it into the
+    /// next session's app that keeps state: written under `target/viso/dev/`
+    /// for this user alone, every `@sensitive` state and secure field's text
+    /// left out.
+    #[arg(long)]
+    pub keep_state: bool,
     /// Draw the frame time over the app's windows, and report every frame
     /// it draws: a `profile` event each under `--json`, a line a second
     /// otherwise.

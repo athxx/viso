@@ -200,6 +200,9 @@ pub enum SourceKind {
         ty: Ty,
         /// The span of the state's declaration.
         declared: TextRange,
+        /// Whether it is marked `@sensitive`: a snapshot written to disk
+        /// leaves its value out.
+        sensitive: bool,
     },
     /// A component `input`.
     Input,
@@ -1224,10 +1227,15 @@ pub(crate) fn mounted_component(
 /// constant initializers), inputs, then computeds.
 fn component_sources(component: &HirComponent, decl: &ComponentDecl) -> Vec<Source> {
     let schema = &component.schema;
-    let initializers: Vec<(String, Option<Expr>)> = decl
+    let initializers: Vec<(String, Option<Expr>, bool)> = decl
         .members()
         .filter_map(|member| match member {
-            Member::State(state) => Some((state.name()?.text(), state.initializer())),
+            Member::State(state) => {
+                let sensitive = crate::ast::decl_attributes(state.syntax())
+                    .iter()
+                    .any(|(name, _, _)| name == "sensitive");
+                Some((state.name()?.text(), state.initializer(), sensitive))
+            }
             _ => None,
         })
         .collect();
@@ -1236,10 +1244,9 @@ fn component_sources(component: &HirComponent, decl: &ComponentDecl) -> Vec<Sour
         let Some(symbol) = state.meta.resolved_symbol else {
             continue;
         };
-        let initial = initializers
-            .iter()
-            .find(|(name, _)| *name == state.name)
-            .and_then(|(_, init)| init.as_ref())
+        let declared = initializers.iter().find(|(name, _, _)| *name == state.name);
+        let initial = declared
+            .and_then(|(_, init, _)| init.as_ref())
             .and_then(|init| fold_constant(init, &state.meta.inferred_type));
         sources.push(Source {
             name: state.name.clone(),
@@ -1248,6 +1255,7 @@ fn component_sources(component: &HirComponent, decl: &ComponentDecl) -> Vec<Sour
                 initial,
                 ty: state.meta.inferred_type.clone(),
                 declared: state.meta.source_origin,
+                sensitive: declared.is_some_and(|&(_, _, sensitive)| sensitive),
             },
         });
     }

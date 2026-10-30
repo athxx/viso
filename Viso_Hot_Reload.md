@@ -1194,7 +1194,7 @@ current dev session only
 - 支持敏感字段 exclusion；
 - 不成为 production persistence format。
 
-已实现：snapshot 只在 `viso run` 的内存中，每次 restart 替换，不写盘，不进 log 与 JSON（只报告字节数与耗时）。落盘的 opt-in cache 等 DSL 能标记敏感 state 之后再做。
+已实现：snapshot 默认只在 `viso run` 的内存中，每次 restart 替换，不写盘，不进 log 与 JSON（只报告字节数与耗时）。`viso run --keep-state` 是落盘的 opt-in（CLI §13）：session 停止时宿主请 app 给出落盘用的 snapshot，请求里按每个文件运行的版本列出 `@sensitive` 状态（DSL §94.3）的 key 与读取它们的静态节点，app 据此省去这些 Cell、链接的槽位与节点文本、有敏感状态的文件中 Region 节点的文本、所有 `secure` 输入框的文本，未列出的文件省去全部状态与文本；宿主把它与 app 运行的 `.vs` 文本、窗口位置写入 `target/viso/dev/kept/<target>.state`（0600，目录 0700，临时文件 + rename，带 dev protocol 版本）。下一个带 `--keep-state` 的 session 取走并删除它，第一个有保存状态的 lane 以 `VISO_DEV_RESTORE` 启动，宿主按新 mount 编译保存的文本、规划到新 build 的视图后发送 restore，失败时 app 全新启动。该文件不是 production persistence format。
 
 ---
 

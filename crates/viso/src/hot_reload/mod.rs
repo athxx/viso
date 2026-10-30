@@ -82,7 +82,8 @@ use viso_ui::{AssetBytes, AssetPayload};
 use viso_view::dev::commit::dirty_counts;
 use viso_view::dev::commit::{Candidate, CommitReport, LiveRuntime, commit, restore, static_nodes};
 use viso_view::dev::snapshot::{
-    DevSnapshot, Extension, GameEntry, MountRef, RustCell, ViewSnapshot, WindowCells, capture_view,
+    DevSnapshot, Extension, GameEntry, MountRef, Redact, RustCell, ViewSnapshot, WindowCells,
+    capture_view,
 };
 use viso_view::dev::wire::{
     CommitCounts, DEV_RESTORE_ENV, DEV_WINDOW_ENV, DirtyCounts, Domain, Domains, FileCommit,
@@ -91,7 +92,7 @@ use viso_view::dev::wire::{
     NACK_REPLAYING, NACK_SYSTEM_FAULT, NACK_UNBINDABLE_SHADER, NACK_UNCOMPILABLE_SHADER,
     NACK_UNKNOWN_FILE, NACK_UNKNOWN_SESSION, NACK_UNLOADABLE_ASSET, NACK_UNLOADABLE_SYSTEM,
     NACK_UNLOADABLE_VIEW, NACK_UNRESTORABLE_SNAPSHOT, Notice, PatchAck, PatchBundle, PatchNack,
-    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, ReloadPlan, ResourceCommit,
+    PatchSection, PatchTimings, RESET_NOTICE, RecordSpan, Redaction, ReloadPlan, ResourceCommit,
     RestoreBundle, RestoreReport, Revision, RuntimeIdentity, RuntimeMessage, SchemaFingerprint,
     ScopedReset, Stage, WindowGeometry,
 };
@@ -179,9 +180,9 @@ pub(crate) struct HotReloadSession {
     waker: Option<LoopWaker>,
     /// The thread compiling staged patches' shaders, started with the first.
     compiles: Option<ShaderCompiles>,
-    /// Whether the host asked for a snapshot, taken at the next frame
-    /// boundary.
-    snapshot_asked: bool,
+    /// The snapshot the host asked for, taken at the next frame boundary:
+    /// redacted for the disk with `Some`.
+    snapshot_asked: Option<Option<Vec<Redaction>>>,
     /// The host's questions for the app's inspector, answered at the next
     /// frame boundary.
     inspects: Vec<(u32, InspectAsk)>,
@@ -568,7 +569,7 @@ impl HotReloadSession {
     /// Whether the host asked for a snapshot, which the next frame boundary
     /// takes with each window's position.
     pub(crate) fn snapshot_asked(&self) -> bool {
-        self.snapshot_asked
+        self.snapshot_asked.is_some()
     }
 
     /// Where each window is on the desktop, for the snapshot asked for.
@@ -861,8 +862,10 @@ impl HotReloadSession {
     /// The app's development state now, at the frame boundary, to the host:
     /// each window that mounts a view, in the order they opened, with its
     /// mounts in the order they were adopted and their games, then each
-    /// extension the app registered.
-    fn capture(&mut self, windows: &[WindowState]) {
+    /// extension the app registered. With `redactions`, for the disk, a view
+    /// leaves out its secure fields' text and what its file's redaction
+    /// names, and a view of a file none names every state and text.
+    fn capture(&mut self, windows: &[WindowState], redactions: Option<&[Redaction]>) {
         let started = Instant::now();
         let Some(identity) = &self.identity else {
             return;
@@ -901,6 +904,16 @@ impl HotReloadSession {
                     live.nodes.clone()
                 };
                 let host = live.host.as_ref().map(|host| host.borrow());
+                let redact = match redactions {
+                    None => Redact::None,
+                    Some(redactions) => redactions
+                        .iter()
+                        .find(|r| r.file == file.entry.file)
+                        .map_or(Redact::All, |r| Redact::Listed {
+                            states: &r.states,
+                            nodes: &r.nodes,
+                        }),
+                };
                 snapshot.views.push(capture_view(
                     &ws.store,
                     &ws.states,
@@ -909,6 +922,7 @@ impl HotReloadSession {
                     &nodes,
                     &live.cells,
                     at.clone(),
+                    redact,
                 ));
                 if let Some(session) = game_session(&ws.store, live.root) {
                     snapshot.games.push(GameEntry {
@@ -975,7 +989,7 @@ impl HotReloadSession {
         if !self.receive(windows) {
             return;
         }
-        if self.snapshot_asked || !self.inspects.is_empty() || self.scenario_arrived {
+        if self.snapshot_asked.is_some() || !self.inspects.is_empty() || self.scenario_arrived {
             self.scenario_arrived = false;
             for ws in windows {
                 cx.request_redraw(ws.window);
@@ -1089,8 +1103,8 @@ impl HotReloadSession {
                     self.queries.push(query);
                     changed = true;
                 }
-                Incoming::Snapshot => {
-                    self.snapshot_asked = true;
+                Incoming::Snapshot(redactions) => {
+                    self.snapshot_asked = Some(redactions);
                     changed = true;
                 }
                 Incoming::Inspect { id, ask } => {
@@ -1249,8 +1263,8 @@ impl HotReloadSession {
         if !self.recordings.is_empty() {
             self.finish_recordings();
         }
-        if std::mem::take(&mut self.snapshot_asked) {
-            self.capture(windows);
+        if let Some(redactions) = self.snapshot_asked.take() {
+            self.capture(windows, redactions.as_deref());
         }
         for (id, ask) in std::mem::take(&mut self.inspects) {
             let window = |at: u32| windows.get(at as usize);
@@ -4250,8 +4264,18 @@ mod tests {
         host: &mut Host,
         windows: &mut [WindowState],
     ) -> (Vec<u8>, Vec<WindowGeometry>) {
-        host.send(&HostMessage::Snapshot);
-        until(session, |s| s.snapshot_asked);
+        snapshot_redacted(session, host, windows, None)
+    }
+
+    /// [`snapshot_of`], redacted for the disk by `redactions` when `Some`.
+    fn snapshot_redacted(
+        session: &mut HotReloadSession,
+        host: &mut Host,
+        windows: &mut [WindowState],
+        redactions: Option<Vec<Redaction>>,
+    ) -> (Vec<u8>, Vec<WindowGeometry>) {
+        host.send(&HostMessage::Snapshot(redactions));
+        until(session, |s| s.snapshot_asked.is_some());
         session.reload(windows, &mut Assets::default());
         let mut blobs = viso_view::dev::wire::Blobs::default();
         loop {
@@ -4308,6 +4332,30 @@ mod tests {
             unreachable!("a view section")
         };
         ui
+    }
+
+    #[test]
+    fn a_snapshot_for_the_disk_drops_every_state_of_a_file_no_redaction_names() {
+        let scroller = |cx: &mut BuildCx<'_>| {
+            viso_ui_macros::view!("../../tests/fixtures/scroller.vs")(cx).id()
+        };
+        let mut old = mounted(scroller);
+        let (mut session, mut host, _) = session(&mut old, SCROLLER);
+        let (_, cell) = session.views[0].cells[0];
+        old.states.set(cell, StateValue::Int(7));
+        let file = session.files[0].entry.file;
+        let windows = std::slice::from_mut(&mut old);
+        let cells = |bytes: &[u8]| DevSnapshot::decode(bytes).unwrap().views[0].cells.clone();
+
+        let (unknown, _) = snapshot_redacted(&mut session, &mut host, windows, Some(Vec::new()));
+        assert!(cells(&unknown).is_empty(), "the host knows nothing of it");
+        let named = vec![Redaction {
+            file,
+            states: Vec::new(),
+            nodes: Vec::new(),
+        }];
+        let (known, _) = snapshot_redacted(&mut session, &mut host, windows, Some(named));
+        assert_eq!(cells(&known)[0].1, StateValue::Int(7), "nothing sensitive");
     }
 
     #[test]

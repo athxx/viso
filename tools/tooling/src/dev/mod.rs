@@ -57,6 +57,7 @@
 pub mod build;
 pub mod cargo;
 pub mod control;
+mod kept;
 pub mod link;
 mod profile;
 pub mod report;
@@ -75,10 +76,11 @@ use viso_dev_protocol::headless::Reported;
 use viso_dev_protocol::inspect::{InspectAsk, SourceTable};
 use viso_dev_protocol::wire::{
     BlobRef, Blobs, BuildId, CommitCounts, Domain, FileId, GameAnswer, GameAsk, GameQuery,
-    GameRefusal, GameReply, HostMessage, MAX_FRAME, PatchAck, PatchBundle, PatchNack, PatchSection,
-    Rebuild, ResourceAsset, ResourcePatch, RestoreBundle, RestoreReport, Revision,
-    RuntimeDiagnostic, RuntimeHello, RuntimeLabel, RuntimeMessage, RuntimeSessionId, RuntimeTarget,
-    ShaderLang, SourceAt, Stage, SystemPatch, UiPatch, WindowGeometry, blob_chunks, source_hash,
+    GameRefusal, GameReply, HostMessage, MAX_FRAME, MAX_REDACTED, PatchAck, PatchBundle, PatchNack,
+    PatchSection, Rebuild, Redaction, ResourceAsset, ResourcePatch, RestoreBundle, RestoreReport,
+    Revision, RuntimeDiagnostic, RuntimeHello, RuntimeLabel, RuntimeMessage, RuntimeSessionId,
+    RuntimeTarget, ShaderLang, SourceAt, Stage, SystemPatch, UiPatch, WindowGeometry, blob_chunks,
+    source_hash,
 };
 use viso_dsl::Diagnostic;
 use viso_dsl::assets::{ASSET_ERROR, ResourceId};
@@ -182,9 +184,27 @@ fn micros(from: Instant, to: Instant) -> u64 {
 
 pub struct HeldSnapshot {
     bytes: Arc<[u8]>,
-    /// The view each file of the app ran, by path: what the restore plans
-    /// from.
-    views: Vec<(PathBuf, CandidatePlan)>,
+    /// The view each file of the app ran: what the restore plans from.
+    views: Vec<HeldView>,
+}
+
+/// A view an app ran, as a held snapshot keeps it.
+struct HeldView {
+    path: PathBuf,
+    /// The text of it the app ran, when the session read it.
+    text: Option<String>,
+    /// Its compile; for state a session before kept, compiled as the app
+    /// launched to restore it mounts the file.
+    plan: Option<CandidatePlan>,
+}
+
+/// What `--keep-state` keeps across sessions.
+struct Keep {
+    /// The dev cache the kept state is under.
+    dev: PathBuf,
+    /// The runtimes asked for their state as the session stops, with the
+    /// target each is kept for.
+    asked: Vec<(RuntimeSessionId, BuildId, String)>,
 }
 
 impl Drop for Runtime {
@@ -337,6 +357,8 @@ pub struct DevSession {
     clock: RestartClock,
     /// Whether each runtime's frames are streamed, `--profile-frame`.
     profile_frames: bool,
+    /// What `--keep-state` keeps; `None` without it.
+    keep: Option<Keep>,
 }
 
 impl DevSession {
@@ -381,6 +403,175 @@ impl DevSession {
             windows: Vec::new(),
             clock: RestartClock::default(),
             profile_frames: false,
+            keep: None,
+        }
+    }
+
+    /// Keeps the app's state across sessions under the dev cache `dev`:
+    /// `viso run --keep-state`.
+    pub fn keep_state(&mut self, dev: PathBuf) {
+        self.keep = Some(Keep {
+            dev,
+            asked: Vec::new(),
+        });
+    }
+
+    /// Restores the state a session before kept for `target`, removing it,
+    /// into the app the lane of build `lane` launches first; whether there
+    /// is any to restore.
+    pub fn restore_kept(&mut self, lane: BuildId, target: &str, out: &mut dyn Reporter) -> bool {
+        let Some(keep) = &self.keep else {
+            return false;
+        };
+        let kept = match kept::Kept::take(&kept::path(&keep.dev, target)) {
+            None => return false,
+            Some(Ok(kept)) => kept,
+            Some(Err(why)) => {
+                out.log(
+                    "warn",
+                    "tool",
+                    &format!("the state the last session kept is not restored: {why}"),
+                );
+                return false;
+            }
+        };
+        out.log(
+            "info",
+            "tool",
+            &format!(
+                "restoring the state the last session kept ({} bytes)",
+                kept.snapshot.len()
+            ),
+        );
+        self.held = Some(HeldSnapshot {
+            bytes: kept.snapshot.into(),
+            views: kept
+                .views
+                .into_iter()
+                .map(|(path, text)| HeldView {
+                    path,
+                    text: Some(text),
+                    plan: None,
+                })
+                .collect(),
+        });
+        self.windows = kept.windows;
+        self.restart_build = Some(lane);
+        self.restore_next = true;
+        self.landing = true;
+        true
+    }
+
+    /// Asks the app the lane of build `lane` launched for its state, to keep
+    /// for `target` as the session stops: every `@sensitive` state and
+    /// secure field's text left out, and every state of a view whose
+    /// version the session does not know. Whether it was asked; the session
+    /// is to wait for [`kept`](Self::kept) before closing it.
+    pub fn keep_on_stop(&mut self, lane: BuildId, target: &str) -> bool {
+        let Some(keep) = &mut self.keep else {
+            return false;
+        };
+        let Some(app) = self.runtimes.iter().find(|r| r.hello.build_id == lane) else {
+            return false;
+        };
+        let redactions = app
+            .mounts
+            .views
+            .values()
+            .filter_map(|mount| {
+                let plan = mount.last_good.as_ref()?;
+                let mut states: Vec<_> = plan
+                    .sensitive
+                    .iter()
+                    .map(|symbol| viso_schema::StateKey::from_parts(symbol.hi, symbol.lo))
+                    .collect();
+                let mut nodes = plan.sensitive_nodes();
+                states.truncate(MAX_REDACTED);
+                nodes.truncate(MAX_REDACTED);
+                Some(Redaction {
+                    file: mount.file,
+                    states,
+                    nodes,
+                })
+            })
+            .collect();
+        if app
+            .writer
+            .send(HostMessage::Snapshot(Some(redactions)))
+            .is_err()
+        {
+            return false;
+        }
+        let asked = (app.hello.runtime_session, lane, target.to_owned());
+        keep.asked.push(asked);
+        true
+    }
+
+    /// Whether the state the app of the lane of build `lane` was asked for
+    /// as the session stops is kept, or no longer awaited.
+    pub fn kept(&self, lane: BuildId) -> bool {
+        self.keep
+            .as_ref()
+            .is_none_or(|keep| !keep.asked.iter().any(|&(_, build, _)| build == lane))
+    }
+
+    /// Writes the state runtime `at` sent as the session stops, for the
+    /// target it was asked for.
+    fn keep_snapshot(
+        &mut self,
+        at: usize,
+        bytes: Option<Arc<[u8]>>,
+        windows: Vec<WindowGeometry>,
+        out: &mut dyn Reporter,
+    ) {
+        let launch = self.runtimes[at].hello.runtime_session;
+        let Some(keep) = &mut self.keep else {
+            return;
+        };
+        let Some(asked) = keep.asked.iter().position(|&(r, _, _)| r == launch) else {
+            return;
+        };
+        let (_, _, target) = keep.asked.swap_remove(asked);
+        let Some(bytes) = bytes else {
+            return out.log(
+                "warn",
+                "tool",
+                "the app's state did not arrive whole: none is kept for the next session",
+            );
+        };
+        let runtime = &self.runtimes[at];
+        let views = runtime
+            .mounts
+            .views
+            .values()
+            .filter_map(|mount| {
+                let (view, text, _) = self.sources.running(&runtime.mounts, mount.file)?;
+                Some((self.sources.views[view].path.clone(), text.to_owned()))
+            })
+            .collect();
+        let kept = kept::Kept {
+            windows,
+            views,
+            snapshot: bytes.to_vec(),
+        };
+        let path = kept::path(&keep.dev, &target);
+        match kept.write(&path) {
+            Ok(()) => out.log(
+                "info",
+                "tool",
+                &format!(
+                    "kept the app's state for the next session: {} bytes",
+                    kept.snapshot.len()
+                ),
+            ),
+            Err(error) => out.log(
+                "warn",
+                "tool",
+                &format!(
+                    "cannot keep the app's state in `{}`: {error}",
+                    path.display()
+                ),
+            ),
         }
     }
 
@@ -843,6 +1034,16 @@ impl DevSession {
                 windows,
                 capture_us,
             } => {
+                if self
+                    .keep
+                    .as_ref()
+                    .is_some_and(|keep| keep.asked.iter().any(|&(runtime, _, _)| runtime == launch))
+                {
+                    let runtime = &mut self.runtimes[at];
+                    let bytes = runtime.blobs.take(blob);
+                    runtime.blobs.clear();
+                    return self.keep_snapshot(at, bytes, windows, out);
+                }
                 if self.snapshot_from != Some(launch) {
                     return;
                 }
@@ -866,7 +1067,11 @@ impl DevSession {
                     .iter()
                     .filter_map(|(&view, mount)| {
                         let last_good = mount.last_good.as_ref()?;
-                        Some((self.sources.views[view].path.clone(), last_good.clone()))
+                        Some(HeldView {
+                            path: self.sources.views[view].path.clone(),
+                            text: None,
+                            plan: Some(last_good.clone()),
+                        })
                     })
                     .collect();
                 out.log(
@@ -1215,7 +1420,7 @@ impl DevSession {
         };
         let app = &self.runtimes[at];
         self.snapshot_from = Some(app.hello.runtime_session);
-        app.writer.send(HostMessage::Snapshot).is_ok()
+        app.writer.send(HostMessage::Snapshot(None)).is_ok()
     }
 
     /// Where the next app's launch window opens: where the first window of
@@ -1259,9 +1464,34 @@ impl DevSession {
                 continue;
             };
             let path = &self.sources.views[*view].path;
-            let old = held.views.iter().find(|(old, _)| old == path);
-            let (Some((_, old)), Some(new)) = (old, &mount.last_good) else {
+            let Some(old) = held.views.iter().find(|old| old.path == *path) else {
                 continue;
+            };
+            let Some(new) = &mount.last_good else {
+                continue;
+            };
+            let compiled;
+            let old = match (&old.plan, &old.text) {
+                (Some(plan), _) => plan,
+                (None, Some(text)) => match self.sources.compile_as(&runtime.mounts, *view, text) {
+                    Ok(plan) => {
+                        compiled = plan;
+                        &compiled
+                    }
+                    Err(codes) => {
+                        let name = Source::new(path, &self.root, "").name().to_owned();
+                        out.log(
+                            "warn",
+                            "tool",
+                            &format!(
+                                "`{name}`: the version the last session ran does not compile \
+                                 ({codes}); it runs fresh"
+                            ),
+                        );
+                        continue;
+                    }
+                },
+                (None, None) => continue,
             };
             match view_patch(mount.file, Some(old), new, &langs) {
                 Ok(patch) => ui.views.push(patch),
@@ -3242,7 +3472,7 @@ mod tests {
             "the app restarts on it"
         );
         assert!(f.dev.request_snapshot(BuildId(2)));
-        assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot)));
+        assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot(None))));
         assert!(!f.dev.has_snapshot());
         let bytes: Vec<u8> = (0..BLOB_CHUNK + 9).map(|i| i as u8).collect();
         for chunk in blob_chunks(&bytes) {
@@ -3320,6 +3550,90 @@ mod tests {
         }));
         assert!(f.dev.restarting.is_none(), "the restart landed");
         assert!(!f.dev.restore_next, "one restore per launch");
+    }
+
+    #[test]
+    fn state_kept_as_the_session_stops_leaves_the_sensitive_out_and_restores_next_time() {
+        const SECRET: &str = "component Counter {\n    state count = 0;\n    @sensitive state token = \"\";\n    view {\n        Column {\n            Text { width: 120dp; text: token; }\n        }\n    }\n}\n";
+        let mut f = Fixture::app("keep", true, SECRET, SECRET, Domains::NONE);
+        let _ = f.settle();
+        let dev = f.dev.root().join("target/viso/dev");
+        assert!(
+            !f.dev.keep_on_stop(BuildId(2), "host"),
+            "not without the flag"
+        );
+        f.dev.keep_state(dev.clone());
+        assert!(f.dev.keep_on_stop(BuildId(2), "host"));
+        let Ok(HostMessage::Snapshot(Some(redactions))) = f.sent.try_recv() else {
+            panic!("a snapshot for the disk");
+        };
+        let [redaction] = &redactions[..] else {
+            panic!("{redactions:?}");
+        };
+        assert_eq!(redaction.file, FileId(0));
+        assert_eq!(redaction.states.len(), 1, "`token`");
+        assert_eq!(redaction.nodes, [1], "the text reading it");
+        assert!(!f.dev.kept(BuildId(2)));
+
+        let bytes: Vec<u8> = (0..40).collect();
+        for chunk in blob_chunks(&bytes) {
+            f.runtime(RuntimeMessage::Blob(chunk));
+        }
+        let window = WindowGeometry {
+            size: (640.0, 480.0),
+            position: None,
+        };
+        f.runtime(RuntimeMessage::Snapshot {
+            blob: BlobRef::of(&bytes),
+            windows: vec![window],
+            capture_us: 1,
+        });
+        assert!(f.dev.kept(BuildId(2)));
+        assert!(!f.dev.has_snapshot(), "kept, not held for a restart");
+        let file = kept::path(&dev, "host");
+        assert!(file.exists());
+
+        // The next session restores it into its first launch.
+        let old = f.launch();
+        f.dev.link(LinkEvent::Closed(old), &mut f.out);
+        assert!(!f.dev.restore_kept(BuildId(2), "android", &mut f.out));
+        assert!(f.dev.restore_kept(BuildId(2), "host", &mut f.out));
+        assert!(!file.exists(), "taken");
+        assert_eq!(f.dev.launch_window(), Some(window));
+        f.sent = connect(
+            &mut f.dev,
+            &mut f.out,
+            hello(10, RuntimeTarget::DesktopHost, Domains::NONE),
+        );
+        f.runtime(RuntimeMessage::Mounts(vec![MountEntry {
+            file: FileId(0),
+            path: f.path.display().to_string(),
+            package: "app".into(),
+            module: vec!["view".into()],
+            language: None,
+            catalog: None,
+            capabilities: Vec::new(),
+            source_hash: source_hash(SECRET),
+            assets: None,
+        }]));
+        let mut blobs = Blobs::default();
+        let mut restore = None;
+        for message in f.sent.try_iter() {
+            match message {
+                HostMessage::Blob(chunk) => blobs.add(chunk),
+                HostMessage::Restore(bundle) => restore = Some(bundle),
+                other => panic!("{other:?}"),
+            }
+        }
+        let restore = restore.expect("the restore");
+        assert_eq!(blobs.take(restore.snapshot).as_deref(), Some(&bytes[..]));
+        let [view] = &restore.ui.views[..] else {
+            panic!("{:?}", restore.ui);
+        };
+        assert!(!view.plan.states.is_empty(), "planned from the kept text");
+        f.runtime(RuntimeMessage::Restored(RestoreReport::default()));
+        assert!(!f.dev.restarting(), "the restore landed");
+        let _ = std::fs::remove_dir_all(f.dev.root());
     }
 
     /// `f`'s app restarting on a new build with a snapshot held, its old
@@ -3738,7 +4052,7 @@ mod tests {
             f.dev.request_snapshot(BuildId(2)),
             "the app launched is asked"
         );
-        assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot)));
+        assert!(matches!(f.sent.try_recv(), Ok(HostMessage::Snapshot(None))));
         assert!(web.try_iter().next().is_none(), "the page is not");
         f.dev.relaunched(&mut f.out);
         let [only] = &f.dev.runtimes[..] else {

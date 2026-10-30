@@ -993,9 +993,14 @@ cancelled build, whose `rustc`s must not outlive their `cargo`.
       ran to the view the new build reports in its first mounts.
 - [x] `DevSnapshot` and its messages join the release-absence markers
       (`xtask/src/absence.rs`).
-- [ ] An opt-in disk cache under the ignored dev cache (§32, "if ever allowed") waits
-      for a DSL way to mark a state sensitive; it would exclude those and secure text
-      fields.
+- [x] An opt-in disk cache under the ignored dev cache (§32): `viso run --keep-state`
+      asks each app for a snapshot redacted for the disk as the session stops and writes
+      it to `target/viso/dev/kept/<target>.state` (0600), the next session with the flag
+      taking it into its first launch. `@sensitive` (DSL §94.3, `E5105` misplaced) marks a
+      state; the host lists each running view's sensitive keys and the nodes reading them,
+      and the app leaves those out, every secure field's text, and every state of a view
+      the host does not know. Verified on `04-navigation`: Ctrl-C kept 265 bytes; the next
+      session restored 2 mounts with the same counts as a warm restart.
 
 ### H6.3 — Desktop warm restart (§26)
 
