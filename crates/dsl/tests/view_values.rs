@@ -23,11 +23,11 @@ export component Values {
     state name = "Ada";
     view {
         Column {
-            Text { text: format("{} items", count); }
+            Text { text: "{count} items"; }
             Button { text: "Go"; }
             TextInput { bind value <=> name; }
             Text { }
-            Text { text: format("{}", count / 10); }
+            Text { text: "{count / 10}"; }
         }
     }
 }
@@ -256,8 +256,8 @@ export component Named {
         Column {
             semantics.role: Role::region;
             semantics.label: Option::Some("Totals");
-            Text { text: format("{}", count); }
-            Button { text: "Add"; semantics.label: Option::Some(format("Add to {}", count)); }
+            Text { text: "{count}"; }
+            Button { text: "Add"; semantics.label: Option::Some("Add to {count}"); }
             Image { opacity: 1.0; }
         }
     }
@@ -343,7 +343,7 @@ export component Said {
             Text {
                 text: "x";
                 semantics.hint: "Opens the details";
-                semantics.value: format("Step {}", step);
+                semantics.value: "Step {step}";
                 semantics.live: LiveRegion::polite;
             }
             Text { text: "y"; semantics.hidden: busy; }

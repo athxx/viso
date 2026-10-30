@@ -314,7 +314,7 @@ const APP: &str = r#"
 export component App {
     state count = 0;
     state order: List<I64> = [1, 2, 3];
-    computed label = format("{}", count * 2);
+    computed label = "{count * 2}";
     action add() {
         count += 1;
     }
@@ -324,7 +324,7 @@ export component App {
             Text { width: 20dp; height: 20dp; text: "Rotate"; on click { order.push(order.remove(0)); } }
             Column {
                 for id in order key id {
-                    Text { text: format("{}", id); }
+                    Text { text: "{id}"; }
                 }
             }
         }
@@ -376,8 +376,7 @@ fn a_component_runs_reacts_keeps_keys_and_survives_a_bad_reload() {
 
 #[test]
 fn diagnostics_carry_what_tools_and_ai_read() {
-    let src =
-        "export component C { state count = 0; view { Text { text: format(\"{}\", cuont); } } }";
+    let src = "export component C { state count = 0; view { Text { text: \"{cuont}\"; } } }";
     let document = Document::new(src, &origin());
     let [diagnostic] = document.diagnostics() else {
         panic!("{:#?}", document.diagnostics());

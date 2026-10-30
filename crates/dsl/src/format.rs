@@ -213,11 +213,40 @@ fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
     let mut tokens: Vec<Tok> = Vec::new();
     let mut breaks = 0;
     let mut in_params = false;
+    // A string with holes is kept as written, one token: nothing in it may
+    // break its line.
+    let mut strings = 0usize;
     for el in root.descendants_with_tokens() {
         let Some(t) = el.as_token() else {
             continue;
         };
         let kind = t.kind();
+        if strings > 0 {
+            let text = t.text();
+            // A string its line ends runs to the end of the line.
+            let open = kind == SyntaxKind::Eof
+                || text.contains('\n')
+                || (kind == SyntaxKind::StringEnd && strings == 1 && !closes_string(&text));
+            if let Some(string) = tokens.last_mut() {
+                string.ends_line |= open;
+            }
+            if kind == SyntaxKind::Eof || text.contains('\n') {
+                strings = 0;
+            } else {
+                match kind {
+                    SyntaxKind::StringStart => strings += 1,
+                    SyntaxKind::StringEnd => strings -= 1,
+                    _ => {}
+                }
+                if let Some(string) = tokens.last_mut() {
+                    string.text.push_str(&text);
+                }
+                continue;
+            }
+        }
+        if kind == SyntaxKind::StringStart {
+            strings = 1;
+        }
         if kind == SyntaxKind::Whitespace {
             breaks += t.text().matches('\n').count();
             continue;
@@ -329,19 +358,29 @@ fn matching_braces(tokens: &[Tok]) -> Vec<Option<usize>> {
 /// (an escape error is the one it reports then).
 fn open_on_its_line(t: &Token, source: &str) -> bool {
     let quote = match t.kind {
-        SyntaxKind::StringLiteral => b'"',
+        SyntaxKind::StringLiteral | SyntaxKind::StringEnd => b'"',
         SyntaxKind::CharLiteral => b'\'',
         _ => return false,
     };
     let text = &source.as_bytes()[t.range.start().to_usize()..t.range.end().to_usize()];
+    !closed_by(text, quote)
+}
+
+/// Whether the text of a string's last part ends with its closing `"`.
+fn closes_string(text: &str) -> bool {
+    closed_by(text.as_bytes(), b'"')
+}
+
+/// Whether `text`, a literal's text, ends with its unescaped closing `quote`.
+fn closed_by(text: &[u8], quote: u8) -> bool {
     let Some((&last, body)) = text.split_last() else {
-        return true;
+        return false;
     };
     if body.is_empty() || last != quote {
-        return true;
+        return false;
     }
     // A closing quote after an odd run of backslashes is escaped.
-    body.iter().rev().take_while(|&&b| b == b'\\').count() % 2 == 1
+    body.iter().rev().take_while(|&&b| b == b'\\').count() % 2 == 0
 }
 
 /// Whether `before` and `after` written with nothing between them would lex

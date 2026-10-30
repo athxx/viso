@@ -7,7 +7,7 @@ export component Ticker {
             padding: 8dp
             gap: 8dp
             Text { width: 100dp; height: 24dp; text: "Tick"; on click { count += 1 } }
-            Text { width: 200dp; height: 24dp; text: format("{}", count) }
+            Text { width: 200dp; height: 24dp; text: "{count}" }
             Text { width: 400dp; height: 24dp; text: "A steady page around one changing label" }
             Row {
                 gap: 8dp

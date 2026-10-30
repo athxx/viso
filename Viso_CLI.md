@@ -2545,7 +2545,7 @@ component Counter {
 
     view {
         Column {
-            Text { text: format("{}", count) }
+            Text { text: "{count}" }
             Button {
                 text: "Add"
                 on click { count += 1 }
@@ -2773,7 +2773,7 @@ summary       见 §36.3
 
 ```json
 {"type":"progress","payload":{"phase":"build","message":"building headless (dev)"}}
-{"type":"diagnostic","payload":{"schema_version":"1.0","severity":"warning","code":"E3705","message":"`text` shows a `format` with literal text; word order differs between languages, so build it with `tr` and arguments","primary":{"file":"src/app.vs","byte_start":136,"byte_end":163,"line":5,"column_utf16":66,"end_line":5,"end_column_utf16":93},"related":[],"expected":[],"actual":null,"notes":[],"fixes":[]}}
+{"type":"diagnostic","payload":{"schema_version":"1.0","severity":"warning","code":"E3705","message":"`text` shows a string with holes and literal text; word order differs between languages, so build it with `tr` and arguments","primary":{"file":"src/app.vs","byte_start":136,"byte_end":163,"line":5,"column_utf16":66,"end_line":5,"end_column_utf16":93},"related":[],"expected":[],"actual":null,"notes":[],"fixes":[]}}
 {"type":"artifact","payload":{"kind":"trace","path":"target/viso/traces/profile-20261017-071234-512.ende","target":"headless","profile":"dev","build_id":"sha256:4be1…","size":18432,"hash":"sha256:4be1…"}}
 {"type":"device","payload":{"platform":"android","id":"pixel-local","name":"Pixel (local)","state":"ready"}}
 {"type":"test","payload":{"name":"clicks","domain":"ui","status":"pass","duration_ms":688}}

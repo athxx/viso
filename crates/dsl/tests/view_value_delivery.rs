@@ -37,12 +37,12 @@ component Delivered {
                 Text { width: 20dp; height: 20dp; on click { count += 1; } }
                 Text { width: 20dp; height: 20dp; on click { items = [2, 3]; } }
             }
-            Text { width: 100dp; height: 20dp; text: format("{} items", count); }
+            Text { width: 100dp; height: 20dp; text: "{count} items"; }
             Row {
                 width: 400dp;
                 height: 20dp;
                 for item in items key item {
-                    Text { width: 20dp; height: 20dp; text: format("{}:{}", item, count); }
+                    Text { width: 20dp; height: 20dp; text: "{item}:{count}"; }
                 }
             }
         }
@@ -58,7 +58,7 @@ component Flat {
             width: 400dp;
             height: 300dp;
             Text { width: 20dp; height: 20dp; on click { count += 1; } }
-            Text { width: 100dp; height: 20dp; text: format("{} items", count); }
+            Text { width: 100dp; height: 20dp; text: "{count} items"; }
         }
     }
 }
@@ -75,7 +75,7 @@ component Batch {
             Text {
                 width: 100dp;
                 height: 20dp;
-                text: format("{} items", count);
+                text: "{count} items";
                 on click { count += 1; items = [1, 2]; count += 1; items = [3]; }
             }
         }
@@ -242,7 +242,7 @@ fn a_reload_keeping_the_tree_replaces_the_value_hook() {
     };
     assert_eq!(rt.store.structure_hook_count(), 1);
 
-    rt.reload(&FLAT.replace("{} items", "{} things"));
+    rt.reload(&FLAT.replace(" items", " things"));
     assert_eq!(rt.declared(), [(label, "1 things".to_owned())]);
     assert_eq!(rt.store.structure_hook_count(), 1, "the hook is replaced");
 

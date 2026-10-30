@@ -130,7 +130,7 @@ fn labelled() -> viso_dsl::hotreload::CandidatePlan {
         ..Default::default()
     };
     viso_dsl::hotreload::plan_view(
-        "component Labelled { state label = 0; view { Row { Text { text: format(\"{}\", label); } } } }",
+        "component Labelled { state label = 0; view { Row { Text { text: \"{label}\"; } } } }",
         &origin,
     )
     .expect("compiles")

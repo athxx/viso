@@ -1238,11 +1238,16 @@ pub(crate) fn range_bounds(node: &SyntaxNode) -> Option<(i128, i128)> {
 }
 
 /// The value a string or char literal body spells, `None` when an escape is
-/// malformed (already a lexical error).
+/// malformed (already a lexical error). In a string, `{{` and `}}` are braces.
 pub(crate) fn unescape(body: &str) -> Option<String> {
     let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars();
+    let mut chars = body.chars().peekable();
     while let Some(c) = chars.next() {
+        if (c == '{' || c == '}') && chars.peek() == Some(&c) {
+            chars.next();
+            out.push(c);
+            continue;
+        }
         if c != '\\' {
             out.push(c);
             continue;

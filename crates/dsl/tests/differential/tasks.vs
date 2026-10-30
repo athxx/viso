@@ -46,7 +46,7 @@ export component Jobs {
     action chain(n: I64) {
         start wait() { success (v) { b += v + n } }
         start count(n)
-        log = format("{n}", n: n)
+        log = "{n}"
     }
 
     view { Text { text: log } }

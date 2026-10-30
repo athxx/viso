@@ -18,9 +18,9 @@ fn#0 Shapes.classify fn params=1 regs=13
    13: r9 = const "few"
    14: r1 = r9
    15: jump @22
-   16: r10 = display.signed r0
-   17: r11 = const "many "
-   18: r12 = concat (r11, r10)
+   16: r10 = const "many "
+   17: r11 = display.signed r0
+   18: r12 = concat (r10, r11)
    19: r1 = r12
    20: jump @22
    21: unreachable

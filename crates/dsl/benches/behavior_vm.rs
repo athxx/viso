@@ -29,7 +29,7 @@ component Counter {
         total
     }
 
-    view { Text { text: format("{n}", n: count); } }
+    view { Text { text: "{count}"; } }
 }
 "#;
 

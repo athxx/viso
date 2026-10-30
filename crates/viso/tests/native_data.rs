@@ -170,8 +170,8 @@ import api::{deeper, Route};
 fn title(r: Route) -> String {
     match r {
         Route::inbox => "inbox",
-        Route::message(id, subject) => format("message {id}: {subject}", id: id, subject: subject),
-        Route::user_profile { name, tags } => format("{name} ({n})", name: name, n: tags.len()),
+        Route::message(id, subject) => "message {id}: {subject}",
+        Route::user_profile { name, tags } => "{name} ({tags.len()})",
         Route::prefs => "prefs",
     }
 }
@@ -183,13 +183,13 @@ component Nav {
     action walk() {
         titles = title(route);
         route = deeper(route);
-        titles = format("{t}|{r}", t: titles, r: title(route));
+        titles = "{titles}|{title(route)}";
         route = deeper(route);
-        titles = format("{t}|{r}", t: titles, r: title(route));
+        titles = "{titles}|{title(route)}";
         route = deeper(route);
-        titles = format("{t}|{r}", t: titles, r: title(route));
+        titles = "{titles}|{title(route)}";
         route = Route::user_profile { name: "Ada", tags: ["math"] };
-        titles = format("{t}|{r}", t: titles, r: title(route));
+        titles = "{titles}|{title(route)}";
         route = Route::message(7, "late");
     }
 

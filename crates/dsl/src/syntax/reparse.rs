@@ -8,9 +8,9 @@
 //! that would break that identity does not hold, this falls back to a full
 //! re-lex, so correctness never depends on the fast path being taken.
 //!
-//! The `.vs` lexer carries no state across token boundaries (see
-//! [`LexState`](super::lexer::LexState)), so a re-lex can safely restart at any
-//! token boundary at or before the edit. The one subtlety is that a token
+//! The `.vs` lexer carries no state across token boundaries outside a string
+//! (see [`LexState`](super::lexer::LexState)), so a re-lex can safely restart at
+//! any such token boundary at or before the edit. The one subtlety is that a token
 //! adjacent to the edit may merge with or split from its neighbor (typing `x`
 //! after `foo` extends the identifier), so the reused prefix ends a few tokens
 //! *before* the edit and the reused suffix begins a few tokens *after* it; the
@@ -19,6 +19,7 @@
 //! untouched prefix — a correct, conservative version of that idea; a tighter
 //! suffix-reuse pass can follow when profiling shows it matters.
 
+use super::kind::SyntaxKind;
 use super::lexer::Lexer;
 use super::span::{TextRange, TextSize};
 use super::token::Token;
@@ -85,7 +86,7 @@ pub fn reparse_tokens(old_tokens: &[Token], edit: &Edit, new_source: &str) -> Ve
     let mut lexer = Lexer::resume(new_source, resume_at, Default::default());
     loop {
         let tok = lexer.next_token();
-        let is_eof = tok.kind == super::kind::SyntaxKind::Eof;
+        let is_eof = tok.kind == SyntaxKind::Eof;
         out.push(tok);
         if is_eof {
             break;
@@ -95,10 +96,13 @@ pub fn reparse_tokens(old_tokens: &[Token], edit: &Edit, new_source: &str) -> Ve
 }
 
 /// The number of leading tokens whose spans are entirely before `edit_start` and
-/// are therefore reusable verbatim. The token abutting or containing the edit is
-/// excluded, so it gets re-lexed (it may merge with inserted text).
+/// are therefore reusable verbatim, ending outside every string. The token
+/// abutting or containing the edit is excluded, so it gets re-lexed (it may
+/// merge with inserted text).
 fn reusable_prefix(old_tokens: &[Token], edit_start: TextSize) -> usize {
     let mut n = 0;
+    let mut outside = 0;
+    let mut strings = 0usize;
     for tok in old_tokens {
         // Stop at the first token whose end reaches the edit start — that token
         // (and everything after) must be re-lexed. The `Eof` token has a
@@ -107,6 +111,14 @@ fn reusable_prefix(old_tokens: &[Token], edit_start: TextSize) -> usize {
             break;
         }
         n += 1;
+        match tok.kind {
+            SyntaxKind::StringStart => strings += 1,
+            SyntaxKind::StringEnd => strings = strings.saturating_sub(1),
+            _ => {}
+        }
+        if strings == 0 {
+            outside = n;
+        }
     }
-    n
+    outside
 }

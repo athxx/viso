@@ -7,7 +7,7 @@ component Overflow {
                 height: 50dp
                 Button { width: 120dp; height: 40dp; text: "Up" }
                 Button { width: 120dp; height: 40dp; text: "Down"; on click { down += 1 } }
-                Text { width: 120dp; height: 20dp; text: format("pressed {}", down) }
+                Text { width: 120dp; height: 20dp; text: "pressed {down}" }
             }
             Scroll {
                 width: 120dp

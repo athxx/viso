@@ -208,6 +208,15 @@ mod tests {
     }
 
     #[test]
+    fn goto_definition_from_a_string_hole() {
+        let src = "component C {\n  state count = 0\n  computed d = \"n: {count}\"\n}\n";
+        let (map, id) = doc(src);
+        let doc = map.get(id).unwrap();
+        let loc = goto_definition(doc, at(src, "count", 1)).expect("goto resolves");
+        assert_eq!(loc.range.start().to_usize(), src.find("count").unwrap());
+    }
+
+    #[test]
     fn find_references_lists_declaration_and_use() {
         let src = "component C {\n  state count = 0;\n  computed d = count;\n}\n";
         let (map, id) = doc(src);

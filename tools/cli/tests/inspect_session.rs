@@ -22,7 +22,7 @@ const VIEW: &str = r#"component Probe {
         Column {
             width: 200dp;
             height: 40dp;
-            node total: Text { width: 200dp; height: 40dp; text: format("{}", count); }
+            node total: Text { width: 200dp; height: 40dp; text: "{count}"; }
         }
     }
 }

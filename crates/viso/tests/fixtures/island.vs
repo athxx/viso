@@ -10,7 +10,7 @@ component Chart {
             Text {
                 width: 100dp
                 height: 50dp
-                text: format("{} x{}", title, scale)
+                text: "{title} x{scale}"
                 on click { hits += 1; emit picked(hits * scale) }
             }
         }
@@ -22,7 +22,7 @@ export component App {
     state last = 0
     view {
         Column {
-            Text { text: format("picked {}", last) }
+            Text { text: "picked {last}" }
             Island {
                 width: 200dp
                 height: 100dp

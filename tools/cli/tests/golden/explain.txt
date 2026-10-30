@@ -129,7 +129,7 @@ E2104                         State Initializer Forward Reference
 E2105                         Computed Dependency Cycle
 E2106                         MixedLength Cannot Narrow Before Layout
 E2107                         Illegal Dimensional Operation
-E2108                         Format Template Mismatch
+E2108                         Value Not Shown In A String
 E2109                         Length Divided By Constant Zero
 E2110                         Assignment Target Is Not Writable
 E2111                         Context Read Outside Its Scope

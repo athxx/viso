@@ -14,7 +14,7 @@
 //! the reason for a constant layout does not take yet.
 
 use crate::ast::{AstNode, CallExpr, Expr, ParenExpr, PathExpr};
-use crate::hir::infer::format::template_literal;
+use crate::hir::infer::interpolation::string_literal;
 use crate::hir::infer::pattern::unescape;
 use crate::ir::length::{self, Consts, Lowered};
 use crate::ir::ui_ir::{
@@ -279,7 +279,7 @@ pub(super) fn fold_adaptive(
 
 /// A constant string literal's text.
 fn string(value: &Expr, consts: &Consts) -> Option<String> {
-    let (body, raw) = template_literal(&resolved(value, consts))?;
+    let (body, raw) = string_literal(&resolved(value, consts))?;
     if raw { Some(body) } else { unescape(&body) }
 }
 

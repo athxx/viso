@@ -250,6 +250,7 @@ const ROWS: &[Row] = &[
     row("PostfixSuffix", E, "a?.type", "a?.", &["E1404"]),
     row("GenericCallArgs", E, "f::<I64, const 2>()", "f::<I64()", &["E1404"]),
     row("PrimaryExpression", E, "(self, Self, [1], P { }, (a), { 1 }, if a { 1 } else { 2 }, match a { _ => 1 }, || 1)", ")", &["E1402"]),
+    row("InterpolatedString", E, "\"{a} and {b.c()} {{x}}\"", "\"{a b}\"", &["E1404"]),
     row("Literal", E, "[1, 1.5, \"s\", 'c', #fff, 8dp, true, false, None]", "1e2dp", &["E1203"]),
     row("TupleExpression", E, "(a, b, c,)", "(a, b", &["E1401"]),
     row("ListExpression", E, "[a, b,]", "[a b]", &["E1402", "E1403", "E1404"]),

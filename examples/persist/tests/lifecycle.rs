@@ -21,7 +21,7 @@ viso::component! {
         @persist("draft.words")
         state words = 0;
         view {
-            Text { width: 200dp; height: 40dp; text: format("{w} words", w: words); }
+            Text { width: 200dp; height: 40dp; text: "{words} words"; }
         }
     }
 }

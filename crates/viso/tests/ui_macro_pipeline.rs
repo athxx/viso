@@ -148,7 +148,7 @@ viso::component! {
         state count = 0;
         view {
             Column {
-                Text { text: format("{}", count); }
+                Text { text: "{count}"; }
             }
         }
     }

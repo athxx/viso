@@ -93,6 +93,8 @@ pub enum LexError {
     /// A `\u{...}` escape was malformed (missing braces, no digits, a non-hex
     /// digit, or a value that is not a Unicode scalar).
     InvalidUnicodeEscape,
+    /// A `}` in a string's text that closes no hole; a literal one is `}}`.
+    UnpairedBrace,
     /// A `#...` color literal was not one of `#RGB` / `#RGBA` / `#RRGGBB` /
     /// `#RRGGBBAA`, or contained a non-hex digit.
     InvalidColor,
@@ -137,7 +139,8 @@ impl LexError {
             LexError::UnknownSuffix => "E1204",
             LexError::InvalidEscape
             | LexError::InvalidByteEscape
-            | LexError::InvalidUnicodeEscape => "E1205",
+            | LexError::InvalidUnicodeEscape
+            | LexError::UnpairedBrace => "E1205",
             LexError::MalformedNumericSeparator => "E1206",
             LexError::InvalidColor => "E1207",
             LexError::MalformedChar => "E1208",
@@ -157,6 +160,7 @@ impl LexError {
             LexError::UnterminatedChar => "unterminated character literal",
             LexError::MalformedChar => "character literal must contain exactly one character",
             LexError::InvalidEscape => "unknown character escape",
+            LexError::UnpairedBrace => "a `}` in a string is written `}}`",
             LexError::InvalidByteEscape => {
                 "`\\x` escape needs exactly two hex digits, at most `7F`; use `\\u{...}` beyond ASCII"
             }

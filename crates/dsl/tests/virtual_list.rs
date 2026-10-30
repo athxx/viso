@@ -40,7 +40,7 @@ const FEED: &str = "component Feed {
                 estimated_extent: 20dp;
                 overscan: 2;
                 for i in 0..count key i {
-                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
                 }
             }
         }
@@ -253,7 +253,7 @@ const GLIDING: &str = "component Feed {
                 tail: true;
                 scroll_bars: false;
                 for i in 0..count key i {
-                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
                 }
             }
         }
@@ -368,13 +368,13 @@ fn a_list_reports_the_rows_it_shows_and_a_scroll_its_offset() {
                     width: 200dp;
                     height: 300dp;
                     Text { width: 200dp; height: 20dp; text: shown; }
-                    Text { width: 200dp; height: 20dp; text: format(\"{}\", top); }
+                    Text { width: 200dp; height: 20dp; text: \"{top}\"; }
                     VirtualList {
                         width: 200dp;
                         height: 100dp;
                         estimated_extent: 20dp;
                         on visible_range_changed(range) {
-                            shown = format(\"{}..{} of {}\", range.first, range.last, range.count);
+                            shown = \"{range.first}..{range.last} of {range.count}\";
                         }
                         for i in 0..50 key i { Text { width: 200dp; height: 20dp; text: \"row\"; } }
                     }
@@ -430,7 +430,7 @@ fn a_row_can_hold_a_list_of_its_own() {
                                 axis: Axis::row;
                                 estimated_extent: 50dp;
                                 for b in 0..1000 key b {
-                                    Text { width: 50dp; height: 40dp; text: format(\"{}/{}\", s, b); }
+                                    Text { width: 50dp; height: 40dp; text: \"{s}/{b}\"; }
                                 }
                             }
                         }
@@ -495,7 +495,7 @@ const REFRESHING: &str = "component Feed {
                 refreshing: loading;
                 on refresh { loading = true; asked += 1; }
                 for i in 0..100 key i {
-                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
                 }
             }
             VirtualList {
@@ -505,7 +505,7 @@ const REFRESHING: &str = "component Feed {
                 refreshing: false;
                 on refresh { asked += 1; }
                 for i in 0..100 key i {
-                    Text { width: 200dp; height: 20dp; text: format(\"{}\", i); }
+                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
                 }
             }
         }
@@ -565,7 +565,7 @@ const SECTIONS: &str = "component Feed {
                 estimated_extent: 20dp;
                 overscan: 1;
                 for i in 0..100 key i {
-                    Text { width: 200dp; height: 20dp; sticky: grouped && i % 10 == 0; text: format(\"{}\", i); }
+                    Text { width: 200dp; height: 20dp; sticky: grouped && i % 10 == 0; text: \"{i}\"; }
                 }
             }
             Scroll {
@@ -659,7 +659,7 @@ const PAGES: &str = "component Tour {
         Column {
             width: 200dp;
             height: 300dp;
-            Text { width: 200dp; height: 20dp; text: format(\"{}\", page); }
+            Text { width: 200dp; height: 20dp; text: \"{page}\"; }
             VirtualList {
                 axis: Axis::row;
                 width: 200dp;
@@ -668,7 +668,7 @@ const PAGES: &str = "component Tour {
                 page_dots: true;
                 on snap_changed(e) { page = e.value; }
                 for i in 0..5 key i {
-                    Text { text: format(\"{}\", i); }
+                    Text { text: \"{i}\"; }
                 }
             }
             Scroll {
@@ -681,7 +681,7 @@ const PAGES: &str = "component Tour {
                     padding: 16dp;
                     gap: 8dp;
                     for i in 0..6 key i {
-                        Text { width: 120dp; height: 20dp; text: format(\"{}\", i); }
+                        Text { width: 120dp; height: 20dp; text: \"{i}\"; }
                     }
                 }
             }
@@ -766,7 +766,7 @@ const GRID: &str = "component Photos {
             gap: 10dp;
             column_gap: 5dp;
             for i in 0..30 key i {
-                Text { height: 50dp; list.full_line: i == 3; text: format(\"{}\", i); }
+                Text { height: 50dp; list.full_line: i == 3; text: \"{i}\"; }
             }
         }
     }

@@ -60,6 +60,7 @@ fn at_expr_start_kind(kind: SyntaxKind) -> bool {
             | FloatLiteral
             | UnitLiteral
             | StringLiteral
+            | StringStart
             | RawStringLiteral
             | CharLiteral
             | ColorLiteral
@@ -540,6 +541,7 @@ fn primary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
             p.bump_any();
             m.complete(p, LiteralExpr)
         }
+        StringStart => interpolated_string(p),
         Ident if p.at_contextual(MoveKw) && matches!(p.nth(1), Pipe | PipePipe) => closure_expr(p),
         Ident | RawIdent | SelfValueKw | SelfTypeKw => path_or_record_expr(p, r),
         LParen => paren_or_tuple_expr(p),
@@ -617,6 +619,44 @@ fn path(p: &mut Parser) {
         }
         super::label(p);
     }
+}
+
+/// A string with holes: its `StringStart`, then each hole's expression (none
+/// in an empty hole) before the `StringMiddle` or `StringEnd` that follows it.
+fn interpolated_string(p: &mut Parser) -> CompletedMarker {
+    use SyntaxKind::*;
+    let m = p.start();
+    p.bump_any(); // `StringStart`
+    loop {
+        if !p.at(StringMiddle) && !p.at(StringEnd) && !p.at_end() && !p.at_line_break() {
+            expr(p);
+        }
+        if p.eat(StringEnd) {
+            break;
+        }
+        if p.eat(StringMiddle) {
+            continue;
+        }
+        // The hole holds more than one expression, or its string never ends:
+        // skip to where the string goes on, on its line.
+        p.error(ParseErrorKind::MissingToken);
+        let mut strings = 0usize;
+        while !p.at_end() && !p.at_line_break() {
+            match p.current() {
+                StringMiddle | StringEnd if strings == 0 => break,
+                StringStart => strings += 1,
+                StringEnd => strings -= 1,
+                _ => {}
+            }
+            let e = p.start();
+            p.bump_any();
+            e.complete(p, ErrorNode);
+        }
+        if !p.at(StringMiddle) && !p.at(StringEnd) {
+            break;
+        }
+    }
+    m.complete(p, InterpolatedString)
 }
 
 /// A block in expression position.

@@ -530,7 +530,7 @@ fn an_inlined_view_binds_the_mounted_sources_it_reads() {
         r#"component Label {
             input value: I64;
             state hovered = false;
-            view { Text { text: format("{} {}", value, hovered); } }
+            view { Text { text: "{value} {hovered}"; } }
         }
         export component App {
             state amount = 5;

@@ -9,12 +9,12 @@
 //! validation. It **never panics** on any input — truncated, malformed, or
 //! arbitrary bytes all produce a token stream (the fuzz contract).
 //!
-//! A resumable [`LexState`] captures the only cross-token lexer state (nothing,
-//! today — a `.vs` token never depends on lexer state carried across a token
-//! boundary), so the incremental reparser can restart the lexer mid-file at a
-//! token boundary and get an identical stream. It exists as an explicit seam so
-//! the incremental path in `reparse` has a state type to thread even though the
-//! current grammar's state is empty.
+//! A string with holes (`"a {x} b"`) lexes as `StringStart`, the hole's
+//! tokens, any `StringMiddle`s and a `StringEnd`; the lexer keeps a stack of the
+//! open holes so a hole's `}` is told from a brace inside it. That stack is the
+//! only cross-token state, captured by [`LexState`]: outside any string it is
+//! empty, so the incremental reparser restarts the lexer at such a boundary
+//! and gets an identical stream.
 
 use icu_properties::CodePointSetData;
 use icu_properties::props::{XidContinue, XidStart};
@@ -39,15 +39,19 @@ pub fn tokenize(source: &str) -> Vec<Token> {
     out
 }
 
-/// Resumable cross-token lexer state.
-///
-/// The `.vs` grammar carries no state across token boundaries (comments and
-/// strings are always closed within a single token), so this is currently empty.
-/// It is a named type rather than `()` so the incremental reparser threads a
-/// stable state seam that stays correct if a future stateful token (e.g. a
-/// heredoc) is added.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LexState;
+/// Resumable cross-token lexer state: the string holes open at a position,
+/// each with the `{` it holds unclosed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LexState {
+    holes: Vec<u32>,
+}
+
+impl LexState {
+    /// Whether no string hole is open: the position is outside every string.
+    pub fn is_empty(&self) -> bool {
+        self.holes.is_empty()
+    }
+}
 
 /// A byte cursor over the source with `char`-aware inspection.
 ///
@@ -58,6 +62,8 @@ pub struct Lexer<'s> {
     bytes: &'s [u8],
     /// Current byte offset into `source`. Always on a UTF-8 char boundary.
     pos: usize,
+    /// The string holes open, innermost last, each with the `{` it holds open.
+    holes: Vec<u32>,
 }
 
 impl<'s> Lexer<'s> {
@@ -67,17 +73,19 @@ impl<'s> Lexer<'s> {
             source,
             bytes: source.as_bytes(),
             pos: 0,
+            holes: Vec::new(),
         }
     }
 
     /// Creates a lexer positioned at byte `offset` with resumable `state`, for
     /// incremental reparsing. `offset` must be a char boundary.
-    pub fn resume(source: &'s str, offset: TextSize, _state: LexState) -> Lexer<'s> {
+    pub fn resume(source: &'s str, offset: TextSize, state: LexState) -> Lexer<'s> {
         debug_assert!(source.is_char_boundary(offset.to_usize()));
         Lexer {
             source,
             bytes: source.as_bytes(),
             pos: offset.to_usize(),
+            holes: state.holes,
         }
     }
 
@@ -87,10 +95,12 @@ impl<'s> Lexer<'s> {
         TextSize::new(self.pos as u32)
     }
 
-    /// The resumable state at the current position (always empty today).
+    /// The resumable state at the current position.
     #[inline]
     pub fn state(&self) -> LexState {
-        LexState
+        LexState {
+            holes: self.holes.clone(),
+        }
     }
 
     // --- Cursor primitives -------------------------------------------------
@@ -156,14 +166,31 @@ impl<'s> Lexer<'s> {
     pub fn next_token(&mut self) -> Token {
         let start = self.pos;
         let Some(b) = self.peek_byte() else {
-            return Token::new(SyntaxKind::Eof, TextRange::empty(self.offset()));
+            let eof = TextRange::empty(self.offset());
+            if self.holes.is_empty() {
+                return Token::new(SyntaxKind::Eof, eof);
+            }
+            // A hole left open: its string never ends.
+            self.holes.clear();
+            return Token::with_error(SyntaxKind::Eof, eof, LexError::UnterminatedString);
         };
 
+        if let Some(depth) = self.holes.last_mut() {
+            match b {
+                b'{' => *depth += 1,
+                b'}' if *depth > 0 => *depth -= 1,
+                b'}' => return self.string_text(start, true),
+                _ => {}
+            }
+        }
         match b {
             b' ' | b'\t' | b'\n' => self.whitespace(start),
             b'\r' => self.carriage_return(start),
             b'/' => self.slash_or_comment(start),
-            b'"' => self.string(start),
+            b'"' => {
+                self.bump_ascii(); // opening '"'
+                self.string_text(start, false)
+            }
             b'\'' => self.char_literal(start),
             b'#' => self.color(start),
             b'r' => self.raw_prefix_or_ident(start),
@@ -192,6 +219,11 @@ impl<'s> Lexer<'s> {
                 }
                 _ => break,
             }
+        }
+        // A string, and so a hole in it, ends on its line.
+        if !self.holes.is_empty() && self.source[start..self.pos].contains('\n') {
+            self.holes.clear();
+            return self.token_err(SyntaxKind::Whitespace, start, LexError::UnterminatedString);
         }
         self.token(SyntaxKind::Whitespace, start)
     }
@@ -412,36 +444,63 @@ impl<'s> Lexer<'s> {
 
     // --- Strings & chars ---------------------------------------------------
 
-    /// A `"..."` string with escapes. Unterminated at end of line or input is
-    /// flagged; escape errors are flagged but scanning continues to the close.
-    fn string(&mut self, start: usize) -> Token {
-        self.bump_ascii(); // opening '"'
+    /// A string's text with escapes, the cursor past its opening `"` or, with
+    /// `after_hole`, at the `}` closing a hole: up to its closing `"` (a
+    /// `StringLiteral`, or the `StringEnd` after a hole) or the `{` opening a
+    /// hole (a `StringStart`, or a `StringMiddle` between holes). `{{` and `}}`
+    /// are literal braces. Unterminated at end of line or input is flagged;
+    /// escape errors are flagged but scanning continues to the close.
+    fn string_text(&mut self, start: usize, after_hole: bool) -> Token {
+        if after_hole {
+            self.bump_ascii(); // '}'
+        }
+        let (closed, open) = if after_hole {
+            (SyntaxKind::StringEnd, SyntaxKind::StringMiddle)
+        } else {
+            (SyntaxKind::StringLiteral, SyntaxKind::StringStart)
+        };
         let mut error: Option<LexError> = None;
         loop {
             match self.peek_byte() {
-                None => {
-                    return self.token_err(
-                        SyntaxKind::StringLiteral,
-                        start,
-                        error.unwrap_or(LexError::UnterminatedString),
-                    );
+                // A newline inside a string closes nothing; the string is
+                // unterminated on this line. The newline is not consumed (it is
+                // its own whitespace token), so recovery resumes cleanly.
+                None | Some(b'\n') => {
+                    if after_hole {
+                        self.holes.pop();
+                    }
+                    let error = error.unwrap_or(LexError::UnterminatedString);
+                    return self.token_err(closed, start, error);
                 }
                 Some(b'"') => {
                     self.bump_ascii();
-                    return match error {
-                        Some(e) => self.token_err(SyntaxKind::StringLiteral, start, e),
-                        None => self.token(SyntaxKind::StringLiteral, start),
-                    };
+                    if after_hole {
+                        self.holes.pop();
+                    }
+                    return self.finish(closed, start, error);
                 }
-                Some(b'\n') => {
-                    // A newline inside a string closes nothing; the string is
-                    // unterminated on this line. Do not consume the newline (it
-                    // is its own whitespace token), so recovery resumes cleanly.
-                    return self.token_err(
-                        SyntaxKind::StringLiteral,
-                        start,
-                        error.unwrap_or(LexError::UnterminatedString),
-                    );
+                Some(b'{') if self.peek_byte_at(1) == Some(b'{') => {
+                    self.bump_ascii();
+                    self.bump_ascii();
+                }
+                Some(b'{') => {
+                    self.bump_ascii();
+                    if after_hole {
+                        if let Some(depth) = self.holes.last_mut() {
+                            *depth = 0;
+                        }
+                    } else {
+                        self.holes.push(0);
+                    }
+                    return self.finish(open, start, error);
+                }
+                Some(b'}') => {
+                    self.bump_ascii();
+                    if self.peek_byte() == Some(b'}') {
+                        self.bump_ascii();
+                    } else {
+                        error.get_or_insert(LexError::UnpairedBrace);
+                    }
                 }
                 Some(b'\\') => {
                     if let Some(e) = self.string_escape() {
@@ -452,6 +511,14 @@ impl<'s> Lexer<'s> {
                     self.bump();
                 }
             }
+        }
+    }
+
+    /// A token of `kind` over `[start, pos)`, with `error` when there is one.
+    fn finish(&self, kind: SyntaxKind, start: usize, error: Option<LexError>) -> Token {
+        match error {
+            Some(e) => self.token_err(kind, start, e),
+            None => self.token(kind, start),
         }
     }
 

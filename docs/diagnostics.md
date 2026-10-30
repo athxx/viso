@@ -38,7 +38,7 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E2105](#e2105) | Computed Dependency Cycle | error | type |
 | [E2106](#e2106) | MixedLength Cannot Narrow Before Layout | error | type |
 | [E2107](#e2107) | Illegal Dimensional Operation | error | type |
-| [E2108](#e2108) | Format Template Mismatch | error | type |
+| [E2108](#e2108) | Value Not Shown In A String | error | type |
 | [E2109](#e2109) | Length Divided By Constant Zero | error | type |
 | [E2110](#e2110) | Assignment Target Is Not Writable | error | type |
 | [E2111](#e2111) | Context Read Outside Its Scope | error | type |
@@ -714,7 +714,7 @@ component A {
 }
 ```
 
-Fix: Change the expression so it produces the expected type, or change the declared type to match the value. For text, convert a displayable value with `format`.
+Fix: Change the expression so it produces the expected type, or change the declared type to match the value. For text, show a displayable value in a string, `"{value}"`.
 
 ```vs
 state n: I64 = 0;
@@ -805,22 +805,23 @@ fn narrow(width: Dp) -> Bool { width < 200dp }
 
 ## E2108
 
-**Format Template Mismatch** — error, type
+**Value Not Shown In A String** — error, type
 
-`format(template, args...)` is checked at compile time: the template must be a string literal, each `{}` consumes the next positional argument, each `{name}` consumes the named argument `name:`, and every argument must be used exactly once. Each argument's type must implement `Display`; records, enums, lists, options and similar types do not and must be mapped to text first. A missing, extra or non-displayable argument is this error.
+A string's hole (`"{count} items"`) shows its value as text, which takes a type with `Display`: the scalars, `String`, `Char` and the single-unit lengths, durations, angles and frequencies have it; records, enums, lists, options, tuples, colors and similar types do not and must be mapped to text first, for example with a `match`. A hole with nothing in it is this error too; a literal brace in a string is written `{{` or `}}`.
 
 ```vs
+record Point { x: I64, y: I64 }
+
 component A {
-    state n: I64 = 1;
-    fn label() -> String { format("{} of {}", n) }
-    view { Text { text: label(); } }
+    state at = Point { x: 1, y: 2 }
+    view { Text { text: "at {at} {}" } }
 }
 ```
 
-Fix: Make the placeholders and the arguments match one to one, and pass only displayable values.
+Fix: Show a displayable value in each hole, such as a field of the record, and put something in every hole.
 
 ```vs
-fn label() -> String { format("{} of {total}", n, total: 3) }
+    view { Text { text: "at {at.x}, {at.y}" } }
 ```
 
 ## E2109
@@ -880,7 +881,7 @@ Fix: Read the context value inside the view, or pass it as an argument to the fu
 
 ```vs
 fn scaled(scale: F32) -> F32 { scale * 2.0 }
-view { Text { text: format("{}", scaled(env.text_scale)); } }
+view { Text { text: "{scaled(env.text_scale)}"; } }
 ```
 
 ## E2112
@@ -1901,14 +1902,14 @@ See also: `viso check --a11y strict`
 
 **Concatenated Localizable Text** — warning, view
 
-A localizable property (`Text.text`, `Button.text`, `Toggle.label`, `TextInput.placeholder`, `semantics.label`, `semantics.hint` and similar) is built by string concatenation or by a `format` whose template contains literal words or more than one placeholder. Word order differs between languages, so such text cannot be translated; a message with named arguments through `tr` can. `format("{}", n)` with a single placeholder is allowed. This is a warning by default; `viso check --i18n strict` makes it an error and also reports plain literals.
+A localizable property (`Text.text`, `Button.text`, `Toggle.label`, `TextInput.placeholder`, `semantics.label`, `semantics.hint` and similar) is built by string concatenation or by a string with holes that holds literal words or more than one hole. Word order differs between languages, so such text cannot be translated; a message with named arguments through `tr` can. `"{n}"` with a single hole is allowed. This is a warning by default; `viso check --i18n strict` makes it an error and also reports plain literals.
 
 ```vs
 component A {
-    state name: String = "Ada";
+    state name: String = "Ada"
 
     view {
-        Text { text: "Hello " + name; }
+        Text { text: "Hello {name}" }
     }
 }
 ```
@@ -1916,7 +1917,7 @@ component A {
 Fix: Move the sentence into the message catalog and pass the variable parts as named arguments of `tr`.
 
 ```vs
-Text { text: tr("greeting", name: name); }
+Text { text: tr("greeting", name: name) }
 ```
 
 See also: `viso check --i18n strict`

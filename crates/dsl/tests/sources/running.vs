@@ -15,7 +15,7 @@ component Counter {
         start later() { success (v) { add(v) } }
     }
     view {
-        Text { text: format("{}={}", label, n) }
+        Text { text: "{label}={n}" }
     }
 }
 
@@ -75,26 +75,26 @@ export component Demo {
     }
 
     effect boot {
-        start wait(1) as job { success (v) { note(format("a{}", v)) } cancelled { note("c") } }
+        start wait(1) as job { success (v) { note("a{v}") } cancelled { note("c") } }
         start wait(2) as job {
-            success (v) { note(format("a{}", v)); bump() }
+            success (v) { note("a{v}"); bump() }
             cancelled { note("c") }
         }
         start wait(3) as queued {
             policy = [TaskPolicy::queue]
-            success (v) { note(format("q{}", v)) }
+            success (v) { note("q{v}") }
         }
         start wait(4) as queued {
             policy = [TaskPolicy::queue]
-            success (v) { note(format("q{}", v)) }
+            success (v) { note("q{v}") }
         }
         start wait(5) as dropped {
             policy = [TaskPolicy::drop_new]
-            success (v) { note(format("d{}", v)) }
+            success (v) { note("d{v}") }
         }
         start wait(6) as dropped {
             policy = [TaskPolicy::drop_new]
-            success (v) { note(format("d{}", v)) }
+            success (v) { note("d{v}") }
         }
     }
 
@@ -111,7 +111,7 @@ export component Demo {
     view {
         Column {
             Text { text: "log=" + log }
-            Text { text: format("runs={}", runs) }
+            Text { text: "runs={runs}" }
             match results.state {
                 ResourceState::ready(items) => {
                     for item in items key item {

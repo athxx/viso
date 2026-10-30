@@ -34,7 +34,7 @@ export component Hud {
                     if game.is_paused() { game.resume(); } else { game.pause(); }
                 }
             }
-            Text { width: 100dp; height: 20dp; text: format("Score: {}", game.score()); }
+            Text { width: 100dp; height: 20dp; text: "Score: {game.score()}"; }
             Column {
                 width: 100dp;
                 height: 20dp;
@@ -106,7 +106,7 @@ fn a_reload_keeps_the_hud_on_the_running_game() {
         tick(&mut rt);
     }
     assert_eq!(text(&rt, 1), "Score: 2");
-    rt.reload(&SOURCE.replace("Score: {}", "Points: {}"));
+    rt.reload(&SOURCE.replace("Score: ", "Points: "));
     assert_eq!(text(&rt, 1), "Points: 2", "the same game, read at once");
     tick(&mut rt);
     tick(&mut rt);
@@ -130,12 +130,12 @@ fn a_misused_query_or_game_is_reported() {
     };
     let base = "system S implements FixedUpdate { state n = 0; \
                 @query fn count() -> I64 { n } action fixed_update(frame: FixedFrame) {} }";
-    assert!(codes(&with(base, r#"format("{}", game.count())"#)).is_empty());
+    assert!(codes(&with(base, r#""{game.count()}""#)).is_empty());
     assert!(
-        codes(&with(base, r#"format("{}", game.m())"#)).contains(&"E2001".to_string()),
+        codes(&with(base, r#""{game.m()}""#)).contains(&"E2001".to_string()),
         "no such query"
     );
-    assert!(codes(&with(base, r#"format("{}", game)"#)).contains(&"E2001".to_string()));
+    assert!(codes(&with(base, r#""{game}""#)).contains(&"E2001".to_string()));
     let params = "system S implements FixedUpdate { state n = 0; \
                   @query fn count(k: I64) -> I64 { n + k } action fixed_update(frame: FixedFrame) {} }";
     assert!(codes(&with(params, r#""x""#)).contains(&"E9112".to_string()));
@@ -150,8 +150,8 @@ fn a_misused_query_or_game_is_reported() {
     let on_state = "system S implements FixedUpdate { @query state n = 0; \
                     action fixed_update(frame: FixedFrame) {} }";
     assert!(codes(&with(on_state, r#""x""#)).contains(&"E9112".to_string()));
-    let no_game = r#"export component Hud { view { Text { text: format("{}", game.tick()); } } }"#;
+    let no_game = r#"export component Hud { view { Text { text: "{game.tick()}"; } } }"#;
     assert!(codes(no_game).contains(&"E2001".to_string()), "no system");
-    let in_binding = with(base, r#"format("{}", { game.pause(); 1 })"#);
+    let in_binding = with(base, r#""{ { game.pause(); 1 } }""#);
     assert!(!codes(&in_binding).is_empty(), "an action in a binding");
 }

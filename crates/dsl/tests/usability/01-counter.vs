@@ -7,7 +7,7 @@ export component Counter {
             Row {
                 gap: 4dp
                 Text { text: "Count" }
-                Text { text: format("{}", count) }
+                Text { text: "{count}" }
             }
             Button {
                 text: "Add"

@@ -140,7 +140,7 @@ export system Combat implements CollisionListener {
                         score += 1
                         event.world.remove(other)
                         event.kit.sound(Sfx::coin)
-                        log = format("coin {s} at {t}", s: score, t: event.tick())
+                        log = "coin {score} at {event.tick()}"
                     } else if event.world.has_tag(other, GameTag::enemy) {
                         hits += 1
                         event.kit.sound(Sfx::hurt)

@@ -10,7 +10,7 @@ export component Tally {
             Text {
                 width: 300dp
                 height: 40dp
-                text: format("{c} in all, {t} this run", c: count, t: taps)
+                text: "{count} in all, {taps} this run"
             }
             Button {
                 width: 300dp

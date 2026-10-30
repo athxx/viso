@@ -890,7 +890,7 @@ component Page {
 "#,
         ),
         fix: "Change the expression so it produces the expected type, or change the declared \
-            type to match the value. For text, convert a displayable value with `format`.",
+            type to match the value. For text, show a displayable value in a string, `\"{value}\"`.",
         fixed: Some(
             r#"state n: I64 = 0;
 "#,
@@ -1007,25 +1007,26 @@ computed b: I64 = base;
         code: "E2108",
         severity: Severity::Error,
         stage: Stage::Type,
-        title: "Format Template Mismatch",
-        explanation: "`format(template, args...)` is checked at compile time: the template must be a \
-            string literal, each `{}` consumes the next positional argument, each `{name}` \
-            consumes the named argument `name:`, and every argument must be used exactly once. \
-            Each argument's type must implement `Display`; records, enums, lists, options and \
-            similar types do not and must be mapped to text first. A missing, extra or \
-            non-displayable argument is this error.",
+        title: "Value Not Shown In A String",
+        explanation: "A string's hole (`\"{count} items\"`) shows its value as text, which takes \
+            a type with `Display`: the scalars, `String`, `Char` and the single-unit lengths, \
+            durations, angles and frequencies have it; records, enums, lists, options, tuples, \
+            colors and similar types do not and must be mapped to text first, for example \
+            with a `match`. A hole with nothing in it is this error too; a literal brace in a \
+            string is written `{{` or `}}`.",
         example: Example::Source(
-            r#"component A {
-    state n: I64 = 1;
-    fn label() -> String { format("{} of {}", n) }
-    view { Text { text: label(); } }
+            r#"record Point { x: I64, y: I64 }
+
+component A {
+    state at = Point { x: 1, y: 2 }
+    view { Text { text: "at {at} {}" } }
 }
 "#,
         ),
-        fix: "Make the placeholders and the arguments match one to one, and pass only \
-            displayable values.",
+        fix: "Show a displayable value in each hole, such as a field of the record, and put \
+            something in every hole.",
         fixed: Some(
-            r#"fn label() -> String { format("{} of {total}", n, total: 3) }
+            r#"    view { Text { text: "at {at.x}, {at.y}" } }
 "#,
         ),
         commands: &[],
@@ -1106,7 +1107,7 @@ action reset() { limit = 0; }
             that needs it.",
         fixed: Some(
             r#"fn scaled(scale: F32) -> F32 { scale * 2.0 }
-view { Text { text: format("{}", scaled(env.text_scale)); } }
+view { Text { text: "{scaled(env.text_scale)}"; } }
 "#,
         ),
         commands: &[],
@@ -2391,18 +2392,18 @@ event changed(value: I64);
         title: "Concatenated Localizable Text",
         explanation: "A localizable property (`Text.text`, `Button.text`, `Toggle.label`, \
             `TextInput.placeholder`, `semantics.label`, `semantics.hint` and similar) is built \
-            by string concatenation or by a `format` whose template contains literal words or \
-            more than one placeholder. Word order differs between languages, so such text \
+            by string concatenation or by a string with holes that holds literal words or \
+            more than one hole. Word order differs between languages, so such text \
             cannot be translated; a message with named arguments through `tr` can. \
-            `format(\"{}\", n)` with a single placeholder is allowed. This is a warning by \
+            `\"{n}\"` with a single hole is allowed. This is a warning by \
             default; `viso check --i18n strict` makes it an error and also reports plain \
             literals.",
         example: Example::Source(
             r#"component A {
-    state name: String = "Ada";
+    state name: String = "Ada"
 
     view {
-        Text { text: "Hello " + name; }
+        Text { text: "Hello {name}" }
     }
 }
 "#,
@@ -2410,7 +2411,7 @@ event changed(value: I64);
         fix: "Move the sentence into the message catalog and pass the variable parts as named \
             arguments of `tr`.",
         fixed: Some(
-            r#"Text { text: tr("greeting", name: name); }
+            r#"Text { text: tr("greeting", name: name) }
 "#,
         ),
         commands: &["viso check --i18n strict"],

@@ -236,13 +236,13 @@ const SHAKE: &str = "component Shake {
                 width: 50dp; height: 20dp;
                 on animation_end(e) {
                     ended = match e.target {
-                        Animate::translate(_) => format(\"translate {}\", e.finished),
+                        Animate::translate(_) => \"translate {e.finished}\",
                         _ => \"other\",
                     };
                 }
             }
             Text { width: 100dp; height: 20dp; text: ended; }
-            Text { width: 100dp; height: 20dp; text: format(\"{}\", running); }
+            Text { width: 100dp; height: 20dp; text: \"{running}\"; }
         }
     }
 }";
@@ -319,8 +319,8 @@ const PULSE: &str = "component Pulse {
                 width: 50dp; height: 20dp;
                 on animation_end(e) {
                     ended = match e.target {
-                        Animate::scale(s) => format(\"scale {} {}\", s, e.finished),
-                        Animate::opacity(o) => format(\"opacity {} {}\", o, e.finished),
+                        Animate::scale(s) => \"scale {s} {e.finished}\",
+                        Animate::opacity(o) => \"opacity {o} {e.finished}\",
                         _ => \"other\",
                     };
                 }
@@ -363,7 +363,7 @@ fn a_named_node_is_a_node_ref_only_in_handlers_and_actions() {
         view {
             Column {
                 node field: TextInput { width: 100dp; height: 20dp; }
-                Text { text: format(\"{}\", field); }
+                Text { text: \"{field}\"; }
             }
         }
     }";

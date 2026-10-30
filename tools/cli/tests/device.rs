@@ -31,7 +31,7 @@ const VIEW: &str = r#"component Probe {
         Column {
             width: 200dp;
             height: 40dp;
-            Text { width: 200dp; height: 40dp; text: format("{}", count); }
+            Text { width: 200dp; height: 40dp; text: "{count}"; }
         }
     }
 }
@@ -160,7 +160,7 @@ fn hot_reload(run: Run, app: &Path, logs: bool) {
 
     std::fs::write(
         app.join("src/probe.vs"),
-        VIEW.replace("format(\"{}\", count)", "format(\"n={}\", count)"),
+        VIEW.replace("\"{count}\"", "\"n={count}\""),
     )
     .expect("probe.vs");
     let applied = run.until(Duration::from_secs(60), "the patch", |line| {

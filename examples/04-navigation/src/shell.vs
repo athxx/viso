@@ -10,7 +10,7 @@ component Shell {
 
     computed title: String = match nav.current() {
         Route::inbox => "Inbox"
-        Route::message { id } => format("Message {id}", id: id)
+        Route::message { id } => "Message {id}"
         Route::settings => "Settings"
     }
 
@@ -43,7 +43,7 @@ component Shell {
                     on click { nav.replace(Route::settings) }
                 }
                 Toggle { label: "Editing"; bind checked <=> editing }
-                Text { width: 120dp; height: 24dp; text: format("{n} kept", n: kept) }
+                Text { width: 120dp; height: 24dp; text: "{kept} kept" }
             }
             RouterView {
                 navigator: nav

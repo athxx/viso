@@ -22,7 +22,7 @@ export component Profile {
     view {
         Card {
             title: "Profile"
-            Text { text: format("{}", likes) }
+            Text { text: "{likes}" }
             fill actions {
                 Button {
                     text: "Like"

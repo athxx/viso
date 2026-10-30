@@ -63,7 +63,7 @@ component Counter {
         emit changed(count);
     }
 
-    view { Text { text: format("{n}", n: doubled); } }
+    view { Text { text: "{doubled}"; } }
 }
 "#,
     );
@@ -87,7 +87,7 @@ component Shapes {
         match n {
             0 => "zero",
             1 | 2 => "few",
-            _ => format("many {n}", n: n),
+            _ => "many {n}",
         }
     }
 
@@ -186,7 +186,7 @@ component Records {
         Some(n)
     }
 
-    view { Text { text: format("{x}", x: point.x); } }
+    view { Text { text: "{point.x}"; } }
 }
 "#,
     );

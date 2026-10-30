@@ -98,12 +98,12 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
 #[test]
 fn localizable_text_is_no_concatenation_or_literal_format() {
     assert_eq!(lenient("Text { text: \"Inbox\"; }"), CLEAN);
-    assert_eq!(lenient("Text { text: format(\"{}\", n); }"), CLEAN);
+    assert_eq!(lenient("Text { text: \"{n}\"; }"), CLEAN);
     assert_eq!(lenient("Text { text: name; }"), CLEAN);
     assert_eq!(lenient("Text { text: \"Hi \" + name; }"), ["E3705"]);
     assert_eq!(lenient("Text { text: (name + \"!\"); }"), ["E3705"]);
-    assert_eq!(lenient("Text { text: format(\"{} new\", n); }"), ["E3705"]);
-    assert_eq!(lenient("Text { text: format(\"{}{}\", n, n); }"), ["E3705"]);
+    assert_eq!(lenient("Text { text: \"{n} new\"; }"), ["E3705"]);
+    assert_eq!(lenient("Text { text: \"{n}{n}\"; }"), ["E3705"]);
     assert_eq!(
         lenient("Button { text: \"Name: \" + name; on click { n += 1; } }"),
         ["E3705"]

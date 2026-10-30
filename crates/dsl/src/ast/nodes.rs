@@ -8,7 +8,7 @@
 //! LSP, or a rename refactor walks — so projecting the AST costs nothing beyond a
 //! kind tag comparison.
 
-use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken};
+use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 
 use super::support;
 
@@ -1952,6 +1952,10 @@ ast_node!(
     LiteralExpr = LiteralExpr
 );
 ast_node!(
+    /// A string with holes (`"{count} items"`).
+    InterpolatedString = InterpolatedString
+);
+ast_node!(
     /// A path expression (`a`, `a::b`, `self`, `Self`).
     PathExpr = PathExpr
 );
@@ -2036,6 +2040,62 @@ impl LiteralExpr {
             )
         })
     }
+}
+
+/// A piece of a string with holes, in source order.
+#[derive(Debug, Clone)]
+pub enum StringPart {
+    /// A run of text as written, escapes undecoded: the inside of a
+    /// `StringStart`, `StringMiddle` or `StringEnd` token, `token` being it.
+    Text(SyntaxToken),
+    /// A hole's expression; `None` for an empty hole, at the `range` of its
+    /// braces' inside.
+    Hole(Option<Expr>, TextRange),
+}
+
+impl InterpolatedString {
+    /// Its text runs and holes, in order.
+    pub fn parts(&self) -> Vec<StringPart> {
+        let mut out = Vec::new();
+        let mut open: Option<TextSize> = None;
+        for el in self.syntax.children_with_tokens() {
+            if let Some(node) = el.as_node() {
+                if let (Some(at), Some(expr)) = (open.take(), Expr::cast(node.clone())) {
+                    out.push(StringPart::Hole(
+                        Some(expr),
+                        TextRange::new(at, node.text_range().end()),
+                    ));
+                }
+                continue;
+            }
+            let Some(token) = el.as_token() else {
+                continue;
+            };
+            if !matches!(
+                token.kind(),
+                SyntaxKind::StringStart | SyntaxKind::StringMiddle | SyntaxKind::StringEnd
+            ) {
+                continue;
+            }
+            let range = token.text_range();
+            if let Some(at) = open.take() {
+                out.push(StringPart::Hole(None, TextRange::new(at, range.start())));
+            }
+            out.push(StringPart::Text(token.clone()));
+            if token.kind() != SyntaxKind::StringEnd {
+                open = Some(range.end());
+            }
+        }
+        out
+    }
+}
+
+/// The text a string part token holds between its delimiters (`"` or `}` before,
+/// `{` or `"` after), escapes undecoded.
+pub fn string_part_body(text: &str) -> &str {
+    let start = usize::from(text.starts_with(['"', '}']));
+    let end = text.len() - usize::from(text.len() > start && text.ends_with(['"', '{']));
+    &text[start..end]
 }
 
 /// Whether a token kind is one of the infix binary operators the parser places
@@ -2197,6 +2257,7 @@ impl Expr {
         matches!(
             kind,
             SyntaxKind::LiteralExpr
+                | SyntaxKind::InterpolatedString
                 | SyntaxKind::PathExpr
                 | SyntaxKind::BinaryExpr
                 | SyntaxKind::UnaryExpr

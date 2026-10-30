@@ -7,7 +7,7 @@
 use viso_behavior::i18n::{MESSAGE_KEY, TR};
 use viso_behavior::native::NativeId;
 
-use super::format::{displayable, template_literal};
+use super::interpolation::{displayable, string_literal};
 use super::pattern::unescape;
 use super::{InferCx, VariantPayload, first_child_expr, is_numeric_ty};
 use crate::ast::{AstNode, Expr};
@@ -50,7 +50,7 @@ pub(crate) fn is_tr(id: NativeId) -> bool {
 
 /// The key a string literal spells, unescaped.
 pub(crate) fn literal_key(expr: &Expr) -> Option<String> {
-    let (text, raw) = template_literal(expr)?;
+    let (text, raw) = string_literal(expr)?;
     if raw { Some(text) } else { unescape(&text) }
 }
 

@@ -60,7 +60,7 @@ viso::component! {
         state count = 0;
         view {
             Column {
-                Text { text: format("{}", count); }
+                Text { text: "{count}"; }
             }
         }
     }
@@ -565,7 +565,7 @@ viso::component! {
         state count = 0;
         view {
             Column {
-                Text { text: format("{}", count); }
+                Text { text: "{count}"; }
                 Button {
                     text: "Add";
                     on click { count += 1; }
@@ -2855,7 +2855,7 @@ DSL 侧每次 Action / Event Handler 调用自动开启一个 behavior transacti
 必须可缓存、无副作用（DSL §43）：
 
 ```viso
-computed full_name = format("{} {}", first, last)
+computed full_name = "{first} {last}"
 ```
 
 DSL computed 由 behavior VM 记忆（`viso_behavior::memo`）：编译期为每个零参数 computed 求出它（含其调用的函数）读取的 state / input slot 并建立反向索引；实例缓存已求值的 computed，写入某个 slot 只清空读它的条目，依赖未变就不重算；调用闭包值的 computed 读集无法静态确定，不缓存。Rust 侧 `ComputedStore` 的派生只读（`ComputeCx`），每次求值经 `DepCursor` 重新记录依赖，被依赖写入唤醒后重算，值不变则不标脏下游节点（memo boundary）。
@@ -3617,7 +3617,7 @@ export component Counter {
 
     view {
         Column {
-            Text { text: format("{}", count) }
+            Text { text: "{count}" }
             node add_button: Button {
                 text: "Add"
                 on click { count += 1 }

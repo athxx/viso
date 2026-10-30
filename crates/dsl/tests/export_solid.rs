@@ -88,7 +88,7 @@ export component Counter {
 
     view {
         Column {
-            Text { text: format("{}", count); }
+            Text { text: "{count}"; }
             Button {
                 text: "Add";
                 on click { count += 1; }
@@ -155,7 +155,7 @@ export component Badge {
     view {
         Row {
             Text { width: 80dp; height: 20dp; text: title; }
-            Text { width: 80dp; height: 20dp; text: format("{}", doubled + count); }
+            Text { width: 80dp; height: 20dp; text: "{doubled + count}"; }
             Button {
                 width: 80dp;
                 height: 20dp;

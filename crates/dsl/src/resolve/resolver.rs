@@ -932,18 +932,9 @@ fn keyword_start(node: &SyntaxNode) -> TextSize {
 /// Builds a module's import environment: local name to the exported symbol it names.
 ///
 /// The value names the language provides without a declaration: the `Option`
-/// and `Result` constructors, the `format`/`untracked`/`asset` intrinsics and
+/// and `Result` constructors, the `untracked`/`asset` intrinsics and
 /// the `tracks` standard function.
-const BUILTIN_VALUES: &[&str] = &[
-    "Some",
-    "None",
-    "Ok",
-    "Err",
-    "format",
-    "untracked",
-    "asset",
-    "tracks",
-];
+const BUILTIN_VALUES: &[&str] = &["Some", "None", "Ok", "Err", "untracked", "asset", "tracks"];
 
 /// The native types every module names without an import, by name.
 const STANDARD_NATIVE_TYPES: &[(&str, &str)] = &[("Navigator", viso_behavior::nav::NAVIGATOR_PATH)];
@@ -2940,7 +2931,7 @@ mod tests {
     fn an_unresolved_value_is_e2001_with_the_nearest_names() {
         let mut interner = NameInterner::new();
         let src = "component A { state count = 0; slot body: Slot<Node>; \
-                   action go() { count = cont + 1; let x = Some(format(\"{count}\")); } \
+                   action go() { count = cont + 1; let x = Some(\"{count}\"); } \
                    view { SlotOutlet { slot: body; } } }";
         let app = unit(&mut interner, &["app"], src);
         let mods = resolve_all(vec![app], &mut interner);

@@ -3,7 +3,7 @@
 //! or key gesture, has a role other than `group` and an accessible name
 //! (`E3704`) and a keyboard path — it is focusable and handles `click`
 //! (`E3708`); text a Localizable property shows is no concatenation and no
-//! `format` with literal text (`E3705`), and under a strict profile no
+//! string with holes and literal text (`E3705`), and under a strict profile no
 //! literal either. Each is a warning, an error under the profile's strict
 //! accessibility or localization checks. A component node whose caller
 //! forwards gesture handlers onto its view's root is checked as that root
@@ -12,7 +12,8 @@
 use viso_behavior::native::NativeWidget;
 
 use crate::ast::{
-    AstNode, CallExpr, ComponentDecl, Expr, NodeBody, PathExpr, PropertyBinding, ViewItem,
+    AstNode, ComponentDecl, Expr, InterpolatedString, NodeBody, PathExpr, PropertyBinding,
+    StringPart, ViewItem, string_part_body,
 };
 use crate::diag::Diagnostic;
 use crate::hir::style::path_name;
@@ -214,9 +215,9 @@ pub(crate) fn check_text(
                  languages, so build it with `tr` and arguments"
             )
         }
-        SyntaxKind::CallExpr if literal_format(&value) => format!(
-            "`{property}` shows a `format` with literal text; word order differs between \
-             languages, so build it with `tr` and arguments"
+        SyntaxKind::InterpolatedString if literal_interpolation(&value) => format!(
+            "`{property}` shows a string with holes and literal text; word order differs \
+             between languages, so build it with `tr` and arguments"
         ),
         SyntaxKind::LiteralExpr if strict && type_of(&value) == Some(Ty::String) => {
             format!("`{property}` shows literal text; strict localization takes it from `tr`")
@@ -239,66 +240,23 @@ fn unparen(value: &Expr) -> Expr {
     value
 }
 
-/// Whether `value` is `format(template, ..)` whose template has literal text
-/// or more than one placeholder.
-fn literal_format(value: &Expr) -> bool {
-    let Some(call) = CallExpr::cast(value.syntax().clone()) else {
+/// Whether `value` is a string with holes that shows literal words, or more
+/// than one hole: text a translation would reorder.
+fn literal_interpolation(value: &Expr) -> bool {
+    let Some(string) = InterpolatedString::cast(value.syntax().clone()) else {
         return false;
     };
-    let is_format = call
-        .callee()
-        .is_some_and(|callee| is_path(&callee, &["format"]));
-    if !is_format {
-        return false;
-    }
-    // The template is the first argument, spelled as a literal.
-    let template = value
-        .syntax()
-        .children()
-        .into_iter()
-        .find(|n| n.kind() == SyntaxKind::ArgumentList)
-        .and_then(|args| {
-            args.children()
-                .into_iter()
-                .find(|n| n.kind() == SyntaxKind::Argument)
-        })
-        .and_then(|arg| arg.children().into_iter().find_map(Expr::cast));
-    let Some(template) = template.filter(|t| t.syntax().kind() == SyntaxKind::LiteralExpr) else {
-        return false;
-    };
-    let template = template.syntax();
-    let text = template.text().to_string();
-    let Some(inner) = text
-        .trim()
-        .strip_prefix('"')
-        .and_then(|t| t.strip_suffix('"'))
-    else {
-        return false;
-    };
-    let mut placeholders = 0;
+    let mut holes = 0;
     let mut literal = false;
-    let mut chars = inner.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '{' if chars.peek() == Some(&'{') => {
-                chars.next();
-                literal = true;
+    for part in string.parts() {
+        match part {
+            StringPart::Hole(..) => holes += 1,
+            StringPart::Text(token) => {
+                literal |= string_part_body(&token.text())
+                    .chars()
+                    .any(|c| !c.is_whitespace());
             }
-            '{' => {
-                placeholders += 1;
-                for c in chars.by_ref() {
-                    if c == '}' {
-                        break;
-                    }
-                }
-            }
-            '}' if chars.peek() == Some(&'}') => {
-                chars.next();
-                literal = true;
-            }
-            c if !c.is_whitespace() => literal = true,
-            _ => {}
         }
     }
-    literal || placeholders > 1
+    literal || holes > 1
 }

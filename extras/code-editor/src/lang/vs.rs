@@ -150,7 +150,10 @@ fn lex(text: &str, out: &mut Vec<Token>) -> u32 {
             .map(|&n| (toks[n].kind, &text[toks[n].range.clone()]));
         let spelled = &text[t.range.clone()];
         match t.kind {
-            SyntaxKind::StringLiteral => string(spelled, out),
+            SyntaxKind::StringLiteral
+            | SyntaxKind::StringStart
+            | SyntaxKind::StringMiddle
+            | SyntaxKind::StringEnd => string(spelled, out),
             kind => out.push(Token::new(
                 t.range.len(),
                 classify(kind, spelled, prev, next),
@@ -183,23 +186,27 @@ fn lex(text: &str, out: &mut Vec<Token>) -> u32 {
     }
 }
 
-/// A string's text and its escapes.
+/// A string's text and its escapes, a literal brace (`{{`) and a hole's
+/// brace among them.
 fn string(text: &str, out: &mut Vec<Token>) {
     let b = text.as_bytes();
     let mut start = 0;
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && i + 1 < b.len() {
-            if i > start {
-                out.push(Token::new(i - start, TokenKind::String));
+        let end = match b[i] {
+            b'\\' if i + 1 < b.len() => escape_end(text, i),
+            brace @ (b'{' | b'}') => i + if b.get(i + 1) == Some(&brace) { 2 } else { 1 },
+            _ => {
+                i += 1;
+                continue;
             }
-            let end = escape_end(text, i);
-            out.push(Token::new(end - i, TokenKind::Escape));
-            start = end;
-            i = end;
-        } else {
-            i += 1;
+        };
+        if i > start {
+            out.push(Token::new(i - start, TokenKind::String));
         }
+        out.push(Token::new(end - i, TokenKind::Escape));
+        start = end;
+        i = end;
     }
     if b.len() > start {
         out.push(Token::new(b.len() - start, TokenKind::String));
@@ -322,7 +329,11 @@ mod tests {
         use SyntaxKind as K;
         match kind {
             K::LineComment | K::BlockComment | K::DocComment | K::ModuleDocComment => 1,
-            K::StringLiteral | K::RawStringLiteral => 2,
+            K::StringLiteral
+            | K::StringStart
+            | K::StringMiddle
+            | K::StringEnd
+            | K::RawStringLiteral => 2,
             K::Whitespace => 0,
             _ => 3,
         }

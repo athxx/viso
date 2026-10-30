@@ -252,8 +252,8 @@ system Synth implements AudioProcess {
     /// The game fixture's module, with an audio system when `synth`.
     fn module(synth: bool) -> Rc<Module> {
         let source = include_str!("fixtures/game.vs").replacen(
-            "import viso::math::Vec3F32;",
-            "import viso::math::Vec3F32;\nimport viso::game::{AudioProcess, AudioBlock};",
+            "import viso::math::Vec3F32\n",
+            "import viso::math::Vec3F32\nimport viso::game::{AudioProcess, AudioBlock}\n",
             1,
         );
         let source = if synth { source + SYNTH } else { source };

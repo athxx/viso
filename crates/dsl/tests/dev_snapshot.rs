@@ -43,7 +43,7 @@ fn card(states: &str, before: &str) -> String {
                     width: 200dp;
                     height: 300dp;
                     {before}
-                    Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }}
+                    Scroll {{ {SCROLLED} Text {{ {TALL} text: \"{{count}}\"; }} }}
                     TextInput {{ width: 100dp; height: 20dp; }}
                     Text {{ width: 100dp; height: 20dp; text: name; }}
                 }}
@@ -237,8 +237,8 @@ fn a_snapshot_for_the_disk_leaves_out_sensitive_states_and_secure_text() {
                 height: 300dp;
                 TextInput { width: 100dp; height: 20dp; secure: true; }
                 TextInput { width: 100dp; height: 20dp; }
-                Text { width: 100dp; height: 20dp; text: format(\"{} {}\", pin, token); }
-                Text { width: 100dp; height: 20dp; text: format(\"{}\", count); }
+                Text { width: 100dp; height: 20dp; text: \"{pin} {token}\"; }
+                Text { width: 100dp; height: 20dp; text: \"{count}\"; }
             }
         }
     }";
@@ -382,7 +382,7 @@ fn a_node_the_new_build_drops_reports_what_it_held_lost() {
     let new_source = format!(
         "component Card {{
             {states}
-            view {{ Column {{ width: 200dp; height: 300dp; Text {{ text: format(\"{{}}\", count); }} }} }}
+            view {{ Column {{ width: 200dp; height: 300dp; Text {{ text: \"{{count}}\"; }} }} }}
         }}"
     );
     let mut new = Live::mount(&new_source);
@@ -397,7 +397,7 @@ fn a_closure_a_state_holds_is_not_captured() {
     let source = "component Card {
         state count = 2;
         state pick: Fn(I64) -> I64 = |x| x + 1;
-        view { Column { width: 10dp; height: 10dp; Text { text: format(\"{}\", count); } } }
+        view { Column { width: 10dp; height: 10dp; Text { text: \"{count}\"; } } }
     }";
     let old = Live::mount(source);
     let snapshot = carried(old.capture());

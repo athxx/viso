@@ -56,7 +56,7 @@ export component Core {
     }
 
     action rename(name: String) {
-        label = format("{name}:{n}", name: name, n: count)
+        label = "{name}:{count}"
         emit named(label)
     }
 
@@ -102,7 +102,7 @@ export component Core {
         match n {
             0 => "zero"
             1 | 2 => "few"
-            _ => format("many {n}", n: n)
+            _ => "many {n}"
         }
     }
 
@@ -152,5 +152,5 @@ export component Core {
         i
     }
 
-    view { Text { text: format("{n}", n: total) } }
+    view { Text { text: "{total}" } }
 }

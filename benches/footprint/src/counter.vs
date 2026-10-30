@@ -5,7 +5,7 @@ export component Counter {
         Column {
             width: 420dp
             height: 96dp
-            Text { width: 420dp; height: 40dp; text: format("Count: {c}", c: count) }
+            Text { width: 420dp; height: 40dp; text: "Count: {count}" }
             Button {
                 width: 160dp
                 height: 40dp

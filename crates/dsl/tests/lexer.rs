@@ -382,6 +382,68 @@ fn identifier_tables_are_unicode_17() {
     );
 }
 
+#[test]
+fn a_string_with_holes_lexes_as_its_parts_and_the_holes_tokens() {
+    use SyntaxKind::*;
+    assert_eq!(
+        significant_pairs(r#""a {x} b {y.z()} c""#),
+        [
+            (StringStart, r#""a {"#),
+            (Ident, "x"),
+            (StringMiddle, "} b {"),
+            (Ident, "y"),
+            (Dot, "."),
+            (Ident, "z"),
+            (LParen, "("),
+            (RParen, ")"),
+            (StringEnd, r#"} c""#),
+        ]
+    );
+    // Braces in a hole pair up; a string in a hole has holes of its own.
+    assert_eq!(
+        significant_kinds(r#""{ P { x: 1 }.x } {"n{i}"}""#),
+        [
+            StringStart,
+            Ident,
+            LBrace,
+            Ident,
+            Colon,
+            IntLiteral,
+            RBrace,
+            Dot,
+            Ident,
+            StringMiddle,
+            StringStart,
+            Ident,
+            StringEnd,
+            StringEnd,
+        ]
+    );
+    // `{{` and `}}` are text; raw strings and chars have no holes.
+    assert_eq!(significant_kinds(r#""{{x}}""#), [StringLiteral]);
+    assert_eq!(significant_kinds(r#"r"{x}""#), [RawStringLiteral]);
+    assert_eq!(significant_kinds("'{'"), [CharLiteral]);
+    assert_eq!(significant_kinds(r#""{}""#), [StringStart, StringEnd]);
+}
+
+#[test]
+fn a_hole_left_open_ends_its_string_at_the_line() {
+    let toks = tokenize("\"a {x\nlet y");
+    let errors: Vec<_> = toks.iter().filter_map(|t| t.error).collect();
+    assert_eq!(errors, [LexError::UnterminatedString]);
+    // The next line lexes as code again.
+    assert!(significant_kinds("\"a {x\nlet y").ends_with(&[SyntaxKind::LetKw, SyntaxKind::Ident]));
+    let toks = tokenize("\"a {x");
+    assert_eq!(
+        toks.last().unwrap().error,
+        Some(LexError::UnterminatedString)
+    );
+    assert_eq!(
+        tokenize("\"a } b\"")[0].error,
+        Some(LexError::UnpairedBrace)
+    );
+}
+
 // --- Malformed-input recovery ----------------------------------------------
 
 #[test]

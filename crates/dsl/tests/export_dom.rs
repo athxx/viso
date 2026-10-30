@@ -48,7 +48,7 @@ export component Counter {
         Column {
             width: 320dp;
             gap: 16dp;
-            Text { width: 320dp; height: 40dp; text: format("Clicked {n} times", n: clicks); }
+            Text { width: 320dp; height: 40dp; text: "Clicked {clicks} times"; }
             Button {
                 width: 320dp;
                 height: 40dp;
@@ -186,7 +186,7 @@ export component App {
     state last = 0;
     view {
         Column {
-            Text { text: format("Picked {n}", n: last); }
+            Text { text: "Picked {last}"; }
             Island {
                 width: 200dp;
                 height: 100dp;

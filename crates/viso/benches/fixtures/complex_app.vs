@@ -7,7 +7,7 @@ component TaskRow {
             height: 28dp
             gap: 8dp
             CheckBox { width: 20dp; height: 20dp; bind checked <=> done }
-            Text { width: 200dp; height: 20dp; text: format("Task {n}", n: id) }
+            Text { width: 200dp; height: 20dp; text: "Task {id}" }
             Button { width: 64dp; height: 24dp; text: "Edit" }
         }
     }
@@ -54,7 +54,7 @@ export component Workspace {
                     }
                 }
             }
-            Text { width: 400dp; height: 20dp; text: format("Level {l}", l: level) }
+            Text { width: 400dp; height: 20dp; text: "Level {level}" }
         }
     }
 }

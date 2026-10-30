@@ -1736,7 +1736,7 @@ computed subtotal: Money = items.fold(Money::zero(), |sum, item| {
     return sum + item.price
 })
 
-computed label = format("{} items", items.length())
+computed label = "{items.length()} items"
 ```
 
 ---
@@ -2724,6 +2724,7 @@ for item in (Query { limit: 10 }.run()) key item.id {}
 
 ```ebnf
 primary_expression   = literal
+                     | interpolated_string
                      | path_expression
                      | self_expression
                      | tuple_expression
@@ -2744,6 +2745,10 @@ literal              = integer_literal
                      | "true"
                      | "false"
                      | "None" ;
+
+interpolated_string  = string_start, [ expression ],
+                       { string_middle, [ expression ] },
+                       string_end ;
 
 path_expression      = path ;
 self_expression      = "self" | "Self" ;
@@ -2844,7 +2849,7 @@ if_expression        = "if", head_expression, block,
 let label = if count == 1 {
     "1 item"
 } else {
-    format("{} items", count)
+    "{count} items"
 }
 ```
 
@@ -2903,7 +2908,7 @@ closure_parameter    = [ "mut" ], pattern,
 let doubled = items.map(|item| item.value * 2)
 
 let formatter = |value: I64| -> String {
-    format("Value: {}", value)
+    "Value: {value}"
 }
 
 start scheduler.after(250ms, move || {
@@ -4294,6 +4299,9 @@ IDENT
 INT_LITERAL
 FLOAT_LITERAL
 STRING_LITERAL
+STRING_START
+STRING_MIDDLE
+STRING_END
 CHAR_LITERAL
 COLOR_LITERAL
 UNIT_LITERAL
@@ -4302,7 +4310,7 @@ STRICT_KEYWORD
 END_OF_FILE
 ```
 
-`STRICT_KEYWORD` 指 §12.1、§12.2 中任一严格关键字 Token。上下文关键字（§12.3）由 Lexer 产生 `IDENT`；带引号的上下文关键字终结符（如 `"state"`）匹配文本相同的 `IDENT`，识别位置见 §12.4。Binding/声明位置使用 `IDENT`；Label 位置使用：
+`STRING_START`、`STRING_MIDDLE`、`STRING_END` 是含洞字符串的片段（§17）：`"…{`、`}…{` 与 `}…"`。`STRICT_KEYWORD` 指 §12.1、§12.2 中任一严格关键字 Token。上下文关键字（§12.3）由 Lexer 产生 `IDENT`；带引号的上下文关键字终结符（如 `"state"`）匹配文本相同的 `IDENT`，识别位置见 §12.4。Binding/声明位置使用 `IDENT`；Label 位置使用：
 
 ```ebnf
 Label
@@ -5115,6 +5123,7 @@ GenericCallArgs
 
 PrimaryExpression
     ::= Literal
+     |  InterpolatedString
      |  Path
      |  "self"
      |  "Self"
@@ -5126,6 +5135,9 @@ PrimaryExpression
      |  IfExpression
      |  MatchExpression
      |  ClosureExpression
+
+InterpolatedString
+    ::= STRING_START Expression? ( STRING_MIDDLE Expression? )* STRING_END
 
 Literal
     ::= INT_LITERAL
@@ -5451,6 +5463,7 @@ RecordPatternField
 | `PostfixSuffix`             | A.12  | `stable`   |
 | `GenericCallArgs`           | A.12  | `stable`   |
 | `PrimaryExpression`         | A.12  | `stable`   |
+| `InterpolatedString`        | A.12  | `stable`   |
 | `Literal`                   | A.12  | `stable`   |
 | `TupleExpression`           | A.12  | `stable`   |
 | `ListExpression`            | A.12  | `stable`   |

@@ -7,10 +7,13 @@ use super::super::ir::{
     BinaryOp, Const, DisplayKind, FuncId, Function, FunctionKind, Inst, Num, Reg, UnaryOp,
 };
 use super::{Frame, Lower, Lowerer, Place, assigns, num_of};
-use crate::ast::{AstNode, CallExpr, CastExpr, Expr, FieldExpr, PathExpr};
+use crate::ast::{
+    AstNode, CallExpr, CastExpr, Expr, FieldExpr, InterpolatedString, PathExpr, StringPart,
+    string_part_body,
+};
 use crate::hir::Ty;
 use crate::hir::infer::body::{child_of, emit_args};
-use crate::hir::infer::format::{Hole, Piece, template_literal, template_pieces};
+use crate::hir::infer::interpolation::string_literal;
 use crate::hir::infer::pattern::unescape;
 use crate::hir::infer::translate::{ArgPass, TrCall};
 use crate::hir::infer::{NativeCall, VariantInfo, VariantPayload, is_spread, record_spread};
@@ -137,6 +140,7 @@ impl Lowerer<'_, '_> {
         let node = e.syntax().clone();
         match node.kind() {
             SyntaxKind::LiteralExpr => self.literal(e),
+            SyntaxKind::InterpolatedString => self.interpolated(&node),
             SyntaxKind::PathExpr => self.path(&node),
             SyntaxKind::FieldExpr => self.field(&node),
             SyntaxKind::OptionalFieldExpr => self.optional_field(&node),
@@ -261,7 +265,7 @@ impl Lowerer<'_, '_> {
                 }
             }
             SyntaxKind::StringLiteral | SyntaxKind::RawStringLiteral => {
-                match template_literal(e)
+                match string_literal(e)
                     .and_then(|(text, raw)| if raw { Some(text) } else { unescape(&text) })
                 {
                     Some(text) => Const::Str(text),
@@ -697,9 +701,6 @@ impl Lowerer<'_, '_> {
         let head = segments
             .first()
             .and_then(|h| self.cx.resolution_at(h.text_range()));
-        if head.is_none() && segments.len() == 1 && segments[0].text() == "format" {
-            return self.format(node);
-        }
         let args = emit_args(node);
         if head.is_none() && segments.len() == 1 && segments[0].text() == "asset" {
             // The checker named the file; the value is its resource.
@@ -968,47 +969,30 @@ impl Lowerer<'_, '_> {
         Ok((task, args))
     }
 
-    /// `format(template, args..)`: the arguments evaluate in source order, each
-    /// non-`String` one is displayed, and the pieces concatenate.
-    fn format(&mut self, node: &SyntaxNode) -> Lower<Reg> {
-        let args = emit_args(node);
-        let Some((_, template)) = args.first() else {
-            return self.bail("`format` needs a template");
+    /// A string with holes: its text runs and each hole's value shown as text,
+    /// joined.
+    fn interpolated(&mut self, node: &SyntaxNode) -> Lower<Reg> {
+        let Some(string) = InterpolatedString::cast(node.clone()) else {
+            return self.bail("a malformed string");
         };
-        let Some(pieces) =
-            template_literal(template).and_then(|(text, raw)| template_pieces(&text, raw))
-        else {
-            return self.bail("a malformed `format` template");
-        };
-        let exprs: Vec<Expr> = args[1..].iter().map(|(_, e)| e.clone()).collect();
-        let regs = self.operands(&exprs)?;
-        let mut positional = Vec::new();
-        let mut named = Vec::new();
-        for ((label, e), reg) in args[1..].iter().zip(regs) {
-            let ty = self.ty(e)?;
-            let shown = self.display(reg, &ty)?;
-            match label {
-                Some(label) => {
-                    named.push((label.text().trim_start_matches("r#").to_string(), shown))
+        let mut parts = Vec::new();
+        for part in string.parts() {
+            match part {
+                StringPart::Text(token) => {
+                    let Some(text) = unescape(string_part_body(&token.text())) else {
+                        return self.bail("a malformed string");
+                    };
+                    if !text.is_empty() {
+                        parts.push(self.constant(Const::Str(text)));
+                    }
                 }
-                None => positional.push(shown),
+                StringPart::Hole(Some(value), _) => {
+                    let reg = self.expr(&value)?;
+                    let ty = self.ty(&value)?;
+                    parts.push(self.display(reg, &ty)?);
+                }
+                StringPart::Hole(None, _) => return self.bail("an empty hole"),
             }
-        }
-        let mut positional = positional.into_iter();
-        let mut parts = Vec::with_capacity(pieces.len());
-        for piece in pieces {
-            let reg = match piece {
-                Piece::Text(text) => self.constant(Const::Str(text)),
-                Piece::Hole(Hole::Positional) => match positional.next() {
-                    Some(reg) => reg,
-                    None => return self.bail("too few `format` arguments"),
-                },
-                Piece::Hole(Hole::Named(name)) => match named.iter().find(|(n, _)| *n == name) {
-                    Some((_, reg)) => *reg,
-                    None => return self.bail(format!("no `format` argument `{name}:`")),
-                },
-            };
-            parts.push(reg);
         }
         if let [only] = parts.as_slice() {
             return Ok(*only);

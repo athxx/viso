@@ -93,7 +93,7 @@ const STATES: [&str; 7] = ["label", "count", "a", "b", "extra", "first", "last"]
 fn component(view: &str) -> String {
     let states: String = STATES
         .iter()
-        .filter(|name| view.contains(&format!("\"{{}}\", {name})")))
+        .filter(|name| view.contains(&format!("{{{name}}}")))
         .map(|name| format!("state {name} = 0; "))
         .collect();
     format!("component T {{ {states}view {{ {view} }} }}")
@@ -171,7 +171,7 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
     // Mount a two-node tree, then reload a property-only edit. The structure is
     // unchanged, so every node must be reused in place (same NodeId) and every
     // reactive cell must keep its live value.
-    let (mut live, last_good) = mount("Row { Text { text: format(\"{}\", label); } }");
+    let (mut live, last_good) = mount("Row { Text { text: \"{label}\"; } }");
 
     let before = preorder(&live.store, live.root);
     assert_eq!(before.len(), 2, "Row + Text mounted");
@@ -189,7 +189,7 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
         let done = hot_reload(
             &mut rt,
             &last_good,
-            "Row { Text { text: format(\"{}\", label); color: #ff0000; } }",
+            "Row { Text { text: \"{label}\"; color: #ff0000; } }",
         )
         .expect("valid edit commits");
         live.root = rt.root;
@@ -212,7 +212,7 @@ fn valid_edit_atomically_patches_and_reuses_instances() {
 
 #[test]
 fn invalid_edit_keeps_last_good_field_for_field() {
-    let (mut live, last_good) = mount("Row { Text { text: format(\"{}\", label); } }");
+    let (mut live, last_good) = mount("Row { Text { text: \"{label}\"; } }");
 
     // Snapshot the live tree and the reactive cell before the failed reload.
     let before_tree = preorder(&live.store, live.root);
@@ -272,7 +272,7 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     // Re-typing the inner node rebuilds the tree: the kept scroll container
     // carries its offset, and the focus on the replaced node is lost.
     let (mut live, last_good) = mount(&format!(
-        "Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }}"
+        "Scroll {{ {SCROLLED} Text {{ {TALL} text: \"{{count}}\"; }} }}"
     ));
     lay_out(&mut live);
 
@@ -298,7 +298,7 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
     let done = reload(
         &mut live,
         &last_good,
-        &format!("Scroll {{ {SCROLLED} Button {{ {TALL} text: format(\"{{}}\", count); }} }}"),
+        &format!("Scroll {{ {SCROLLED} Button {{ {TALL} text: \"{{count}}\"; }} }}"),
     );
 
     assert_eq!(
@@ -327,7 +327,7 @@ fn structural_edit_migrates_state_and_reports_focus_and_scroll() {
 #[test]
 fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
     let (mut live, last_good) = mount(&format!(
-        "Column {{ Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }} }}"
+        "Column {{ Scroll {{ {SCROLLED} Text {{ {TALL} text: \"{{count}}\"; }} }} }}"
     ));
     lay_out(&mut live);
     let [_, scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
@@ -342,7 +342,7 @@ fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
         &mut live,
         &last_good,
         &format!(
-            "Column {{ Text {{ text: format(\"{{}}\", count); }} Scroll {{ {SCROLLED} Text {{ {TALL} text: format(\"{{}}\", count); }} }} }}"
+            "Column {{ Text {{ text: \"{{count}}\"; }} Scroll {{ {SCROLLED} Text {{ {TALL} text: \"{{count}}\"; }} }} }}"
         ),
     );
     let [_, _, scroll_node, text_node] = preorder(&live.store, live.root)[..] else {
@@ -365,7 +365,7 @@ fn focus_and_scroll_follow_their_nodes_past_an_inserted_sibling() {
     let done = reload(
         &mut live,
         &done.candidate,
-        "Column { Text { text: format(\"{}\", count); } }",
+        "Column { Text { text: \"{count}\"; } }",
     );
     assert!(done.report.focus_lost);
     assert_eq!(done.report.scroll_lost, 1);
@@ -381,7 +381,7 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
     // *same* type aligns by position, not by which one a human would call
     // "the same node" — a different test, not this one).
     let (mut live, last_good) =
-        mount("Column { Text { text: format(\"{}\", a); } Button { text: format(\"{}\", b); } }");
+        mount("Column { Text { text: \"{a}\"; } Button { text: \"{b}\"; } }");
     let [column, text, button] = preorder(&live.store, live.root)[..] else {
         panic!("Column + Text + Button mounted");
     };
@@ -389,7 +389,7 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
     let done = reload(
         &mut live,
         &last_good,
-        "Column { TextInput { } Text { text: format(\"{}\", a); } Button { text: format(\"{}\", b); } }",
+        "Column { TextInput { } Text { text: \"{a}\"; } Button { text: \"{b}\"; } }",
     );
 
     let [column_after, _, text_after, button_after] = preorder(&live.store, live.root)[..] else {
@@ -410,9 +410,8 @@ fn an_inserted_sibling_keeps_every_other_node_s_live_identity() {
 
 #[test]
 fn a_removed_sibling_keeps_the_rest_s_live_identity() {
-    let (mut live, last_good) = mount(
-        "Column { Text { text: format(\"{}\", a); } Button { text: format(\"{}\", b); } TextInput { } }",
-    );
+    let (mut live, last_good) =
+        mount("Column { Text { text: \"{a}\"; } Button { text: \"{b}\"; } TextInput { } }");
     let [column, text, button, input] = preorder(&live.store, live.root)[..] else {
         panic!("Column + Text + Button + TextInput mounted");
     };
@@ -420,7 +419,7 @@ fn a_removed_sibling_keeps_the_rest_s_live_identity() {
     let done = reload(
         &mut live,
         &last_good,
-        "Column { Text { text: format(\"{}\", a); } TextInput { } }",
+        "Column { Text { text: \"{a}\"; } TextInput { } }",
     );
 
     let [column_after, text_after, input_after] = preorder(&live.store, live.root)[..] else {
@@ -445,12 +444,12 @@ fn a_removed_sibling_keeps_the_rest_s_live_identity() {
 
 #[test]
 fn a_new_states_scoped_reset_names_its_own_key_not_a_kept_sibling() {
-    let (mut live, last_good) = mount("Row { Text { text: format(\"{}\", label); } }");
+    let (mut live, last_good) = mount("Row { Text { text: \"{label}\"; } }");
 
     let done = reload(
         &mut live,
         &last_good,
-        "Row { Text { text: format(\"{}\", label); } Text { text: format(\"{}\", extra); } }",
+        "Row { Text { text: \"{label}\"; } Text { text: \"{extra}\"; } }",
     );
 
     let extra = done
@@ -488,7 +487,7 @@ fn a_kept_text_input_keeps_its_identity_and_buffer_past_an_inserted_sibling() {
     let done = reload(
         &mut live,
         &last_good,
-        "Column { Text { text: format(\"{}\", label); } TextInput { width: 100dp; height: 20dp; } }",
+        "Column { Text { text: \"{label}\"; } TextInput { width: 100dp; height: 20dp; } }",
     );
     assert_eq!(done.report.scroll_lost, 0);
     let [_, _, same] = preorder(&live.store, live.root)[..] else {
@@ -572,7 +571,7 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
         let done = hot_reload(
             &mut rt,
             &empty_baseline(),
-            "Column { Text { text: format(\"{}\", first); } Text { text: format(\"{}\", last); } }",
+            "Column { Text { text: \"{first}\"; } Text { text: \"{last}\"; } }",
         )
         .expect("the outer content mounts");
         (done, rt.root.expect("the outer content has a root"))
@@ -594,7 +593,7 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
         let done = hot_reload(
             &mut rt,
             &empty_baseline(),
-            "Row { Text { text: format(\"{}\", label); } }",
+            "Row { Text { text: \"{label}\"; } }",
         )
         .expect("the view mounts");
         live.root = rt.root;
@@ -607,12 +606,8 @@ fn a_rebuild_replaces_only_the_views_subtree_in_place() {
     // A structural edit rebuilds the view.
     {
         let mut rt = live.runtime();
-        hot_reload(
-            &mut rt,
-            &last_good,
-            "Row { Button { text: format(\"{}\", label); } }",
-        )
-        .expect("the structural edit commits");
+        hot_reload(&mut rt, &last_good, "Row { Button { text: \"{label}\"; } }")
+            .expect("the structural edit commits");
         live.root = rt.root;
     }
     let rebuilt = live.root.unwrap();

@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn a_bound_property_becomes_an_edge_by_identity_not_name() {
         // The single node is index 0; its `text` binds to the `label` state.
-        let candidate = view_plan("Text { text: format(\"{}\", label); }");
+        let candidate = view_plan("Text { text: \"{label}\"; }");
         let pkg = emit_package(&candidate);
         assert_eq!(pkg.edges.len(), 1, "one static binding edge");
         let edge = pkg.edges[0];
@@ -644,7 +644,7 @@ mod tests {
     fn node_indices_are_the_binding_keys() {
         // A nested tree: the deep leaf's edge must reference its own pre-order index,
         // proving the emitter's numbering matches the binding IR's `NodeKey` walk.
-        let candidate = view_plan("Column { Row { Text { text: format(\"{}\", label); } } }");
+        let candidate = view_plan("Column { Row { Text { text: \"{label}\"; } } }");
         let pkg = emit_package(&candidate);
         // pre-order: Column(0) Row(1) Text(2).
         assert_eq!(pkg.nodes.len(), 3);

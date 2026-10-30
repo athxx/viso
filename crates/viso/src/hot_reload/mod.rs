@@ -3498,7 +3498,7 @@ mod tests {
 
     const COUNTER_STATES: &str = "state count = 0;\n    state enabled = true;";
     const COUNTER_CHILDREN: &str =
-        "Text { text: format(\"{}\", count); }\n            Text { visible: enabled; }";
+        "Text { text: \"{count}\"; }\n            Text { visible: enabled; }";
 
     #[test]
     fn insert_remove_reorder_and_a_scoped_reset_each_apply_without_disturbing_the_rest() {
@@ -3586,7 +3586,7 @@ mod tests {
             &mut counter_edits,
             &counter_source(
                 COUNTER_STATES,
-                "node first: Text { text: format(\"{}\", count); }\n            node second: Text { visible: enabled; }",
+                "node first: Text { text: \"{count}\"; }\n            node second: Text { visible: enabled; }",
             ),
         );
         let [_, _, named_second] = subtree(&windows[0].store, root)[..] else {
@@ -3594,7 +3594,7 @@ mod tests {
         };
         let named = counter_source(
             COUNTER_STATES,
-            "node second: Text { visible: enabled; }\n            node first: Text { text: format(\"{}\", count); }",
+            "node second: Text { visible: enabled; }\n            node first: Text { text: \"{count}\"; }",
         );
         accept_on(
             &mut session,
@@ -3620,7 +3620,7 @@ mod tests {
         //    is untouched, and the ACK names exactly the state that reset.
         let retyped = counter_source(
             "state count = 0;\n    state enabled: I64 = 0;",
-            "node second: Text { }\n            node first: Text { text: format(\"{}\", count); }",
+            "node second: Text { }\n            node first: Text { text: \"{count}\"; }",
         );
         let ack = accept_on(
             &mut session,

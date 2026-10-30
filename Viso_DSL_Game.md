@@ -649,7 +649,7 @@ export component GameScreen {
 
             Column {
                 Text {
-                    text: format("Score: {}", game.score())
+                    text: "Score: {game.score()}"
                 }
 
                 if game.is_paused() preserve "pause-menu" {

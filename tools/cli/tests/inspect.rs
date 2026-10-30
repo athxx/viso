@@ -446,7 +446,7 @@ fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
             (
                 "src/app.vs",
                 b"export component App {\n    state taps = 0;\n    view {\n        Column {\n            \
-                  node count: Text { width: 160dp; height: 20dp; text: format(\"{t} taps\", t: taps); }\n            \
+                  node count: Text { width: 160dp; height: 20dp; text: \"{taps} taps\"; }\n            \
                   node tap: Button { width: 120dp; height: 40dp; background: #2266ff; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
             ),
             (

@@ -122,7 +122,7 @@ fn a_headless_run_is_profiled_frame_by_frame() {
             (
                 "src/app.vs",
                 b"export component App {\n    state taps = 0;\n    view {\n        Column {\n            \
-                  Text { text: format(\"{} taps\", taps); }\n            \
+                  Text { text: \"{taps} taps\"; }\n            \
                   Button { width: 120dp; height: 40dp; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
             ),
             (

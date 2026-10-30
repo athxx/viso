@@ -236,7 +236,7 @@ component Counter {
     view {
         Column {
             width: 120dp;
-            Text { text: format("{}", count); }
+            Text { text: "{count}"; }
             Text { visible: enabled; }
         }
     }
@@ -248,7 +248,7 @@ component Counter {
 fn todo(extra: &str, edited: bool) -> String {
     let header = if edited {
         "Text { width: 20dp; height: 20dp; on click { show = !show; } }\n\
-         Text { width: 40dp; height: 20dp; text: format(\"{}\", done); }"
+         Text { width: 40dp; height: 20dp; text: \"{done}\"; }"
     } else {
         "Text { width: 20dp; height: 20dp; on click { show = !show; } }"
     };

@@ -4,7 +4,7 @@
 //! video (`E3713` otherwise).
 
 use super::InferCx;
-use super::format::template_literal;
+use super::interpolation::string_literal;
 use super::pattern::unescape;
 use crate::assets::{AssetIssue, AssetUse};
 use crate::ast::{AstNode, Expr};
@@ -18,7 +18,7 @@ pub(crate) use crate::assets::ASSET_ERROR as ASSET;
 
 /// The path `asset(…)`'s argument spells, when it is a string literal.
 pub(crate) fn asset_path(arg: &Expr) -> Option<String> {
-    let (body, raw) = template_literal(arg)?;
+    let (body, raw) = string_literal(arg)?;
     if raw { Some(body) } else { unescape(&body) }
 }
 

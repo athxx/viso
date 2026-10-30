@@ -175,6 +175,7 @@ fn ends_item(kind: SyntaxKind) -> bool {
             | K::FloatLiteral
             | K::UnitLiteral
             | K::StringLiteral
+            | K::StringEnd
             | K::RawStringLiteral
             | K::CharLiteral
             | K::ColorLiteral

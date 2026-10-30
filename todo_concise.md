@@ -48,16 +48,18 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C2 — String interpolation (§17)
 
-- [ ] Lexer: `StringStart`/`StringMiddle`/`StringEnd` with a delimiter stack; `{{` `}}`;
+- [x] Lexer: `StringStart`/`StringMiddle`/`StringEnd` with a delimiter stack; `{{` `}}`;
       raw strings untouched; highlighter kinds.
-- [ ] Parser/CST/AST: an interpolated string node with literal parts and hole expressions.
-- [ ] HIR: holes typed against `Display` (`E2108` for empty holes and non-`Display`);
+- [x] Parser/CST/AST: an interpolated string node with literal parts and hole expressions.
+- [x] HIR: holes typed against `Display` (`E2108` for empty holes and non-`Display`);
       lowering to the same code `format` produced; constant strings unchanged.
-- [ ] Remove the `format` builtin; `E2108` meaning updated; `E3705` on interpolation.
-- [ ] Literal-only positions (import, attribute, `asset`, `preserve`, `MessageKey`) reject
-      holes with their own codes.
-- [ ] Formatter, LSP (semantic tokens, hover/definition inside holes), hot reload.
-- [ ] Migrate every `format(` use; text-slot fix offers `"{x}"`.
+- [x] Remove the `format` builtin; `E2108` meaning updated; `E3705` on interpolation.
+- [x] Literal-only positions (import, attribute, `asset`, `preserve`, `MessageKey`) reject
+      holes with their own codes (`E3301` for `preserve`, `E3713` for `asset`, ...).
+- [x] Formatter (a string with holes kept as written), LSP (definition inside holes;
+      `StringEnd` ends an item), code-editor highlighting of holes, hot reload,
+      incremental re-lex restarting only outside strings.
+- [x] Migrate every `format(` use; text-slot fix offers `"{x}"`.
 
 ## C3 — Primary property (§50.1)
 

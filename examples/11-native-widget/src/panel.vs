@@ -14,7 +14,7 @@ export component Panel {
                 corner_radius: 6dp
                 on pressed(at) { presses += 1 }
             }
-            Text { width: 200dp; height: 24dp; text: format("{n}", n: presses) }
+            Text { width: 200dp; height: 24dp; text: "{presses}" }
         }
     }
 }

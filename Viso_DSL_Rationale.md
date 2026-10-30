@@ -36,7 +36,7 @@ import viso::widgets::{Window, Column, Text, Button}
 
 export component Counter {
     state count = 0
-    computed label = format("Count: {}", count)
+    computed label = "Count: {count}"
 
     view {
         Window {
@@ -61,12 +61,12 @@ export component Counter {
 
 ### 1.2 简洁性修订
 
-一次以真实 authoring 为对象的评估指出，1.0 草案的清晰度规则把书写成本推得过高：每条属性都要分号，`Text { text: "x"; }` 与 `format("{}", x)` 让最常见的两行代码变长，Shader Brush 每次都要重复同一段 Vertex 与三个保留成员，复用机制有 Component、Slot/Fill、Template、Part 四种，与“一个概念一种写法”自相矛盾。修订按“性能、资源、效果、干净、简洁、易用、灵活”的次序取舍，结论如下：
+一次以真实 authoring 为对象的评估指出，1.0 草案的清晰度规则把书写成本推得过高：每条属性都要分号，`Text { text: "x"; }` 与 `"{x}"` 让最常见的两行代码变长，Shader Brush 每次都要重复同一段 Vertex 与三个保留成员，复用机制有 Component、Slot/Fill、Template、Part 四种，与“一个概念一种写法”自相矛盾。修订按“性能、资源、效果、干净、简洁、易用、灵活”的次序取舍，结论如下：
 
 | 问题 | 修订 | 为什么这样选 |
 | ---- | ---- | ------------ |
 | 每条都要 `;` | 换行结束完整条目，同一行多个条目用 `;` 分隔；`( )`、`[ ]` 内换行是空白；行首为二元/后缀 Token 或 `else` 时续行（§14） | 规则只看换行前的条目是否完整与下一行的首 Token，Parser 无需回溯、增量重解析仍以条目为单位；Go、Swift、Kotlin 证明了这种规则对人和工具都可预测。`;` 降为纯分隔符，不再区分“语句”与“Tail”，Unit 上下文丢弃最后一个表达式的值，消除了 Rust 式“多一个分号就改变类型”的陷阱 |
-| `format("{}", x)` | 字符串插值 `"Count: {count}"`，`{{`/`}}` 转义，删除 `format`（§17） | 插值在词法上是独立的 Token 序列，洞内是普通 Expression，编辑器高亮、跳转、补全直接可用；编译期即知模板与洞的类型，生成的代码与 `format` 相同；本地化仍走 `tr`，Localizable Property 上带字面文字的插值照旧报 `E3705` |
+| `"{x}"` | 字符串插值 `"Count: {count}"`，`{{`/`}}` 转义，删除 `format`（§17） | 插值在词法上是独立的 Token 序列，洞内是普通 Expression，编辑器高亮、跳转、补全直接可用；编译期即知模板与洞的类型，生成的代码与 `format` 相同；本地化仍走 `tr`，Localizable Property 上带字面文字的插值照旧报 `E3705` |
 | `Text { text: "x"; }` | 主属性：Widget Schema 或 Component 至多一个 `@primary` 属性，写作 `Text("x")`、`Button("Save") { .. }`，且只能这样写（U2） | 一个节点最常设置的那个值占据最短的位置，Schema 决定哪个是主属性，因此仍是唯一写法；它只是一次单向 Property Binding，失效类别、诊断与热重载都不变 |
 | `align: Align::center`、`width: Sizing::fill {}` | Property 与 Record 字段的期望类型是 Enum 时可写裸 Variant：`align: center`、`width: fill`；与作用域中的值同名时报歧义（U1.3） | 期望类型已知，重复类型名只是噪音；歧义是编译错误而不是静默遮蔽，读者不需要猜 |
 | 示例里写死宽高 | 容器与叶节点默认 `fit`，View 根节点 `fill`，代码与 U3.1 对齐；示例只在设计需要时写尺寸 | `fit` 是唯一不依赖父节点就能预测的默认值；根节点占满窗口符合每个应用的第一需求 |

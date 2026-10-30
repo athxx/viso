@@ -363,8 +363,8 @@ export component Pulsed {
                     faded = match e.target { Animate::opacity(_) => e.finished, _ => faded };
                 }
             }
-            Text { text: format("scaled={}", scaled); }
-            Text { text: format("faded={}", faded); }
+            Text { text: "scaled={scaled}"; }
+            Text { text: "faded={faded}"; }
         }
     }
 }
@@ -501,8 +501,8 @@ export component Tapped {
                 on tap { taps += 1; }
                 on double_tap(event) { doubles += 1; }
             }
-            Text { text: format("taps={}", taps); }
-            Text { text: format("doubles={}", doubles); }
+            Text { text: "taps={taps}"; }
+            Text { text: "doubles={doubles}"; }
         }
     }
 }
@@ -541,8 +541,8 @@ export component Swiped {
                 on swipe(event) { lefts += match event.direction { SwipeDirection::left => 1, _ => 0 }; }
                 on drag_end(event) { ends += 1; }
             }
-            Text { text: format("lefts={}", lefts); }
-            Text { text: format("ends={}", ends); }
+            Text { text: "lefts={lefts}"; }
+            Text { text: "ends={ends}"; }
         }
     }
 }
@@ -581,8 +581,8 @@ export component Pinched {
                 on pinch_move(event) { zoom = event.scale; }
                 on pinch_end(event) { ends += 1; }
             }
-            Text { text: format("zoom={}", zoom); }
-            Text { text: format("ends={}", ends); }
+            Text { text: "zoom={zoom}"; }
+            Text { text: "ends={ends}"; }
         }
     }
 }
@@ -702,7 +702,7 @@ export component Inbox {
                     Button { width: 70dp; height: 40dp; text: "Delete"; on click { deleted += 10; } }
                 }
             }
-            Text { text: format("deleted={}", deleted); }
+            Text { text: "deleted={deleted}"; }
         }
     }
 }
@@ -756,7 +756,7 @@ export component Page {
     view {
         Column {
             Button { text: "Open"; on click { shown = true; } }
-            Text { text: format("rest={} shown={} asks={}.", rest, shown, asks); }
+            Text { text: "rest={rest} shown={shown} asks={asks}."; }
             Sheet {
                 bind open <=> shown;
                 bind detent <=> rest;
@@ -823,7 +823,7 @@ export component Groceries {
                 Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move eggs"; } }
                 Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move bread"; } }
             }
-            Text { text: format("moved={}", moved); }
+            Text { text: "moved={moved}"; }
         }
     }
 }
@@ -1147,7 +1147,7 @@ export component Counter {
     state count = 0;
     view {
         Column {
-            Text { width: 100dp; height: 20dp; text: format("{}", count); }
+            Text { width: 100dp; height: 20dp; text: "{count}"; }
             Button {
                 width: 100dp;
                 height: 32dp;
@@ -1169,7 +1169,7 @@ fn static_refuses_what_changes_at_its_place() {
     assert_eq!(
         needs,
         [
-            (Need::Dynamic, "format(\"{}\", count)"),
+            (Need::Dynamic, "\"{count}\""),
             (Need::Dynamic, "on click { count += 1; }"),
         ],
         "{findings:#?}"
@@ -2002,7 +2002,7 @@ export component Board {
                 on drop_enter(e) { enters += 1; }
                 on drop(e) { taken = e.text; kind = e.kind; }
             }
-            Text { text: format("taken={} kind={} enters={} ended={}", taken, kind, enters, ended == Some(DropOperation::copy)); }
+            Text { text: "taken={taken} kind={kind} enters={enters} ended={ended == Some(DropOperation::copy)}"; }
         }
     }
 }

@@ -256,7 +256,7 @@ impl IncrementalParse {
         // Re-lex the unit; it must end exactly on the shifted old end boundary.
         let delta = edit.insert.len() as i64 - edit.range.len().to_u32() as i64;
         let new_end = shift(old_range.end(), delta);
-        let mut lexer = Lexer::resume(new_source, old_range.start(), LexState);
+        let mut lexer = Lexer::resume(new_source, old_range.start(), LexState::default());
         let mut lexed = Vec::new();
         loop {
             let token = lexer.next_token();
@@ -267,6 +267,10 @@ impl IncrementalParse {
             if token.range.end() == new_end {
                 break;
             }
+        }
+        // A string the edit left open would lex what follows differently.
+        if !lexer.state().is_empty() {
+            return None;
         }
 
         // Everything the parse had inspected when the unit opened must precede

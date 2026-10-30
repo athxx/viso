@@ -31,7 +31,7 @@ fn small(insert: &str) -> String {
     action bump() {{ count += 1; }}
     view {{
         Column {{
-            Text {{ text: format("{{l}}: {{n}}", l: label, n: count); on click {{ bump(); }} }}
+            Text {{ text: "{{label}}: {{count}}"; on click {{ bump(); }} }}
             Text {{ text: "hint"; }}
 {insert}        }}
     }}
@@ -52,7 +52,7 @@ fn large(edited: Option<usize>) -> String {
     action tap() {{ taps += 1; }}
     view {{
         Row {{
-            Text {{ text: format("card {i}: {{n}}", n: taps); on click {{ tap(); }} }}
+            Text {{ text: "card {i}: {{taps}}"; on click {{ tap(); }} }}
 {insert}        }}
     }}
 }}

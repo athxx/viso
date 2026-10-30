@@ -1435,7 +1435,7 @@ component Badge {
     fn a_headerless_file_compiles_its_only_component() {
         let src = "component Counter {
   state count = 3;
-  view { Text { text: format(\"{}\", count); } }\n}\n";
+  view { Text { text: \"{count}\"; } }\n}\n";
         let compiled = compile_file(src, &origin(&["counter"]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
         let component = compiled.component.as_ref().unwrap();
@@ -1458,7 +1458,7 @@ component Badge {
   computed sum: I64 = a + total();
   computed twice: I64 = sum * 2;
   fn total() -> I64 { b }
-  view { Text { text: format(\"{}\", twice); } Text { text: format(\"{}\", c); } }\n}\n";
+  view { Text { text: \"{twice}\"; } Text { text: \"{c}\"; } }\n}\n";
         let compiled = compile_file(src, &origin(&[]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
         let names = |node: u32| {

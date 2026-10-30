@@ -39,8 +39,14 @@ pub enum SyntaxKind {
     FloatLiteral,
     /// A numeric body immediately followed by a unit suffix or `%`.
     UnitLiteral,
-    /// `"..."` string with escapes.
+    /// `"..."` string with escapes and no holes.
     StringLiteral,
+    /// The start of a string with holes, up to and including the first hole's `{`.
+    StringStart,
+    /// A string's text between two holes, from a hole's `}` to the next's `{`.
+    StringMiddle,
+    /// The end of a string with holes, from the last hole's `}` to the `"`.
+    StringEnd,
     /// `r"..."` / `r#"..."#` raw string.
     RawStringLiteral,
     /// `'c'` character literal.
@@ -512,6 +518,9 @@ pub enum SyntaxKind {
     // Expressions.
     /// A literal expression (int/float/string/color/bool/None/…).
     LiteralExpr,
+    /// A string with holes: `StringStart`, then each hole's expression before a
+    /// `StringMiddle` or the closing `StringEnd`.
+    InterpolatedString,
     /// A path expression `Path` / `self` / `Self`.
     PathExpr,
     /// A binary operator expression `lhs op rhs`.
@@ -653,6 +662,9 @@ impl SyntaxKind {
             Self::FloatLiteral => "FloatLiteral",
             Self::UnitLiteral => "UnitLiteral",
             Self::StringLiteral => "StringLiteral",
+            Self::StringStart => "StringStart",
+            Self::StringMiddle => "StringMiddle",
+            Self::StringEnd => "StringEnd",
             Self::RawStringLiteral => "RawStringLiteral",
             Self::CharLiteral => "CharLiteral",
             Self::ColorLiteral => "ColorLiteral",
@@ -912,6 +924,7 @@ impl SyntaxKind {
             Self::IfStmt => "IfStmt",
             Self::MatchStmt => "MatchStmt",
             Self::LiteralExpr => "LiteralExpr",
+            Self::InterpolatedString => "InterpolatedString",
             Self::PathExpr => "PathExpr",
             Self::BinaryExpr => "BinaryExpr",
             Self::UnaryExpr => "UnaryExpr",

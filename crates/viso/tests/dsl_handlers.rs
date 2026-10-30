@@ -58,7 +58,7 @@ viso::component! {
                 Text {
                     width: 100dp;
                     height: 50dp;
-                    text: format("{} taps", count);
+                    text: "{count} taps";
                     on click { count += 1; }
                 }
             }

@@ -424,7 +424,7 @@ mod tests {
             )
             .expect("compiles")
         };
-        let a = view("Text { text: format(\"{}\", count); }");
+        let a = view("Text { text: \"{count}\"; }");
         let b = view("Column { Text { visible: count > 0; } }");
         assert_eq!(
             a.symbol_for_name("count"),

@@ -342,7 +342,7 @@ State Write 不立即触发 Render；只记录 Write Set，提交阶段统一失
 ## 119. Computed Lowering
 
 ```viso
-computed label: String = format("Count: {}", count)
+computed label: String = "Count: {count}"
 ```
 
 Lower：

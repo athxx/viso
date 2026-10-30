@@ -3683,23 +3683,15 @@ mod tests {
     }
 
     #[test]
-    fn format_templates_are_checked() {
-        assert_clean("fn f(n: I64) -> String { format(\"{} of {total}\", n, total: 3) }");
-        assert_eq!(
-            codes("fn f(n: I64) -> String { format(\"{} {}\", n) }"),
-            ["E2108"]
-        );
-        assert_eq!(
-            codes("fn f(n: I64) -> String { format(\"{x}\", n) }"),
-            ["E2108", "E2108"]
-        );
+    fn a_string_hole_takes_a_displayable_value() {
+        assert_clean("fn f(n: I64) -> String { \"{n} of {n * 2} {{x}}\" }");
+        assert_eq!(codes("fn f(n: I64) -> String { \"{n} {}\" }"), ["E2108"]);
+        assert_eq!(codes("fn f(n: I64) -> String { \"{[n]}\" }"), ["E2108"]);
     }
 
     #[test]
     fn a_text_property_takes_only_a_string() {
-        assert_clean(
-            "component C {\n  state n = 0\n  view { Text { text: format(\"{}\", n); } }\n}",
-        );
+        assert_clean("component C {\n  state n = 0\n  view { Text { text: \"{n}\" } }\n}");
         let src = "component C {\n  state n = 0\n  view { Text { text: n; } }\n}";
         let pkg = lower_src(src);
         let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
@@ -3707,12 +3699,12 @@ mod tests {
         let fix = pkg.diagnostics[0]
             .fixes
             .first()
-            .expect("a wrap-in-format fix");
+            .expect("a show-in-a-string fix");
         assert_eq!(
             fix.applicability,
             crate::diag::Applicability::MachineApplicable
         );
-        assert_eq!(fix.edits[0].replacement, "format(\"{}\", n)");
+        assert_eq!(fix.edits[0].replacement, "\"{n}\"");
         assert_eq!(&src[fix.edits[0].range.as_usize()], "n");
 
         let decls = "record P { x: I64; }\n";
@@ -3721,12 +3713,10 @@ mod tests {
         ));
         assert!(
             pkg.diagnostics.iter().all(|d| d.fixes.is_empty()),
-            "a record has no `Display`, so no format fix is offered"
+            "a record has no `Display`, so no fix is offered"
         );
         assert_eq!(
-            self::codes(&format!(
-                "{decls}fn f(p: P) -> String {{ format(\"{{}}\", p) }}"
-            )),
+            self::codes(&format!("{decls}fn f(p: P) -> String {{ \"{{p}}\" }}")),
             ["E2108"]
         );
     }

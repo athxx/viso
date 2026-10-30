@@ -63,7 +63,7 @@ component Counter {
         emit changed(count);
     }
 
-    view { Text { text: format("{n}", n: doubled); } }
+    view { Text { text: "{doubled}"; } }
 }
 "#;
 
@@ -298,7 +298,7 @@ component C {
         match n {
             0 => "zero",
             1 | 2 => "few",
-            _ => format("many {n}", n: n),
+            _ => "many {n}",
         }
     }
 
@@ -349,7 +349,7 @@ component C {
         point = Point { x: point.y, ..point };
     }
 
-    view { Text { text: format("{x}", x: point.x); } }
+    view { Text { text: "{point.x}"; } }
 }
 "#,
         "C",
@@ -789,7 +789,7 @@ component M {
         a += items[5] + x;
     }
 
-    view { Text { text: format("{n}", n: total); } }
+    view { Text { text: "{total}"; } }
 }
 "#;
 
@@ -858,7 +858,7 @@ component C {
     state a = 1;
     computed x: I64 = a + again();
     fn again() -> I64 { x }
-    view { Text { text: format("{n}", n: x); } }
+    view { Text { text: "{x}"; } }
 }
 "#,
         "C",

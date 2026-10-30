@@ -29,9 +29,9 @@ pub(crate) mod asset;
 pub(crate) mod body;
 mod carry;
 mod event;
-pub(crate) mod format;
 pub(crate) mod game;
 mod generic;
+pub(crate) mod interpolation;
 mod lens;
 pub(crate) mod list;
 mod native;
@@ -435,6 +435,10 @@ impl<'a> InferCx<'a> {
         }
         let ty = match node.kind() {
             SyntaxKind::LiteralExpr => self.infer_literal(node, expected),
+            SyntaxKind::InterpolatedString => {
+                let ty = self.infer_interpolated(node);
+                self.check_against(ty, expected, node)
+            }
             SyntaxKind::PathExpr => {
                 let ty = self.infer_path(node, expected);
                 self.check_against(ty, expected, node)
@@ -659,8 +663,7 @@ impl<'a> InferCx<'a> {
 
     /// Types a call: resolves the callee's signature, then checks each argument against
     /// its parameter type (widening allowed, `E2102`/`E2103` otherwise) and returns the
-    /// declared return type. `Some`/`Ok`/`Err` construct from the expected type, and
-    /// `format` is checked against its template.
+    /// declared return type. `Some`/`Ok`/`Err` construct from the expected type.
     fn infer_call(&mut self, node: &SyntaxNode, expected: Option<&Ty>) -> Ty {
         let Some(call) = CallExpr::cast(node.clone()) else {
             return Ty::Unknown;
@@ -680,10 +683,6 @@ impl<'a> InferCx<'a> {
             .and_then(|h| self.refs.get(&h.text_range()).copied());
 
         if head.is_none() && !segments.is_empty() {
-            if segments.len() == 1 && segments[0].text() == "format" {
-                let ty = self.check_format(node);
-                return self.check_against(ty, expected, node);
-            }
             if segments.len() == 1 && segments[0].text() == "asset" {
                 let ty = self.check_asset(&args, node);
                 return self.check_against(ty, expected, node);
