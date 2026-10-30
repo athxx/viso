@@ -49,7 +49,8 @@ pub struct PointerSample {
     pub y: f32,
     /// Normalized contact pressure in `0.0..=1.0`.
     pub pressure: f32,
-    /// Buttons currently held, as a raw bitmask (matches the UI-tier mask).
+    /// Buttons held, as a raw bitmask (matches the UI-tier mask); on an
+    /// `Up`, the ones the release let go (a lifting contact's primary).
     pub buttons: u8,
     /// Keyboard modifier state at the time of the sample.
     pub modifiers: Modifiers,

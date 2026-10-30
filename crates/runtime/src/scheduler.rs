@@ -17,8 +17,8 @@ use std::time::Duration;
 use viso_platform::Instant;
 
 use viso_platform::{
-    AppHandler, ControlFlow, GamepadEvent, Modifiers as RawModifiers, PlatformApp, RawEvent,
-    RawGesture, RawPointer, RawScroll, WindowId,
+    AppHandler, ControlFlow, GamepadEvent, Modifiers as RawModifiers, PlatformApp, PointerButtons,
+    PointerId, PointerKind, RawEvent, RawGesture, RawPointer, RawScroll, WindowId,
 };
 
 use crate::clock::{FrameClock, WallClock};
@@ -60,6 +60,8 @@ struct Loop<D: FrameDriver, C: FrameClock> {
     last_frame: Option<Instant>,
     /// What a gamepad poll reported, kept to reuse its storage.
     gamepads: Vec<GamepadEvent>,
+    /// The buttons each pointer holding any was last seen with.
+    held: Vec<(WindowId, PointerId, u8)>,
 }
 
 impl<D: FrameDriver> Scheduler<D, WallClock> {
@@ -85,6 +87,7 @@ impl<D: FrameDriver, C: FrameClock> Scheduler<D, C> {
                 clock,
                 last_frame: None,
                 gamepads: Vec::new(),
+                held: Vec::new(),
             },
         }
     }
@@ -440,7 +443,11 @@ impl<D: FrameDriver, C: FrameClock> Loop<D, C> {
                     .window(p.window)
                     .map(|w| w.scale_factor())
                     .unwrap_or(1.0) as f32;
-                let sample = normalize_pointer(p, scale);
+                let buttons = released_or_held(&mut self.held, &p);
+                let sample = PointerSample {
+                    buttons,
+                    ..normalize_pointer(p, scale)
+                };
                 self.driver
                     .on_input(InputSample::Pointer(sample), self.clock.peek());
                 self.reasons.add(RedrawReason::InputDirty);
@@ -712,6 +719,38 @@ fn normalize_pointer(p: RawPointer, scale: f32) -> PointerSample {
         modifiers: normalize_modifiers(p.modifiers),
         phase,
     }
+}
+
+/// The buttons of `p` as the UI takes them: the ones held, and on an `Up`
+/// the ones the release let go, whether the backend reported the buttons
+/// still held after it (as the browser and Windows do) or the one released
+/// (as macOS does). `held` keeps what each pointer holds between samples.
+fn released_or_held(held: &mut Vec<(WindowId, PointerId, u8)>, p: &RawPointer) -> u8 {
+    use viso_platform::PointerPhase as RawPhase;
+    let slot = held
+        .iter()
+        .position(|&(w, id, _)| w == p.window && id == p.pointer);
+    let before = slot.map_or(0, |i| held[i].2);
+    let now = p.buttons.0;
+    let (after, reported) = match p.phase {
+        RawPhase::Down | RawPhase::Moved => (now, now),
+        RawPhase::Up if before & !now != 0 => (now, before & !now),
+        RawPhase::Up if now != 0 => (before & !now, now),
+        // A contact lifting reports nothing held; its press was its contact.
+        RawPhase::Up if p.kind != PointerKind::Mouse => (0, PointerButtons::PRIMARY.0),
+        RawPhase::Up => (0, 0),
+        RawPhase::Cancel => (0, now),
+        RawPhase::Left => (before, now),
+    };
+    match (slot, after) {
+        (Some(i), 0) => {
+            held.swap_remove(i);
+        }
+        (Some(i), _) => held[i].2 = after,
+        (None, 0) => {}
+        (None, _) => held.push((p.window, p.pointer, after)),
+    }
+    reported
 }
 
 /// Convert a raw scroll sample (logical points) into the runtime-tier
@@ -1111,6 +1150,61 @@ mod tests {
             RawModifiers::default(),
             viso_platform::PointerPhase::Down,
         ))
+    }
+
+    #[test]
+    fn a_release_reaches_the_ui_as_the_buttons_it_let_go() {
+        use viso_platform::PointerButtons as B;
+        use viso_platform::PointerPhase as P;
+        let mouse = |buttons, phase| {
+            RawPointer::mouse(
+                WindowId(1),
+                4.0,
+                4.0,
+                buttons,
+                RawModifiers::default(),
+                phase,
+            )
+        };
+        let mut held = Vec::new();
+        let mut run = |samples: &[RawPointer]| -> Vec<u8> {
+            samples
+                .iter()
+                .map(|p| released_or_held(&mut held, p))
+                .collect()
+        };
+        let both = B(B::PRIMARY.0 | B::SECONDARY.0);
+        // The buttons still held after it, as a browser reports them.
+        assert_eq!(
+            run(&[
+                mouse(B::PRIMARY, P::Down),
+                mouse(both, P::Down),
+                mouse(B::PRIMARY, P::Up),
+                mouse(B::NONE, P::Up),
+            ]),
+            [1, 3, 2, 1]
+        );
+        // The one released, as macOS reports it.
+        assert_eq!(
+            run(&[
+                mouse(B::PRIMARY, P::Down),
+                mouse(B::PRIMARY, P::Moved),
+                mouse(B::PRIMARY, P::Up),
+                mouse(B::NONE, P::Moved),
+            ]),
+            [1, 1, 1, 0]
+        );
+        // A finger lifting reports nothing held.
+        let finger = |buttons, phase| RawPointer {
+            kind: PointerKind::Touch,
+            pointer: PointerId(7),
+            ..mouse(buttons, phase)
+        };
+        assert_eq!(
+            run(&[finger(B::PRIMARY, P::Down), finger(B::NONE, P::Up)]),
+            [1, 1]
+        );
+        assert!(held.is_empty(), "nothing is held after every release");
     }
 
     #[test]

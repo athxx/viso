@@ -68,6 +68,7 @@ pub struct PointerEvent {
     pub x: f32,
     pub y: f32,
     pub phase: PointerPhase,
+    /// The buttons held; on an `Up`, the ones the release let go.
     pub buttons: PointerButtons,
     pub modifiers: Modifiers,
 }

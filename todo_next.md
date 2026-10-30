@@ -1388,6 +1388,11 @@ output, a live macOS session) is listed with the device runs of N8.
   can measure it; when that frame's layout then gives the run a width it wraps at, the
   unconstrained lines are not drawn and the last good ones draw until the wrapped ones land
   (`text_reflow`: 474 px in a 180 px box before, never past it now).
+- [x] A click on a canvas page's button never fired its `on_click` in Chrome. The widgets
+  take an `Up` to carry the buttons it let go, as macOS and the headless tapes report it; the
+  browser (and Windows, Wayland, a lifting touch) reports the buttons still held. The runtime
+  now tracks each pointer's buttons and hands the UI the released ones either way (verified
+  over CDP: the press reaches `on_click`).
 - [ ] Per-target availability of natives, and the capability table rows it gives; lands with the
   first native missing on some target (`todo_cli.md` C1.5, C4.4).
 - [x] A pixel golden of the frame-profile HUD (`todo_cli.md` C6). `the_hud_draws_as_its_golden`

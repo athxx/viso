@@ -176,7 +176,9 @@ pub struct RawPointer {
     /// sensing report `0.5` while a button/contact is down and `0.0` otherwise.
     pub pressure: f32,
     /// Buttons currently held. A touch or pen contact reports
-    /// [`PointerButtons::PRIMARY`] while down.
+    /// [`PointerButtons::PRIMARY`] while down. On an `Up` a backend may
+    /// report the buttons still held after it or the one released; the
+    /// runtime hands the UI the ones released either way.
     pub buttons: PointerButtons,
     pub modifiers: Modifiers,
     /// What kind of sample this is.
