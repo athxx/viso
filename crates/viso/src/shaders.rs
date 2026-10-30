@@ -79,9 +79,6 @@ mod tests {
 
     const FILL: &str = r#"
 shader Fill {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance color: ColorLinear;
     vertex(vertex_id: U32) -> VertexOutput {
         let unit = quad_vertex(vertex_id);

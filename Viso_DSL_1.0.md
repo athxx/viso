@@ -4088,33 +4088,18 @@ Backend 不支持动态 Loop 时，Compiler 可以在限制内展开或拒绝，
 
 ```viso
 export shader RoundedRect {
-    uniform viewport_size: Vec2F32
-    instance rect_pos: Vec2F32
-    instance rect_size: Vec2F32
     instance radius: F32
     instance color: ColorLinear
 
-    varying local_pos: Vec2F32
-
-    vertex (vertex_id: U32) -> VertexOutput {
-        let unit = quad_vertex(vertex_id)
-        let position = rect_pos + unit * rect_size
-        local_pos = unit * rect_size
-
-        return VertexOutput {
-            clip_position: to_clip(position, viewport_size),
-        }
-    }
-
     fragment () -> Vec4F32 {
-        let distance = rounded_rect_sdf(local_pos, rect_size, radius)
+        let distance = rounded_rect_sdf(local, rect_size, radius)
         let alpha = smoothstep(1.0f32, 0.0f32, distance)
         return color.to_vec4() * alpha
     }
 }
 ```
 
-Shader Entry 的实际 Builtin 参数、返回 Record 和可写 Varying 由 Render Profile Schema 定义。上例展示语言形态，不允许 Backend 自行改变核心表达式优先级。
+`rect_size` 与 `local` 是下文 Brush Profile 的 Builtin，省略的 `vertex` 是其默认 Vertex。Shader Entry 的实际 Builtin 参数、返回 Record 和可写 Varying 由 Render Profile Schema 定义。上例展示语言形态，不允许 Backend 自行改变核心表达式优先级。
 
 Render Profile：一个 Shader 至多一个 `vertex`，恰好一个 `fragment` Entry（重复或声明 `compute` 报 `E8106`）。手写的 `vertex` 的参数只能是 Builtin `vertex_id: U32`（实例四边形的六个顶点之一，`quad_vertex(vertex_id)` 依次给出 `(0,0) (1,0) (0,1) (1,0) (1,1) (0,1)`）与 `instance_id: U32`，返回 `VertexOutput { clip_position: Vec4F32 }`；`fragment` 的参数只能是 `frag_coord: Vec4F32`，返回 `Vec4F32` 或 `ColorLinear`（颜色目标 0）。只有 `vertex` 写 Varying，Varying 是数值标量或向量（`F32` 透视插值，整数 Flat）；Instance 字段在两个阶段都可读；Uniform 与 Instance 成员不能含 `Bool`（无 Buffer Layout，报 `E8104`），Texture 与 Sampler 只能用 `texture`/`sampler` 声明。`to_clip(position, viewport)` 把左上原点的像素坐标映射到 Clip Space；`rounded_rect_sdf(p, size, radius)` 是 `p` 到原点在左上、尺寸 `size`、圆角 `radius` 的矩形的有符号距离，内部为负。
 
@@ -4133,9 +4118,10 @@ Brush Profile：绘制一个节点盒子的 Shader。每个 Shader 都有以下 
 
 ```text
 vertex(vertex_id: U32) -> VertexOutput {
-    uv = quad_vertex(vertex_id)
-    local = uv * rect_size
-    return VertexOutput { clip_position: to_clip(rect_pos + local, viewport_size) }
+    let unit = quad_vertex(vertex_id)
+    uv = unit
+    local = unit * rect_size
+    return VertexOutput { clip_position: to_clip(rect_pos + unit * rect_size, viewport_size) }
 }
 ```
 
@@ -4147,13 +4133,15 @@ Host 侧，Shader 名同时是其参数的 Record 类型：字段是声明的 In
 import viso::math::Vec2F32
 
 shader Ripple {
-    uniform viewport_size: Vec2F32
-    instance rect_pos: Vec2F32
-    instance rect_size: Vec2F32
     instance tint: ColorLinear
     instance rings: F32
     instance center: Vec2F32
-    // vertex / fragment 同上例
+
+    fragment () -> Vec4F32 {
+        let d = distance(uv, center)
+        let k = 0.5 + 0.5 * cos((d * rings - time * 0.5) * 6.2831855)
+        return Vec4F32(tint.r * k, tint.g * k, tint.b * k, 1.0)
+    }
 }
 
 export component Card {

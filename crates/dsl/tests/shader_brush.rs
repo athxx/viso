@@ -32,9 +32,6 @@ fn codes(source: &str) -> Vec<String> {
 fn brush(name: &str, members: &str) -> String {
     format!(
         "shader {name} {{
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     {members}
     vertex(vertex_id: U32) -> VertexOutput {{
         let unit = quad_vertex(vertex_id);
@@ -132,12 +129,10 @@ fn a_shader_view_takes_only_a_shaders_parameters() {
     assert_eq!(codes(&painting(&record, "Point { x: 1.0 }")), ["E2103"]);
 }
 
-/// A shader breaking the brush profile every way: no `rect_size`, a uniform
-/// the renderer does not write, a parameter of no host kind and a texture.
+/// A shader breaking the brush profile every way: a uniform the renderer
+/// does not write, a parameter of no host kind and a texture of no image.
 const OFF_PROFILE: &str = "shader Glow {
-    uniform viewport_size: Vec2F32;
     uniform scale: F32;
-    instance rect_pos: Vec2F32;
     instance strength: F32;
     instance basis: Mat2F32;
     texture noise: Texture2D<F32>;
@@ -161,31 +156,17 @@ fn a_shader_breaking_the_brush_profile_is_reported_only_where_it_paints() {
     let compiled = compile_file(&source, &origin());
     let found: Vec<_> = compiled.errors().collect();
     let found_codes: Vec<&str> = found.iter().map(|d| d.code).collect();
-    assert_eq!(found_codes, ["E8107"; 4], "{found:#?}");
+    assert_eq!(found_codes, ["E8107"; 3], "{found:#?}");
     let messages: Vec<&str> = found.iter().map(|d| d.message.as_str()).collect();
-    for part in [
-        "`scale`",
-        "`basis`",
-        "`noise`",
-        "instance rect_size: Vec2F32;",
-    ] {
+    for part in ["`scale`", "`basis`", "`noise`"] {
         assert!(
             messages.iter().any(|m| m.contains(part)),
             "{part}: {messages:#?}"
         );
     }
-    let missing = found
-        .iter()
-        .find(|d| d.message.contains("rect_size"))
-        .unwrap();
     let at = |range: viso_dsl::syntax::TextRange| {
         &source[range.start().to_u32() as usize..range.end().to_u32() as usize]
     };
-    assert_eq!(
-        at(missing.primary),
-        "Glow",
-        "a missing member points at the name"
-    );
     for d in &found {
         let [related] = d.related.as_slice() else {
             panic!("{d:#?}");
@@ -207,7 +188,7 @@ export component Pair {{
     }}
 }}"
     );
-    assert_eq!(codes(&twice), ["E8107"; 4]);
+    assert_eq!(codes(&twice), ["E8107"; 3]);
 }
 
 /// A shader using every construct a program holds: a record, a `fn`, a
@@ -217,11 +198,8 @@ const EVERY: &str = "@shader_value
 record Light { position: Vec2F32; strength: F32; }
 
 shader Every {
-    uniform viewport_size: Vec2F32;
     uniform light: Light;
     uniform mode: I32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance tint: ColorLinear;
     varying local: Vec2F32;
     varying band: U32;
@@ -350,9 +328,6 @@ fn a_program_and_a_packed_brush_round_trip_through_the_package_codec() {
 
 /// A brush sampling an image its node names through samplers it declares.
 const PHOTO: &str = "shader Photo {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance fade: F32;
     texture photo: Texture2D<Vec4F32>;
     @sampler(filter: nearest, address: repeat)
@@ -540,4 +515,127 @@ fn a_texture_parameter_takes_an_image_asset() {
         missing.len() == 1 && missing[0].1.contains("photo"),
         "{missing:?}"
     );
+}
+
+#[test]
+fn a_shader_reads_the_builtins_and_declares_none() {
+    for (member, default_vertex) in [
+        ("uniform viewport_size: Vec2F32", true),
+        ("uniform time: F32", false),
+        ("instance rect_pos: Vec2F32", true),
+        ("instance rect_size: Vec2F32", false),
+        ("varying uv: Vec2F32", true),
+        ("varying local: Vec2F32", true),
+    ] {
+        let vertex = if default_vertex {
+            ""
+        } else {
+            "vertex(vertex_id: U32) -> VertexOutput {\n\
+             return VertexOutput { clip_position: to_clip(rect_pos, viewport_size) }\n}\n"
+        };
+        let source = format!(
+            "shader Glow {{\n{member}\n{vertex}fragment() -> Vec4F32 {{ return Vec4F32(1.0) }}\n}}\n\
+             export component Empty {{ view {{ Text {{ }} }} }}"
+        );
+        let found = errors(&source);
+        assert_eq!(found.len(), 1, "{member}: {found:?}");
+        assert!(
+            found[0].0 == "E8107" && found[0].1.contains("builtin"),
+            "{found:?}"
+        );
+    }
+    // A hand-written vertex writes varyings of its own, `uv` among them.
+    let own = "shader Glow {\nvarying uv: Vec2F32\n\
+               vertex(vertex_id: U32) -> VertexOutput {\n\
+               uv = quad_vertex(vertex_id)\n\
+               return VertexOutput { clip_position: to_clip(rect_pos + uv * rect_size, viewport_size) }\n}\n\
+               fragment() -> Vec4F32 { return Vec4F32(uv.x, uv.y, time, 1.0) }\n}\n\
+               export component Empty { view { Text { } } }";
+    assert_eq!(codes(own), Vec::<String>::new());
+}
+
+/// The compiled program of the one shader in `source`.
+fn program_of(source: &str) -> viso_shader::program::Program {
+    let compiled = compile_file(source, &origin());
+    assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
+    compiled.shaders[0].program.clone().expect("a program")
+}
+
+#[test]
+fn the_default_vertex_is_the_hand_written_one() {
+    use viso_shader::program::{Target, emit};
+    let fragment = "fragment() -> Vec4F32 { return Vec4F32(uv.x, local.y, 0.0, 1.0) }";
+    let default = program_of(&format!("shader S {{\n{fragment}\n}}\n"));
+    let written = program_of(&format!(
+        "shader S {{
+    varying uv: Vec2F32
+    varying local: Vec2F32
+    vertex(vertex_id: U32) -> VertexOutput {{
+        let unit = quad_vertex(vertex_id)
+        uv = unit
+        local = unit * rect_size
+        return VertexOutput {{ clip_position: to_clip(rect_pos + unit * rect_size, viewport_size) }}
+    }}
+    {fragment}
+}}
+"
+    ));
+    for target in [Target::Msl, Target::Wgsl, Target::Hlsl, Target::Glsl] {
+        assert_eq!(
+            emit(&default, &default.interface(), target),
+            emit(&written, &written.interface(), target),
+            "{target:?}"
+        );
+    }
+    let unspanned = |p: &viso_shader::program::Program| {
+        let text = format!("{p:?}");
+        let mut out = String::new();
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("span: Span {") {
+            out.push_str(&rest[..at]);
+            rest = &rest[at + rest[at..].find('}').unwrap() + 1..];
+        }
+        out + rest
+    };
+    assert_eq!(
+        unspanned(&default),
+        unspanned(&written),
+        "the program the interpreter runs"
+    );
+}
+
+#[test]
+fn a_builtin_no_body_reads_takes_no_slot() {
+    let names =
+        |p: &viso_shader::program::Program,
+         of: fn(&viso_shader::program::Program) -> &Vec<viso_shader::program::Binding>| {
+            of(p).iter().map(|b| b.name.to_string()).collect::<Vec<_>>()
+        };
+    let plain = program_of("shader S { fragment() -> Vec4F32 { return Vec4F32(1.0) } }");
+    assert_eq!(names(&plain, |p| &p.uniforms), ["viewport_size"]);
+    assert_eq!(names(&plain, |p| &p.instance), ["rect_pos", "rect_size"]);
+    assert!(plain.varyings.is_empty());
+    assert!(plain.vertex.is_some(), "the default vertex");
+
+    let clocked = program_of(
+        "shader S { instance k: F32\n fragment() -> Vec4F32 { return Vec4F32(local.x * k, time, 0.0, 1.0) } }",
+    );
+    assert_eq!(names(&clocked, |p| &p.uniforms), ["viewport_size", "time"]);
+    assert_eq!(
+        names(&clocked, |p| &p.instance),
+        ["rect_pos", "rect_size", "k"]
+    );
+    assert_eq!(names(&clocked, |p| &p.varyings), ["local"]);
+    let compiled = compile_file(
+        &painting(
+            "shader Clock { instance k: F32\n fragment() -> Vec4F32 { return Vec4F32(local.x * k, time, 0.0, 1.0) } }",
+            "Clock { k: 1.0 }",
+        ),
+        &origin(),
+    );
+    assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
+    let layout = compiled.shaders[0].brush.as_ref().expect("a brush");
+    assert_eq!((layout.rect_pos, layout.rect_size), (0, 8), "the box first");
+    assert_eq!(layout.params[0].offset, 16);
+    assert!(layout.time.is_some());
 }

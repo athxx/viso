@@ -104,14 +104,9 @@ fn a_shader_compiler_diagnostic_renders_like_the_frontends() {
     s.write("Viso.toml", MANIFEST).write(
         "src/app.vs",
         "shader Glow {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    vertex(vertex_id: U32) -> VertexOutput {
-        let unit = quad_vertex(vertex_id);
-        return VertexOutput { clip_position: to_clip(rect_pos + unit, viewport_size) };
-    }
+    instance basis: Mat2F32
     fragment() -> Vec4F32 {
-        return Vec4F32(1.0, 0.0, 0.0, 1.0);
+        return Vec4F32(basis[0].x, 0.0, 0.0, 1.0);
     }
 }
 export component Card {
@@ -125,7 +120,7 @@ export component Card {
     assert_eq!(code(&out), 1);
     let err = stderr(&out);
     assert!(err.starts_with("error[E8107]: "), "{err}");
-    assert!(err.contains(" --> src/app.vs:1:8\n"), "{err}");
+    assert!(err.contains(" --> src/app.vs:2:14\n"), "{err}");
     assert!(err.contains("`Glow` paints this view"), "{err}");
     assert!(err.contains("viso explain E8107"), "{err}");
     assert_eq!(stdout(&out), "checked `demo`: 1 file, 1 error\n");

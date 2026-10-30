@@ -1,15 +1,19 @@
 //! The brush profile: a program that paints a node's box.
 //!
-//! The renderer owns three members, which every brush declares:
+//! Every brush has the members the renderer writes, which it reads without
+//! declaring them ([`declare_builtins`]):
 //!
 //! - `uniform viewport_size: Vec2F32` — the target's size in pixels, which
 //!   `to_clip` maps a position against;
 //! - `instance rect_pos: Vec2F32` and `instance rect_size: Vec2F32` — the
-//!   box, in target pixels from the target's top-left corner.
-//!
-//! A brush may also declare `uniform time: F32`, the seconds since its window
-//! opened, which the renderer writes into every draw; a window keeps drawing
-//! frames while a brush reading it is on screen, and only then.
+//!   box, in target pixels from the target's top-left corner;
+//! - `uniform time: F32` — the seconds since its window opened, kept only
+//!   when the brush reads it: a window keeps drawing frames while a brush
+//!   reading it is on screen, and only then;
+//! - without a `vertex` entry, the varyings `uv: Vec2F32` (the box from
+//!   `(0, 0)` to `(1, 1)`) and `local: Vec2F32` (`uv * rect_size`), each kept
+//!   only when the fragment reads it, which the default vertex writes
+//!   ([`finish_builtins`]).
 //!
 //! Every other instance member is a parameter, of a kind a host value
 //! converts into ([`ParamKind`]). A brush declares no other uniform, since
@@ -31,7 +35,10 @@ use viso_diag::Diagnostic;
 use viso_gpu_abi::{PROGRAM_SAMPLERS, PROGRAM_TEXTURES, ProgramAbi, SamplerDesc};
 
 use super::layout::{FieldDescriptor, ShaderInterface};
-use super::{EncodeError, Program, Span, Texel, Ty};
+use super::{
+    BinaryOp, Binding, Block, Builtin, EncodeError, Expr, ExprKind, Function, Intrinsic, Local,
+    Place, Program, Root, Span, Stage, Stmt, Texel, Ty,
+};
 
 /// The uniform the renderer writes the target size into.
 pub const VIEWPORT_SIZE: &str = "viewport_size";
@@ -41,6 +48,204 @@ pub const TIME: &str = "time";
 pub const RECT_POS: &str = "rect_pos";
 /// The instance member the renderer writes the box's size into.
 pub const RECT_SIZE: &str = "rect_size";
+/// The default vertex's varying of the box from `(0, 0)` to `(1, 1)`.
+pub const UV: &str = "uv";
+/// The default vertex's varying of the box in pixels, `uv * rect_size`.
+pub const LOCAL: &str = "local";
+
+/// Each builtin: its name, its type's spelling and whether only the default
+/// vertex has it.
+pub const BUILTINS: &[(&str, &str, bool)] = &[
+    (VIEWPORT_SIZE, "Vec2F32", false),
+    (TIME, "F32", false),
+    (RECT_POS, "Vec2F32", false),
+    (RECT_SIZE, "Vec2F32", false),
+    (UV, "Vec2F32", true),
+    (LOCAL, "Vec2F32", true),
+];
+
+/// Whether a brush has the member `name` without declaring it; `uv` and
+/// `local` only with the default vertex.
+pub fn is_builtin(name: &str, default_vertex: bool) -> bool {
+    BUILTINS
+        .iter()
+        .any(|&(builtin, _, only_default)| builtin == name && (default_vertex || !only_default))
+}
+
+/// Declares the builtins in `program`, whose interface is still empty, all
+/// at `span`: uniforms `viewport_size` and `time` at 0 and 1, instance
+/// members `rect_pos` and `rect_size` at 0 and 1 and, with `default_vertex`,
+/// varyings `uv` and `local` at 0 and 1. [`finish_builtins`] drops those its
+/// bodies do not read once they are lowered.
+pub fn declare_builtins(program: &mut Program, default_vertex: bool, span: Span) {
+    debug_assert!(program.uniforms.is_empty() && program.instance.is_empty());
+    let binding = |name: &str, ty| Binding {
+        name: name.into(),
+        ty,
+        span,
+    };
+    program.uniforms = vec![binding(VIEWPORT_SIZE, Ty::VEC2), binding(TIME, Ty::F32)];
+    program.instance = vec![binding(RECT_POS, Ty::VEC2), binding(RECT_SIZE, Ty::VEC2)];
+    if default_vertex {
+        program.varyings = vec![binding(UV, Ty::VEC2), binding(LOCAL, Ty::VEC2)];
+    }
+}
+
+/// Completes a program [`declare_builtins`] declared the builtins of, its
+/// bodies lowered: drops `time` when no body reads it and, with
+/// `default_vertex`, drops `uv` and `local` when no body reads them and gives
+/// it the default vertex entry, which writes those kept:
+///
+/// ```text
+/// vertex (vertex_id: U32) -> VertexOutput {
+///     let unit = quad_vertex(vertex_id)
+///     uv = unit
+///     local = unit * rect_size
+///     return VertexOutput { clip_position: to_clip(rect_pos + unit * rect_size, viewport_size) }
+/// }
+/// ```
+pub fn finish_builtins(program: &mut Program, default_vertex: bool, span: Span) {
+    let reads = |kind: fn(&ExprKind) -> Option<u32>, index: u32| {
+        let mut read = false;
+        let functions = program.functions.iter().chain(program.entries());
+        for f in functions {
+            f.body.visit(&mut |e| read |= kind(&e.kind) == Some(index));
+        }
+        read
+    };
+    let uniform = |k: &ExprKind| match k {
+        ExprKind::Uniform(i) => Some(*i),
+        _ => None,
+    };
+    let varying = |k: &ExprKind| match k {
+        ExprKind::Varying(i) => Some(*i),
+        _ => None,
+    };
+    let time = reads(uniform, 1);
+    let (uv, local) = if default_vertex {
+        (reads(varying, 0), reads(varying, 1))
+    } else {
+        (false, false)
+    };
+    if !time {
+        program.uniforms.remove(1);
+        drop_time(program);
+    }
+    if !default_vertex {
+        return;
+    }
+    // `local` first, so `uv`'s index still holds.
+    for (kept, index) in [(local, 1), (uv, 0)] {
+        if !kept {
+            program.varyings.remove(index as usize);
+            drop_varying(program, index);
+        }
+    }
+    let uv = uv.then_some(0);
+    let local = local.then(|| u32::from(uv.is_some()));
+    program.vertex = Some(default_vertex_entry(uv, local, span));
+}
+
+/// Shifts every read of a uniform past `time`, which has gone, down one.
+fn drop_time(program: &mut Program) {
+    let entries = program.vertex.iter_mut().chain(&mut program.fragment);
+    for f in program.functions.iter_mut().chain(entries) {
+        f.body.visit_mut(&mut |e| {
+            if let ExprKind::Uniform(i) = &mut e.kind
+                && *i > 1
+            {
+                *i -= 1;
+            }
+        });
+    }
+}
+
+/// Shifts every read of a varying past `gone` down one.
+fn drop_varying(program: &mut Program, gone: u32) {
+    for f in program.functions.iter_mut().chain(&mut program.fragment) {
+        f.body.visit_mut(&mut |e| {
+            if let ExprKind::Varying(i) = &mut e.kind
+                && *i > gone
+            {
+                *i -= 1;
+            }
+        });
+    }
+}
+
+/// The default vertex entry, writing the varyings `uv` and `local` at these
+/// indices when kept.
+fn default_vertex_entry(uv: Option<u32>, local: Option<u32>, span: Span) -> Function {
+    let vec2 = |kind| Expr::new(Ty::VEC2, kind);
+    let unit = || vec2(ExprKind::Local(1));
+    let rect_size = || vec2(ExprKind::Instance(1));
+    let scaled = || {
+        vec2(ExprKind::Binary(
+            BinaryOp::Mul,
+            Box::new(unit()),
+            Box::new(rect_size()),
+        ))
+    };
+    let mut body = vec![Stmt::Let(
+        1,
+        vec2(ExprKind::Intrinsic(
+            Intrinsic::QuadVertex,
+            vec![Expr::new(Ty::U32, ExprKind::Local(0))],
+        )),
+    )];
+    let write = |index: u32, value| {
+        Stmt::Assign(
+            Place {
+                root: Root::Varying(index),
+                path: Vec::new(),
+            },
+            value,
+        )
+    };
+    if let Some(uv) = uv {
+        body.push(write(uv, unit()));
+    }
+    if let Some(local) = local {
+        body.push(write(local, scaled()));
+    }
+    let position = vec2(ExprKind::Binary(
+        BinaryOp::Add,
+        Box::new(vec2(ExprKind::Instance(0))),
+        Box::new(scaled()),
+    ));
+    let clip = Expr::new(
+        Ty::VEC4,
+        ExprKind::Intrinsic(
+            Intrinsic::ToClip,
+            vec![position, vec2(ExprKind::Uniform(0))],
+        ),
+    );
+    body.push(Stmt::Return(Some(Expr::new(
+        Ty::VertexOutput,
+        ExprKind::Construct(vec![clip]),
+    ))));
+    Function {
+        name: "vertex".into(),
+        stage: Some(Stage::Vertex),
+        params: 1,
+        builtins: vec![Builtin::VertexId],
+        ret: Ty::VertexOutput,
+        locals: vec![
+            Local {
+                name: "vertex_id".into(),
+                ty: Ty::U32,
+                mutable: false,
+            },
+            Local {
+                name: "unit".into(),
+                ty: Ty::VEC2,
+                mutable: false,
+            },
+        ],
+        body: Block(body),
+        span,
+    }
+}
 
 /// A program breaks the brush profile.
 const PROFILE: &str = "E8107";

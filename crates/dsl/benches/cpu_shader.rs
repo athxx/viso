@@ -18,10 +18,6 @@ const SOURCE: &str = r#"
 import viso::math::Vec2F32;
 
 shader Ripple {
-    uniform viewport_size: Vec2F32;
-    uniform time: F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance tint: ColorLinear;
     instance rings: F32;
     instance center: Vec2F32;
@@ -45,10 +41,6 @@ shader Ripple {
 }
 
 shader Lens {
-    uniform viewport_size: Vec2F32;
-    uniform time: F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance tiles: F32;
     texture image: Texture2D<Vec4F32>;
     @sampler(filter: linear, address: repeat)

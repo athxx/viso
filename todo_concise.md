@@ -97,11 +97,11 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C6 — Shader brush builtins (§100)
 
-- [ ] `viewport_size`, `rect_pos`, `rect_size`, `time` implicit; declared ones → `E8107`.
-- [ ] Default vertex when `vertex` is absent; `uv`/`local` varyings only when read.
-- [ ] Layout: builtins first; `BrushLayout` and host record fields follow.
-- [ ] Backends (MSL/WGSL/HLSL/CPU) unchanged output for a hand-written equivalent.
-- [ ] Migrate every shader; update `shader_brush`, `shader_check`, CLI and LSP tests.
+- [x] `viewport_size`, `rect_pos`, `rect_size`, `time` implicit; declared ones → `E8107`.
+- [x] Default vertex when `vertex` is absent; `uv`/`local` varyings only when read.
+- [x] Layout: builtins first; `BrushLayout` and host record fields follow.
+- [x] Backends (MSL/WGSL/HLSL/CPU) unchanged output for a hand-written equivalent.
+- [x] Migrate every shader; update `shader_brush`, `shader_check`, CLI and LSP tests.
 
 ## C7 — Sizing defaults (U3.1)
 

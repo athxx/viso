@@ -330,9 +330,6 @@ export component Counter {
 }
 
 shader Glow {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance tint: ColorLinear;
     varying local: Vec2F32;
 

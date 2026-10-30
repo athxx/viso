@@ -280,9 +280,53 @@ impl Expr {
             _ => {}
         }
     }
+
+    /// Calls `f` on this expression and every expression inside it, inner
+    /// ones first, each able to rewrite it.
+    pub fn visit_mut(&mut self, f: &mut impl FnMut(&mut Expr)) {
+        match &mut self.kind {
+            ExprKind::Unary(_, a)
+            | ExprKind::Swizzle(a, _)
+            | ExprKind::Member(a, _)
+            | ExprKind::Convert(a) => a.visit_mut(f),
+            ExprKind::Binary(_, a, b) | ExprKind::Index(a, b) => {
+                a.visit_mut(f);
+                b.visit_mut(f);
+            }
+            ExprKind::Construct(args) | ExprKind::Call(_, args) | ExprKind::Intrinsic(_, args) => {
+                args.iter_mut().for_each(|a| a.visit_mut(f));
+            }
+            _ => {}
+        }
+        f(self);
+    }
 }
 
 impl Block {
+    /// Calls `f` on every expression the block's statements hold, each able
+    /// to rewrite it.
+    pub fn visit_mut(&mut self, f: &mut impl FnMut(&mut Expr)) {
+        for stmt in &mut self.0 {
+            match stmt {
+                Stmt::Let(_, e) | Stmt::Assign(_, e) | Stmt::Return(Some(e)) => e.visit_mut(f),
+                Stmt::If(c, a, b) => {
+                    c.visit_mut(f);
+                    a.visit_mut(f);
+                    b.visit_mut(f);
+                }
+                Stmt::For(l) => {
+                    l.start.visit_mut(f);
+                    l.end.visit_mut(f);
+                    l.body.visit_mut(f);
+                }
+                Stmt::Declare(_)
+                | Stmt::Break
+                | Stmt::Continue
+                | Stmt::Return(None)
+                | Stmt::Discard => {}
+            }
+        }
+    }
     /// Calls `f` on every expression the block's statements hold.
     pub fn visit(&self, f: &mut impl FnMut(&Expr)) {
         for stmt in &self.0 {

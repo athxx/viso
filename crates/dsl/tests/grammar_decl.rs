@@ -139,8 +139,8 @@ fn callable_forms_share_one_shape() {
 }
 
 const ROUNDED_RECT: &str = "export shader RoundedRect {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
+    uniform scale: F32;
+    instance origin: Vec2F32;
     instance color: ColorLinear;
     varying local_pos: Vec2F32;
     texture atlas: Texture2D<Vec4F32>;
@@ -152,7 +152,7 @@ const ROUNDED_RECT: &str = "export shader RoundedRect {
     }
 
     vertex(vertex_id: U32) -> VertexOutput {
-        local_pos = rect_pos;
+        local_pos = origin;
         return VertexOutput { clip_position: Vec4F32::new(0.0f32, 0.0f32, 0.0f32, 1.0f32) };
     }
 

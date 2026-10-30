@@ -147,9 +147,6 @@ fn the_spec_example_compiles() {
     compiles(
         r#"
 export shader RoundedRect {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance radius: F32;
     instance color: ColorLinear;
 

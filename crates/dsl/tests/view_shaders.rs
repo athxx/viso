@@ -20,9 +20,6 @@ use viso_ui::{Content, NodeId, Srgb};
 fn brush(name: &str, members: &str, fill: &str) -> String {
     format!(
         "shader {name} {{
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     {members}
     vertex(vertex_id: U32) -> VertexOutput {{
         let unit = quad_vertex(vertex_id);

@@ -3570,8 +3570,9 @@ for i in 0..count { sum += 0.1; }
         severity: Severity::Error,
         stage: Stage::Shader,
         title: "Render Profile Stage Rule Violated",
-        explanation: "A render shader has exactly one `vertex` and one `fragment` entry and no \
-            `compute`. `vertex` takes only the builtins `vertex_id: U32` and `instance_id: \
+        explanation: "A render shader has at most one `vertex` entry, exactly one `fragment` entry \
+            and no `compute`; without `vertex` it takes the default one, which spans the node's \
+            box. `vertex` takes only the builtins `vertex_id: U32` and `instance_id: \
             U32` and returns `VertexOutput`; `fragment` takes only `frag_coord: Vec4F32`. Only \
             `vertex` writes varyings, fragment-only intrinsics such as `dpdx` and `sample` \
             stay in `fragment`, and a shader `fn` may not read members.",
@@ -3604,41 +3605,40 @@ for i in 0..count { sum += 0.1; }
         severity: Severity::Error,
         stage: Stage::Shader,
         title: "Brush Profile Violated",
-        explanation: "A shader that paints a node's box through a `ShaderView` is a brush. The renderer \
-            writes its reserved members, so every brush declares `uniform viewport_size: \
-            Vec2F32`, `instance rect_pos: Vec2F32` and `instance rect_size: Vec2F32`, and no \
-            other uniforms except `time: F32`. Its parameters are the other instance members, \
+        explanation: "A shader paints a node's box through a `ShaderView`, so it is a brush. Every \
+            shader reads the members the renderer writes without declaring them: \
+            `viewport_size: Vec2F32` and `time: F32`, the box's `rect_pos: Vec2F32` and \
+            `rect_size: Vec2F32` and, without a `vertex` entry, the varyings `uv` and \
+            `local`; declaring one of them is rejected. A brush declares no uniform, since \
+            nothing on the host would write it. Its parameters are its instance members, \
             limited to `F32 I32 U32 Vec2F32 Vec3F32 ColorLinear`, and image textures within \
-            the texture and sampler limits. A shader that no view paints with is not checked \
-            against these rules.",
+            the texture and sampler limits; these rules are checked only for a shader a view \
+            paints with.",
         example: Example::Source(
             r#"shader Glow {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance strength: F32;
-    vertex(vertex_id: U32) -> VertexOutput {
-        let unit = quad_vertex(vertex_id);
-        return VertexOutput { clip_position: to_clip(rect_pos + unit, viewport_size) };
-    }
+    instance rect_size: Vec2F32
+    instance strength: F32
     fragment() -> Vec4F32 {
-        return Vec4F32(strength, 0.0, 0.0, 1.0);
+        return Vec4F32(strength * uv.x, 0.0, 0.0, 1.0)
     }
 }
 
 export component Card {
     view {
-        ShaderView { shader: Glow { strength: 0.5 }; width: 120dp; height: 80dp; }
+        ShaderView { shader: Glow { strength: 0.5 }; width: 120dp; height: 80dp }
     }
 }
 "#,
         ),
-        fix: "Declare all three reserved members and keep parameters to the host-convertible \
-            types.",
+        fix: "Drop the declaration and read the builtin as it is; keep parameters to the \
+            host-convertible types.",
         fixed: Some(
-            r#"uniform viewport_size: Vec2F32;
-instance rect_pos: Vec2F32;
-instance rect_size: Vec2F32;
-instance strength: F32;
+            r#"shader Glow {
+    instance strength: F32
+    fragment() -> Vec4F32 {
+        return Vec4F32(strength * uv.x, 0.0, 0.0, 1.0)
+    }
+}
 "#,
         ),
         commands: &["viso check"],

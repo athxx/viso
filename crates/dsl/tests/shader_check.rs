@@ -57,9 +57,6 @@ fn fragment(members: &str, body: &str) -> String {
 /// The spec's example shader.
 const ROUNDED_RECT: &str = r#"
 export shader RoundedRect {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance radius: F32;
     instance color: ColorLinear;
 
@@ -219,7 +216,7 @@ shader S {
     let p = program(source);
     assert_eq!(p.records.len(), 1);
     assert_eq!(&*p.records[0].name, "Light");
-    assert_eq!(p.uniforms[0].ty, Ty::Record(0));
+    assert_eq!(p.uniforms[1].ty, Ty::Record(0), "after `viewport_size`");
 
     let plain = source.replace(
         "uniform light: Light;",
@@ -334,7 +331,15 @@ fn stage_rules_follow_the_render_profile() {
     assert_eq!(codes(builtin), ["E8106"]);
     assert_eq!(
         codes("shader S { fragment() -> Vec4F32 { return Vec4F32(1.0); } }"),
-        ["E8106"]
+        Vec::<&str>::new(),
+        "the default vertex"
+    );
+    assert_eq!(
+        codes(
+            "shader S { vertex(vertex_id: U32) -> VertexOutput { return VertexOutput { clip_position: Vec4F32(1.0) }; } }"
+        ),
+        ["E8106"],
+        "no fragment"
     );
     let compute = "shader S {
     vertex(vertex_id: U32) -> VertexOutput { return VertexOutput { clip_position: Vec4F32(1.0) }; }

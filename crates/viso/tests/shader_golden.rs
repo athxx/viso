@@ -455,9 +455,6 @@ fn the_spec_example_matches_the_reference() {
     let (source, kernel) = shader!(
         r#"
 export shader RoundedRect {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance radius: F32;
     instance color: ColorLinear;
 
@@ -564,13 +561,10 @@ fn records_matrices_loops_textures_and_discard_match_the_reference() {
 record Light { dir: Vec3F32; strength: F32; }
 
 shader Fancy {
-    uniform viewport: Vec2F32;
     uniform basis: Mat2F32;
     uniform light: Light;
     uniform mode: I32;
     uniform rings: I32;
-    instance pos: Vec2F32;
-    instance size: Vec2F32;
     instance tint: ColorLinear;
     instance seed: U32;
     texture pattern: Texture2D<Vec4F32>;
@@ -599,15 +593,15 @@ shader Fancy {
 
     vertex(vertex_id: U32, instance_id: U32) -> VertexOutput {
         let unit = quad_vertex(vertex_id);
-        local = unit * size;
+        local = unit * rect_size;
         uv = unit;
         id = seed + instance_id;
-        return VertexOutput { clip_position: to_clip(pos + local, viewport) };
+        return VertexOutput { clip_position: to_clip(rect_pos + local, viewport_size) };
     }
 
     fragment(frag_coord: Vec4F32) -> Vec4F32 {
         let texel = sample(pattern, nearest, uv);
-        let center = size * 0.5;
+        let center = rect_size * 0.5;
         let d = distance(local, center);
         let cell = ((frag_coord.x as U32) >> 2u32) + ((frag_coord.y as U32) >> 2u32);
         if id == 7u32 && (cell & 1u32) == 1u32 { discard(); }

@@ -134,9 +134,6 @@ fn a_packaged_view_offers_the_assets_it_shows_and_switches_them() {
 
 const LENS: &str = r#"
 shader Lens {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     texture photo: Texture2D<Vec4F32>;
     sampler smooth: Sampler;
     varying uv: Vec2F32;

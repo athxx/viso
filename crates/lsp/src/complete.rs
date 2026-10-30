@@ -5,6 +5,7 @@
 //! The position is read from the token before the word being typed, so a
 //! half-written word, which the parser cannot place yet, never decides it.
 
+use viso_dsl::ast::AstNode;
 use viso_dsl::schema::{self, Catalog};
 use viso_dsl::syntax::{SyntaxNode, SyntaxToken};
 use viso_dsl::{SyntaxKind, TextSize, Ty};
@@ -548,6 +549,12 @@ fn values(
     out: &mut Vec<Completion>,
 ) {
     locals(node, at, out);
+    if let Some(shader) = node
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::ShaderDecl)
+    {
+        shader_values(&shader, out);
+    }
     let scope = std::iter::once(node.clone())
         .chain(node.ancestors())
         .find(|n| matches!(n.kind(), SyntaxKind::ComponentDecl | SyntaxKind::SystemDecl));
@@ -587,6 +594,43 @@ fn values(
     }
     imports(doc, root, out);
     out.extend(keywords(VALUES));
+}
+
+/// The members a shader body reads: its declared ones, its `fn`s and the
+/// builtins (`uv` and `local` only without a `vertex` entry).
+fn shader_values(shader: &SyntaxNode, out: &mut Vec<Completion>) {
+    let mut default_vertex = true;
+    for member in shader.children() {
+        let kind = match member.kind() {
+            SyntaxKind::ShaderUniform
+            | SyntaxKind::ShaderInstance
+            | SyntaxKind::ShaderVarying
+            | SyntaxKind::ShaderTexture
+            | SyntaxKind::ShaderSampler => CompletionKind::Property,
+            SyntaxKind::ShaderFn => CompletionKind::Function,
+            SyntaxKind::ShaderEntry => {
+                let entry = viso_dsl::ast::ShaderEntry::cast(member);
+                default_vertex &= !matches!(
+                    entry.and_then(|e| e.stage()),
+                    Some(viso_dsl::ast::ShaderStage::Vertex)
+                );
+                continue;
+            }
+            _ => continue,
+        };
+        if let Some(name) = name_of(&member) {
+            let completion = Completion::new(name.text(), kind);
+            out.push(match type_text(&member) {
+                Some(ty) => completion.detail(ty),
+                None => completion,
+            });
+        }
+    }
+    for &(name, ty, only_default) in viso_dsl::SHADER_BUILTINS {
+        if default_vertex || !only_default {
+            out.push(Completion::new(name.to_owned(), CompletionKind::Property).detail(ty));
+        }
+    }
 }
 
 /// The parameters and earlier `let`s in scope at `at` from `node` up.
@@ -918,6 +962,27 @@ mod tests {
         assert!(has(&items, "step", CompletionKind::Property), "{items:?}");
         let events = labels(&counter("    view { Counter { on | } }"));
         assert!(has(&events, "changed", CompletionKind::Event), "{events:?}");
+    }
+
+    #[test]
+    fn a_shader_body_reads_its_members_and_the_builtins() {
+        let items = labels(
+            "shader S {\n    instance k: F32\n    fragment() -> Vec4F32 { return Vec4F32(|) }\n}\n",
+        );
+        for name in ["k", "rect_size", "time", "uv", "local"] {
+            assert!(
+                has(&items, name, CompletionKind::Property),
+                "{name}: {items:?}"
+            );
+        }
+        let written = labels(
+            "shader S {\n    vertex(vertex_id: U32) -> VertexOutput { return VertexOutput { clip_position: Vec4F32(1.0) } }\n    fragment() -> Vec4F32 { return Vec4F32(|) }\n}\n",
+        );
+        assert!(has(&written, "rect_pos", CompletionKind::Property));
+        assert!(
+            !has(&written, "uv", CompletionKind::Property),
+            "{written:?}"
+        );
     }
 
     #[test]

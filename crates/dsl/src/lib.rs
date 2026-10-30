@@ -46,6 +46,8 @@ pub use syntax::{
     Edit, GreenBuilder, GreenNode, LexError, Lexer, LineIndex, Parse, SyntaxKind, TextRange,
     TextSize, Token, parse, reparse_tokens, tokenize,
 };
+/// The members every shader reads without declaring them.
+pub use viso_shader::program::brush::BUILTINS as SHADER_BUILTINS;
 
 /// The canonical DSL source-file extension.
 pub const SOURCE_EXTENSION: &str = "vs";

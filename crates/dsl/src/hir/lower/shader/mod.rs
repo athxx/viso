@@ -14,7 +14,7 @@ mod body;
 
 use std::collections::{HashMap, HashSet};
 
-use viso_shader::program::brush::{RECT_POS, RECT_SIZE};
+use viso_shader::program::brush::{self, LOCAL, RECT_POS, RECT_SIZE, TIME, UV, VIEWPORT_SIZE};
 use viso_shader::program::{
     AddressMode, Binding, BrushLayout, FilterMode, Function, ParamKind, Program, SamplerDesc,
     Scalar, Span, Stage, Texel, Ty,
@@ -560,7 +560,14 @@ pub(super) fn check(
         );
     }
     let members: Vec<ShaderMember> = decl.members().collect();
-    interface(&mut sh, &members);
+    let at = decl
+        .name()
+        .map_or(decl.syntax().text_range(), |t| t.text_range());
+    let default_vertex = !members.iter().any(
+        |m| matches!(m, ShaderMember::Entry(e) if matches!(e.stage(), Some(ShaderStage::Vertex))),
+    );
+    builtins(&mut sh, default_vertex, at);
+    interface(&mut sh, &members, default_vertex);
     let fns = signatures(&mut sh, &members);
     let mut functions = Vec::with_capacity(fns.len());
     let mut calls = Vec::with_capacity(fns.len());
@@ -601,22 +608,14 @@ pub(super) fn check(
         let (function, _) = body::entry(&mut sh, entry, stage);
         *slot = function.map(|f| (f, at));
     }
-    let at = decl
-        .name()
-        .map_or(decl.syntax().text_range(), |t| t.text_range());
-    for (stage, entry) in [Stage::Vertex, Stage::Fragment].into_iter().zip(&entries) {
-        if entry.is_none() && sh.diagnostics.len() == errors_before {
-            sh.error(
-                "E8106",
-                at,
-                format!("the shader has no `{}` entry", stage_word(stage)),
-            );
-        }
+    if entries[Stage::Fragment as usize].is_none() && sh.diagnostics.len() == errors_before {
+        sh.error("E8106", at, "the shader has no `fragment` entry");
     }
     let [vertex, fragment] = entries;
     sh.program.vertex = vertex.map(|(f, _)| f);
     sh.program.fragment = fragment.map(|(f, _)| f);
     order_functions(&mut sh, functions, calls);
+    brush::finish_builtins(&mut sh.program, default_vertex, span(at));
 
     let clean = !sh.diagnostics[sh.errors_before..]
         .iter()
@@ -712,8 +711,27 @@ const fn stage_word(stage: Stage) -> &'static str {
     }
 }
 
-/// Checks the bindings into the program's interface.
-fn interface(sh: &mut Shader<'_, '_>, members: &[ShaderMember]) {
+/// Declares the members every brush reads without declaring them, at the
+/// shader's name `at`.
+fn builtins(sh: &mut Shader<'_, '_>, default_vertex: bool, at: TextRange) {
+    brush::declare_builtins(&mut sh.program, default_vertex, span(at));
+    let mut globals = vec![
+        (VIEWPORT_SIZE, Global::Uniform(0)),
+        (TIME, Global::Uniform(1)),
+        (RECT_POS, Global::Instance(0)),
+        (RECT_SIZE, Global::Instance(1)),
+    ];
+    if default_vertex {
+        globals.extend([(UV, Global::Varying(0)), (LOCAL, Global::Varying(1))]);
+    }
+    for (name, global) in globals {
+        sh.globals.insert(name.to_owned(), (global, at));
+    }
+}
+
+/// Checks the bindings into the program's interface; a builtin's name is
+/// `E8107`.
+fn interface(sh: &mut Shader<'_, '_>, members: &[ShaderMember], default_vertex: bool) {
     for member in members {
         let (name, node) = match member {
             ShaderMember::Uniform(m) => (m.name(), m.syntax()),
@@ -728,6 +746,14 @@ fn interface(sh: &mut Shader<'_, '_>, members: &[ShaderMember]) {
             continue;
         };
         let (text, at) = (name.text(), name.text_range());
+        if brush::is_builtin(&text, default_vertex) {
+            sh.error(
+                "E8107",
+                at,
+                format!("`{text}` is a builtin every shader reads without declaring it"),
+            );
+            continue;
+        }
         let Some(ty) = sh.annotation(node) else {
             continue;
         };

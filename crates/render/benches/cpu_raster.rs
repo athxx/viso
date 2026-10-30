@@ -222,10 +222,6 @@ macro_rules! user_shader {
 const ROUNDED: (&str, &NativeKernel) = user_shader!(
     r#"
 shader Rounded {
-    uniform viewport_size: Vec2F32;
-    uniform time: F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance radius: F32;
     instance color: ColorLinear;
     varying local_pos: Vec2F32;
@@ -249,10 +245,6 @@ shader Rounded {
 const RIPPLE: (&str, &NativeKernel) = user_shader!(
     r#"
 shader Ripple {
-    uniform viewport_size: Vec2F32;
-    uniform time: F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
     instance radius: F32;
     instance color: ColorLinear;
     varying local_pos: Vec2F32;
