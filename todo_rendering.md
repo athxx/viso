@@ -983,8 +983,10 @@ texture/sampler/pipeline in `viso-gpu`.
         hit (zero per-frame rebake, §12.2), `take_dirty()`, epoch wipe on overflow.
   - [x] Tier decision at lowering time: `use_lut = stops.len() >= 3 || interp != LinearRgb`;
         2-stop linear-RGB takes the inline `color0`/`color1` fast path (no LUT row).
-  - [ ] Compact shared stop table middle tier (§10.1) deferred — D2.1 does inline(2-stop) vs
-        LUT(3+) only.
+  - [x] Compact shared stop table middle tier — measured and declined (`Viso_Rendering.md`
+        §12.2): on Metal a LUT row samples as fast as the inline 2-stop ALU lerp, which bounds any
+        stop table from below (48 translucent 4096² gradients: inline 64.7 ms, LUT 4-stop 59.8,
+        8-stop 67.0); the tier would save only a 1 KiB atlas row a ramp.
 - [x] Gradient interpolation color-space policy is explicit (§12.3) — never accidentally
       decided by texture format.
   - [x] Explicit `InterpolationSpace` enum (`viso-math` color.rs), default `LinearRgb`;

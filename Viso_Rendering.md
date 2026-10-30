@@ -958,7 +958,7 @@ GPU 内部使用 premultiplied alpha。
 3+ stops / expensive interpolation    -> cached 1D Gradient LUT atlas (persistent)
 ```
 
-不设 compact shared stop table 一档：在 shader 里逐像素遍历 3–8 个 stop 的 ALU 比一次 LUT 采样贵，而 LUT 行按 key 只 bake 一次、跨帧常驻，atlas 满时回收；省下的只是 atlas 行，换来的是每个像素更多的计算。
+不设 compact shared stop table 一档：在 shader 里逐像素遍历 3–8 个 stop 的 ALU 不会比一次 LUT 采样便宜，而 LUT 行按 key 只 bake 一次、跨帧常驻，atlas 满时回收；省下的只是 atlas 行（每个 ramp 1 KiB），换来的是每个像素更多的计算。实测（Metal，release，48 层半透明 4096² 全屏渐变，取 8 次最好）：inline 2-stop linear 64.7 ms、LUT 4-stop 59.8 ms、LUT 8-stop 67.0 ms；radial inline 62.2 ms、LUT 4-stop 56.2 ms。inline 只做 ALU 插值，是任何 stop table 的下限，LUT 与它持平，所以中间档没有可赢的成本。
 
 - 不为每个 gradient 默认绑定独立 uniform buffer；禁止每个 gradient 每帧重新创建 texture；
 - LUT key 至少包含：stop colors、stop offsets、interpolation space、extend mode、target color profile class；静态 gradient 只 bake 一次。
