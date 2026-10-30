@@ -1256,7 +1256,11 @@ Rules (as for `todo_features.md`):
   - a live macOS session: cursors, IME candidate placement, appearance and key-window
     notifications, memory pressure (`todo_platform.md`);
   - GPU time on presenting Vulkan and D3D12 devices (`todo_cli.md` C6).
-- [ ] ASUN rows decoded as they arrive in `viso-net`, once `asun-rs`'s incremental decoder lands.
+- [x] ASUN rows decoded as they arrive in `viso-net`: `Response::asun_rows::<T>()` hands out each row of
+  a `Vec<T>` body once its bytes are in, without waiting for `asun-rs` to grow an incremental decoder.
+  Text keeps a scanner's place across chunks and decodes each `(row)` under the header's schema;
+  binary decodes rows from the count on, retrying a cut row only once the buffer has doubled. Any
+  other text shape is decoded whole at the end.
 
 ## N9 — Governance
 
