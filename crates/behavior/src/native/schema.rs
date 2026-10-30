@@ -20,7 +20,7 @@ use viso_ende::{JsonValue, JsonWriter};
 use super::{
     Determinism, HookDomain, NativeCx, NativeError, NativeFunction, NativeHook, NativeKind,
     NativeLibrary, NativeTrait, NativeType, NativeWidget, Natives, Ownership, Param, SchemaTy,
-    ThreadDomain, VariantFields, WidgetEvent, WidgetProperty,
+    TARGET_PLATFORMS, ThreadDomain, VariantFields, WidgetEvent, WidgetProperty,
 };
 use crate::value::Value;
 
@@ -34,13 +34,23 @@ const VERSION: u32 = 1;
 ///
 /// A library declaring a widget a package cannot carry: one that is not a
 /// Rust widget ([`NativeWidget::rust`]), or one with slots, groups of its own,
-/// a group it provides or an event that bubbles.
+/// a group it provides or an event that bubbles; a function limited to a
+/// platform that is none of [`TARGET_PLATFORMS`].
 pub fn write(libraries: &[&NativeLibrary]) -> Result<String, String> {
     let mut out =
         format!("{{\n  \"format\": \"{FORMAT}\",\n  \"version\": {VERSION},\n  \"libraries\": [");
     for (i, library) in libraries.iter().enumerate() {
         for widget in library.widgets {
             carried(library, widget)?;
+        }
+        let methods = library.types.iter().flat_map(|t| t.methods);
+        for f in library.functions.iter().chain(methods) {
+            if let Some(t) = f.targets.iter().find(|t| !TARGET_PLATFORMS.contains(t)) {
+                return Err(format!(
+                    "`{}::{}` is limited to `{t}`, which is none of {TARGET_PLATFORMS:?}",
+                    library.path, f.name
+                ));
+            }
         }
         let mut head = JsonWriter::new();
         head.begin_object();
@@ -169,6 +179,14 @@ fn function(f: &NativeFunction) -> String {
         w.string(c);
     }
     w.end_array();
+    if !f.targets.is_empty() {
+        w.name("targets");
+        w.begin_array();
+        for t in f.targets {
+            w.string(t);
+        }
+        w.end_array();
+    }
     w.name("thread");
     w.string(f.thread.name());
     w.name("deterministic");
@@ -557,6 +575,19 @@ fn native_function(json: &JsonValue) -> Result<NativeFunction, String> {
         .iter()
         .map(|c| c.as_str().map(leak).ok_or("a capability is not a string"))
         .collect::<Result<Vec<_>, _>>()?;
+    let targets = match json.get("targets") {
+        None => Vec::new(),
+        Some(targets) => targets
+            .as_array()
+            .ok_or("`targets` is not an array")?
+            .iter()
+            .map(|t| match t.as_str() {
+                Some(t) if TARGET_PLATFORMS.contains(&t) => Ok(leak(t)),
+                Some(t) => Err(format!("`{t}` is not a target platform")),
+                None => Err("a target is not a string".to_owned()),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     let determinism = match string(json, "determinism")? {
         "none" => Determinism::None,
         "same_binary" => Determinism::SameBinary,
@@ -569,6 +600,7 @@ fn native_function(json: &JsonValue) -> Result<NativeFunction, String> {
         params,
         ret: schema_ty(field(json, "ret")?)?,
         capabilities: Box::leak(capabilities.into_boxed_slice()),
+        targets: Box::leak(targets.into_boxed_slice()),
         thread: thread(string(json, "thread")?)?,
         deterministic: flag(json, "deterministic")?,
         realtime_safe: flag(json, "realtime_safe")?,
@@ -788,7 +820,8 @@ mod tests {
             crate::native!(task "get" |_cx, url: String, tries: Option<i64>| -> Obj<Thing> {
                 Ok(Obj::new(Thing(url.len() as i64 + tries.unwrap_or(0))))
             })
-            .requires(&["network.http"]),
+            .requires(&["network.http"])
+            .only_on(&["macos", "web"]),
             crate::native!(fn "lines" |_cx, text: String| -> Vec<String> {
                 Ok(text.lines().map(str::to_owned).collect())
             })
@@ -830,7 +863,17 @@ mod tests {
             let (a, b) = (ours.function(path).unwrap(), theirs.function(path).unwrap());
             assert_eq!(a.function.signature(), b.function.signature(), "{path}");
             assert_eq!(a.function.capabilities, b.function.capabilities, "{path}");
+            assert_eq!(a.function.targets, b.function.targets, "{path}");
         }
+        let get = theirs.function("net::get").unwrap().function;
+        assert!(get.exists_on("web") && !get.exists_on("android"));
+        assert!(
+            theirs
+                .function("net::lines")
+                .unwrap()
+                .function
+                .exists_on("android")
+        );
         assert!(
             theirs
                 .function("net::Thing::status")
@@ -900,5 +943,26 @@ mod tests {
         };
         let error = write(&[&STACKED]).unwrap_err();
         assert!(error.contains("`stacked::Pile`"), "{error}");
+    }
+
+    #[test]
+    fn a_function_is_limited_only_to_known_platforms() {
+        static PHONE: NativeLibrary = NativeLibrary {
+            path: "phone",
+            version: 1,
+            functions: &[crate::native!(fn "dial" |_cx| -> () { Ok(()) }).only_on(&["symbian"])],
+            types: &[],
+            traits: &[],
+            derives: &[],
+            widgets: &[],
+        };
+        let error = write(&[&PHONE]).unwrap_err();
+        assert!(
+            error.contains("`phone::dial`") && error.contains("symbian"),
+            "{error}"
+        );
+        let text = r#"{"format":"viso-natives","version":1,"libraries":[{"path":"phone","version":1,"derives":[],"functions":[{"name":"dial","kind":"fn","params":[],"ret":"()","capabilities":[],"targets":["symbian"],"thread":"ui","deterministic":false,"realtime_safe":false,"cost":1,"constant":false,"property":false,"determinism":"none","presentation":false,"debug_draw":false}],"types":[]}]}"#;
+        let error = read(text).err().unwrap_or_default();
+        assert!(error.contains("symbian"), "{error}");
     }
 }

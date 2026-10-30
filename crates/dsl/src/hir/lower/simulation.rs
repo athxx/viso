@@ -71,6 +71,10 @@ pub struct TargetProfile {
     /// The languages a package packs the shaders its views paint with in:
     /// the target backend's, and `None` for the reference interpreter.
     pub shader_langs: Vec<viso_shader::program::ShaderLang>,
+    /// The platform the package is compiled for, of
+    /// [`viso_behavior::native::TARGET_PLATFORMS`]: a call to a native that
+    /// does not exist on it is `E6104`. `None` checks no platform.
+    pub platform: Option<&'static str>,
     /// Whether the source is a `ui!` fragment, compiled inside a Rust scope:
     /// a node type that no widget and no component of the unit declares names
     /// a component of that scope.
@@ -91,6 +95,7 @@ impl Default for TargetProfile {
             messages: None,
             assets: None,
             shader_langs: vec![viso_shader::program::ShaderLang::None],
+            platform: None,
             rust_scope: false,
         }
     }

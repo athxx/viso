@@ -1939,6 +1939,7 @@ widgets = "WIDGETS"       # crate 中 Rust Widget 的 `&'static [WidgetImpl]`，
 - **Rust Widget**：Library 的 `widgets` 中的 `NativeWidget::rust(name)` 是一个用 Rust 实现的 Widget，Schema 只有它自己的属性与事件，Native Package 只能携带这种 Widget（没有 Slot、属性组与冒泡事件）。`.vs` 像写其他节点一样写它：自己的属性按 Schema 定型（`E2103`），此外接受所有节点都有的布局、变换、焦点、`semantics.*`、`transition.*`、外观与标准事件，不接受子节点。它 Lower 为一个盒节点（Stack），自己的属性成为求值入口，自己事件的处理器按事件在 Schema 中的位置登记，不经事件路由，因此不能写 `capture`。实现是 `viso::native::RustWidget`：节点第一次显示时 `build` 在盒内建出内容，之后每个自有属性的值变化时 `set` 收到新值（相等的值不重复交付，热重载保留已交付的值与 Widget 实例）；它从自己挂上的处理器里以 `WidgetEvents::fire(cells, event, payload)` 报告事件，运行 View 对该事件的处理器。双向属性 `p` 由事件 `p_changed`（主属性也可以是 `changed`）写回，载荷就是新值，`bind p <=> state` 直接写入；包以 `pub static WIDGETS: &[WidgetImpl]` 提供实现，测试以 `viso::native::check_widgets(NATIVES, WIDGETS)` 核对与声明一一对应。展开把 View 用到的 Rust Widget 所在包的 `WIDGETS` 交给 Host，Release View Package 以 `ViewLoad::widgets` 交入；Host 没有链接到某个 Widget 的实现时，该节点不建内容并记录一次 Fault。HTML 导出不支持 Rust Widget；
 - Dev Session 的 Patch 只能链接 Live View 的 Host 已链接的 Library：首次调用构建未链接的包需要重新构建；
 - Capability 照旧：函数声明自己的 Capability，`Viso.toml` 的 `[package] capabilities` 授予，授权随模块到达 Host，授权之外的调用为 `E6103` Fault；`view!` 与 `component!` 以 `Viso.toml` 为编译依赖，改动授权即重新编译。
+- **平台可用性**：函数默认在每个平台存在；只在部分平台实现的函数以 `.only_on(&["ios", "android"])` 声明（名称取自 `viso::native::TARGET_PLATFORMS`：`macos`、`windows`、`linux`、`ios`、`android`、`web`），Schema 以 `targets` 写出（为空时省略），未知平台名在写 Schema 时被拒绝。按某个平台检查或构建时调用它不存在的函数为 `E6104`，指向调用并列出它存在的平台：`viso check <target>` 与 `viso build <target>` 按 target 的平台检查（host 为本机系统，`ios`、`android`，`web-*` 为 `web`，embedded device 为 `linux`，`headless` 与不写 target 时不检查）；`view!`/`component!` 为导入的每个受限函数生成按 `cfg` 守卫的 `compile_error!`，crate 为其他平台构建时以 `E6104` 失败。
 
 - 应用自己的 Native 放在其 workspace 中单独的 crate（如 `app-api`），与扩展 crate 一样是 Native Package：编译 View 的 crate 无法为自己生成它所依赖的 Schema。它只依赖 `viso`：`viso::native` 提供 `native!`、`NativeLibrary` 等写 Library 所需的类型与 `check`；返回的记录是 `#[derive(NativeData)]` 的 struct，可预期的失败以 `Result` 返回，等待网络的函数写作 `native!(task "profile" async |cx, id: i64| -> Result<Profile, String> { .. })`：Body 从 `cx` 取所需服务并返回 Future，其值即调用的值，丢弃即取消；不带默认 feature 依赖 `viso`，以免替 App 选 feature，测试另以 dev-dependency 带默认 feature：
 
@@ -9328,6 +9329,7 @@ RecordPatternField
 | E6101  | Native Schema 版本冲突；手写 Native 声明与 Registry 不符或使用非 Schema 类型（§47.2） |
 | E6102  | Native Ownership/Thread Domain 违规                     |
 | E6103  | Capability Denied（运行时）                             |
+| E6104  | Native 在构建的目标平台上不存在（§47.2）                |
 | E7101  | 执行预算超限                                            |
 | E7102  | 内存预算超限                                            |
 | E7103  | 算术故障：整数溢出、除以零、移位量越界（运行时）        |

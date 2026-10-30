@@ -689,8 +689,39 @@ fn lower_module(
         diagnostics,
     );
 
+    check_native_platforms(env, diagnostics);
     let facts = percent.solve();
     check_percent_flow(&flows, &facts, env, diagnostics)
+}
+
+/// `E6104` at each call of the module to a native that does not exist on
+/// the platform the package is compiled for.
+fn check_native_platforms(env: &ModuleEnv<'_>, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(platform) = env.decls.profile.platform else {
+        return;
+    };
+    let mut missing: Vec<(TextRange, &viso_behavior::native::NativeEntry)> = env
+        .native_calls
+        .borrow()
+        .iter()
+        .filter_map(|(&call, &id)| Some((call, env.natives.function_by_id(id)?)))
+        .filter(|(_, entry)| !entry.function.exists_on(platform))
+        .collect();
+    missing.sort_by_key(|(call, _)| call.start());
+    for (call, entry) in missing {
+        diagnostics.push(
+            Diagnostic::error(
+                "E6104",
+                call,
+                format!("`{}` does not exist on {platform}", entry.path),
+            )
+            .with_note(format!(
+                "it exists on {}; call it where the package is built for one of them, or \
+                 offer what it does another way on {platform}",
+                entry.function.targets.join(", ")
+            )),
+        );
+    }
 }
 
 /// Lowers one `component` declaration: schema + view/callable effect checks, registering each

@@ -199,6 +199,7 @@ E5104                         Duplicate Stable Id
 E6101                         Native Declaration Does Not Match the Schema
 E6102                         Native Ownership or Thread Domain Violation
 E6103                         Capability Denied
+E6104                         Native Unavailable on the Target
 E7101                         Execution Budget Exceeded
 E7102                         Memory Budget Exceeded
 E7103                         Arithmetic Fault

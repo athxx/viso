@@ -1393,8 +1393,12 @@ output, a live macOS session) is listed with the device runs of N8.
   browser (and Windows, Wayland, a lifting touch) reports the buttons still held. The runtime
   now tracks each pointer's buttons and hands the UI the released ones either way (verified
   over CDP: the press reaches `on_click`).
-- [ ] Per-target availability of natives, and the capability table rows it gives; lands with the
-  first native missing on some target (`todo_cli.md` C1.5, C4.4).
+- [x] Per-target availability of natives, and the capability table rows it gives (`todo_cli.md`
+  C1.5, C4.4). `NativeFunction::only_on` limits a native to platforms; the schema writes them as
+  `targets`. Lowering for a platform reports a call to a native missing there as `E6104`;
+  `check`/`build <target>` lower for the target's platform, and the macros gate a limited native
+  with a `cfg`'d `compile_error!`. Verified on `04-navigation`: a cargo build for macOS fails,
+  `check web-gpu` flags the call, and `check ios` passes.
 - [x] A pixel golden of the frame-profile HUD (`todo_cli.md` C6). `the_hud_draws_as_its_golden`
   shapes a capture's line with the fixture font, draws the HUD over a grey window on the CPU
   rasterizer and compares `tests/golden/profile_hud.bgra8`.

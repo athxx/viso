@@ -300,10 +300,11 @@ gap, and CI can run all of it headless.
       §17.2 keeps check fast).
 - [x] `--a11y strict` and `--i18n strict` (DSL §U8.2, §U10) make those findings
       errors.
-- [ ] A platform-gated native on a target that lacks it: natives declare no target
-      availability yet (every capability they require exists on every available
-      target). Blocked until the native schema gains per-target availability; the
-      check lands with the first native that is missing somewhere.
+- [x] A platform-gated native on a target that lacks it: a native declares the
+      platforms it exists on (`only_on`, the schema's `targets`); `check <target>` and
+      `build <target>` lower for the target's platform and a call to a native missing
+      there is `E6104`, naming the platforms it exists on; `view!`/`component!` gate
+      each imported limited native with a `cfg`'d `compile_error!`.
 - [x] A schema-enum property value names a variant of its enum: the widget enums
       (`Sizing`, `Track`, `Axis`, `Justify`, `Align`, `GridAlign`, `Alignment2D`,
       `FontWeight`, `TextOverflow`, `TextAlign`, `LiveRegion`, `Role`, …) and the
@@ -734,7 +735,7 @@ alternative.
 
 ### C4.4 — Web capability diagnostics (§33)
 
-- [ ] Capability table per target (GPU-only nodes, custom shaders, threads, file
+- [x] Capability table per target (GPU-only nodes, custom shaders, threads, file
       system, native libraries) in the compiler, consumed by `check <web-target>` and
       `build`; each diagnostic names the node, the target and the alternative
       (`WEB_*` codes registered in C2.3). `web-dom`'s rows are done:
@@ -743,7 +744,7 @@ alternative.
       same outside the island (a second island or one in a region is
       `WEB_DOM_UNSUPPORTED`) plus `WEB_HYBRID_NO_ISLAND`. On `web-gpu` every node, shader
       and native the compiler knows is available, so the rest of the table is the
-      platform-gated natives' (the item above). The
+      platform-gated natives' (the item above, `E6104`). The
       §33 classification already runs where a target lacks something today — the
       export lowering's findings (`viso export html|solid`), each at its span with
       the node, the capability and the alternative.
@@ -1108,9 +1109,8 @@ and traced from the CLI and from Studio over the same services.
       `android list/use/doctor/emulator/adb` and `ios list/use/doctor/simulator` manage
       their environments alone; no signing, provisioning or physical device in the dev
       loop; no `sdkmanager`/`avdmanager`/`simctl` in ordinary workflows.
-- [ ] Web: `web-gpu`, `web-dom`, `web-hybrid`, `serve`, capability diagnostics.
-      (`web-gpu`, `web-dom`, `web-hybrid` and `serve` done; the platform-gated rows of
-      the capability table remain, C4.4.)
+- [x] Web: `web-gpu`, `web-dom`, `web-hybrid`, `serve`, capability diagnostics
+      (the platform-gated rows of the capability table are `E6104`, C4.4).
 - [x] Language: `fmt`, `check`, `schema`, `explain`, `dump`, `lsp`.
 - [x] Test/Debug: `test`, `snapshot`, `inspect`, `profile` (`studio` dropped, see above).
 - [x] Delivery: `package`, artifact manifest, `export html`, `export solid`.

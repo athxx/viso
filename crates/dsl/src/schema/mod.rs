@@ -159,6 +159,8 @@ pub struct FunctionSchema {
     pub method: bool,
     /// The capabilities a caller needs.
     pub capabilities: Vec<String>,
+    /// The platforms it exists on; empty for every one.
+    pub targets: Vec<String>,
     /// The thread it runs on.
     pub thread: ThreadDomain,
     /// Whether equal arguments always give an equal result.
@@ -686,6 +688,7 @@ fn function(entry: &NativeEntry, method: bool) -> FunctionSchema {
         returns: f.ret.to_string(),
         method,
         capabilities: f.capabilities.iter().map(|&c| c.to_owned()).collect(),
+        targets: f.targets.iter().map(|&t| t.to_owned()).collect(),
         thread: f.thread,
         deterministic: f.deterministic,
         realtime_safe: f.realtime_safe,
@@ -873,6 +876,11 @@ fn write_function(w: &mut JsonWriter, function: &FunctionSchema) {
     w.string(&function.returns);
     w.name("capabilities");
     strings(w, &function.capabilities);
+    // Written for a native limited to some platforms alone.
+    if !function.targets.is_empty() {
+        w.name("targets");
+        strings(w, &function.targets);
+    }
     w.name("thread");
     w.string(function.thread.name());
     w.name("deterministic");

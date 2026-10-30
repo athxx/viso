@@ -748,6 +748,7 @@ fn mount<'a>(
             .map_err(|message| report.at(component.schema.view, message))?;
         let widgets = package_widgets(behavior, packages)
             .map_err(|message| report.at(component.schema.view, message))?;
+        allocations.extend(platform_gates(behavior, packages));
         module = module_tokens(behavior);
         let name = &behavior.component;
         (offer, page_offer) = if inputs.is_empty() {
@@ -985,6 +986,52 @@ fn package_libraries(
         }
     }
     Ok(quote! { &[#(#libraries),*] })
+}
+
+/// A `compile_error!` for each native of `packages` the module calls that
+/// does not exist on the platform the crate is built for (`E6104`), gated
+/// on the platforms it does exist on.
+fn platform_gates(behavior: &ViewBehavior, packages: &[NativePackage]) -> TokenStream {
+    let mut gates = TokenStream::new();
+    for import in behavior.module.natives() {
+        let path = &*import.path;
+        let found = packages
+            .iter()
+            .flat_map(|package| &package.libraries)
+            .find_map(|library| {
+                let rest = path.strip_prefix(library.path)?.strip_prefix("::")?;
+                let methods = library.types.iter().flat_map(|ty| {
+                    ty.methods.iter().filter(move |m| {
+                        rest.strip_prefix(ty.name)
+                            .and_then(|r| r.strip_prefix("::"))
+                            == Some(m.name)
+                    })
+                });
+                library
+                    .functions
+                    .iter()
+                    .filter(|f| f.name == rest)
+                    .chain(methods)
+                    .next()
+            });
+        let Some(function) = found.filter(|f| !f.targets.is_empty()) else {
+            continue;
+        };
+        let platforms = function.targets.iter().map(|target| match *target {
+            "web" => quote! { all(target_arch = "wasm32", target_os = "unknown") },
+            os => quote! { target_os = #os },
+        });
+        let message = format!(
+            "E6104: `{path}` does not exist on the platform this crate is built for; it exists \
+             on {}",
+            function.targets.join(", ")
+        );
+        gates.extend(quote! {
+            #[cfg(not(any(#(#platforms),*)))]
+            ::core::compile_error!(#message);
+        });
+    }
+    gates
 }
 
 /// The Rust widget implementations of each of `packages` whose widgets the

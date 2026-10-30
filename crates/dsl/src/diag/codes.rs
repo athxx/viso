@@ -3256,6 +3256,38 @@ capabilities = ["clipboard.write"]
         reserved: false,
     },
     CodeInfo {
+        code: "E6104",
+        severity: Severity::Error,
+        stage: Stage::Native,
+        title: "Native Unavailable on the Target",
+        explanation: "A native package may limit a native to the platforms it has an implementation \
+            on (`NativeFunction::only_on`: macos, windows, linux, ios, android, web). When the \
+            package is checked or built for a target, every call to a native that does not \
+            exist on that target's platform is this error, at the call, naming the platforms it \
+            does exist on. Every web target is `web`, an embedded board `linux`; a headless run \
+            and a check without a target check no platform.",
+        example: Example::Text(
+            r#"A dependency's native exists on phones alone:
+
+    crate::native!(action "vibrate" |cx, ms: i64| -> () { ... }).only_on(&["ios", "android"])
+
+and a view calls it:
+
+    import haptics;
+    export component Bell {
+        view { Text { text: "ring"; on click { haptics::vibrate(30); } } }
+    }
+
+`viso check web-gpu` reports E6104 at the call: `haptics::vibrate` does not exist on web.
+"#,
+        ),
+        fix: "Keep the call to the targets that have the native, or offer what it does another \
+            way where it is missing (a web API, another native).",
+        fixed: None,
+        commands: &["viso check <target>", "viso schema --list natives"],
+        reserved: false,
+    },
+    CodeInfo {
         code: "E7101",
         severity: Severity::Error,
         stage: Stage::Runtime,

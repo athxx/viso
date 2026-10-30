@@ -273,6 +273,10 @@ pub type Thunk = fn(&mut NativeCx<'_>, &[Value]) -> Result<Value, NativeError>;
 /// network, filesystem, process and clipboard access need an explicit grant.
 pub const PREVIEW_CAPABILITIES: &[&str] = &["asset.read.package", "gpu.draw.sandboxed", "ui.basic"];
 
+/// The platforms a native may be limited to ([`NativeFunction::only_on`]):
+/// a web target is `web` whether it draws to a canvas or the page's DOM.
+pub const TARGET_PLATFORMS: &[&str] = &["macos", "windows", "linux", "ios", "android", "web"];
+
 /// A native function or handle method.
 ///
 /// A method's first parameter is its receiver when its type is the owning
@@ -290,6 +294,9 @@ pub struct NativeFunction {
     pub ret: SchemaTy,
     /// The capabilities a caller must be granted.
     pub capabilities: &'static [&'static str],
+    /// The platforms it exists on, of [`TARGET_PLATFORMS`]; empty for every
+    /// one.
+    pub targets: &'static [&'static str],
     /// The thread it runs on.
     pub thread: ThreadDomain,
     /// Whether equal arguments always give an equal result with no observable
@@ -333,6 +340,7 @@ impl NativeFunction {
             params,
             ret,
             capabilities: &[],
+            targets: &[],
             thread: ThreadDomain::Ui,
             deterministic: false,
             realtime_safe: false,
@@ -350,6 +358,18 @@ impl NativeFunction {
     pub const fn requires(mut self, capabilities: &'static [&'static str]) -> NativeFunction {
         self.capabilities = capabilities;
         self
+    }
+
+    /// Makes it exist only on `targets`, of [`TARGET_PLATFORMS`]: a call
+    /// compiled for another is an error.
+    pub const fn only_on(mut self, targets: &'static [&'static str]) -> NativeFunction {
+        self.targets = targets;
+        self
+    }
+
+    /// Whether it exists on `platform`.
+    pub fn exists_on(&self, platform: &str) -> bool {
+        self.targets.is_empty() || self.targets.contains(&platform)
     }
 
     /// Runs it on `thread`.

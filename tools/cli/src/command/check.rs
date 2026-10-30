@@ -745,7 +745,29 @@ pub(super) fn profile(project: &Project, options: &Options) -> TargetProfile {
         messages: None,
         assets: None,
         shader_langs: shader_langs(project, options.target),
+        platform: platform(project, options.target),
         rust_scope: false,
+    }
+}
+
+/// The platform natives must exist on for `target`: the host's OS, a
+/// phone's, the browser for every web target, Linux for an embedded board;
+/// none for a headless run, which runs anywhere, or without a target.
+fn platform(project: &Project, target: Option<Target>) -> Option<&'static str> {
+    match target? {
+        Target::Host => match std::env::consts::OS {
+            os @ ("macos" | "windows" | "linux") => Some(os),
+            _ => None,
+        },
+        Target::Headless => None,
+        Target::Ios => Some("ios"),
+        Target::Android => Some("android"),
+        Target::WebGpu | Target::WebDom | Target::WebHybrid => Some("web"),
+        Target::Device(name) => match project.manifest.targets.device(name)?.profile.value {
+            Footprint::EmbeddedGpu | Footprint::EmbeddedCpu => Some("linux"),
+            Footprint::Web => Some("web"),
+            Footprint::Desktop | Footprint::Mobile => None,
+        },
     }
 }
 
@@ -897,6 +919,13 @@ mod tests {
         );
         // Without a target the boards' touch counts, as a phone's does.
         assert!(of(None).devices.touch);
+        // A board is Linux, any web target the browser; a run without a
+        // target or a headless one checks no platform.
+        assert_eq!(of(Some(Target::device("panel"))).platform, Some("linux"));
+        assert_eq!(of(Some(Target::WebDom)).platform, Some("web"));
+        assert_eq!(of(Some(Target::Android)).platform, Some("android"));
+        assert_eq!(of(Some(Target::Headless)).platform, None);
+        assert_eq!(of(None).platform, None);
         let bare = project("[package]\nname = \"a\"\n");
         assert!(!profile(&bare, &Options::default()).devices.touch);
     }
