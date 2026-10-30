@@ -619,7 +619,7 @@ viso/
 ├── Cargo.toml / Cargo.lock / rustfmt.toml
 ├── AGENTS.md（= CLAUDE.md）
 ├── Viso_Architecture.md        本文（架构合同主干）
-├── Viso_DSL_1.0.md / Viso_DSL_Rationale.md / Viso_Hot_Reload.md / Viso_CLI.md
+├── Viso_DSL_1.0.md / Viso_DSL_UI.md / Viso_DSL_Game.md / Viso_DSL_Implementation.md / Viso_DSL_Rationale.md / Viso_Hot_Reload.md / Viso_CLI.md
 ├── Viso_Rendering.md / Viso_Text_Font_Runtime.md
 ├── crates/
 │   ├── viso/          facade

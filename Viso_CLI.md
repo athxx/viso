@@ -505,7 +505,7 @@ Ctrl-C / SIGINT / SIGTERM                             130
 
 `--json` 模式下 `summary.payload.exit_code` 必须等于进程 exit code（§36.3）。AI/CI 不得依赖解析英文文本判断成功失败。
 
-`Viso_DSL_1.0.md` §137 的 0–3 与本表一致；其 `4 = Runtime/Backend` 对应本表 4/5，CLI exit code 以本节为准。
+`Viso_DSL_Implementation.md` §137 的 0–3 与本表一致；其 `4 = Runtime/Backend` 对应本表 4/5，CLI exit code 以本节为准。
 
 ---
 
@@ -1659,7 +1659,7 @@ viso schema --list widgets       # widgets | components | natives | types
 viso schema Button --json
 ```
 
-输出一条 `result` event，`payload` 为 `Viso_DSL_1.0.md` §139 定义的 schema object；CLI 不定义第二套 schema JSON。对象以 `schema_version`（当前 `1.0`，`viso --version` 的 `schema object`）开头：删除字段或改变字段含义时升级，新增字段不升级。Invalidation 名称只用 dirty class 规范名（`STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TEST SEMANTICS`）。符号不存在时输出 `diagnostic` 并 exit 1。`tests/golden/schema.json.txt` 固定 Widget、成员、Native 函数与类型、项目组件和 `--list` 的 JSON。
+输出一条 `result` event，`payload` 为 `Viso_DSL_Implementation.md` §139 定义的 schema object；CLI 不定义第二套 schema JSON。对象以 `schema_version`（当前 `1.0`，`viso --version` 的 `schema object`）开头：删除字段或改变字段含义时升级，新增字段不升级。Invalidation 名称只用 dirty class 规范名（`STRUCTURE STYLE MEASURE LAYOUT TRANSFORM PAINT HIT_TEST SEMANTICS`）。符号不存在时输出 `diagnostic` 并 exit 1。`tests/golden/schema.json.txt` 固定 Widget、成员、Native 函数与类型、项目组件和 `--list` 的 JSON。
 
 ### 18.3 Source origin
 
@@ -1971,7 +1971,7 @@ viso snapshot capture HomePage
 viso snapshot capture HomePage --output out/home.snap
 ```
 
-`Viso_DSL_1.0.md` §137 的 `viso snapshot <component> --output=<path>` 即此命令。
+`Viso_DSL_Implementation.md` §137 的 `viso snapshot <component> --output=<path>` 即此命令。
 
 ### 23.2 Compare
 
@@ -2747,7 +2747,7 @@ payload         type 对应的 payload（§36）
 ```text
 type          payload 关键字段
 progress      phase, message, current?, total?
-diagnostic    Viso_DSL_1.0.md §138 JSON Diagnostic 对象（原样）
+diagnostic    Viso_DSL_Implementation.md §138 JSON Diagnostic 对象（原样）
 artifact      kind, path, target, profile, build_id, size, hash, cached
 device        platform(ios|android), id, name, state(booting|ready|installing|launched|stopped)
 test          name, domain, status(pass|fail|skip), duration_ms, message?, artifacts[]?
@@ -2791,7 +2791,7 @@ summary       见 §36.3
 
 ### 36.1 Diagnostic
 
-`payload` 即 `Viso_DSL_1.0.md` §138 对象（`edits` 为空的 fix 是下一步要运行的命令，§53）：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16}, related[{…位置字段, message}], expected[], actual, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0014`）、环境诊断（如 `ENV_ANDROID_SDK`）、exporter 诊断与 CLI 自身诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
+`payload` 即 `Viso_DSL_Implementation.md` §138 对象（`edits` 为空的 fix 是下一步要运行的命令，§53）：`schema_version, severity, code, message, primary{file, byte_start, byte_end, line, column_utf16, end_line, end_column_utf16}, related[{…位置字段, message}], expected[], actual, notes[], fixes[{title, applicability, edits[{file, byte_start, byte_end, replacement}]}]`。CLI 不定义第二套 diagnostic 形状。Config 诊断（`C0001`–`C0014`）、环境诊断（如 `ENV_ANDROID_SDK`）、exporter 诊断与 CLI 自身诊断使用同一形状；无源码位置时 `primary` 为 `null`，Viso.toml 诊断的 `primary.file` 指向 `Viso.toml`。
 
 CLI 自身诊断 code 各自绑定一个 exit code（CLI 内只有一张表，失败按其 code 取 exit，不另行选择）；前缀即失败类别：`CLI_*` 2、`ENV_*` 3、`BUILD_*` 4、`RUN_*` 5、`TEST_*` 1、`INTERNAL_*` 7，`DEVICE_*`/`GAME_*` 按各自含义：
 
@@ -3653,7 +3653,7 @@ choice truly ambiguous
 
 ## 56. AI-friendly commands
 
-`Viso_DSL_1.0.md` §137 的 AI/CI 命令合同在 CLI 中的对应：
+`Viso_DSL_Implementation.md` §137 的 AI/CI 命令合同在 CLI 中的对应：
 
 ```text
 DSL §137                                    CLI

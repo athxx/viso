@@ -8,13 +8,18 @@ use viso_dsl::syntax::SyntaxNode;
 use viso_dsl::syntax::grammar::{Entry, parse_entry};
 use viso_dsl::{SyntaxKind, tokenize};
 
-const SPEC: &str = include_str!("../../../Viso_DSL_1.0.md");
-const RATIONALE: &str = include_str!("../../../Viso_DSL_Rationale.md");
+const DOCS: [&str; 5] = [
+    include_str!("../../../Viso_DSL_1.0.md"),
+    include_str!("../../../Viso_DSL_UI.md"),
+    include_str!("../../../Viso_DSL_Game.md"),
+    include_str!("../../../Viso_DSL_Implementation.md"),
+    include_str!("../../../Viso_DSL_Rationale.md"),
+];
 
-/// The ```viso blocks of the specification and the rationale.
+/// The ```viso blocks of the DSL documents.
 fn examples() -> Vec<String> {
     let mut out = Vec::new();
-    for text in [SPEC, RATIONALE] {
+    for text in DOCS {
         let mut open: Option<String> = None;
         for line in text.lines() {
             let fence = line.trim_start();

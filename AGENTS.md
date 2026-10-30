@@ -52,7 +52,7 @@ The core design summary is:
 Before changing architecture-sensitive code, read:
 
 1. `Viso_Architecture.md` — the architecture contract spine. It fixes the non-violable contracts and delegates detailed subsystem specifications to standalone documents:
-   - [`Viso_DSL_1.0.md`](./Viso_DSL_1.0.md) — Viso DSL language specification (normative; design rationale is informative in [`Viso_DSL_Rationale.md`](./Viso_DSL_Rationale.md)).
+   - [`Viso_DSL_1.0.md`](./Viso_DSL_1.0.md) — Viso DSL language specification (normative), with [`Viso_DSL_UI.md`](./Viso_DSL_UI.md) (UI standard surface: widgets, layout, adaptive), [`Viso_DSL_Game.md`](./Viso_DSL_Game.md) (Game Profile) and [`Viso_DSL_Implementation.md`](./Viso_DSL_Implementation.md) (compiler architecture, tooling contract, acceptance, implementation notes); design rationale is informative in [`Viso_DSL_Rationale.md`](./Viso_DSL_Rationale.md).
    - [`Viso_Hot_Reload.md`](./Viso_Hot_Reload.md) — development runtime & transactional hot reload.
    - [`Viso_CLI.md`](./Viso_CLI.md) — CLI command surface, JSON protocol, and tooling contract.
    - [`Viso_Text_Font_Runtime.md`](./Viso_Text_Font_Runtime.md) — text/font runtime specification.

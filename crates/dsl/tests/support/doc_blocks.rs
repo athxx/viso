@@ -1,7 +1,24 @@
-//! The fenced code blocks of the specification and the rationale.
+//! The fenced code blocks of the DSL documents.
 
-const SPEC: &str = include_str!("../../../../Viso_DSL_1.0.md");
-const RATIONALE: &str = include_str!("../../../../Viso_DSL_Rationale.md");
+const DOCS: [(&str, &str); 5] = [
+    (
+        "Viso_DSL_1.0.md",
+        include_str!("../../../../Viso_DSL_1.0.md"),
+    ),
+    ("Viso_DSL_UI.md", include_str!("../../../../Viso_DSL_UI.md")),
+    (
+        "Viso_DSL_Game.md",
+        include_str!("../../../../Viso_DSL_Game.md"),
+    ),
+    (
+        "Viso_DSL_Implementation.md",
+        include_str!("../../../../Viso_DSL_Implementation.md"),
+    ),
+    (
+        "Viso_DSL_Rationale.md",
+        include_str!("../../../../Viso_DSL_Rationale.md"),
+    ),
+];
 
 /// One fenced block: its info string, the line it opens on, its body, and
 /// whether it sits in the lexical part of the specification.
@@ -48,9 +65,9 @@ fn blocks(file: &'static str, text: &'static str) -> Vec<Block> {
     out
 }
 
-/// Every block of the specification, then of the rationale.
+/// Every block of the DSL documents, the specification first.
 pub fn all_blocks() -> Vec<Block> {
-    let mut all = blocks("Viso_DSL_1.0.md", SPEC);
-    all.extend(blocks("Viso_DSL_Rationale.md", RATIONALE));
-    all
+    DOCS.iter()
+        .flat_map(|&(file, text)| blocks(file, text))
+        .collect()
 }
