@@ -46,7 +46,6 @@ pub(super) fn check_members(decl: &SystemDecl, diagnostics: &mut Vec<Diagnostic>
         let what = match member {
             Member::View(_) => "a `view`",
             Member::Event(_) => "an `event`",
-            Member::Slot(_) => "a `slot`",
             Member::Effect(_) => "an `effect`",
             Member::Resource(_) => "a `resource`",
             _ => continue,

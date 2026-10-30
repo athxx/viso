@@ -32,14 +32,6 @@
 
 当前实现：`start` 只出现在 Action、Event Handler 与 Effect 主体（含其 `transaction`）中；在 `cleanup`、`fn`、Task 与初始化器中报 `E2501`，在 View 与 Computed 中报 `E2502`；目标不是 Task Call（含 Native Task）报 `E4401`；Module 级 `action` 中的 `start` 没有所属实例，报 `E4501`；System 中的 `start` 报 `E9109`。调用参数在启动它的 Transaction 中求值，Task 在该 Transaction 提交后启动。`success(p)` 绑定返回 `Result` 的 Task 的 `Ok` 载荷，否则绑定整个返回值；`error(p)` 绑定 `Err` 载荷，用在不返回 `Result` 的 Task 上报 `E2103`。三种 Handler 各自是一个新的 Transaction（Event 主体的调用权），以闭包捕获启动处读到的局部值，从不在启动它的 Transaction 内运行：`success` / `error` 在 Task 返回后的帧边界运行（即使 Task 未挂起就返回），`cancelled` 在取消它的 Transaction 提交之后运行。`policy = [..]` 恰好一个 `TaskPolicy::keep_latest`、`drop_new`、`queue` 或 `parallel(n)`（`n` 为不小于 1 的整数字面量），且只用于命名 Slot；具名 Slot 默认 `keep_latest`；未命名的 `start` 不受限并行。策略不合法、重复的 `policy` 或重复的 Handler 报 `E4302`。
 
-## 57. Part
-
-当前实现：`part name: T { .. }` 是带局部名 `name` 的节点，同一 View 中重复的 Part 名报 `E2002`；Component 与 Template 都可暴露 Part。`override part`/`replace part` 写在放置该 Component 的节点体或 Template 的 `use` 体中，名字须是其 Part（否则 `E3501`），写在 Widget 节点上或 View 顶层报 `E2103`。`override part` 的绑定与 Handler 属于调用方（读调用方的 State，在调用方的执行域中求值），按 Part 的节点类型检查（`E3101`、`E3102` 等）；它取代 Part 自身对同一 Property（`:` 或 `bind`）的绑定与同一 Event 的 Handler，其余保留。可覆盖的是 Widget Part 的全部 Property 与 Event；Part 是用户 Component 时其 Input 不经 `override` 覆盖（`E3711`），可用 `replace`。`replace part` 的 View Block 属于调用方，必须恰好挂载一个节点（否则 `E3502`）。Part 位于定义方 `for`/`match` 之内时，调用方的 `override`/`replace` 无法在其中求值（`E3711`）。
-
-## 58. Template
-
-当前实现：Template 是没有 State 的 Component，参数是它的 Input，与 Component 实例一样在编译期内联进放置它的 View（§40.1），每个 `use` 一个实例，实例身份为 `Template名#序号`。成员只能是 `slot`、`const`、`fn` 与 `view`，其他成员或缺少 `view` 报 `E3601`。`use` 的实参按位置或 `name: value` 给出参数，每个参数至多给一次（`E3102`），未知参数名报 `E3101`，多余实参与缺少无默认值的参数报 `E2103`，实参按参数类型检查；`use` 体只含 `fill`、`override part`、`replace part`（其他项 `E3601`）。Template 只能以 `use` 放置：写成节点 `T { .. }`，或 `use` 一个 Component，报 `E2103`。经 `use` 直接或间接放置自身所在的 Template 报 `E3601`：参数是运行期值，无法在编译期终止展开。展开后的节点保留定义处的 Source Origin，其实例记录调用处（`use` 或节点）的 Source Origin；挂载失败（`E3711`）的诊断同时指向两处。经 import 可见的其他文件的 Template 与本文件的同样内联。
-
 ## 59. Style
 
 当前实现：Style 的目标是本文件可见的原生 Widget 或用户 Component（否则 `E2001`）；Base 是本文件或经 import 可见的同目标 Style（名字无法解析报 `E2001`，解析为非 Style 或目标不同报 `E2103`），Base 图有环的 Style 报 `E2003`。Style 只绑定 Widget Schema 标为 Styleable 的 Property（各节点的布局、外观、变换、`transition.*`、容器的间距与对齐、文本样式；`styles`、内容、焦点与语义属性不是）或用户 Component 的 `@styleable` Input，否则 `E3101`；同一块（顶层或同一 `when`）内重复绑定报 `E3102`；值按 Property 类型检查（`E2103`），按 View 上下文检查副作用（`E2502`），可读 `theme`。`when` 的选择器只由选择器名、`!`、`&&`、`||` 与括号组成（否则 `E2103`），名字须是目标支持的选择器（U12.1，否则 `E2001`）。节点的 `styles` 是本文件或经 import 可见的 Style 名的列表（不是列表、元素不是名字或不是 Style 报 `E2103`，Style 目标不是节点类型报 `E2103`）。应用：每个 Style 先按顺序深度优先应用其 Base，再按源码顺序应用自身各项；对同一 Property，无条件绑定取代此前的全部值，`when` 绑定作为分支叠加，后写的优先；节点自身绑定（`:` 或 `bind`）的 Property 不取 Style 的值。`background` 与 `opacity` 编译为节点的基值入口加按优先级排列的分支（选择器的后缀式与值入口，入口注册在节点 `styles` 值的 Site 上，按确定顺序编号），运行时取第一个成立的分支，否则取基值，都没有时取属性默认值；`transition.background`/`transition.opacity` 取无条件值；其他 Property 的无条件值与节点自身的值同样折叠或成为 Binding，其上的 `when` 报 `E3711`。选择器中的 `disabled`、`checked`、`invalid` 读取节点自身的 `enabled`、`checked`、`invalid`（未绑定时取默认值并在编译期折叠：恒假的分支删除，恒真的分支成为基值）。用户 Component 节点上的 `styles` 给出其 `@styleable` Input（U2.3）。热重载、Release 包与宏路径相同。
@@ -910,7 +902,7 @@ viso schema viso::widgets::Button --json
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "kind": "component",
   "symbol": "viso::widgets::Button",
   "version": "1.0",
@@ -932,7 +924,6 @@ viso schema viso::widgets::Button --json
     }
   ],
   "slots": [],
-  "parts": [],
   "capabilities": [],
   "origin": "framework"
 }
@@ -940,12 +931,12 @@ viso schema viso::widgets::Button --json
 
 对象字段：
 
-- `schema_version`：对象格式版本（当前 `1.0`），删除字段或改变含义时升级；
+- `schema_version`：对象格式版本（当前 `1.1`），删除字段或改变含义时升级；
 - `origin`：框架符号为 `"framework"`，项目组件为其声明位置、SymbolId、`visibility` 与 schema `revision`（CLI §18.3）；
 - `kind`：`component`、`record`、`enum`、`native_library`、`native_function` 或 `native_type`；查询 `Symbol.member` 时另有 `member`，`inputs`/`events`/`functions`/`fields`/`variants` 只保留该成员；
 - `inputs`：Component 的 Property（分组 Property 写作 `semantics.label`，`invalidates` 为该 Binding 实际失效的 Dirty Class 规范名，`two_way` 标记可 `bind`），或 Native 函数的参数；`default` 未记录时为 `null`；
 - `events`：`bubbles` 为 Capture → Target → Bubble 路由的输入事件为真；Component 自身事件不冒泡；
-- `slots`：每项 `{name, type, default}`，`type` 为 `Slot<Node>`、`OptionalSlot<Node>` 或 `SlotList<Node>`，`default` 标记 `@default`（Native Widget 为其 Default Slot）；
+- `slots`：每项 `{name, type, default}`，`type` 为 `Slot<Node>`、`OptionalSlot<Node>` 或 `SlotList<Node>`（Native Widget 按其 Cardinality；用户 Component 的 Slot 都是 `SlotList<Node>`），`default` 标记默认 Slot（用户 Component 的 `children`）；
 - `record` 另有 `fields`（每项 `name`、`type`、`required`、`default`，`default` 为源码形式，未声明为 `null`）；`enum` 另有 `variants`（每项 `name`、`payload`：Tuple 载荷 `(I64, String)`、Record 载荷 `{ code: I64 }`，Unit 为 `null`）；
 - `capabilities`：函数自身所需，或 Library/Type 全部函数所需的并集；
 - `native_library`、`native_function`、`native_type` 另有 `functions`（每项：`name`、`symbol`、`kind`、`method`、`params`、`returns`、`capabilities`、`thread`、`deterministic`、`realtime_safe`、`cost`）；`native_library` 另有 `types`；`native_type` 另有 `ownership` 与 `thread`。
@@ -1067,7 +1058,7 @@ AddTraitImpl
 
 - Symbol ID 的文本形式是 32 位小写十六进制；`Document::symbol(&["Counter", "count"])` 按声明路径取得，`symbol_at(offset)` 取包含该位置的最内层声明；
 - Syntax ID 指向 View 结构节点、Property Binding 与 Event Handler：所属声明的 Symbol ID 加从声明向下的路径，每步是节点种类与它在父节点同种类子项中的序号，文本形式 `<symbol>/ViewDecl.0/AnonymousNode.1/PropertyBinding.0`。它在所属声明之外的任何编辑、以及声明内不在其路径前方增加同种类兄弟的编辑后仍然有效；`syntax_id_at(offset)` 取包含该位置的最内层节点；
-- 插入位置按规范成员顺序：`AddInput` 在最后一个 `input`/`slot`/`event` 之后，`AddState` 在最后一个 `state` 之后，`AddAction` 在 `view` 之前；`InsertNode` 是父节点的第 `index` 个结构子项（越界为最后一个）；`SetPropertyBinding` 只替换已有绑定的值，否则在最后一个绑定之后新增；`AttachEventHandler` 在绑定与 Handler 之后；`WrapInKeyedFor` 以 `for item in list key k { .. }` 包住节点；`ConvertTaskToResource` 要求组件成员 Task 返回 `Result<T, E>`，在 Task 之后声明 `resource name: Resource<T, E> { load = task(args); key = k; }`，并删除该组件中不带 Slot 与 Handler 的 `start task(..);`；`AddImport` 在最后一个 Import 之后（已存在时拒绝）；`CreateComponent`、`AddTraitImpl` 追加到文件末尾。插入文本按四空格缩进放在兄弟成员所在的缩进上，空的 `{}` 展开为多行；
+- 插入位置按规范成员顺序：`AddInput` 在最后一个 `input`/`event` 之后，`AddState` 在最后一个 `state` 之后，`AddAction` 在 `view` 之前；`InsertNode` 是父节点的第 `index` 个结构子项（越界为最后一个）；`SetPropertyBinding` 只替换已有绑定的值，否则在最后一个绑定之后新增；`AttachEventHandler` 在绑定与 Handler 之后；`WrapInKeyedFor` 以 `for item in list key k { .. }` 包住节点；`ConvertTaskToResource` 要求组件成员 Task 返回 `Result<T, E>`，在 Task 之后声明 `resource name: Resource<T, E> { load = task(args); key = k; }`，并删除该组件中不带 Slot 与 Handler 的 `start task(..);`；`AddImport` 在最后一个 Import 之后（已存在时拒绝）；`CreateComponent`、`AddTraitImpl` 追加到文件末尾。插入文本按四空格缩进放在兄弟成员所在的缩进上，空的 `{}` 展开为多行；
 - `apply` 返回不重叠、按源码顺序排列的 Text Edit 与编辑后的源码，以及新建的声明或节点的 ID 以便链式编辑。编辑后重新编译：出现源码原本没有的错误（按错误码与消息计数）时拒绝并返回这些诊断；不存在的 Symbol/Syntax ID 与种类不符的目标在改动文本前拒绝；
 - LSP 声明 `codeActionProvider`：`textDocument/codeAction` 返回与范围相交的诊断所带的同文件 Fix（`quickfix`，`machine-applicable` 的标为首选）与由光标处声明完全确定的结构化编辑（`refactor.rewrite`，目前是把返回 `Result` 的 Task 按其参数转为 Resource，名称去掉 `fetch_`/`load_`/`get_` 前缀），均已检查。`viso/syntaxId` 返回某位置的 Symbol ID 与 Syntax ID；`viso/structuredEdit` 接受 `{textDocument, edit: {kind, ..字段}}`，返回 `{edit: WorkspaceEdit, created}`，被拒绝时返回 `-32602` 错误与原因。
 
@@ -1133,7 +1124,6 @@ AddTraitImpl
 ### P3：Advanced
 
 - 用户定义 Trait/Impl、一般泛型、Const Generic、`dyn` Trait；
-- Template/Part；
 - 手写 Native 声明；
 - 多 System Game Profile / physics integration contract；
 - `cross_platform` 确定性浮点（§106.5）；

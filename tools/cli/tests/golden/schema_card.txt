@@ -1,6 +1,6 @@
 $ viso schema Card
 demo::card::Card
-  src/card.vs:1:18  public  version 1.2.0  revision cf67bb12bd93a73682e98d4706ad55b9
+  src/card.vs:1:18  public  version 1.2.0  revision 33ba059a4ac9aeb88c4a9d26b5fd0383
 
 Properties
   value  String        invalidates: MEASURE|LAYOUT|PAINT|SEMANTICS  bind
@@ -11,17 +11,17 @@ Events
   changed  (value: String)
 
 Slots
-  footer  OptionalSlot<Node>
+  footer  SlotList<Node>
 $ viso schema Point
 demo::card::Point  (record)
-  src/card.vs:16:15  public  version 1.2.0  revision 80f674d7bcb35a3307985ebd4e04a9f6
+  src/card.vs:16:15  public  version 1.2.0  revision fba0f26ff59fe7bce77272f8a2fa798c
 
 Fields
   x  I64
   y  I64 = 0
 $ viso schema Status
 demo::card::Status  (enum)
-  src/card.vs:21:6  private  version 1.2.0  revision d30f56d4873ab9de6c7b93812ebb1585
+  src/card.vs:21:6  private  version 1.2.0  revision a1da801aa73de70f29da8edb00a33897
 
 Variants
   idle

@@ -26,7 +26,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use viso_behavior::native::SlotCardinality;
 
-use crate::ast::{AstNode, ComponentDecl, Member, SlotDecl};
+use crate::ast::{AstNode, ComponentDecl, ElseBranch, Member, ViewItem};
 use crate::diag::{Diagnostic, Related};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::TextRange;
@@ -97,28 +97,6 @@ pub(crate) fn lower_component(
     let mut computed_order: Vec<ComputedEntry> = Vec::new();
 
     let primary = super::lower::primary_input(decl);
-    // A template's parameters are its inputs.
-    for param in decl.template_params() {
-        let member_name = token_text(param.name());
-        let symbol = env.member_symbol(&member_name);
-        let ty = param
-            .ty()
-            .map(|t| resolve_annotation(&t, &nominal, param.syntax().text_range(), diagnostics))
-            .unwrap_or(Ty::Unknown);
-        let meta = decl_meta(
-            symbol,
-            ty,
-            super::effect::EffectClass::Read,
-            OwnershipMode::Borrowed,
-            param.syntax().text_range(),
-        );
-        schema.inputs.push(HirInput {
-            name: member_name,
-            primary: false,
-            meta,
-        });
-    }
-
     for member in decl.members() {
         match member {
             Member::Input(input) => {
@@ -336,7 +314,7 @@ pub(crate) fn lower_component(
             Member::View(view) => {
                 schema.view = Some(view.syntax().text_range());
             }
-            Member::Slot(_) | Member::Effect(_) | Member::Native(_) | Member::Const(_) => {}
+            Member::Effect(_) | Member::Native(_) | Member::Const(_) => {}
         }
     }
 
@@ -667,101 +645,113 @@ pub(super) fn callable_node(
     }
 }
 
-/// The `slot` members of `decl`, in declaration order, with the `@default` attribute
-/// that marks the one bare child items fill. A second `@default` is `E3004`; a type
-/// other than `Slot<Node>`, `OptionalSlot<Node>` or `SlotList<Node>` is `E2103` (the
-/// slot then takes any number of nodes, so its callers are not diagnosed again); a
-/// default on a `Slot<Node>`, which takes exactly one node, is `E3502`.
+/// The slots `decl`'s view places, in source order: `slot name` a named
+/// slot, a bare `slot` the default one ([`crate::ast::DEFAULT_SLOT`]), each taking any
+/// number of nodes. A name placed twice, a second default slot, or a slot
+/// inside a `for`, which would place its caller's nodes once per item, is
+/// `E3502`.
 pub(crate) fn slots_of(decl: &ComponentDecl, diagnostics: &mut Vec<Diagnostic>) -> Vec<HirSlot> {
-    let mut slots: Vec<HirSlot> = Vec::new();
-    let mut marked: Option<TextRange> = None;
-    for child in decl.syntax().children() {
-        if child.kind() == crate::syntax::SyntaxKind::Attribute {
-            if attribute_name(&child).as_deref() == Some("default") {
-                marked = Some(child.text_range());
+    fn walk(
+        items: impl Iterator<Item = ViewItem>,
+        in_for: bool,
+        slots: &mut Vec<HirSlot>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        for item in items {
+            match item {
+                ViewItem::Slot(slot) => {
+                    let name = slot.slot_name();
+                    let keyword = slot
+                        .syntax()
+                        .children_with_tokens()
+                        .into_iter()
+                        .filter_map(|e| e.as_token().cloned())
+                        .find(|t| t.kind() == crate::syntax::SyntaxKind::SlotKw);
+                    let at = slot
+                        .name()
+                        .or(keyword)
+                        .map_or(slot.syntax().text_range(), |t| t.text_range());
+                    if in_for {
+                        diagnostics.push(Diagnostic::error(
+                            "E3502",
+                            at,
+                            format!(
+                                "the slot `{name}` is inside a `for`, which would place its caller's nodes once per item"
+                            ),
+                        ));
+                    } else if let Some(first) = slots.iter().find(|s| s.name == name) {
+                        let mut diagnostic = Diagnostic::error(
+                            "E3502",
+                            at,
+                            format!("the slot `{name}` is placed twice in this view"),
+                        );
+                        diagnostic
+                            .related
+                            .push(Related::new(first.declared_at, "placed first here"));
+                        diagnostics.push(diagnostic);
+                    } else {
+                        slots.push(HirSlot {
+                            name,
+                            cardinality: SlotCardinality::Many,
+                            default: slot.name().is_none(),
+                            declared_at: at,
+                        });
+                    }
+                    if let Some(block) = slot.body() {
+                        walk(block.items(), in_for, slots, diagnostics);
+                    }
+                }
+                ViewItem::Named(node) => {
+                    if let Some(body) = node.body() {
+                        walk(body.members(), in_for, slots, diagnostics);
+                    }
+                }
+                ViewItem::Anonymous(node) => {
+                    if let Some(body) = node.body() {
+                        walk(body.members(), in_for, slots, diagnostics);
+                    }
+                }
+                ViewItem::Fill(fill) => {
+                    if let Some(block) = fill.body() {
+                        walk(block.items(), in_for, slots, diagnostics);
+                    }
+                }
+                ViewItem::If(view_if) => {
+                    let mut next = Some(view_if);
+                    while let Some(arm) = next.take() {
+                        if let Some(block) = arm.then_block() {
+                            walk(block.items(), in_for, slots, diagnostics);
+                        }
+                        match arm.else_branch() {
+                            Some(ElseBranch::If(nested)) => next = Some(nested),
+                            Some(ElseBranch::Block(block)) => {
+                                walk(block.items(), in_for, slots, diagnostics)
+                            }
+                            None => {}
+                        }
+                    }
+                }
+                ViewItem::Match(view_match) => {
+                    for arm in view_match.arms() {
+                        if let Some(block) = arm.body() {
+                            walk(block.items(), in_for, slots, diagnostics);
+                        }
+                    }
+                }
+                ViewItem::For(view_for) => {
+                    if let Some(block) = view_for.body() {
+                        walk(block.items(), true, slots, diagnostics);
+                    }
+                }
+                ViewItem::Property(_) | ViewItem::Handler(_) | ViewItem::TwoWayBinding(_) => {}
             }
-            continue;
         }
-        let attribute = marked.take();
-        let Some(slot) = SlotDecl::cast(child) else {
-            continue;
-        };
-        let Some(name) = slot.name() else {
-            continue;
-        };
-        let text = slot.ty().map(|t| t.syntax().text().to_string());
-        let spelled: String = text
-            .iter()
-            .flat_map(|t| t.chars())
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        let kinds = [
-            SlotCardinality::One,
-            SlotCardinality::Optional,
-            SlotCardinality::Many,
-        ];
-        let cardinality = kinds.into_iter().find(|c| c.type_name() == spelled);
-        let cardinality = match cardinality {
-            Some(c) => c,
-            None => {
-                let at = slot
-                    .ty()
-                    .map_or(name.text_range(), |t| t.syntax().text_range());
-                diagnostics.push(
-                    Diagnostic::error(
-                        "E2103",
-                        at,
-                        format!(
-                            "a slot's type is `Slot<Node>`, `OptionalSlot<Node>` or `SlotList<Node>`, not `{spelled}`"
-                        ),
-                    )
-                    .expecting(kinds.map(SlotCardinality::type_name), spelled.clone()),
-                );
-                SlotCardinality::Many
-            }
-        };
-        if let (SlotCardinality::One, Some(default)) = (cardinality, slot.default()) {
-            diagnostics.push(Diagnostic::error(
-                "E3502",
-                default.text_range(),
-                "a `Slot<Node>` takes exactly one node, so it has no default; declare it `OptionalSlot<Node>` or `SlotList<Node>`",
-            ));
-        }
-        let default = match (attribute, slots.iter().find(|s| s.default)) {
-            (Some(at), Some(first)) => {
-                let mut diagnostic = Diagnostic::error(
-                    "E3004",
-                    at,
-                    format!(
-                        "only one slot can be `@default`, and `{}` already is",
-                        first.name
-                    ),
-                );
-                diagnostic
-                    .related
-                    .push(Related::new(first.declared_at, "the default slot"));
-                diagnostics.push(diagnostic);
-                false
-            }
-            (attribute, _) => attribute.is_some(),
-        };
-        slots.push(HirSlot {
-            name: name.text().trim_start_matches("r#").to_string(),
-            cardinality,
-            default,
-            declared_at: name.text_range(),
-        });
+    }
+    let mut slots = Vec::new();
+    if let Some(block) = decl.view().and_then(|v| v.block()) {
+        walk(block.items(), false, &mut slots, diagnostics);
     }
     slots
-}
-
-/// The path an attribute names: `default` for `@default`.
-fn attribute_name(attr: &crate::syntax::SyntaxNode) -> Option<String> {
-    let path = attr
-        .children()
-        .into_iter()
-        .find(|c| c.kind() == crate::syntax::SyntaxKind::PathExpr)?;
-    Some(path.text().to_string().trim().to_string())
 }
 
 #[cfg(test)]

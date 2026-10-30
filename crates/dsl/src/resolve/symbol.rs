@@ -111,7 +111,6 @@ pub enum SymbolKind {
     TypeParam = 19,
     /// A trait's or an impl's associated type.
     AssocType = 20,
-    Template = 21,
     /// A named node of a component's view, which its actions and handlers
     /// reach as a `NodeRef`.
     Node = 22,

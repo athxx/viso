@@ -10,7 +10,7 @@ use super::{
     EventSchema, FieldSchema, InputSchema, Schema, SchemaKind, SlotSchema, SourceOrigin,
     VariantSchema, dirty_names,
 };
-use crate::ast::{AstNode, CompilationUnit, ComponentDecl, Item, Member, PartNode, RecordField};
+use crate::ast::{AstNode, CompilationUnit, ComponentDecl, Item, Member, RecordField};
 use crate::frontend::{component_decls, graph_consts, graph_units, input_invalidations};
 use crate::hir::{FieldInfo, HirComponent, LoweredPackage, VariantPayload};
 use crate::package::LoadedPackage;
@@ -260,14 +260,6 @@ fn component_schema(
         .collect();
     capabilities.sort();
     capabilities.dedup();
-    let mut parts: Vec<String> = decl
-        .syntax()
-        .descendants()
-        .into_iter()
-        .filter_map(PartNode::cast)
-        .filter_map(|part| Some(part.name()?.text()))
-        .collect();
-    parts.dedup();
     Schema {
         inputs,
         events,
@@ -280,7 +272,6 @@ fn component_schema(
                 default: slot.default,
             })
             .collect(),
-        parts,
         capabilities,
         ..Schema::empty(SchemaKind::Component, schema.name.clone(), String::new())
     }

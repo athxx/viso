@@ -172,18 +172,17 @@ fn declared(token: &SyntaxToken) -> Option<(TokenType, u32)> {
         | SyntaxKind::TaskDecl
         | SyntaxKind::ShaderFn
         | SyntaxKind::NativeDecl => (TokenType::Function, 0),
-        SyntaxKind::StateDecl | SyntaxKind::SlotDecl | SyntaxKind::ResourceDecl => {
+        SyntaxKind::StateDecl | SyntaxKind::SlotItem | SyntaxKind::ResourceDecl => {
             (TokenType::Property, 0)
         }
         SyntaxKind::InputDecl | SyntaxKind::ComputedDecl => (TokenType::Property, READONLY),
         SyntaxKind::EventDecl => (TokenType::Event, 0),
         SyntaxKind::ConstDecl => (TokenType::Variable, READONLY),
         SyntaxKind::GenericParam => (TokenType::TypeParameter, 0),
-        SyntaxKind::NamedNode | SyntaxKind::PartNode => (TokenType::Variable, READONLY),
+        SyntaxKind::NamedNode => (TokenType::Variable, READONLY),
         SyntaxKind::TypeAliasDecl
         | SyntaxKind::TraitDecl
         | SyntaxKind::AssocTypeDecl
-        | SyntaxKind::TemplateDecl
         | SyntaxKind::StyleDecl
         | SyntaxKind::ThemeDecl
         | SyntaxKind::ShaderDecl => (TokenType::Type, 0),
@@ -262,10 +261,7 @@ fn contextual(
                 .parent()
                 .and_then(|path| path.parent())
                 .is_some_and(|n| {
-                    matches!(
-                        n.kind(),
-                        SyntaxKind::AnonymousNode | SyntaxKind::NamedNode | SyntaxKind::PartNode
-                    )
+                    matches!(n.kind(), SyntaxKind::AnonymousNode | SyntaxKind::NamedNode)
                 });
             let text = token.text();
             if in_node {

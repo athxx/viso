@@ -233,11 +233,11 @@ const CARD: &str = r#"export component Card {
     input title: String;
     input dense: Bool = false;
     event changed(value: String);
-    slot footer: OptionalSlot<Node>;
     view {
         Column {
             Text(title)
             if dense { Text(value) }
+            slot footer
         }
     }
 }

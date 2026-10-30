@@ -1664,11 +1664,11 @@ let fragment = ui! {
         stage: Stage::View,
         title: "No Default Slot",
         explanation: "A node body contains bare child items, but the node's type has no default slot to \
-            receive them. Bare structure items in a node body go into the type's `@default` \
-            slot; leaf widgets such as `Text`, `Button` and `TextInput` have no slots at all, \
-            and a user component without a `@default` slot only accepts children through \
-            `fill`. This usually happens when a node is nested inside a leaf widget, or when a \
-            component's slots are all named.",
+            receive them. Bare structure items in a node body go into the type's default slot \
+            `children`, the one a component's view places with a bare `slot`; leaf widgets such \
+            as `Text`, `Button` and `TextInput` have no slots at all, and a component whose view \
+            places only named slots accepts children only through `name { ... }`. This usually \
+            happens when a node is nested inside a leaf widget.",
         example: Example::Source(
             r#"component A {
     view {
@@ -1682,8 +1682,8 @@ let fragment = ui! {
 "#,
         ),
         fix: "Move the child out to a container that has a default slot, or fill one of the \
-            component's named slots with `fill name { ... }`; if it is your own component, \
-            mark one of its slots `@default`.",
+            component's named slots with `name { ... }`; if it is your own component, place a \
+            bare `slot` in its view.",
         fixed: Some(
             r#"Column {
     Text("Title")
@@ -1695,53 +1695,13 @@ let fragment = ui! {
         reserved: false,
     },
     CodeInfo {
-        code: "E3004",
-        severity: Severity::Error,
-        stage: Stage::View,
-        title: "Several Default Slots",
-        explanation: "A component or template marks more than one slot `@default`. The default slot is \
-            where bare child items of a node go, so there can be at most one per declaration; \
-            with two, the compiler could not decide which slot a bare child fills. The \
-            diagnostic points at the second `@default` and names the slot that already is the \
-            default.",
-        example: Example::Source(
-            r#"component Panel {
-    @default
-    slot header: SlotList<Node> = empty;
-
-    @default
-    slot body: SlotList<Node> = empty;
-
-    view {
-        Column {
-            SlotOutlet { slot: header; }
-            SlotOutlet { slot: body; }
-        }
-    }
-}
-"#,
-        ),
-        fix: "Keep `@default` on one slot and remove it from the others; callers fill the other \
-            slots by name with `fill`.",
-        fixed: Some(
-            r#"slot header: SlotList<Node> = empty;
-
-@default
-slot body: SlotList<Node> = empty;
-"#,
-        ),
-        commands: &[],
-        reserved: false,
-    },
-    CodeInfo {
         code: "E3101",
         severity: Severity::Error,
         stage: Stage::View,
         title: "Unknown Property",
         explanation: "A node binds a property that its type's schema does not declare. Widgets expose a \
             fixed schema, user components expose their `input`s, parent-provided properties \
-            such as `grid.row` come from the parent container, and a template's `use` takes \
-            the template's parameters; any other name is rejected. The usual cause is a \
+            such as `grid.row` come from the parent container; any other name is rejected. The usual cause is a \
             misspelling, and the diagnostic suggests the nearest known name. In a `style`, a \
             property that is not styleable is reported the same way.",
         example: Example::Source(
@@ -1767,7 +1727,7 @@ slot body: SlotList<Node> = empty;
         stage: Stage::View,
         title: "Property Bound Twice",
         explanation: "The same property is bound more than once in one node body (with `:` or `bind`), \
-            one style block, or one template `use`. Each property of a node has exactly one \
+            or one style block. Each property of a node has exactly one \
             binding, so a second one would silently override the first. The diagnostic points \
             at the repeated binding and at the first one.",
         example: Example::Source(
@@ -2169,35 +2129,31 @@ if !open preserve "closed-panel" { Text("b") }
         code: "E3501",
         severity: Severity::Error,
         stage: Stage::View,
-        title: "Unknown Slot Or Part",
-        explanation: "A `fill`, `SlotOutlet`, `override part` or `replace part` names a slot or part the \
-            target does not declare. `fill name { ... }` must name a slot of the placed \
-            component or template, `override part`/`replace part` a part it exposes, and \
-            `SlotOutlet { slot: name; }` a slot of the component whose view it is in. The \
-            usual cause is a misspelling, and the diagnostic suggests the nearest name.",
+        title: "Unknown Slot",
+        explanation: "A fill `name { ... }` names a slot the placed component does not have. A \
+            component's slots are the `slot name` items of its view, plus `children` when it \
+            places a bare `slot`; a native container's slots are those of its schema. The usual \
+            cause is a misspelling, and the diagnostic suggests the nearest name.",
         example: Example::Source(
             r#"component Card {
-    slot footer: OptionalSlot<Node> = None;
-
     view {
-        Column { SlotOutlet { slot: footer; } }
+        Column { slot footer }
     }
 }
 
 export component App {
     view {
         Card {
-            fill foter { Text("Done") }
+            foter { Text("Done") }
         }
     }
 }
 "#,
         ),
-        fix: "Name a slot or part the target declares; query the component's schema to list \
-            them.",
+        fix: "Name a slot the component places; query its schema to list them.",
         fixed: Some(
             r#"Card {
-    fill footer { Text("Done") }
+    footer { Text("Done") }
 }
 "#,
         ),
@@ -2208,14 +2164,13 @@ export component App {
         code: "E3502",
         severity: Severity::Error,
         stage: Stage::View,
-        title: "Slot Cardinality Conflict",
-        explanation: "The nodes given to a slot do not fit its cardinality. A `Slot<Node>` takes exactly \
-            one node and has no default, an `OptionalSlot<Node>` takes zero or one, and a \
-            `SlotList<Node>` any number. Cardinality is checked statically over the number of \
-            nodes each item can produce: a node counts one, `if` without `else` can produce \
-            zero, and `for` any number. It is also a conflict to fill a single slot twice, to \
-            mix bare children with `fill` of the default slot, to leave a `Slot<Node>` \
-            unfilled, or to place a slot's `SlotOutlet` twice or inside a `for`.",
+        title: "Slot Conflict",
+        explanation: "A slot is placed or filled in a way that has no single meaning. A component's view \
+            places each slot once and never inside a `for`, which would put its caller's nodes \
+            once per item; a caller fills each slot once and does not mix bare children with a \
+            `children { ... }` fill. A native container's slot also has a cardinality, checked \
+            over the number of nodes each item can produce: `Scroll` takes exactly one child, \
+            a node counts one, `if` without `else` can produce zero, and `for` any number.",
         example: Example::Source(
             r#"component A {
     view {
@@ -2227,9 +2182,8 @@ export component App {
 }
 "#,
         ),
-        fix: "Give the slot as many nodes as its type allows, for example by wrapping several \
-            nodes in one container; declare the slot `SlotList<Node>` if it should take any \
-            number.",
+        fix: "Place and fill each slot once; give a native slot as many nodes as it takes, for \
+            example by wrapping several nodes in one container.",
         fixed: Some(
             r#"Scroll {
     Column {
@@ -2240,42 +2194,6 @@ export component App {
 "#,
         ),
         commands: &["viso schema <Component>"],
-        reserved: false,
-    },
-    CodeInfo {
-        code: "E3601",
-        severity: Severity::Error,
-        stage: Stage::View,
-        title: "Invalid Template",
-        explanation: "A template is a stateless piece of view structure expanded where each `use` places \
-            it. Its members can only be `slot`, `const`, `fn` and `view`, and it must have a \
-            `view`; `state`, `input`, `action` and other members are rejected. A `use` body \
-            holds only `fill`, `override part` and `replace part`, since the template's \
-            parameters are passed as arguments. A template that places itself, directly or \
-            through another template, would expand forever and is also rejected.",
-        example: Example::Source(
-            r#"template Badge() {
-    state count: I64 = 0;
-
-    view { Text("badge") }
-}
-
-export component App {
-    view {
-        Column { use Badge(); }
-    }
-}
-"#,
-        ),
-        fix: "Keep only `slot`, `const`, `fn` and `view` in a template and pass values as \
-            parameters; if the piece needs its own state, make it a `component`.",
-        fixed: Some(
-            r#"template Badge(label: String) {
-    view { Text(label) }
-}
-"#,
-        ),
-        commands: &[],
         reserved: false,
     },
     CodeInfo {

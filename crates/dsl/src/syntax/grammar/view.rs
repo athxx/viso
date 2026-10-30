@@ -7,8 +7,7 @@
 //! ## The `:` here is a binding, not an ascription
 //!
 //! In a node body `PropertyPath ":" Expression ";"` binds a property; the same
-//! colon in `node id: Type` and `part id: Type` separates a node's name from its
-//! component type. This is the declarative half of the `:` vs `=` split — the
+//! colon in `node id: Type` separates a node's name from its component type. This is the declarative half of the `:` vs `=` split — the
 //! imperative half (`let`/assignment) lives in [`super::stmt`]. The two never
 //! collide because a view block is never entered from statement position.
 //!
@@ -42,7 +41,8 @@ pub(super) fn view_fragment_items(p: &mut Parser) {
     }
 }
 
-/// `"{" ViewStructureItem* "}"` — a view block or the body of a `fill` clause.
+/// `"{" ViewStructureItem* "}"` — a view block, a slot's default content or
+/// what a slot fill puts in the slot.
 fn view_block(p: &mut Parser) {
     if p.enter().is_some() {
         return;
@@ -60,15 +60,14 @@ fn view_block(p: &mut Parser) {
     p.leave();
 }
 
-/// One structure item at the top of a view block: a node, a control-flow form, or
-/// a `template` use. Leading attributes are absorbed
-/// into the item they decorate.
+/// One structure item at the top of a view block: a node, a slot or a
+/// control-flow form. Leading attributes are absorbed into the item they
+/// decorate.
 fn view_structure_item(p: &mut Parser) {
     attributes(p);
     match view_keyword(p) {
         Some(SyntaxKind::NodeKw) => return named_node(p),
-        Some(SyntaxKind::PartKw) => return part_node(p),
-        Some(SyntaxKind::UseKw) => return template_use(p),
+        Some(SyntaxKind::SlotKw) => return slot_item(p),
         _ => {}
     }
     match p.current() {
@@ -89,16 +88,6 @@ fn named_node(p: &mut Parser) {
     p.expect(SyntaxKind::Colon);
     node_head(p);
     m.complete(p, SyntaxKind::NamedNode);
-}
-
-/// `"part" IDENT ":" ComponentType NodeBody`.
-fn part_node(p: &mut Parser) {
-    let m = p.start();
-    p.bump_as(SyntaxKind::PartKw);
-    name(p);
-    p.expect(SyntaxKind::Colon);
-    node_head(p);
-    m.complete(p, SyntaxKind::PartNode);
 }
 
 /// `NodeHead` — an unnamed node, identified only by its type.
@@ -153,20 +142,16 @@ fn node_body(p: &mut Parser) {
 }
 
 /// One member of a node body: a property binding, a two-way binding, an event
-/// handler, a `fill` clause, a nested node, a control-flow form, or a part
-/// override/replacement. Dispatch is on the leading keyword; anything else is
-/// tried as a property binding (`PropertyPath : Expr ;`).
+/// handler, a slot fill, a nested node, a slot or a control-flow form.
+/// Dispatch is on the leading keyword; a lowercase name before `{` fills a
+/// slot; anything else is tried as a property binding (`PropertyPath : Expr`).
 pub(super) fn node_member(p: &mut Parser) {
     attributes(p);
     match view_keyword(p) {
         Some(SyntaxKind::OnKw) => return event_handler(p),
         Some(SyntaxKind::BindKw) => return two_way_binding(p),
-        Some(SyntaxKind::FillKw) => return fill_clause(p),
         Some(SyntaxKind::NodeKw) => return named_node(p),
-        Some(SyntaxKind::PartKw) => return part_node(p),
-        Some(SyntaxKind::UseKw) => return template_use(p),
-        Some(SyntaxKind::OverrideKw) => return part_override(p),
-        Some(SyntaxKind::ReplaceKw) => return part_replace(p),
+        Some(SyntaxKind::SlotKw) => return slot_item(p),
         _ => {}
     }
     match p.current() {
@@ -174,11 +159,12 @@ pub(super) fn node_member(p: &mut Parser) {
         SyntaxKind::ForKw => view_for(p),
         SyntaxKind::MatchKw => view_match(p),
         SyntaxKind::ChildKw => p.reserved_child(),
-        // A leading name is either a nested anonymous node (`Type { ... }`) or a
-        // property binding (`path : expr ;`). A `{` after the type marks the node;
-        // otherwise it is a property path.
+        // A leading name is a slot fill (`name { ... }`), a nested anonymous
+        // node (`Type { ... }`) or a property binding (`path : expr`).
         SyntaxKind::Ident | SyntaxKind::RawIdent => {
-            if starts_anonymous_node(p) {
+            if starts_slot_fill(p) {
+                slot_fill(p);
+            } else if starts_anonymous_node(p) {
                 anonymous_node(p);
             } else {
                 property_binding(p);
@@ -193,24 +179,27 @@ pub(super) fn node_member(p: &mut Parser) {
 }
 
 /// The contextual keyword the cursor acts as at a node-body / view-block item
-/// start: `node IDENT :`, `part IDENT :`, `on IDENT`, `bind IDENT`,
-/// `fill IDENT`, `use IDENT`, `override part`, `replace part`. Otherwise the
-/// word is an ordinary identifier (`on: x;` binds a property named `on`).
+/// start: `node IDENT :`, `on IDENT`, `bind IDENT`, and `slot` unless a `:`
+/// or `.` makes it a property path. Otherwise the word is an ordinary
+/// identifier (`on: x;` binds a property named `on`).
 fn view_keyword(p: &Parser) -> Option<SyntaxKind> {
     let kw = p.nth_contextual(0)?;
     let ok = match kw {
-        SyntaxKind::NodeKw | SyntaxKind::PartKw => {
-            p.nth_is_ident(1) && p.nth(2) == SyntaxKind::Colon
-        }
-        SyntaxKind::OnKw | SyntaxKind::BindKw | SyntaxKind::FillKw | SyntaxKind::UseKw => {
-            p.nth_is_ident(1)
-        }
-        SyntaxKind::OverrideKw | SyntaxKind::ReplaceKw => {
-            p.nth_at_contextual(1, SyntaxKind::PartKw)
-        }
+        SyntaxKind::NodeKw => p.nth_is_ident(1) && p.nth(2) == SyntaxKind::Colon,
+        SyntaxKind::OnKw | SyntaxKind::BindKw => p.nth_is_ident(1),
+        SyntaxKind::SlotKw => !matches!(p.nth(1), SyntaxKind::Colon | SyntaxKind::Dot),
         _ => false,
     };
     ok.then_some(kw)
+}
+
+/// Whether the upcoming tokens fill a slot: a lowercase name and a `{` on
+/// its line. Slot names are `snake_case` and node types `UpperCamelCase`.
+fn starts_slot_fill(p: &Parser) -> bool {
+    let first = p.token_text(0).trim_start_matches("r#").chars().next();
+    first.is_some_and(|c| c.is_lowercase() || c == '_')
+        && p.nth(1) == SyntaxKind::LBrace
+        && !p.line_start.get(p.pos + 1).copied().unwrap_or(false)
 }
 
 /// Whether the upcoming tokens are an anonymous node rather than a property
@@ -336,13 +325,27 @@ fn event_handler(p: &mut Parser) {
     m.complete(p, SyntaxKind::EventHandler);
 }
 
-/// `"fill" IDENT ViewBlock` — content projected into a named slot.
-fn fill_clause(p: &mut Parser) {
+/// `IDENT ViewBlock` — what a component node puts in its named slot.
+fn slot_fill(p: &mut Parser) {
     let m = p.start();
-    p.bump_as(SyntaxKind::FillKw);
     name(p);
     view_block(p);
-    m.complete(p, SyntaxKind::FillClause);
+    m.complete(p, SyntaxKind::SlotFill);
+}
+
+/// `"slot" IDENT? ViewBlock?` — where a component's view places the slot
+/// `IDENT` (the default slot without one), with default content. The name
+/// and the block start on the keyword's line.
+fn slot_item(p: &mut Parser) {
+    let m = p.start();
+    p.bump_as(SyntaxKind::SlotKw);
+    if p.nth_is_ident(0) && !p.at_line_break() {
+        name(p);
+    }
+    if p.at(SyntaxKind::LBrace) && !p.at_line_break() {
+        view_block(p);
+    }
+    m.complete(p, SyntaxKind::SlotItem);
 }
 
 /// `"if" HeadExpression ("preserve" STRING_LITERAL)? ViewBlock ("else" (ViewIf |
@@ -424,53 +427,4 @@ fn view_match_arm(p: &mut Parser) {
     p.expect(SyntaxKind::FatArrow);
     view_block(p);
     m.complete(p, SyntaxKind::ViewMatchArm);
-}
-
-/// `"override" "part" IDENT "{" (PropertyBinding | TwoWayBinding | EventHandler)*
-/// "}"`.
-fn part_override(p: &mut Parser) {
-    let m = p.start();
-    p.bump_as(SyntaxKind::OverrideKw);
-    p.bump_as(SyntaxKind::PartKw);
-    name(p);
-    p.expect(SyntaxKind::LBrace);
-    while !p.at(SyntaxKind::RBrace) && !p.at_end() {
-        match p.current() {
-            SyntaxKind::Ident if view_keyword(p) == Some(SyntaxKind::OnKw) => event_handler(p),
-            SyntaxKind::Ident if view_keyword(p) == Some(SyntaxKind::BindKw) => two_way_binding(p),
-            SyntaxKind::Ident | SyntaxKind::RawIdent => property_binding(p),
-            _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
-        }
-    }
-    p.expect(SyntaxKind::RBrace);
-    m.complete(p, SyntaxKind::PartOverride);
-}
-
-/// `"replace" "part" IDENT ViewBlock`.
-fn part_replace(p: &mut Parser) {
-    let m = p.start();
-    p.bump_as(SyntaxKind::ReplaceKw);
-    p.bump_as(SyntaxKind::PartKw);
-    name(p);
-    view_block(p);
-    m.complete(p, SyntaxKind::PartReplace);
-}
-
-/// `"use" TypePath "(" ArgumentList ")" ("{" (FillClause | PartOverride |
-/// PartReplace)* "}")? ";"`. The body parses as a node body; HIR admits
-/// only the three forms.
-fn template_use(p: &mut Parser) {
-    let m = p.start();
-    p.bump_as(SyntaxKind::UseKw);
-    super::types::type_(p);
-    if p.at(SyntaxKind::LParen) {
-        super::expr::arg_list(p);
-    } else {
-        p.expect(SyntaxKind::LParen);
-    }
-    if p.at(SyntaxKind::LBrace) {
-        node_body(p);
-    }
-    p.eat(SyntaxKind::Semi);
-    m.complete(p, SyntaxKind::TemplateUse);
 }

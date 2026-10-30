@@ -425,8 +425,6 @@ const FOCUS_SCOPE: &[WidgetProperty] = &[prop("trap", "Bool"), prop("restore_foc
 const KEY_SHORTCUT: &[WidgetProperty] =
     &[prop("chord", "KeyChord"), prop("scope", "ShortcutScope")];
 
-/// The slot of the enclosing component a `SlotOutlet` places, by name.
-const SLOT_OUTLET: &[WidgetProperty] = &[prop("slot", "SlotName")];
 
 const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("axis", "Axis"),
@@ -713,7 +711,6 @@ pub const STANDARD: &[NativeWidget] = &[
     .slots(CONTENT)
     .migratable(MigratableState::SCROLL),
     NativeWidget::new("Fragment", WidgetNode::Fragment).slots(CHILDREN),
-    NativeWidget::new("SlotOutlet", WidgetNode::Outlet).properties(&[SLOT_OUTLET]),
     layout(
         "Text",
         WidgetNode::Leaf,

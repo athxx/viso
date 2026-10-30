@@ -243,7 +243,8 @@ fn view_losslessness_holds_over_a_corpus() {
         view_of("for row in rows key row.id { for cell in row.cells key cell.id { Cell { } } }"),
         view_of("if a { Text { } } else if b { Row { } } else { Empty { } }"),
         view_of("@animated node fade: Box { opacity: 0.5; }"),
-        view_of("fill header { Title { } }"),
+        view_of("Card { header { Title { } } }"),
+        view_of("Column { slot head { Text { } }; slot }"),
     ];
     for src in corpus {
         let root = unit(&src);

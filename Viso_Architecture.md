@@ -3598,7 +3598,7 @@ Embedded profile 下默认：
 
 语言能力按 Core / Standard / Advanced 分层（关键字分层见 DSL 规范 §12 与 ADR 0034，Proposed）。硬规则：
 
-- Advanced Surface（用户定义 trait/impl、通用泛型、Template/Part 元编程、手写 native 声明、compiler plugins 等）不得阻塞 1.0 vertical slice，并在 Quick Start、formatter 示例与 AI context 中隔离；
+- Advanced Surface（用户定义 trait/impl、通用泛型、手写 native 声明、compiler plugins 等）不得阻塞 1.0 vertical slice，并在 Quick Start、formatter 示例与 AI context 中隔离；
 - `.vs` 不是第二门必须完整重实现 Rust 的通用语言；
 - 语言团队维护 feature matrix，每个 production 标注 `stable / preview / reserved`（DSL 规范附录 A.14；`crates/dsl/tests/ebnf_golden.rs` 要求它与附录 A 的 Production 集合一一对应）。
 

@@ -87,13 +87,13 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C5 — Slots and reuse (§45, §53)
 
-- [ ] Grammar: `slot` / `slot name` / `slot name { default }` as view items; `name { .. }`
+- [x] Grammar: `slot` / `slot name` / `slot name { default }` as view items; `name { .. }`
       fill in a component node body; remove `slot_decl`, `fill`, `SlotOutlet`, `template`,
       `use`, `part`, `override part`, `replace part`; keyword tables.
-- [ ] HIR: slots read from the view; default content in the definer's scope; forwarding;
+- [x] HIR: slots read from the view; default content in the definer's scope; forwarding;
       `E3003`, `E3501`, `E3502` per §45/§53; drop `E3004`, `E3601`, part codes.
-- [ ] Schema `slots` output; LSP; hot reload identities.
-- [ ] Migrate tests (`templates.rs`, `view_controls.rs`, slot unit tests, goldens).
+- [x] Schema `slots` output; LSP; hot reload identities.
+- [x] Migrate tests (`templates.rs`, `view_controls.rs`, slot unit tests, goldens).
 
 ## C6 — Shader brush builtins (§100)
 

@@ -33,7 +33,7 @@ use crate::syntax::TextRange;
 
 /// The version of the schema object's format, which every object reports as
 /// its `schema_version`: a field removed or changing meaning raises it.
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
 
 /// The dirty classes in canonical order, with their names.
 const DIRTY_NAMES: [(DirtyClass, &str); 8] = [
@@ -50,7 +50,7 @@ const DIRTY_NAMES: [(DirtyClass, &str); 8] = [
 /// What a schema describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaKind {
-    /// A node type: its inputs, events, slots and parts.
+    /// A node type: its inputs, events and slots.
     Component,
     /// A package's record: its fields.
     Record,
@@ -119,7 +119,7 @@ pub struct SlotSchema {
     pub name: String,
     /// How many nodes it takes.
     pub cardinality: SlotCardinality,
-    /// Whether `@default` marks it: a caller's bare child items fill it.
+    /// Whether it is the default slot: a caller's bare child items fill it.
     pub default: bool,
 }
 
@@ -199,8 +199,6 @@ pub struct Schema {
     pub events: Vec<EventSchema>,
     /// A node type's slots.
     pub slots: Vec<SlotSchema>,
-    /// A node type's named parts.
-    pub parts: Vec<String>,
     /// The capabilities using it needs: a function's own, or every function's of
     /// a library or type.
     pub capabilities: Vec<String>,
@@ -230,7 +228,6 @@ impl Schema {
             inputs: Vec::new(),
             events: Vec::new(),
             slots: Vec::new(),
-            parts: Vec::new(),
             capabilities: Vec::new(),
             functions: Vec::new(),
             types: Vec::new(),
@@ -767,8 +764,6 @@ impl Schema {
             w.end_object();
         }
         w.end_array();
-        w.name("parts");
-        strings(w, &self.parts);
         w.name("capabilities");
         strings(w, &self.capabilities);
         if matches!(
@@ -1029,11 +1024,11 @@ mod tests {
         assert_eq!(
             w.as_str(),
             concat!(
-                r#"{"schema_version":"1.0","kind":"component","symbol":"viso::widgets::Button","#,
+                r#"{"schema_version":"1.1","kind":"component","symbol":"viso::widgets::Button","#,
                 r#""version":"1","#,
                 r#""member":"text","inputs":[{"name":"text","type":"String","required":false,"#,
                 r#""default":null,"invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"],"primary":true}],"#,
-                r#""events":[],"slots":[],"parts":[],"capabilities":[],"origin":"framework"}"#
+                r#""events":[],"slots":[],"capabilities":[],"origin":"framework"}"#
             )
         );
     }

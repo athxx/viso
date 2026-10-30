@@ -54,7 +54,6 @@ pub(crate) fn root_of(decl: &ComponentDecl) -> Option<ViewRoot> {
     let (ty, body) = match item {
         ViewItem::Named(node) => (node.ty()?, node.body()),
         ViewItem::Anonymous(node) => (node.ty()?, node.body()),
-        ViewItem::Part(part) => (part.ty()?, part.body()),
         _ => return None,
     };
     let segments: Vec<_> = ty.segments().collect();

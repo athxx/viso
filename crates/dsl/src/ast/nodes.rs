@@ -163,10 +163,6 @@ ast_node!(
     EventDecl = EventDecl
 );
 ast_node!(
-    /// `slot IDENT : Type (= None | = empty)? ;`.
-    SlotDecl = SlotDecl
-);
-ast_node!(
     /// `effect IDENT (when (Expr,*))? (run Path)? { Statement* (cleanup Block)? }`.
     EffectDecl = EffectDecl
 );
@@ -330,142 +326,6 @@ ast_node!(
     /// `type IDENT (: TraitBounds)? ;` in a trait, `type IDENT = Type ;` in an impl.
     AssocTypeDecl = AssocTypeDecl
 );
-ast_node!(
-    /// `template IDENT GenericParams? ( ParamList ) WhereClause? { Member* }`.
-    TemplateDecl = TemplateDecl
-);
-ast_node!(
-    /// `part IDENT : ComponentType NodeBody` — a node a template or component
-    /// exposes to its callers.
-    PartNode = PartNode
-);
-ast_node!(
-    /// `use TypePath ( ArgumentList ) NodeBody? ;` — a template use.
-    TemplateUse = TemplateUse
-);
-ast_node!(
-    /// `override part IDENT { PartOverrideItem* }`.
-    PartOverride = PartOverride
-);
-ast_node!(
-    /// `replace part IDENT ViewBlock`.
-    PartReplace = PartReplace
-);
-
-impl TemplateDecl {
-    /// The template's name.
-    pub fn name(&self) -> Option<SyntaxToken> {
-        support::name_token(&self.syntax)
-    }
-
-    /// Its parameters, in order.
-    pub fn params(&self) -> Vec<Param> {
-        support::child::<ParamList>(&self.syntax)
-            .map(|l| l.params().collect())
-            .unwrap_or_default()
-    }
-
-    /// The template as a component: the same node, whose parameters are its
-    /// inputs and whose members lower like a component's. Lowering rejects
-    /// any member but `slot`, `const`, `fn` and `view`.
-    pub fn as_component(&self) -> ComponentDecl {
-        ComponentDecl {
-            syntax: self.syntax.clone(),
-        }
-    }
-}
-
-impl PartNode {
-    /// The part's name.
-    pub fn name(&self) -> Option<SyntaxToken> {
-        support::name_token(&self.syntax)
-    }
-
-    /// The part's node type.
-    pub fn ty(&self) -> Option<TypePath> {
-        support::child(&self.syntax)
-    }
-
-    /// The part's `( value )`, binding its primary property.
-    pub fn primary(&self) -> Option<PropertyBinding> {
-        primary_of(&self.syntax)
-    }
-
-    /// The part's body.
-    pub fn body(&self) -> Option<NodeBody> {
-        support::child(&self.syntax)
-    }
-
-    /// The part's members: its primary binding, then its body's.
-    pub fn members(&self) -> impl Iterator<Item = ViewItem> {
-        node_members(self.primary(), self.body())
-    }
-}
-
-impl TemplateUse {
-    /// The template the use names.
-    pub fn ty(&self) -> Option<TypePath> {
-        support::child(&self.syntax)
-    }
-
-    /// Its arguments in order: each value, with the label a named one has.
-    pub fn args(&self) -> Vec<(Option<SyntaxToken>, Expr)> {
-        self.syntax
-            .children()
-            .into_iter()
-            .filter(|c| c.kind() == SyntaxKind::ArgumentList)
-            .flat_map(|list| list.children())
-            .filter(|a| a.kind() == SyntaxKind::Argument)
-            .filter_map(|arg| {
-                let value = arg.children().into_iter().find_map(Expr::cast)?;
-                let label = arg
-                    .children_with_tokens()
-                    .into_iter()
-                    .filter_map(|e| e.as_token().cloned())
-                    .find(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent));
-                Some((label, value))
-            })
-            .collect()
-    }
-
-    /// Its argument list, if written.
-    pub fn arg_list(&self) -> Option<SyntaxNode> {
-        self.syntax
-            .children()
-            .into_iter()
-            .find(|c| c.kind() == SyntaxKind::ArgumentList)
-    }
-
-    /// Its body: the `fill`, `override part` and `replace part` clauses.
-    pub fn body(&self) -> Option<NodeBody> {
-        support::child(&self.syntax)
-    }
-}
-
-impl PartOverride {
-    /// The name of the part it overrides.
-    pub fn name(&self) -> Option<SyntaxToken> {
-        support::name_token(&self.syntax)
-    }
-
-    /// Its bindings and handlers, in order.
-    pub fn members(&self) -> impl Iterator<Item = ViewItem> {
-        support::children(&self.syntax)
-    }
-}
-
-impl PartReplace {
-    /// The name of the part it replaces.
-    pub fn name(&self) -> Option<SyntaxToken> {
-        support::name_token(&self.syntax)
-    }
-
-    /// What replaces the part.
-    pub fn body(&self) -> Option<ViewBlock> {
-        support::child(&self.syntax)
-    }
-}
-
 impl ImportDecl {
     /// The imported module path.
     pub fn path(&self) -> Option<ModulePath> {
@@ -534,19 +394,6 @@ impl ComponentDecl {
     /// The component's `view` declaration, if it has one.
     pub fn view(&self) -> Option<ViewDecl> {
         support::child(&self.syntax)
-    }
-
-    /// Whether this is a template seen as a component
-    /// ([`TemplateDecl::as_component`]).
-    pub fn is_template(&self) -> bool {
-        self.syntax.kind() == SyntaxKind::TemplateDecl
-    }
-
-    /// A template's parameters, its inputs; none for a component.
-    pub fn template_params(&self) -> Vec<Param> {
-        TemplateDecl::cast(self.syntax.clone())
-            .map(|t| t.params())
-            .unwrap_or_default()
     }
 }
 
@@ -1014,28 +861,6 @@ impl EventDecl {
     /// The event's name.
     pub fn name(&self) -> Option<SyntaxToken> {
         support::name_token(&self.syntax)
-    }
-}
-
-impl SlotDecl {
-    /// The slot's name.
-    pub fn name(&self) -> Option<SyntaxToken> {
-        support::name_token(&self.syntax)
-    }
-
-    /// The slot's type: `Slot<Node>`, `OptionalSlot<Node>` or `SlotList<Node>`.
-    pub fn ty(&self) -> Option<TypePath> {
-        support::child(&self.syntax)
-    }
-
-    /// The `= None` / `= empty` default, when written.
-    pub fn default(&self) -> Option<SyntaxToken> {
-        self.syntax
-            .children_with_tokens()
-            .into_iter()
-            .filter_map(|e| e.as_token().cloned())
-            .skip_while(|t| t.kind() != SyntaxKind::Eq)
-            .find(|t| matches!(t.kind(), SyntaxKind::NoneKw | SyntaxKind::EmptyKw))
     }
 }
 
@@ -1624,8 +1449,12 @@ ast_node!(
     ViewMatchArm = ViewMatchArm
 );
 ast_node!(
-    /// `fill IDENT ViewBlock`.
-    FillClause = FillClause
+    /// `IDENT ViewBlock` in a component node's body: what fills its slot.
+    SlotFill = SlotFill
+);
+ast_node!(
+    /// `slot IDENT? ViewBlock?`: where a component's view places a slot.
+    SlotItem = SlotItem
 );
 ast_node!(
     /// A pattern. Every pattern and subpattern is a `Pattern` node whose
@@ -1698,14 +1527,9 @@ impl ViewBlock {
                             walk(body.members(), out);
                         }
                     }
-                    ViewItem::Part(part) => {
-                        if let Some(body) = part.body() {
-                            walk(body.members(), out);
-                        }
-                    }
-                    ViewItem::Use(used) => {
-                        if let Some(body) = used.body() {
-                            walk(body.members(), out);
+                    ViewItem::Slot(slot) => {
+                        if let Some(block) = slot.body() {
+                            walk(block.items(), out);
                         }
                     }
                     ViewItem::Fill(fill) => {
@@ -1736,9 +1560,7 @@ impl ViewBlock {
                     ViewItem::For(_)
                     | ViewItem::Property(_)
                     | ViewItem::Handler(_)
-                    | ViewItem::TwoWayBinding(_)
-                    | ViewItem::Override(_)
-                    | ViewItem::Replace(_) => {}
+                    | ViewItem::TwoWayBinding(_) => {}
                 }
             }
         }
@@ -1906,13 +1728,37 @@ impl AssignablePath {
     }
 }
 
-impl FillClause {
-    /// The name of the slot this clause fills.
+impl SlotFill {
+    /// The name of the slot this fills.
     pub fn name(&self) -> Option<SyntaxToken> {
         support::name_token(&self.syntax)
     }
 
-    /// The projected content block.
+    /// What it puts in the slot.
+    pub fn body(&self) -> Option<ViewBlock> {
+        support::child(&self.syntax)
+    }
+}
+
+/// The name of a component's default slot, as its schema lists it.
+pub const DEFAULT_SLOT: &str = "children";
+
+impl SlotItem {
+    /// The slot's name; `None` for the default slot.
+    pub fn name(&self) -> Option<SyntaxToken> {
+        support::name_token(&self.syntax)
+    }
+
+    /// The slot's name as its schema lists it: [`DEFAULT_SLOT`] for the
+    /// default slot.
+    pub fn slot_name(&self) -> String {
+        self.name().map_or_else(
+            || DEFAULT_SLOT.to_string(),
+            |n| n.text().trim_start_matches("r#").to_string(),
+        )
+    }
+
+    /// The default content shown while no caller fills the slot.
     pub fn body(&self) -> Option<ViewBlock> {
         support::child(&self.syntax)
     }
@@ -2394,7 +2240,6 @@ pub enum Item {
     Native(NativeDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
-    Template(TemplateDecl),
 }
 
 impl AstNode for Item {
@@ -2417,7 +2262,6 @@ impl AstNode for Item {
                 | SyntaxKind::NativeDecl
                 | SyntaxKind::TraitDecl
                 | SyntaxKind::ImplDecl
-                | SyntaxKind::TemplateDecl
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -2438,7 +2282,6 @@ impl AstNode for Item {
             SyntaxKind::NativeDecl => Item::Native(NativeDecl { syntax: node }),
             SyntaxKind::TraitDecl => Item::Trait(TraitDecl { syntax: node }),
             SyntaxKind::ImplDecl => Item::Impl(ImplDecl { syntax: node }),
-            SyntaxKind::TemplateDecl => Item::Template(TemplateDecl { syntax: node }),
             _ => return None,
         };
         Some(item)
@@ -2461,7 +2304,6 @@ impl AstNode for Item {
             Item::Native(n) => n.syntax(),
             Item::Trait(n) => n.syntax(),
             Item::Impl(n) => n.syntax(),
-            Item::Template(n) => n.syntax(),
         }
     }
 }
@@ -2473,7 +2315,6 @@ pub enum Member {
     State(StateDecl),
     Computed(ComputedDecl),
     Event(EventDecl),
-    Slot(SlotDecl),
     Fn(FnDecl),
     Action(ActionDecl),
     Task(TaskDecl),
@@ -2492,7 +2333,6 @@ impl AstNode for Member {
                 | SyntaxKind::StateDecl
                 | SyntaxKind::ComputedDecl
                 | SyntaxKind::EventDecl
-                | SyntaxKind::SlotDecl
                 | SyntaxKind::FnDecl
                 | SyntaxKind::ActionDecl
                 | SyntaxKind::TaskDecl
@@ -2509,7 +2349,6 @@ impl AstNode for Member {
             SyntaxKind::StateDecl => Member::State(StateDecl { syntax: node }),
             SyntaxKind::ComputedDecl => Member::Computed(ComputedDecl { syntax: node }),
             SyntaxKind::EventDecl => Member::Event(EventDecl { syntax: node }),
-            SyntaxKind::SlotDecl => Member::Slot(SlotDecl { syntax: node }),
             SyntaxKind::FnDecl => Member::Fn(FnDecl { syntax: node }),
             SyntaxKind::ActionDecl => Member::Action(ActionDecl { syntax: node }),
             SyntaxKind::TaskDecl => Member::Task(TaskDecl { syntax: node }),
@@ -2528,7 +2367,6 @@ impl AstNode for Member {
             Member::State(n) => n.syntax(),
             Member::Computed(n) => n.syntax(),
             Member::Event(n) => n.syntax(),
-            Member::Slot(n) => n.syntax(),
             Member::Fn(n) => n.syntax(),
             Member::Action(n) => n.syntax(),
             Member::Task(n) => n.syntax(),
@@ -2553,11 +2391,8 @@ pub enum ViewItem {
     If(ViewIf),
     For(ViewFor),
     Match(ViewMatch),
-    Fill(FillClause),
-    Part(PartNode),
-    Use(TemplateUse),
-    Override(PartOverride),
-    Replace(PartReplace),
+    Fill(SlotFill),
+    Slot(SlotItem),
 }
 
 impl AstNode for ViewItem {
@@ -2573,11 +2408,8 @@ impl AstNode for ViewItem {
                 | SyntaxKind::ViewIf
                 | SyntaxKind::ViewFor
                 | SyntaxKind::ViewMatch
-                | SyntaxKind::FillClause
-                | SyntaxKind::PartNode
-                | SyntaxKind::TemplateUse
-                | SyntaxKind::PartOverride
-                | SyntaxKind::PartReplace
+                | SyntaxKind::SlotFill
+                | SyntaxKind::SlotItem
         )
     }
     fn cast(node: SyntaxNode) -> Option<Self> {
@@ -2592,11 +2424,8 @@ impl AstNode for ViewItem {
             SyntaxKind::ViewIf => ViewItem::If(ViewIf { syntax: node }),
             SyntaxKind::ViewFor => ViewItem::For(ViewFor { syntax: node }),
             SyntaxKind::ViewMatch => ViewItem::Match(ViewMatch { syntax: node }),
-            SyntaxKind::FillClause => ViewItem::Fill(FillClause { syntax: node }),
-            SyntaxKind::PartNode => ViewItem::Part(PartNode { syntax: node }),
-            SyntaxKind::TemplateUse => ViewItem::Use(TemplateUse { syntax: node }),
-            SyntaxKind::PartOverride => ViewItem::Override(PartOverride { syntax: node }),
-            SyntaxKind::PartReplace => ViewItem::Replace(PartReplace { syntax: node }),
+            SyntaxKind::SlotFill => ViewItem::Fill(SlotFill { syntax: node }),
+            SyntaxKind::SlotItem => ViewItem::Slot(SlotItem { syntax: node }),
             _ => return None,
         };
         Some(item)
@@ -2612,10 +2441,7 @@ impl AstNode for ViewItem {
             ViewItem::For(n) => n.syntax(),
             ViewItem::Match(n) => n.syntax(),
             ViewItem::Fill(n) => n.syntax(),
-            ViewItem::Part(n) => n.syntax(),
-            ViewItem::Use(n) => n.syntax(),
-            ViewItem::Override(n) => n.syntax(),
-            ViewItem::Replace(n) => n.syntax(),
+            ViewItem::Slot(n) => n.syntax(),
         }
     }
 }

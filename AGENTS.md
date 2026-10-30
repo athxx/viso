@@ -969,7 +969,6 @@ Core: component/input/state/computed/action/view, record/enum,
 Standard: effect/task/resource/slot/style/theme
 
 Advanced/preview: user trait/impl/general generics/const generics,
-                  template/part metaprogramming,
                   hand-written native declarations,
                   fine-grained capability annotations
 ```

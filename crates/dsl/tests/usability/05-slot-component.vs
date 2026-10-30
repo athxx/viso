@@ -1,16 +1,14 @@
 component Card {
     input title: String
-    @default slot content: Slot<Node>
-    slot actions: SlotList<Node> = empty
 
     view {
         Column {
             gap: 8dp
             Text(title)
-            SlotOutlet { slot: content }
+            slot
             Row {
                 gap: 8dp
-                SlotOutlet { slot: actions }
+                slot actions
             }
         }
     }
@@ -23,7 +21,7 @@ export component Profile {
         Card {
             title: "Profile"
             Text("{likes}")
-            fill actions {
+            actions {
                 Button("Like") {
                     on click { likes += 1 }
                 }

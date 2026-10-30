@@ -376,10 +376,10 @@ fn a_component_of_another_file_exports_to_the_web() {
 }
 
 #[test]
-fn a_template_of_another_file_inlines_with_its_parameters() {
+fn a_component_of_another_file_inlines_with_its_inputs() {
     let widgets = Siblings::Memory(Arc::from(vec![(
         vec!["cards".to_owned()],
-        "export template Card(w: MixedLength = 30dp) {\n    view { Text { width: w; height: 10dp; } }\n}\n"
+        "export component Card {\n    input w: MixedLength = 30dp\n    view { Text { width: w; height: 10dp } }\n}\n"
             .to_owned(),
     )]));
     let page = r#"
@@ -387,8 +387,8 @@ import cards::{Card};
 export component Deck {
     view {
         Column {
-            use Card(50dp);
-            use Card();
+            Card { w: 50dp }
+            Card {}
         }
     }
 }

@@ -20,7 +20,7 @@ macro_rules! kinds {
 kinds! {
     Row, Column, Flex, AdaptiveScope, SafeArea, KeyboardAvoiding, BlurView, Grid, Stack,
     Absolute, InteractiveViewer, SwipeRow, SwipeActions, DragPreview, ReorderHandle, Scroll,
-    Fragment, SlotOutlet,
+    Fragment,
     Text, LinkLabel, TextInput, NumberField, Button, Toggle, CheckBox, Chip, Stepper, Slider,
     Knob, ComboBox, SearchField, ColorPicker, RouterView, Image, Svg, Video, CameraView,
     ProgressBar, ProgressRing, Spinner, Badge, Avatar, ShaderView, GameViewport, Tabs,

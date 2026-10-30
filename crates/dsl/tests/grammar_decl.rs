@@ -312,7 +312,6 @@ fn declaration_losslessness_holds_over_a_corpus() {
         "fn f() { }",
         "action a(x: I32) { }",
         "impl Foo for Bar { }",
-        "template T { }",
     ];
     for src in corpus {
         let root = unit(src);

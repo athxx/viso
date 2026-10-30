@@ -149,10 +149,10 @@ fn a_fragment_splices_its_children_and_an_unknown_type_is_a_rust_component() {
 }
 
 #[test]
-fn a_fill_lowers_to_the_widgets_children_and_an_outlet_mounts_nothing() {
+fn a_fill_lowers_to_the_widgets_children() {
     let column = only_node(
-        "Column { fill children { Text { } } Fragment { fill children { Button { } } } \
-         SlotOutlet { slot: body; } Scroll { fill content { Row { } } } }",
+        "Column { children { Text { } } Fragment { children { Button { } } } \
+         Scroll { content { Row { } } } }",
     );
     let types: Vec<_> = column
         .children

@@ -61,7 +61,6 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E3001](#e3001) | Reserved Word Child | error | view |
 | [E3002](#e3002) | View Cardinality Not Satisfied (reserved) | error | view |
 | [E3003](#e3003) | No Default Slot | error | view |
-| [E3004](#e3004) | Several Default Slots | error | view |
 | [E3101](#e3101) | Unknown Property | error | view |
 | [E3102](#e3102) | Property Bound Twice | error | view |
 | [E3103](#e3103) | Property Is Not Two-Way | error | view |
@@ -76,9 +75,8 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E3301](#e3301) | Invalid Preserve Identity | error | view |
 | [E3401](#e3401) | View For Without Key | error | view |
 | [E3402](#e3402) | Unstable Key Expression | warning | view |
-| [E3501](#e3501) | Unknown Slot Or Part | error | view |
-| [E3502](#e3502) | Slot Cardinality Conflict | error | view |
-| [E3601](#e3601) | Invalid Template | error | view |
+| [E3501](#e3501) | Unknown Slot | error | view |
+| [E3502](#e3502) | Slot Conflict | error | view |
 | [E3701](#e3701) | Invalid Bindable Input | error | view |
 | [E3702](#e3702) | Misplaced Parent-Provided Property | error | view |
 | [E3703](#e3703) | Invalid Transition | error | view |
@@ -1321,7 +1319,7 @@ let fragment = ui! {
 
 **No Default Slot** — error, view
 
-A node body contains bare child items, but the node's type has no default slot to receive them. Bare structure items in a node body go into the type's `@default` slot; leaf widgets such as `Text`, `Button` and `TextInput` have no slots at all, and a user component without a `@default` slot only accepts children through `fill`. This usually happens when a node is nested inside a leaf widget, or when a component's slots are all named.
+A node body contains bare child items, but the node's type has no default slot to receive them. Bare structure items in a node body go into the type's default slot `children`, the one a component's view places with a bare `slot`; leaf widgets such as `Text`, `Button` and `TextInput` have no slots at all, and a component whose view places only named slots accepts children only through `name { ... }`. This usually happens when a node is nested inside a leaf widget.
 
 ```vs
 component A {
@@ -1335,7 +1333,7 @@ component A {
 }
 ```
 
-Fix: Move the child out to a container that has a default slot, or fill one of the component's named slots with `fill name { ... }`; if it is your own component, mark one of its slots `@default`.
+Fix: Move the child out to a container that has a default slot, or fill one of the component's named slots with `name { ... }`; if it is your own component, place a bare `slot` in its view.
 
 ```vs
 Column {
@@ -1346,43 +1344,11 @@ Column {
 
 See also: `viso schema <Component>`
 
-## E3004
-
-**Several Default Slots** — error, view
-
-A component or template marks more than one slot `@default`. The default slot is where bare child items of a node go, so there can be at most one per declaration; with two, the compiler could not decide which slot a bare child fills. The diagnostic points at the second `@default` and names the slot that already is the default.
-
-```vs
-component Panel {
-    @default
-    slot header: SlotList<Node> = empty;
-
-    @default
-    slot body: SlotList<Node> = empty;
-
-    view {
-        Column {
-            SlotOutlet { slot: header; }
-            SlotOutlet { slot: body; }
-        }
-    }
-}
-```
-
-Fix: Keep `@default` on one slot and remove it from the others; callers fill the other slots by name with `fill`.
-
-```vs
-slot header: SlotList<Node> = empty;
-
-@default
-slot body: SlotList<Node> = empty;
-```
-
 ## E3101
 
 **Unknown Property** — error, view
 
-A node binds a property that its type's schema does not declare. Widgets expose a fixed schema, user components expose their `input`s, parent-provided properties such as `grid.row` come from the parent container, and a template's `use` takes the template's parameters; any other name is rejected. The usual cause is a misspelling, and the diagnostic suggests the nearest known name. In a `style`, a property that is not styleable is reported the same way.
+A node binds a property that its type's schema does not declare. Widgets expose a fixed schema, user components expose their `input`s, parent-provided properties such as `grid.row` come from the parent container; any other name is rejected. The usual cause is a misspelling, and the diagnostic suggests the nearest known name. In a `style`, a property that is not styleable is reported the same way.
 
 ```vs
 component A {
@@ -1404,7 +1370,7 @@ See also: `viso schema <Component>`, `viso schema <Component> --json`
 
 **Property Bound Twice** — error, view
 
-The same property is bound more than once in one node body (with `:` or `bind`), one style block, or one template `use`. Each property of a node has exactly one binding, so a second one would silently override the first. The diagnostic points at the repeated binding and at the first one.
+The same property is bound more than once in one node body (with `:` or `bind`), or one style block. Each property of a node has exactly one binding, so a second one would silently override the first. The diagnostic points at the repeated binding and at the first one.
 
 ```vs
 component A {
@@ -1713,33 +1679,31 @@ for name in names key name {
 
 ## E3501
 
-**Unknown Slot Or Part** — error, view
+**Unknown Slot** — error, view
 
-A `fill`, `SlotOutlet`, `override part` or `replace part` names a slot or part the target does not declare. `fill name { ... }` must name a slot of the placed component or template, `override part`/`replace part` a part it exposes, and `SlotOutlet { slot: name; }` a slot of the component whose view it is in. The usual cause is a misspelling, and the diagnostic suggests the nearest name.
+A fill `name { ... }` names a slot the placed component does not have. A component's slots are the `slot name` items of its view, plus `children` when it places a bare `slot`; a native container's slots are those of its schema. The usual cause is a misspelling, and the diagnostic suggests the nearest name.
 
 ```vs
 component Card {
-    slot footer: OptionalSlot<Node> = None;
-
     view {
-        Column { SlotOutlet { slot: footer; } }
+        Column { slot footer }
     }
 }
 
 export component App {
     view {
         Card {
-            fill foter { Text("Done") }
+            foter { Text("Done") }
         }
     }
 }
 ```
 
-Fix: Name a slot or part the target declares; query the component's schema to list them.
+Fix: Name a slot the component places; query its schema to list them.
 
 ```vs
 Card {
-    fill footer { Text("Done") }
+    footer { Text("Done") }
 }
 ```
 
@@ -1747,9 +1711,9 @@ See also: `viso schema <Component>`
 
 ## E3502
 
-**Slot Cardinality Conflict** — error, view
+**Slot Conflict** — error, view
 
-The nodes given to a slot do not fit its cardinality. A `Slot<Node>` takes exactly one node and has no default, an `OptionalSlot<Node>` takes zero or one, and a `SlotList<Node>` any number. Cardinality is checked statically over the number of nodes each item can produce: a node counts one, `if` without `else` can produce zero, and `for` any number. It is also a conflict to fill a single slot twice, to mix bare children with `fill` of the default slot, to leave a `Slot<Node>` unfilled, or to place a slot's `SlotOutlet` twice or inside a `for`.
+A slot is placed or filled in a way that has no single meaning. A component's view places each slot once and never inside a `for`, which would put its caller's nodes once per item; a caller fills each slot once and does not mix bare children with a `children { ... }` fill. A native container's slot also has a cardinality, checked over the number of nodes each item can produce: `Scroll` takes exactly one child, a node counts one, `if` without `else` can produce zero, and `for` any number.
 
 ```vs
 component A {
@@ -1762,7 +1726,7 @@ component A {
 }
 ```
 
-Fix: Give the slot as many nodes as its type allows, for example by wrapping several nodes in one container; declare the slot `SlotList<Node>` if it should take any number.
+Fix: Place and fill each slot once; give a native slot as many nodes as it takes, for example by wrapping several nodes in one container.
 
 ```vs
 Scroll {
@@ -1774,34 +1738,6 @@ Scroll {
 ```
 
 See also: `viso schema <Component>`
-
-## E3601
-
-**Invalid Template** — error, view
-
-A template is a stateless piece of view structure expanded where each `use` places it. Its members can only be `slot`, `const`, `fn` and `view`, and it must have a `view`; `state`, `input`, `action` and other members are rejected. A `use` body holds only `fill`, `override part` and `replace part`, since the template's parameters are passed as arguments. A template that places itself, directly or through another template, would expand forever and is also rejected.
-
-```vs
-template Badge() {
-    state count: I64 = 0;
-
-    view { Text("badge") }
-}
-
-export component App {
-    view {
-        Column { use Badge(); }
-    }
-}
-```
-
-Fix: Keep only `slot`, `const`, `fn` and `view` in a template and pass values as parameters; if the piece needs its own state, make it a `component`.
-
-```vs
-template Badge(label: String) {
-    view { Text(label) }
-}
-```
 
 ## E3701
 

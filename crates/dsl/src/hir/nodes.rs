@@ -196,7 +196,7 @@ pub struct HirSlot {
     pub name: String,
     /// How many nodes it takes, from its type.
     pub cardinality: SlotCardinality,
-    /// Whether `@default` marks it: bare child items of a caller's node fill it.
+    /// Whether it is the default slot: bare child items of a caller's node fill it.
     pub default: bool,
     /// The slot name's source span.
     pub declared_at: TextRange,

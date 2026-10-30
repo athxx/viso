@@ -1100,7 +1100,7 @@ pub(crate) fn input_invalidations(
         .collect()
 }
 
-/// Every component and template the unit declares, exported or not.
+/// Every component the unit declares, exported or not.
 pub(crate) fn component_decls(cu: &CompilationUnit) -> Vec<ComponentDecl> {
     cu.items()
         .filter_map(|item| match item {
@@ -1109,7 +1109,6 @@ pub(crate) fn component_decls(cu: &CompilationUnit) -> Vec<ComponentDecl> {
         })
         .filter_map(|item| match item {
             Item::Component(decl) => Some(decl),
-            Item::Template(decl) => Some(decl.as_component()),
             _ => None,
         })
         .collect()

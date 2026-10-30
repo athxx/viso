@@ -35,7 +35,6 @@ const MEMBER_UNITS: &[SyntaxKind] = &[
     SyntaxKind::StateDecl,
     SyntaxKind::ComputedDecl,
     SyntaxKind::EventDecl,
-    SyntaxKind::SlotDecl,
     SyntaxKind::EffectDecl,
     SyntaxKind::ViewDecl,
     SyntaxKind::ConstDecl,
@@ -62,7 +61,6 @@ const TOP_LEVEL_UNITS: &[SyntaxKind] = &[
     SyntaxKind::NativeDecl,
     SyntaxKind::TraitDecl,
     SyntaxKind::ImplDecl,
-    SyntaxKind::TemplateDecl,
 ];
 
 /// Whether the parser records nodes of `kind` as reparse units.
@@ -202,7 +200,7 @@ impl IncrementalParse {
             return None;
         };
         let production = match parent.kind() {
-            SyntaxKind::ComponentDecl | SyntaxKind::SystemDecl | SyntaxKind::TemplateDecl
+            SyntaxKind::ComponentDecl | SyntaxKind::SystemDecl
                 if MEMBER_UNITS.contains(&old.kind()) =>
             {
                 Production::Member
@@ -498,7 +496,7 @@ mod tests {
         "// lead\ncomponent C { /* c */ state s = \"a}b\"; @inline fn h() { } }\n",
         "native fn f(a: I64) -> I64;\nnative type T;\ncomponent C { native action g() requires { x::y }; }\n",
         "trait Shape: Eq { type Unit: Clone; const N: I64; fn area(self) -> F64; }\nimpl<T> Shape for Box<T> where T: Eq { type Unit = I64; const N: I64 = 1; fn area(self) -> F64 { 1.0 } }\nimpl P { fn new(mut self, x: I64) -> Self { self } }\n",
-        "template Card(t: String = \"a\") { slot s: Slot<Node>; const K: I64 = 1; view { Column { part h: Text(t) } } }\ncomponent C { view { Column { use Card(\"x\") { override part h { color: c; } replace part h { Row {} } }; } } }\n",
+        "component Card { input t: String = \"a\"; const K: I64 = 1; view { Column { Text(t); slot head { Row {} }; slot } } }\ncomponent C { view { Column { Card { t: \"x\"; head { Text(\"h\") }\n Row {} } } } }\n",
     ];
 
     const INSERTS: &[&str] = &["x", " ", "{", "}", ";", "\"", "1", "(", "//", "<", "\n"];

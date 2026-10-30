@@ -83,7 +83,7 @@ pub struct UiInstance {
     pub component: SymbolId,
     /// The component's name, as the node placing it spells its type.
     pub name: String,
-    /// The node or `use` that places it, in its parent's view: the call
+    /// The node that places it, in its parent's view: the call
     /// site of every node its view mounts.
     pub origin: TextRange,
     /// The instance whose view names the node.
@@ -193,8 +193,7 @@ pub struct UiNode {
     /// The value each property of a view-driven native node reads its current
     /// value or range from (`checked`, `value`, `selected`, `min`, `max`,
     /// `step`, a label's `text`), by property name, the span of the expression or
-    /// `bind` source, and the instance whose layout site registers its entry: the
-    /// node's own, or a caller's for an `override part` binding.
+    /// `bind` source, and the instance whose layout site registers its entry.
     pub control_reads: Vec<(String, TextRange, u32)>,
     /// The look the node's styles give it, beyond what it binds itself.
     pub styled: Option<UiStyled>,

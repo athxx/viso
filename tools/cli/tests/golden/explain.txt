@@ -2,7 +2,7 @@ $ viso explain E3101
 E3101 Unknown Property
 error, compiler, view
 
-A node binds a property that its type's schema does not declare. Widgets expose a fixed schema, user components expose their `input`s, parent-provided properties such as `grid.row` come from the parent container, and a template's `use` takes the template's parameters; any other name is rejected. The usual cause is a misspelling, and the diagnostic suggests the nearest known name. In a `style`, a property that is not styleable is reported the same way.
+A node binds a property that its type's schema does not declare. Widgets expose a fixed schema, user components expose their `input`s, parent-provided properties such as `grid.row` come from the parent container; any other name is rejected. The usual cause is a misspelling, and the diagnostic suggests the nearest known name. In a `style`, a property that is not styleable is reported the same way.
 
 Example:
     component A {
@@ -152,7 +152,6 @@ E2803                         Misplaced Control Transfer
 E3001                         Reserved Word Child
 E3002                         View Cardinality Not Satisfied  (reserved)
 E3003                         No Default Slot
-E3004                         Several Default Slots
 E3101                         Unknown Property
 E3102                         Property Bound Twice
 E3103                         Property Is Not Two-Way
@@ -167,9 +166,8 @@ E3202                         Unknown Event Or Wrong Payload
 E3301                         Invalid Preserve Identity
 E3401                         View For Without Key
 E3402                         Unstable Key Expression
-E3501                         Unknown Slot Or Part
-E3502                         Slot Cardinality Conflict
-E3601                         Invalid Template
+E3501                         Unknown Slot
+E3502                         Slot Conflict
 E3701                         Invalid Bindable Input
 E3702                         Misplaced Parent-Provided Property
 E3703                         Invalid Transition

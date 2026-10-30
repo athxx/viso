@@ -55,8 +55,6 @@ use super::view::{
     HandlerSink, InputFlows, InputProp, ModuleView, PercentFlow, ViewEnv, check_input_bases,
     check_percent_flow, check_view,
 };
-pub(crate) use templates::PartInfo;
-use templates::parts_of;
 
 mod audio;
 mod effects;
@@ -68,7 +66,6 @@ mod styles;
 mod system;
 mod tags;
 mod tasks;
-mod templates;
 mod themes;
 mod traits;
 
@@ -375,7 +372,6 @@ fn collect_migrators(
         let component = match decl {
             Some(Item::Component(c)) => Some(c),
             Some(Item::System(s)) => Some(s.as_component()),
-            Some(Item::Template(t)) => Some(t.as_component()),
             _ => None,
         };
         if let Some(c) = component {
@@ -526,13 +522,6 @@ fn lower_module(
     const_cycles(cu.items(), refs, env, diagnostics);
     let books = env.styles.expect("a package module's env has its styles");
     let styles_cyclic = styles::cyclic(books);
-    templates::check_recursion(
-        cu,
-        refs,
-        &env.decls.templates,
-        &|c| env.scope.components.get(&c.syntax().text_range()).copied(),
-        diagnostics,
-    );
 
     for item in cu.items() {
         let decl = match item {
@@ -567,20 +556,6 @@ fn lower_module(
                     &mut percent,
                 );
                 styles::check_members(&c, env, diagnostics);
-                components.push(component);
-            }
-            Item::Template(t) => {
-                let c = t.as_component();
-                env.focus_component(&c);
-                templates::check_members(&t, diagnostics);
-                let component = lower_component_item(
-                    &c,
-                    (refs, env, views),
-                    diagnostics,
-                    cap,
-                    &mut flows,
-                    &mut percent,
-                );
                 components.push(component);
             }
             Item::System(s) => {
@@ -739,7 +714,6 @@ fn lower_component_item(
 ) -> HirComponent {
     env.focus_component(decl);
     check_bindable(decl, env, diagnostics);
-    templates::check_parts(decl, diagnostics);
     let schema = lower_component(decl, refs, env, diagnostics, percent);
     env.record_inferred(&schema);
     check_schema_ownership(decl, &schema, env, diagnostics);
@@ -767,17 +741,6 @@ fn lower_component_item(
             Some(sink),
         ));
         check_body(refs, BodyContext::View, env, block.syntax(), diagnostics);
-    }
-    for param in decl.template_params() {
-        if let Some(default) = param.default() {
-            check_body(
-                refs,
-                BodyContext::Initializer,
-                env,
-                default.syntax(),
-                diagnostics,
-            );
-        }
     }
     for member in decl.members() {
         let (context, body) = match &member {
@@ -1326,17 +1289,13 @@ fn lower_member_values(
             .find(|(n, _)| n.as_str() == name)
             .map(|(_, meta)| meta)
     };
-    let params = decl
-        .template_params()
-        .into_iter()
-        .map(|p| (FunctionKind::InputDefault, p.name(), p.default()));
     let members = decl.members().filter_map(|member| match &member {
         Member::State(d) => Some((FunctionKind::StateInit, d.name(), d.initializer())),
         Member::Computed(d) => Some((FunctionKind::Computed, d.name(), d.body())),
         Member::Input(d) => Some((FunctionKind::InputDefault, d.name(), d.default())),
         _ => None,
     });
-    for (kind, name, value) in params.chain(members) {
+    for (kind, name, value) in members {
         let name = name_of(name);
         let (Some(value), Some(meta)) = (value, settled(&name)) else {
             continue;
@@ -1605,11 +1564,6 @@ struct Declarations {
     /// Every system's `@query` function, in package order, which a view
     /// reads as `game.<name>()`.
     queries: Vec<super::infer::game::GameQueryDecl>,
-    /// Every template, placed by `use` rather than as a node.
-    templates: HashSet<SymbolId>,
-    /// The parts each component and template exposes, by name, with the
-    /// node each one is.
-    parts: HashMap<SymbolId, Vec<PartInfo>>,
     /// The root node of each component's view.
     roots: HashMap<SymbolId, ViewRoot>,
     /// Every enum deriving `InputAction`.
@@ -1927,14 +1881,6 @@ impl ViewEnv for ModuleEnv<'_> {
         self.decls.slots.get(&component).map(Vec::as_slice)
     }
 
-    fn component_parts(&self, component: SymbolId) -> &[PartInfo] {
-        self.decls.parts.get(&component).map_or(&[], Vec::as_slice)
-    }
-
-    fn is_template(&self, component: SymbolId) -> bool {
-        self.decls.templates.contains(&component)
-    }
-
     fn component_root(&self, component: SymbolId) -> Option<&ViewRoot> {
         self.decls.roots.get(&component)
     }
@@ -2192,11 +2138,10 @@ impl ModuleScope {
             };
             let system = match &decl {
                 Item::System(s) => Some(s.as_component()),
-                Item::Template(t) => Some(t.as_component()),
                 _ => None,
             };
             match &decl {
-                Item::Component(_) | Item::System(_) | Item::Template(_) => {
+                Item::Component(_) | Item::System(_) => {
                     // Record this component's symbol keyed by its declaration span, so the env
                     // can focus on whichever component it is currently lowering (a module may
                     // declare several), and its members from its own member table. A system
@@ -2210,16 +2155,9 @@ impl ModuleScope {
                         continue;
                     };
                     scope.components.insert(c.syntax().text_range(), sym);
-                    match &decl {
-                        Item::System(_) => {
-                            decls.systems.insert(sym);
-                        }
-                        Item::Template(_) => {
-                            decls.templates.insert(sym);
-                        }
-                        _ => {}
+                    if let Item::System(_) = &decl {
+                        decls.systems.insert(sym);
                     }
-                    decls.parts.insert(sym, parts_of(c));
                     if let Some(root) = root_of(c) {
                         decls.roots.insert(sym, root);
                     }
@@ -2235,9 +2173,6 @@ impl ModuleScope {
                     decls
                         .slots
                         .insert(sym, super::component::slots_of(c, &mut Vec::new()));
-                    for param in c.template_params() {
-                        scope.record_param(decls, sym, &param, members, interner);
-                    }
                     for member in c.members() {
                         scope.record_member(decls, sym, &member, members, interner);
                     }
@@ -2496,7 +2431,7 @@ impl ModuleScope {
                 }
                 return;
             }
-            Member::Slot(_) | Member::Effect(_) | Member::Native(_) => return,
+            Member::Effect(_) | Member::Native(_) => return,
         };
 
         let Some(tok) = name_tok else {
@@ -2526,30 +2461,6 @@ impl ModuleScope {
                 effect: None,
                 is_reactive_source: kind != SymbolKind::Event,
                 kind,
-            },
-        );
-    }
-
-    /// Records a parameter of the template `owner`: one of its inputs.
-    fn record_param(
-        &mut self,
-        decls: &mut Declarations,
-        owner: SymbolId,
-        param: &Param,
-        table: &SymbolTable,
-        interner: &mut NameInterner,
-    ) {
-        let Some(sym) = decl_symbol(table, interner, param.name(), Namespace::Value) else {
-            return;
-        };
-        self.own(owner, name_of(param.name()), sym);
-        decls.facts.insert(
-            sym,
-            MemberFacts {
-                ty: self.annotation_of(param.syntax()),
-                effect: None,
-                is_reactive_source: true,
-                kind: SymbolKind::Input,
             },
         );
     }
@@ -2623,23 +2534,7 @@ impl ModuleScope {
         table: &SymbolTable,
         interner: &mut NameInterner,
     ) -> Vec<InputProp> {
-        let mut inputs: Vec<InputProp> = decl
-            .template_params()
-            .into_iter()
-            .filter_map(|param| {
-                let name = param.name()?;
-                Some(InputProp {
-                    name: name.text().trim_start_matches("r#").to_string(),
-                    ty: self.annotation_of(param.syntax()),
-                    two_way: false,
-                    styleable: false,
-                    primary: false,
-                    declared_at: name.text_range(),
-                    symbol: decl_symbol(table, interner, Some(name), Namespace::Value),
-                    has_default: param.default().is_some(),
-                })
-            })
-            .collect();
+        let mut inputs: Vec<InputProp> = Vec::new();
         let mut bindable = false;
         let mut styleable = false;
         let mut primary = false;
@@ -3816,7 +3711,7 @@ mod tests {
         );
         assert_eq!(
             codes(
-                "component Card {\n  @default slot body: SlotList<Node>;\n  view { }\n}\n\
+                "component Card {\n  view { Column { slot } }\n}\n\
                  component C {\n  view { Grid { Card { Text { grid.row: 0; } } } }\n}"
             ),
             ["E3702"]
@@ -4261,10 +4156,7 @@ mod tests {
     }
 
     const PANEL: &str = "component Panel {\n\
-         \x20 slot header: Slot<Node>;\n\
-         \x20 slot footer: OptionalSlot<Node>;\n\
-         \x20 @default slot body: SlotList<Node>;\n\
-         \x20 view { Column { SlotOutlet { slot: header; } SlotOutlet { slot: body; } SlotOutlet { slot: footer; } } }\n\
+         \x20 view { Column { slot header; slot; slot footer { Text {} } } }\n\
          }\n";
 
     fn with_panel(view: &str) -> Vec<&'static str> {
@@ -4274,48 +4166,41 @@ mod tests {
     }
 
     #[test]
-    fn slots_are_filled_by_cardinality() {
+    fn slots_are_filled_by_name_or_by_bare_items() {
         assert_clean(&format!(
             "{PANEL}component C {{\n  state on = true;\n  view {{ Panel {{ \
-             fill header {{ if on {{ Text {{}} }} else {{ Row {{}} }} }} \
+             header {{ if on {{ Text {{}} }} }} \
              Text {{}} Text {{}} }} }}\n}}"
         ));
         assert_clean(&format!(
-            "{PANEL}component C {{\n  view {{ Panel {{ fill header {{ Fragment {{ Text {{}} }} }} \
-             fill footer {{ Text {{}} }} fill body {{ Text {{}} }} }} }}\n}}"
+            "{PANEL}component C {{\n  state items = [1];\n  view {{ Panel {{ \
+             header {{ for i in items key i {{ Text {{}} }} }} \
+             footer {{ Text {{}} Text {{}} }} children {{ Text {{}} }} }} }}\n}}"
         ));
-        assert_clean("component C {\n  view { Scroll { fill content { Column {} } } }\n}");
+        assert_clean(&format!(
+            "{PANEL}component C {{\n  view {{ Panel {{}} }}\n}}"
+        ));
+        assert_clean("component C {\n  view { Scroll { content { Column {} } } }\n}");
         assert_eq!(
-            with_panel("Panel { Text {} }"),
+            with_panel("Panel { header { Text {} } header { Text {} } }"),
             ["E3502"],
-            "header unfilled"
+            "a slot is filled once"
         );
         assert_eq!(
-            with_panel("Panel { fill header { if on { Text {} } } }"),
+            with_panel("Panel { header { Text {} } Text {} children { Text {} } }"),
             ["E3502"],
-            "an `if` without `else` may fill nothing"
-        );
-        assert_eq!(
-            with_panel("Panel { fill header { for i in items key i { Text {} } } }"),
-            ["E3502"]
-        );
-        assert_eq!(
-            with_panel("Panel { fill header { Text {} } fill footer { Text {} Text {} } }"),
-            ["E3502"]
-        );
-        assert_eq!(
-            with_panel("Panel { fill header { Text {} } fill header { Text {} } }"),
-            ["E3502"],
-            "a single slot is filled once"
-        );
-        assert_eq!(
-            with_panel("Panel { fill header { Text {} } Text {} fill body { Text {} } }"),
-            ["E3502"],
-            "bare items and `fill` of the default slot"
+            "bare items and a fill of the default slot"
         );
         assert_eq!(
             codes("component C {\n  view { Scroll { Column {} Column {} } }\n}"),
             ["E3502"]
+        );
+        assert_eq!(
+            codes(
+                "component C {\n  state on = true;\n  view { Scroll { if on { Column {} } } }\n}"
+            ),
+            Vec::<&str>::new(),
+            "`Scroll` takes zero or one"
         );
     }
 
@@ -4328,14 +4213,14 @@ mod tests {
         );
         assert_eq!(
             codes(
-                "component Card {\n  slot title: Slot<Node>;\n  view { }\n}\n\
+                "component Card {\n  view { Column { slot title } }\n}\n\
                  component C {\n  view { Card { Text {} } }\n}"
             ),
-            ["E3003", "E3502"],
-            "no default slot, and `title` is left unfilled"
+            ["E3003"],
+            "a view that places only named slots"
         );
         let pkg = lower_src(&format!(
-            "{PANEL}component C {{\n  view {{ Panel {{ fill heder {{ Text {{}} }} fill header {{ Text {{}} }} }} }}\n}}"
+            "{PANEL}component C {{\n  view {{ Panel {{ heder {{ Text {{}} }} header {{ Text {{}} }} }} }}\n}}"
         ));
         let d = pkg
             .diagnostics
@@ -4348,68 +4233,37 @@ mod tests {
             "the misspelling suggests `header`, got {d:?}"
         );
         assert_eq!(pkg.diagnostics.len(), 1, "{:?}", pkg.diagnostics);
+        assert_eq!(
+            codes("component C {\n  view { Column { header { Text {} } } }\n}"),
+            ["E3501"],
+            "a native container has only its default slot"
+        );
     }
 
     #[test]
-    fn slot_declarations_are_checked() {
+    fn a_view_places_each_slot_once_outside_a_for() {
+        assert_eq!(
+            codes("component C {\n  view { Column { slot a; slot a } }\n}"),
+            ["E3502"]
+        );
+        assert_eq!(
+            codes("component C {\n  view { Column { slot; Row { slot } } }\n}"),
+            ["E3502"]
+        );
         assert_eq!(
             codes(
-                "component C {\n  @default slot a: SlotList<Node>;\n  \
-                 @default slot b: SlotList<Node>;\n  view { Column {} }\n}"
+                "component C {\n  state items = [1];\n  \
+                 view { Column { for i in items key i { slot a } } }\n}"
             ),
-            ["E3004"]
-        );
-        assert_eq!(
-            codes("component C {\n  slot a: Slot<String>;\n  view { Column {} }\n}"),
-            ["E2103"]
-        );
-        assert_eq!(
-            codes("component C {\n  slot a: Slot<Node> = empty;\n  view { Column {} }\n}"),
             ["E3502"]
         );
         assert_clean(
-            "component C {\n  slot a: OptionalSlot<Node> = None;\n  \
-             slot b: SlotList<Node> = empty;\n  \
-             view { Column { SlotOutlet { slot: a; } SlotOutlet { slot: b; } } }\n}",
+            "component C {\n  state on = true;\n  \
+             view { Column { if on { slot a } else { Text {} } } }\n}",
         );
-    }
-
-    #[test]
-    fn an_outlet_places_one_slot_of_its_own_component_once() {
-        assert_eq!(
-            codes(
-                "component C {\n  slot a: SlotList<Node>;\n  \
-                 view { Column { SlotOutlet { slot: b; } } }\n}"
-            ),
-            ["E3501"]
-        );
-        assert_eq!(
-            codes("component C {\n  view { Column { SlotOutlet {} } }\n}"),
-            ["E3501"]
-        );
-        assert_eq!(
-            codes(
-                "component C {\n  slot a: SlotList<Node>;\n  \
-                 view { Column { SlotOutlet { slot: a; } SlotOutlet { slot: a; } } }\n}"
-            ),
-            ["E3502"]
-        );
-        assert_eq!(
-            codes(
-                "component C {\n  slot a: SlotList<Node>;\n  state items = [1];\n  \
-                 view { Column { for i in items key i { SlotOutlet { slot: a; } } } }\n}"
-            ),
-            ["E3502"]
-        );
-        assert_eq!(
-            codes(
-                "component Wrap {\n  slot a: Slot<Node>;\n  \
-                 view { Column { SlotOutlet { slot: a; } } }\n}\n\
-                 component C {\n  slot a: Slot<Node>;\n  \
-                 view { Wrap { fill a { SlotOutlet { slot: a; } } } }\n}"
-            ),
-            Vec::<&str>::new(),
-            "an outlet forwards the caller's slot, counted by its cardinality"
+        assert_clean(
+            "component Wrap {\n  view { Column { slot a; slot } }\n}\n\
+             component C {\n  view { Wrap { a { slot head }; slot } }\n}",
         );
     }
 }

@@ -44,9 +44,6 @@ pub enum WidgetNode {
     /// A zero-node grouping: its children join the parent's slot, and it takes
     /// no properties.
     Fragment,
-    /// Where a component's view places one of its slots: the nodes its caller
-    /// fills the slot with, or none when the caller leaves it empty.
-    Outlet,
     /// A box whose content its library builds in Rust ([`NativeWidget::rust`]):
     /// laid out, styled and given the standard events as any box is, while its
     /// own properties go to its implementation and its own events come from

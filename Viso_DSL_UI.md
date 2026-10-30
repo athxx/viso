@@ -225,9 +225,7 @@ view {
     SafeArea {
         KeyboardAvoiding {
             AdaptiveNavigation {
-                fill content {
-                    RouterView {}
-                }
+                RouterView {}
             }
         }
     }
@@ -1411,9 +1409,6 @@ export record AppSettings { notifications: Bool = true; dark_mode: Bool = false;
 export component SettingsSection {
     input title: String
 
-    @default
-    slot content: SlotList<Node> = empty
-
     view {
         Column {
             width: fill
@@ -1425,7 +1420,7 @@ export component SettingsSection {
                 semantics.role: heading
                 semantics.heading_level: 2
             }
-            SlotOutlet { slot: content }
+            slot
         }
     }
 }
@@ -1466,7 +1461,7 @@ export component SettingsPage {
 }
 ```
 
-`SettingsSection` 的裸子节点进入其 `@default`。`Toggle.checked` 与 `Slider.value` 在 Schema 中为 `two_way`，配对事件为 `changed`。`settings.notifications` 只经 `Slider.enabled` 影响 `STYLE|HIT_TEST|SEMANTICS`，不引起 `STRUCTURE`。
+`SettingsSection` 的裸子节点进入其 View 中的 `slot`。`Toggle.checked` 与 `Slider.value` 在 Schema 中为 `two_way`，配对事件为 `changed`。`settings.notifications` 只经 `Slider.enabled` 影响 `STYLE|HIT_TEST|SEMANTICS`，不引起 `STRUCTURE`。
 
 ### U13.2 聊天消息列表：虚拟化、Keyed、自适应
 

@@ -261,8 +261,6 @@ fn schema_text(schema: &Schema) -> String {
             })
             .collect();
         section("Slots", table(&slots, "  "));
-        let parts: Vec<[&str; 1]> = schema.parts.iter().map(|p| [&**p]).collect();
-        section("Parts", table(&parts, "  "));
     } else if schema.kind == SchemaKind::Record {
         let rows: Vec<[String; 2]> = schema
             .fields

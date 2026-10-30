@@ -39,11 +39,8 @@ const ADDRESSABLE: &[SyntaxKind] = &[
     SyntaxKind::ViewDecl,
     SyntaxKind::AnonymousNode,
     SyntaxKind::NamedNode,
-    SyntaxKind::PartNode,
-    SyntaxKind::TemplateUse,
-    SyntaxKind::PartOverride,
-    SyntaxKind::PartReplace,
-    SyntaxKind::FillClause,
+    SyntaxKind::SlotFill,
+    SyntaxKind::SlotItem,
     SyntaxKind::ViewIf,
     SyntaxKind::ViewFor,
     SyntaxKind::ViewMatch,
@@ -58,8 +55,7 @@ const ADDRESSABLE: &[SyntaxKind] = &[
 const STRUCTURE: &[SyntaxKind] = &[
     SyntaxKind::AnonymousNode,
     SyntaxKind::NamedNode,
-    SyntaxKind::PartNode,
-    SyntaxKind::TemplateUse,
+    SyntaxKind::SlotItem,
     SyntaxKind::ViewIf,
     SyntaxKind::ViewFor,
     SyntaxKind::ViewMatch,
@@ -69,7 +65,6 @@ const STRUCTURE: &[SyntaxKind] = &[
 const DECLARATIONS: &[SyntaxKind] = &[
     SyntaxKind::ComponentDecl,
     SyntaxKind::SystemDecl,
-    SyntaxKind::TemplateDecl,
     SyntaxKind::RecordDecl,
     SyntaxKind::EnumDecl,
     SyntaxKind::TraitDecl,
@@ -85,7 +80,6 @@ const DECLARATIONS: &[SyntaxKind] = &[
     SyntaxKind::StateDecl,
     SyntaxKind::ComputedDecl,
     SyntaxKind::EventDecl,
-    SyntaxKind::SlotDecl,
     SyntaxKind::EffectDecl,
     SyntaxKind::ResourceDecl,
     SyntaxKind::NativeDecl,
@@ -162,7 +156,7 @@ pub enum StructuredEdit {
     },
     /// `input <name>: <ty> (= <default>)?;` after the component's last input.
     AddInput {
-        /// The component (or template, or system).
+        /// The component (or system).
         component: SymbolId,
         /// The input's name.
         name: String,
@@ -207,7 +201,7 @@ pub enum StructuredEdit {
     /// `<property>: <value>;` on a node: the existing binding's value replaced,
     /// or a new binding after the node's last one.
     SetPropertyBinding {
-        /// The node (or `override part`).
+        /// The node.
         node: SyntaxId,
         /// The property path, e.g. `color` or `padding.left`.
         property: String,
@@ -693,9 +687,9 @@ impl Document {
         let decl = self.decl_of(owner)?;
         if !matches!(
             decl.kind(),
-            SyntaxKind::ComponentDecl | SyntaxKind::SystemDecl | SyntaxKind::TemplateDecl
+            SyntaxKind::ComponentDecl | SyntaxKind::SystemDecl
         ) {
-            return Err(EditError::WrongTarget("a component, system or template"));
+            return Err(EditError::WrongTarget("a component or system"));
         }
         let members = members_of(&decl);
         let at = match members
@@ -824,7 +818,7 @@ impl Document {
     fn open_body(&self, target: &SyntaxNode, text: &str) -> Result<Plan, EditError> {
         if !matches!(
             target.kind(),
-            SyntaxKind::AnonymousNode | SyntaxKind::NamedNode | SyntaxKind::PartNode
+            SyntaxKind::AnonymousNode | SyntaxKind::NamedNode
         ) {
             return Err(EditError::WrongTarget("a node"));
         }
@@ -1092,7 +1086,7 @@ enum Rank {
 impl Rank {
     fn of(kind: SyntaxKind) -> Option<Rank> {
         Some(match kind {
-            SyntaxKind::InputDecl | SyntaxKind::SlotDecl | SyntaxKind::EventDecl => Rank::Input,
+            SyntaxKind::InputDecl | SyntaxKind::EventDecl => Rank::Input,
             SyntaxKind::StateDecl => Rank::State,
             SyntaxKind::ViewDecl => return None,
             _ => Rank::Action,
@@ -1295,9 +1289,6 @@ fn children_of(container: &SyntaxNode, keep: impl Fn(SyntaxKind) -> bool) -> Vec
 
 /// The braced body a node's children, bindings and handlers go in.
 fn container_of(node: &SyntaxNode) -> Option<SyntaxNode> {
-    if node.kind() == SyntaxKind::PartOverride {
-        return Some(node.clone());
-    }
     node.children()
         .into_iter()
         .find(|c| matches!(c.kind(), SyntaxKind::NodeBody | SyntaxKind::ViewBlock))

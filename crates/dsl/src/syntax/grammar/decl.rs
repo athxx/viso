@@ -146,7 +146,6 @@ fn decl_core(p: &mut Parser) {
         SyntaxKind::Ident if p.nth_is_ident(1) => match p.nth_contextual(0) {
             Some(SyntaxKind::ThemeKw) => theme_decl(p),
             Some(SyntaxKind::StyleKw) => style_decl(p),
-            Some(SyntaxKind::TemplateKw) => template_decl(p),
             _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
         },
         _ => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
@@ -178,22 +177,8 @@ fn component_rest(p: &mut Parser) {
     member_block(p, member);
 }
 
-/// `"template" IDENT GenericParams? "(" ParameterList ")" WhereClause? "{"
-/// TemplateMember+ "}"`. Members parse as a component's; HIR admits only
-/// `slot`, `const`, `fn` and `view`.
-fn template_decl(p: &mut Parser) {
-    let m = p.start();
-    p.bump_as(SyntaxKind::TemplateKw);
-    name(p);
-    generic_params(p);
-    param_list(p);
-    where_clause(p);
-    member_block(p, member);
-    m.complete(p, SyntaxKind::TemplateDecl);
-}
-
 /// `"system" IDENT GenericParams? ImplementsClause? WhereClause? "{"
-/// SystemMember* "}"`. Members are the same as a component's minus `event`/`slot`/
+/// SystemMember* "}"`. Members are the same as a component's minus `event` and
 /// `view`; the parser accepts the shared set and leaves that restriction to HIR.
 fn system_decl(p: &mut Parser) {
     let m = p.start();
@@ -233,7 +218,6 @@ pub(super) fn member(p: &mut Parser) {
         Some(SyntaxKind::StateKw) => return state_decl(p),
         Some(SyntaxKind::ComputedKw) => return computed_decl(p),
         Some(SyntaxKind::EventKw) => return event_decl(p),
-        Some(SyntaxKind::SlotKw) => return slot_decl(p),
         Some(SyntaxKind::EffectKw) => return effect_decl(p),
         Some(SyntaxKind::ResourceKw) => return resource_decl(p),
         _ => {}
@@ -556,28 +540,6 @@ fn event_param(p: &mut Parser) {
     p.expect(SyntaxKind::Colon);
     super::types::type_(p);
     m.complete(p, SyntaxKind::EventParam);
-}
-
-/// `"slot" IDENT ":" Type ("=" SlotDefault)? ";"` where the default is `None` or
-/// the context word `empty`.
-fn slot_decl(p: &mut Parser) {
-    let m = p.start();
-    p.bump_as(SyntaxKind::SlotKw);
-    name(p);
-    p.expect(SyntaxKind::Colon);
-    super::types::type_(p);
-    if p.eat(SyntaxKind::Eq) {
-        // The default is `None` or the `empty` context word; consume either.
-        if p.at(SyntaxKind::NoneKw) {
-            p.bump_any();
-        } else if p.at_contextual(SyntaxKind::EmptyKw) {
-            p.bump_as(SyntaxKind::EmptyKw);
-        } else {
-            p.error(ParseErrorKind::MissingToken);
-        }
-    }
-    p.eat(SyntaxKind::Semi);
-    m.complete(p, SyntaxKind::SlotDecl);
 }
 
 /// `"record" IDENT GenericParams? ImplementsClause? WhereClause? "{" RecordField*

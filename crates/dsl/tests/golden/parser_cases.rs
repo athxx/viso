@@ -82,8 +82,6 @@ pub const CASES: &[Case] = &[
         OK,
     ),
     unit("EventDecl", "component C { event tapped; }", &["E1404"]),
-    unit("SlotDecl", "component C { slot header: View = empty; }", OK),
-    unit("SlotDecl", "component C { slot header View; }", &["E1404"]),
     unit(
         "ActionDecl",
         "component C { action inc() { count += 1; } }",
@@ -262,6 +260,18 @@ pub const CASES: &[Case] = &[
         &["E1404"],
     ),
     frag("NamedNode", "node title: Text(label)", OK),
+    frag(
+        "SlotItem",
+        "Column { slot header { Text(\"t\") }; slot }",
+        OK,
+    ),
+    frag(
+        "SlotItem",
+        "Column { slot header { Text(\"t\") }",
+        &["E1401"],
+    ),
+    frag("SlotFill", "Card { header { Text(\"t\") } }", OK),
+    frag("SlotFill", "Card { header { Text(\"t\") }", &["E1401"]),
     frag("NamedNode", "node title: { }", &["E1404"]),
     frag(
         "PropertyBinding keyword path",

@@ -94,8 +94,6 @@ pub enum SyntaxKind {
     ViewKw,
     StyleKw,
     ThemeKw,
-    TemplateKw,
-    PartKw,
     NativeKw,
     RequiresKw,
     CapabilityKw,
@@ -129,18 +127,13 @@ pub enum SyntaxKind {
 
     // --- View / resource keywords ---
     NodeKw,
-    FillKw,
     BindKw,
     UsingKw,
-    UseKw,
-    OverrideKw,
-    ReplaceKw,
     PreserveKw,
     KeyKw,
     LoadKw,
     PolicyKw,
     ScopeKw,
-    EmptyKw,
 
     // --- Shader keywords ---
     ShaderKw,
@@ -367,8 +360,6 @@ pub enum SyntaxKind {
     EventDecl,
     /// One `IDENT ":" Type` inside an event parameter list.
     EventParam,
-    /// `slot IDENT ":" Type ("=" SlotDefault)? ";"`.
-    SlotDecl,
     /// `effect IDENT EffectDeps? EffectRun? EffectBody`.
     EffectDecl,
     /// `when "(" Expr ("," Expr)* ","? ")"` — an effect's dependency list.
@@ -442,14 +433,6 @@ pub enum SyntaxKind {
     NamedNode,
     /// `ComponentType PrimaryArgument? NodeBody?` — an anonymous child node.
     AnonymousNode,
-    /// `part IDENT ":" ComponentType NodeBody`.
-    PartNode,
-    /// `use TypePath "(" ArgumentList ")" NodeBody? ";"` — a template use.
-    TemplateUse,
-    /// `override part IDENT "{" PartOverrideItem* "}"`.
-    PartOverride,
-    /// `replace part IDENT ViewBlock`.
-    PartReplace,
     /// A `"{" NodeMember* "}"` node body.
     NodeBody,
     /// `"(" Expr ")"` after a node's type: the value of its primary property.
@@ -462,8 +445,10 @@ pub enum SyntaxKind {
     TwoWayBinding,
     /// `on EventPhase? IDENT ("(" Pattern ")")? Block`.
     EventHandler,
-    /// `fill IDENT ViewBlock`.
-    FillClause,
+    /// `IDENT ViewBlock` in a component node's body — what fills its named slot.
+    SlotFill,
+    /// `slot IDENT? ViewBlock?` — where a component's view places a slot.
+    SlotItem,
     /// `if HeadExpr ("preserve" STRING)? ViewBlock ("else" ...)?`.
     ViewIf,
     /// `for Pattern "in" HeadExpr "key" HeadExpr ViewBlock`.
@@ -636,9 +621,6 @@ pub enum SyntaxKind {
     /// impl.
     AssocTypeDecl,
 
-    /// `template IDENT GenericParams? ParamList WhereClause? "{" TemplateMember+
-    /// "}"`.
-    TemplateDecl,
 
     /// The component-member fragment entry: `ComponentMember* EOF` — members
     /// written without their component, as documentation and tooling quote them.
@@ -700,8 +682,6 @@ impl SyntaxKind {
             Self::ViewKw => "ViewKw",
             Self::StyleKw => "StyleKw",
             Self::ThemeKw => "ThemeKw",
-            Self::TemplateKw => "TemplateKw",
-            Self::PartKw => "PartKw",
             Self::NativeKw => "NativeKw",
             Self::RequiresKw => "RequiresKw",
             Self::CapabilityKw => "CapabilityKw",
@@ -731,18 +711,13 @@ impl SyntaxKind {
             Self::ErrorKw => "ErrorKw",
             Self::CancelledKw => "CancelledKw",
             Self::NodeKw => "NodeKw",
-            Self::FillKw => "FillKw",
             Self::BindKw => "BindKw",
             Self::UsingKw => "UsingKw",
-            Self::UseKw => "UseKw",
-            Self::OverrideKw => "OverrideKw",
-            Self::ReplaceKw => "ReplaceKw",
             Self::PreserveKw => "PreserveKw",
             Self::KeyKw => "KeyKw",
             Self::LoadKw => "LoadKw",
             Self::PolicyKw => "PolicyKw",
             Self::ScopeKw => "ScopeKw",
-            Self::EmptyKw => "EmptyKw",
             Self::ShaderKw => "ShaderKw",
             Self::VertexKw => "VertexKw",
             Self::FragmentKw => "FragmentKw",
@@ -855,7 +830,6 @@ impl SyntaxKind {
             Self::ComputedDecl => "ComputedDecl",
             Self::EventDecl => "EventDecl",
             Self::EventParam => "EventParam",
-            Self::SlotDecl => "SlotDecl",
             Self::EffectDecl => "EffectDecl",
             Self::EffectDeps => "EffectDeps",
             Self::EffectRun => "EffectRun",
@@ -890,17 +864,14 @@ impl SyntaxKind {
             Self::ViewBlock => "ViewBlock",
             Self::NamedNode => "NamedNode",
             Self::AnonymousNode => "AnonymousNode",
-            Self::PartNode => "PartNode",
-            Self::TemplateUse => "TemplateUse",
-            Self::PartOverride => "PartOverride",
-            Self::PartReplace => "PartReplace",
             Self::NodeBody => "NodeBody",
             Self::PrimaryArgument => "PrimaryArgument",
             Self::PropertyBinding => "PropertyBinding",
             Self::PropertyPath => "PropertyPath",
             Self::TwoWayBinding => "TwoWayBinding",
             Self::EventHandler => "EventHandler",
-            Self::FillClause => "FillClause",
+            Self::SlotFill => "SlotFill",
+            Self::SlotItem => "SlotItem",
             Self::ViewIf => "ViewIf",
             Self::ViewFor => "ViewFor",
             Self::ViewMatch => "ViewMatch",
@@ -980,7 +951,6 @@ impl SyntaxKind {
             Self::TraitDecl => "TraitDecl",
             Self::ImplDecl => "ImplDecl",
             Self::AssocTypeDecl => "AssocTypeDecl",
-            Self::TemplateDecl => "TemplateDecl",
             Self::MemberFragment => "MemberFragment",
             Self::NodeMemberFragment => "NodeMemberFragment",
             Self::BlockFragment => "BlockFragment",
@@ -1024,7 +994,7 @@ impl SyntaxKind {
     ///
     /// The node kinds occupy the tail of the enum: the coarse skeleton set
     /// (`Root`..=`Block`) followed by the grammar node kinds
-    /// (`CompilationUnit`..=`TemplateDecl`). Everything below `CompilationUnit`
+    /// (`CompilationUnit`..=`NodeMemberFragment`). Everything below `CompilationUnit`
     /// is a token kind. A single lower-bound comparison covers the whole tail
     /// because no token kind is appended after the nodes.
     #[inline]
@@ -1051,7 +1021,6 @@ impl SyntaxKind {
                 | Self::StateKw
                 | Self::ComputedKw
                 | Self::EventKw
-                | Self::SlotKw
                 | Self::ConstKw
                 | Self::FnKw
                 | Self::ActionKw
@@ -1061,8 +1030,6 @@ impl SyntaxKind {
                 | Self::ViewKw
                 | Self::StyleKw
                 | Self::ThemeKw
-                | Self::TemplateKw
-                | Self::PartKw
                 | Self::NativeKw
                 | Self::ShaderKw
         )
@@ -1085,8 +1052,6 @@ impl SyntaxKind {
                 | Self::ViewKw
                 | Self::StyleKw
                 | Self::ThemeKw
-                | Self::TemplateKw
-                | Self::PartKw
                 | Self::RequiresKw
                 | Self::CapabilityKw
                 | Self::OnKw
@@ -1103,18 +1068,13 @@ impl SyntaxKind {
                 | Self::ErrorKw
                 | Self::CancelledKw
                 | Self::NodeKw
-                | Self::FillKw
                 | Self::BindKw
                 | Self::UsingKw
-                | Self::UseKw
-                | Self::OverrideKw
-                | Self::ReplaceKw
                 | Self::PreserveKw
                 | Self::KeyKw
                 | Self::LoadKw
                 | Self::PolicyKw
                 | Self::ScopeKw
-                | Self::EmptyKw
                 | Self::VertexKw
                 | Self::FragmentKw
                 | Self::ComputeKw
@@ -1148,8 +1108,6 @@ impl SyntaxKind {
             "view" => Self::ViewKw,
             "style" => Self::StyleKw,
             "theme" => Self::ThemeKw,
-            "template" => Self::TemplateKw,
-            "part" => Self::PartKw,
             "requires" => Self::RequiresKw,
             "capability" => Self::CapabilityKw,
             "on" => Self::OnKw,
@@ -1166,18 +1124,13 @@ impl SyntaxKind {
             "error" => Self::ErrorKw,
             "cancelled" => Self::CancelledKw,
             "node" => Self::NodeKw,
-            "fill" => Self::FillKw,
             "bind" => Self::BindKw,
             "using" => Self::UsingKw,
-            "use" => Self::UseKw,
-            "override" => Self::OverrideKw,
-            "replace" => Self::ReplaceKw,
             "preserve" => Self::PreserveKw,
             "key" => Self::KeyKw,
             "load" => Self::LoadKw,
             "policy" => Self::PolicyKw,
             "scope" => Self::ScopeKw,
-            "empty" => Self::EmptyKw,
             "vertex" => Self::VertexKw,
             "fragment" => Self::FragmentKw,
             "compute" => Self::ComputeKw,

@@ -1018,3 +1018,26 @@ component C {
     assert_eq!(c.states()[2], Value::Int(5));
     assert!(call(&mut vm, &mut c, "count", &[Value::Nil, Value::Nil]).is_err());
 }
+
+#[test]
+fn a_member_const_is_a_constant_of_its_owner() {
+    let compiled = compile_file(
+        "export component C {\n\
+             const STEP: I64 = 3;\n\
+             state n = STEP;\n\
+             fn twice() -> I64 { return STEP * 2; }\n\
+             action go() { n = n + twice(); }\n\
+             view { Text {} }\n\
+         }",
+        &origin(),
+    );
+    let errors: Vec<_> = compiled.errors().collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let module = Rc::new(compiled.behavior.bytecode().expect("verified bytecode"));
+    let component = module.component("C").expect("component");
+    let go = module.layout(component).member("go").expect("go");
+    let mut vm = Vm::new(module, Budget::default());
+    let mut c = vm.instantiate(component, []).expect("instantiate");
+    vm.call(&mut c, go, &[]).expect("go");
+    assert_eq!(c.states(), &[Value::Int(9)]);
+}

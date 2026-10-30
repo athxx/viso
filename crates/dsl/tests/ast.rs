@@ -443,8 +443,8 @@ fn event_handler_reads_phase_and_payload() {
 }
 
 #[test]
-fn fill_clause_reads_slot_name_and_body() {
-    let fill = fragment_items("Card { fill header { Text {} } }")
+fn a_slot_fill_reads_its_name_and_body() {
+    let fill = fragment_items("Card { header { Text {} } }")
         .into_iter()
         .find_map(|it| match it {
             ViewItem::Anonymous(n) => n.body(),
@@ -456,7 +456,7 @@ fn fill_clause_reads_slot_name_and_body() {
             ViewItem::Fill(f) => Some(f),
             _ => None,
         })
-        .expect("a FillClause");
+        .expect("a SlotFill");
     assert_eq!(name_of(fill.name()), "header", "the filled slot name");
     assert_eq!(
         fill.body().expect("a fill body").items().count(),

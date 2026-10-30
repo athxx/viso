@@ -78,11 +78,11 @@ const TOP_LEVEL: &[&str] = &[
     "system",
 ];
 const MEMBERS: &[&str] = &[
-    "input", "state", "computed", "event", "slot", "effect", "resource", "action", "fn", "task",
-    "const", "view", "style",
+    "input", "state", "computed", "event", "effect", "resource", "action", "fn", "task", "const",
+    "view", "style",
 ];
-const VIEW_ITEMS: &[&str] = &["node", "if", "for", "match"];
-const NODE_MEMBERS: &[&str] = &["on", "node", "if", "for", "match"];
+const VIEW_ITEMS: &[&str] = &["node", "slot", "if", "for", "match"];
+const NODE_MEMBERS: &[&str] = &["on", "node", "slot", "if", "for", "match"];
 const STATEMENTS: &[&str] = &[
     "let",
     "if",
@@ -208,7 +208,6 @@ fn is_typed(kind: SyntaxKind) -> bool {
             | SyntaxKind::StateDecl
             | SyntaxKind::ComputedDecl
             | SyntaxKind::ConstDecl
-            | SyntaxKind::SlotDecl
             | SyntaxKind::ResourceDecl
             | SyntaxKind::Param
             | SyntaxKind::EventParam
@@ -333,6 +332,21 @@ fn properties(doc: &OpenDoc, root: &SyntaxNode, body: &SyntaxNode, out: &mut Vec
             }
             let detail = type_text(&decl);
             out.push(property(name, detail));
+        }
+        for slot in own
+            .descendants()
+            .into_iter()
+            .filter(|n| n.kind() == SyntaxKind::SlotItem)
+        {
+            let Some(name) = name_of(&slot).map(|t| t.text().to_string()) else {
+                continue;
+            };
+            let snippet = format!("{name} {{ $0 }}");
+            out.push(
+                Completion::new(name, CompletionKind::Property)
+                    .snippet(snippet)
+                    .detail("slot"),
+            );
         }
         return;
     }
@@ -904,6 +918,15 @@ mod tests {
         assert!(has(&items, "step", CompletionKind::Property), "{items:?}");
         let events = labels(&counter("    view { Counter { on | } }"));
         assert!(has(&events, "changed", CompletionKind::Event), "{events:?}");
+    }
+
+    #[test]
+    fn a_components_named_slots_are_offered_as_fills() {
+        let items = labels(&counter(
+            "    view { Column { slot footer; slot; Counter { | } } }",
+        ));
+        assert!(has(&items, "footer", CompletionKind::Property), "{items:?}");
+        assert!(has(&items, "slot", CompletionKind::Keyword));
     }
 
     #[test]

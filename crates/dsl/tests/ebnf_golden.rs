@@ -11,10 +11,10 @@
 //! `preview` or `reserved`, and a reserved production's positive source
 //! parses but does not compile.
 //!
-//! Member sets a body shares with a component (a template's, a system's, a
-//! `use` body's) and the shape of a style selector are restricted after
-//! parsing, with the targeted codes the checker gives (`E3601`, `E2103`); their
-//! negatives here break the production's syntax instead.
+//! Member sets a body shares with a component (a system's) and the shape of a
+//! style selector are restricted after parsing, with the targeted codes the
+//! checker gives (`E2103`); their negatives here break the production's syntax
+//! instead.
 
 use std::collections::BTreeSet;
 
@@ -128,7 +128,7 @@ const ROWS: &[Row] = &[
     // A.6 Components and systems
     row("ComponentDecl", U, "component C<T> implements A where T: B { }", "component { }", &["E1404"]),
     row("ComponentDeclBody", K, "Card { state s = 1; }", "Card state s = 1;", &["E1401", "E1404"]),
-    row("ComponentMember", C, "@a state s = 1; input i: I64; computed c = s; event e(); slot x: View = empty; const N: I64 = 1; fn f() {} action a() {} task t() {} effect e2 { } resource r: R { load = t(); } native fn n(); view { }", "record R {}", &["E1402", "E1403"]),
+    row("ComponentMember", C, "@a state s = 1; input i: I64; computed c = s; event e(); const N: I64 = 1; fn f() {} action a() {} task t() {} effect e2 { } resource r: R { load = t(); } native fn n(); view { }", "record R {}", &["E1402", "E1403"]),
     row("SystemDecl", U, "system S implements FixedUpdate { state x = 0; }", "system { }", &["E1404"]),
     row("SystemMember", U, "system S { @a input i: I64; state s = 1; computed c = s; const N: I64 = 1; fn f() {} action a() {} task t() {} effect e { } resource r: R { load = t(); } native fn n(); }", "system S { record R {} }", &["E1402", "E1403"]),
     row("InputDecl", C, "input i: I64 = 1;", "input i = 1;", &["E1404"]),
@@ -137,8 +137,6 @@ const ROWS: &[Row] = &[
     row("EventDecl", C, "event e(a: I64);", "event e;", &["E1404"]),
     row("EventParameterList", C, "event e(a: I64, b: F64,);", "event e(a: I64 b: F64);", &["E1402", "E1403", "E1404"]),
     row("EventParameter", C, "event e(a: I64);", "event e(a);", &["E1404"]),
-    row("SlotDecl", C, "slot s: View = None;", "slot s = empty;", &["E1404"]),
-    row("SlotDefault", C, "slot s: View = empty;", "slot s: View = ;", &["E1404"]),
     row("EffectDecl", C, "effect e when (a, b) run Policy::latest { x(); cleanup { y(); } }", "effect e when a { }", &["E1401", "E1404"]),
     row("EffectDependencies", C, "effect e when (a, b,) { }", "effect e when () { }", &["E1405"]),
     row("EffectRunPolicy", C, "effect e run a::b { }", "effect e run { }", &["E1401", "E1404"]),
@@ -152,31 +150,24 @@ const ROWS: &[Row] = &[
     // A.7 View
     row("ViewDecl", C, "view { Text {} }", "view Text {}", &["E1402", "E1403"]),
     row("ViewBlock", C, "view { }", "view { Text {}", &["E1401"]),
-    row("ViewStructureItem", F, "@a Text {} node n: Text {} part p: Text {} if a { } for x in xs key x { } match m { _ => { } } use T(1);", "x = 1;", &["E1403", "E1404"]),
+    row("ViewStructureItem", F, "@a Text {} node n: Text {} slot s; if a { } for x in xs key x { } match m { _ => { } }", "x = 1;", &["E1403", "E1404"]),
     row("NamedNode", F, "node n: Text(a) { }", "node n Text { }", &["E1404"]),
     row("AnonymousNode", F, "Text(a) { }", "Text { ", &["E1401"]),
-    row("PartNode", F, "part p: Text(a) { }", "part p Text { }", &["E1404"]),
     row("ComponentType", F, "a::Card<I64> { }", "a:: { }", &["E1404"]),
     row("PrimaryArgument", F, "Text(a)", "Text(a", &["E1401"]),
     row("NodeBody", F, "Text { color: a; }", "Text { color: a;", &["E1401"]),
-    row("NodeMember", N, "@a text: a; bind v <=> s; on click { } fill f { } node n: T {} T {} part p: T {} if a { } for x in xs key x { } match m { _ => { } } use U(); override part p { } replace part q { }", "let x = 1;", &["E1403", "E1404", "E1405"]),
+    row("NodeMember", N, "@a text: a; bind v <=> s; on click { } f { } node n: T {} T {} slot s; if a { } for x in xs key x { } match m { _ => { } }", "let x = 1;", &["E1403", "E1404", "E1405"]),
     row("PropertyBinding", N, "text: a;", "text = a;", &["E1404", "E1405"]),
     row("PropertyPath", N, "style.type.x: 1;", "style.: 1;", &["E1404"]),
     row("TwoWayBinding", N, "bind value <=> a.b[0] using Conv;", "bind value <=> ;", &["E1404"]),
     row("EventHandler", N, "on capture click(e) { }", "on click => go();", &["E3201"]),
     row("EventPhase", N, "on bubble click { }", "on capture bubble click { }", &["E1401", "E1404"]),
-    row("FillClause", N, "fill header { Text {} }", "fill header Text {}", &["E1401", "E1404"]),
+    row("SlotFill", N, "header { Text {} }", "header {", &["E1401"]),
+    row("SlotItem", F, "slot head { Text {} } slot", "slot head {", &["E1401"]),
     row("ViewIf", F, "if a preserve \"x\" { } else if b { } else { }", "if a preserve x { }", &["E3301"]),
     row("ViewFor", F, "for (i, x) in xs key x.id { }", "for x in xs { }", &["E3401"]),
     row("ViewMatch", F, "match m { A::a => { }, _ => { }, }", "match m { _ => Text {} }", &["E1401", "E1404"]),
     row("ViewMatchArm", F, "match m { x if x > 0 => { } }", "match m { x => }", &["E1401", "E1404"]),
-    row("PartOverride", N, "override part p { text: a; bind v <=> s; on click { } }", "override p { }", &["E1404"]),
-    row("PartOverrideItem", N, "override part p { on click { } }", "override part p { Text {} }", &["E1404"]),
-    row("PartReplace", N, "replace part p { Text {} }", "replace p { }", &["E1404"]),
-    row("TemplateDecl", U, "template T<A>(x: I64) where A: B { slot s: View = empty; view { } }", "template T { view { } }", &["E1404"]),
-    row("TemplateMember", U, "template T() { slot s: View = empty; const N: I64 = 1; fn f() {} view { } }", "template T() { slot s View; }", &["E1404"]),
-    row("TemplateUse", F, "use a::T(1, k: 2) { fill f { } };", "use T(1) Text {}", &["E1404"]),
-    row("TemplateUseBody", F, "use T() { fill f { } override part p { } replace part q { } };", "use T() { fill f };", &["E1401", "E1404"]),
     // A.8 Style, theme, native and shader
     row("StyleDecl", U, "style S for Button: Base + Other { color: red; }", "style S Button { }", &["E1404"]),
     row("StyleBaseClause", U, "style S for B: a::X + Y { }", "style S for B: { }", &["E1404"]),

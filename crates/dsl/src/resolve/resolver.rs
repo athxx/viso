@@ -249,7 +249,6 @@ pub(crate) fn resolve_in(
             defer_unresolved_types: false,
             in_view: false,
             theme_base: None,
-            owner_slots: Vec::new(),
             owner_nodes: Vec::new(),
             node_refs: false,
         };
@@ -316,7 +315,6 @@ pub(super) fn resolve_standalone(
         defer_unresolved_types: false,
         in_view: false,
         theme_base: None,
-        owner_slots: Vec::new(),
         owner_nodes: Vec::new(),
         node_refs: false,
     };
@@ -406,7 +404,7 @@ fn build_symbol_table(
         // A component's/system's members (state, computed, input, event, and the
         // callables) go in the owner's own member table, fingerprinted under the
         // owner's name: two components may each declare a `count`.
-        if let Item::Component(_) | Item::System(_) | Item::Template(_) = decl {
+        if let Item::Component(_) | Item::System(_) = decl {
             define_members(&decl, id, &text, package, module_text, interner, &mut out);
         }
         if let Item::Trait(t) = &decl {
@@ -627,7 +625,7 @@ fn mint_unnamed(
                 generics(&format!("{path}::{}", member_name.text()), &member, out);
             }
         }
-        Item::Component(_) | Item::System(_) | Item::Template(_) => {
+        Item::Component(_) | Item::System(_) => {
             let Some(name) = ident_tokens(syntax).into_iter().next() else {
                 return;
             };
@@ -813,31 +811,9 @@ fn define_members(
     let members: Vec<crate::ast::Member> = match decl {
         Item::Component(c) => c.members().collect(),
         Item::System(s) => s.members().collect(),
-        Item::Template(t) => t.as_component().members().collect(),
         _ => return,
     };
     out.table.members_mut(owner_id);
-    // A template's parameters are its inputs.
-    let params = match decl {
-        Item::Template(t) => t.params(),
-        _ => Vec::new(),
-    };
-    for name_tok in params.iter().filter_map(|p| p.name()) {
-        let name = interner.intern(&name_tok.text());
-        let member_text = interner.text(name).unwrap_or_default();
-        let decl_path = format!("{owner}::{member_text}");
-        let id = fingerprint(SymbolIdentity {
-            package,
-            module_path: module_text,
-            kind: SymbolKind::Input,
-            decl_path: &decl_path,
-        });
-        let symbol = ModuleSymbol {
-            id,
-            exported: false,
-        };
-        out.define(Some(owner_id), name, Namespace::Value, symbol, &name_tok);
-    }
     // The view's named nodes outside `for` bodies are `NodeRef`s.
     let nodes = members
         .iter()
@@ -888,8 +864,7 @@ fn define_members(
 }
 
 /// The name token, symbol kind, and namespace of a component/system member, or `None`
-/// for a member that mints no module symbol: the `view` block itself, and a `slot`,
-/// which `fill` and `SlotOutlet` name within the component's schema.
+/// for a member that mints no module symbol: the `view` block itself.
 fn member_identity(
     member: &crate::ast::Member,
 ) -> Option<(crate::syntax::SyntaxToken, SymbolKind, Namespace)> {
@@ -905,7 +880,7 @@ fn member_identity(
         Member::Resource(d) => (d.name()?, SymbolKind::Resource, Namespace::Value),
         Member::Const(d) => (d.name()?, SymbolKind::Const, Namespace::Value),
         // A native declaration binds a native path, not a module symbol.
-        Member::Slot(_) | Member::View(_) | Member::Effect(_) | Member::Native(_) => return None,
+        Member::View(_) | Member::Effect(_) | Member::Native(_) => return None,
     };
     Some(triple)
 }
@@ -916,7 +891,6 @@ fn member_identity(
 fn decl_identity(item: &Item) -> Option<(crate::syntax::SyntaxToken, SymbolKind, Namespace)> {
     let triple = match item {
         Item::Component(d) => (d.name()?, SymbolKind::Component, Namespace::Type),
-        Item::Template(d) => (d.name()?, SymbolKind::Template, Namespace::Type),
         Item::System(d) => (d.name()?, SymbolKind::System, Namespace::Type),
         Item::Record(d) => (d.name()?, SymbolKind::Record, Namespace::Type),
         Item::Enum(d) => (d.name()?, SymbolKind::Enum, Namespace::Type),
@@ -1276,9 +1250,6 @@ struct ModulePass<'a> {
     /// Inside a theme's items, what `theme` reads there: its base's value,
     /// `None` for a theme without one.
     theme_base: Option<Option<Resolution>>,
-    /// The slots of the enclosing component or template, which a view's
-    /// `SlotOutlet` names by value though no symbol declares them.
-    owner_slots: Vec<String>,
     /// The named nodes of the enclosing component's view that its actions
     /// and handlers reach as a `NodeRef`.
     owner_nodes: Vec<NameId>,
@@ -1302,7 +1273,6 @@ impl<'a> ModulePass<'a> {
                 && self.push_generics(decl.syntax(), None);
             match decl {
                 Item::Component(c) => self.resolve_component(&c),
-                Item::Template(t) => self.resolve_template(&t),
                 Item::System(s) => self.resolve_system(&s),
                 Item::Fn(f) => self.resolve_callable(f.params(), f.return_type(), f.body()),
                 Item::Action(a) => self.resolve_callable(a.params(), a.return_type(), a.body()),
@@ -1509,20 +1479,6 @@ impl<'a> ModulePass<'a> {
         self.resolve_owner(decl.name(), decl.members());
     }
 
-    /// A template: its parameters' types and defaults, then its members as
-    /// a component's, the parameters being its inputs.
-    fn resolve_template(&mut self, decl: &crate::ast::TemplateDecl) {
-        for param in decl.params() {
-            if let Some(ty) = param.ty() {
-                self.resolve_type_path(&ty);
-            }
-            if let Some(default) = param.default() {
-                self.resolve_expr(&default);
-            }
-        }
-        self.resolve_owner(decl.name(), decl.as_component().members());
-    }
-
     fn resolve_system(&mut self, decl: &SystemDecl) {
         for bound in decl.implements() {
             self.resolve_bound(&bound);
@@ -1625,13 +1581,6 @@ impl<'a> ModulePass<'a> {
             self.table.get(name, Namespace::Type).map(|s| s.id)
         });
         let members: Vec<Member> = members.collect();
-        let slots = members
-            .iter()
-            .filter_map(|m| match m {
-                Member::Slot(slot) => slot.name().map(|n| n.text().to_string()),
-                _ => None,
-            })
-            .collect();
         let nodes = members
             .iter()
             .filter_map(|m| match m {
@@ -1644,7 +1593,6 @@ impl<'a> ModulePass<'a> {
             .collect();
         let outer = std::mem::replace(&mut self.owner, owner);
         let outer_name = std::mem::replace(&mut self.owner_name, owner_name);
-        let outer_slots = std::mem::replace(&mut self.owner_slots, slots);
         let outer_nodes = std::mem::replace(&mut self.owner_nodes, nodes);
         self.scopes.push();
         for member in members {
@@ -1653,7 +1601,6 @@ impl<'a> ModulePass<'a> {
         self.scopes.pop();
         self.owner = outer;
         self.owner_name = outer_name;
-        self.owner_slots = outer_slots;
         self.owner_nodes = outer_nodes;
     }
 
@@ -1818,7 +1765,6 @@ impl<'a> ModulePass<'a> {
                     }
                 }
             }
-            Member::Slot(_) => {}
         }
     }
 
@@ -2145,50 +2091,9 @@ impl<'a> ModulePass<'a> {
                     self.node = node;
                 }
             }
-            ViewItem::Part(part) => {
-                // Like a named node's, a part's name binds a slot for later
-                // siblings; callers name it in `override`/`replace part`.
-                if let Some(tok) = part.name() {
-                    let name = self.interner.intern(&tok.text());
-                    let slot = self.scopes.bind(name);
-                    self.refs.push(ResolvedRef {
-                        range: tok.text_range(),
-                        to: Resolution::Local(slot),
-                    });
-                }
-                if let Some(ty) = part.ty() {
-                    self.resolve_node_type(&ty);
-                }
-                if let Some(primary) = part.primary() {
-                    self.resolve_property(&primary);
-                }
-                if let Some(body) = part.body() {
-                    let instantiated = self.instantiated(part.ty());
-                    self.resolve_node_body(&body, instantiated);
-                }
-            }
-            ViewItem::Use(u) => {
-                if let Some(ty) = u.ty() {
-                    self.resolve_node_type(&ty);
-                }
-                for (_, value) in u.args() {
-                    self.resolve_expr(&value);
-                }
-                if let Some(body) = u.body() {
-                    let instantiated = self.instantiated(u.ty());
-                    self.resolve_node_body(&body, instantiated);
-                }
-            }
-            ViewItem::Override(o) => {
-                // The bindings are the caller's, on a node of the callee.
-                let node = self.node.take();
-                for member in o.members() {
-                    self.resolve_view_item(member);
-                }
-                self.node = node;
-            }
-            ViewItem::Replace(r) => {
-                if let Some(body) = r.body() {
+            ViewItem::Slot(slot) => {
+                // Default content belongs to the view that places the slot.
+                if let Some(body) = slot.body() {
                     let node = self.node.take();
                     self.resolve_view_block(&body);
                     self.node = node;
@@ -2401,7 +2306,7 @@ impl<'a> ModulePass<'a> {
             return;
         }
         let text = head.text();
-        let builtin = BUILTIN_VALUES.contains(&text.as_str()) || self.owner_slots.contains(&text);
+        let builtin = BUILTIN_VALUES.contains(&text.as_str());
         if !builtin && !self.defer_unresolved_types && !self.imports.unresolved.contains(&name) {
             let diagnostic = self.unresolved_value(&head);
             if crate::ast::is_shorthand_site(path.syntax()) {
@@ -2966,9 +2871,9 @@ mod tests {
     #[test]
     fn an_unresolved_value_is_e2001_with_the_nearest_names() {
         let mut interner = NameInterner::new();
-        let src = "component A { state count = 0; slot body: Slot<Node>; \
+        let src = "component A { state count = 0; \
                    action go() { count = cont + 1; let x = Some(\"{count}\"); } \
-                   view { SlotOutlet { slot: body; } } }";
+                   view { Column { slot body } } }";
         let app = unit(&mut interner, &["app"], src);
         let mods = resolve_all(vec![app], &mut interner);
         let errors: Vec<_> = mods
@@ -2976,7 +2881,7 @@ mod tests {
             .flat_map(|m| m.errors.iter())
             .filter(|d| d.code == "E2001")
             .collect();
-        // Builtins and the component's slots are no unresolved names.
+        // Builtins and the view's slots are no unresolved names.
         assert_eq!(errors.len(), 1, "{errors:#?}");
         assert!(errors[0].message.contains("`cont`"), "{errors:#?}");
         let replacements: Vec<_> = errors[0]

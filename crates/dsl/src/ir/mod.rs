@@ -281,9 +281,6 @@ struct Lowering<'a, 'l> {
     /// Whether an unknown type names a component of the surrounding Rust
     /// scope, as in a `ui!` fragment.
     rust_scope: bool,
-    /// The caller's `override part` bindings for the next node to lower, a
-    /// part, and the instance they belong to.
-    overriding: Option<(Vec<ViewItem>, u32)>,
     /// The `NodeRef` key of the named node being lowered, which the first
     /// retained node it lowers to takes.
     naming: Option<u32>,
@@ -299,10 +296,6 @@ struct Frame {
     chain: Vec<SymbolId>,
     /// What the caller fills each slot with.
     fills: Vec<(String, Vec<ViewItem>)>,
-    /// The caller's `override part` bindings and handlers, by part.
-    overrides: Vec<(String, Vec<ViewItem>)>,
-    /// What the caller's `replace part` puts in each part's place.
-    replaces: Vec<(String, Vec<ViewItem>)>,
     /// The caller's frame, and the regions enclosing the caller's node.
     caller: Option<(usize, u32)>,
 }
@@ -328,8 +321,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     .map_or(0, |c| c.unit),
                 chain: root.into_iter().collect(),
                 fills: Vec::new(),
-                overrides: Vec::new(),
-                replaces: Vec::new(),
                 caller: None,
             }],
             current: 0,
@@ -337,7 +328,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
             guarded: false,
             ordinals: HashMap::new(),
             rust_scope: false,
-            overriding: None,
             naming: None,
         }
     }
@@ -498,17 +488,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     out,
                 );
             }
-            ViewItem::Part(part) => self.part(&part, out),
-            ViewItem::Use(template) => self.template_use(&template, out),
+            ViewItem::Slot(slot) => self.slot(&slot, out),
             ViewItem::If(vi) => out.push(UiItem::If(self.lower_if(&vi))),
             ViewItem::For(vf) => out.push(UiItem::For(self.lower_for(&vf))),
             ViewItem::Match(vm) => out.push(UiItem::Match(self.lower_match(&vm))),
             ViewItem::Property(_)
             | ViewItem::Handler(_)
             | ViewItem::TwoWayBinding(_)
-            | ViewItem::Fill(_)
-            | ViewItem::Override(_)
-            | ViewItem::Replace(_) => {}
+            | ViewItem::Fill(_) => {}
         }
     }
 
@@ -556,19 +543,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
     ) {
         // The node's `( value )` leads its members.
         let primary = primary.map(ViewItem::Property);
-        let overriding = self.overriding.take();
         let Some(ty) = ty else { return };
         let type_name = type_name_of(&ty);
         let head = ty.segments().next().map(|t| t.text_range());
         if let Some(id) = head.and_then(|head| self.names().heads.get(&head).copied()) {
-            if overriding.is_some() {
-                self.unmount((
-                    origin,
-                    format!(
-                        "an `override part` binds the properties of a widget part, and this part is a `{type_name}`; replace it instead"
-                    ),
-                ));
-            }
             if self.library.get(id).is_some() {
                 let members = primary
                     .into_iter()
@@ -622,10 +600,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 }
                 return;
             }
-            WidgetNode::Outlet => {
-                self.outlet(body.as_ref(), origin, out);
-                return;
-            }
             // A box its implementation builds the content of.
             WidgetNode::Rust => NodeKind::Stack,
         };
@@ -670,21 +644,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             instance,
             (&mut style, &mut pending, &mut bound),
         );
-        // The caller's overrides replace the node's own bindings of the same
-        // property and its own handlers of the same event.
-        let members: Vec<(ViewItem, u32)> = match overriding {
-            Some((overrides, caller)) => {
-                let rebinds =
-                    |m: &ViewItem| overrides.iter().any(|o| same_binding(o, m, primary_name));
-                own.into_iter()
-                    .filter(|m| !rebinds(m))
-                    .map(|m| (m, instance))
-                    .chain(overrides.iter().cloned().map(|m| (m, caller)))
-                    .collect()
-            }
-            None => own.into_iter().map(|m| (m, instance)).collect(),
-        };
-        for (member, instance) in members {
+        for member in own {
             match member {
                 ViewItem::Property(prop) if dotted(prop.path()).as_deref() == Some("styles") => {}
                 ViewItem::Property(prop) => {
@@ -1188,132 +1148,39 @@ impl<'a, 'l> Lowering<'a, 'l> {
         })));
     }
 
-    /// A `SlotOutlet`: the items the caller fills the slot with, lowered in
-    /// the caller's view; nothing in the mounted component, which no caller
-    /// fills.
-    fn outlet(&mut self, body: Option<&NodeBody>, origin: TextRange, out: &mut Vec<UiItem>) {
-        let Some((caller, depth)) = self.frames[self.current].caller else {
-            return;
-        };
-        let name = body
-            .into_iter()
-            .flat_map(|b| b.members())
-            .find_map(|m| match m {
-                ViewItem::Property(p)
-                    if p.path().is_some_and(|path| {
-                        path.segments().map(|t| t.text()).collect::<Vec<_>>() == ["slot"]
-                    }) =>
-                {
-                    p.value().as_ref().and_then(path_ident)
-                }
-                _ => None,
-            });
-        let Some(name) = name else { return };
-        let Some(items) = self.frames[self.current]
+    /// A `slot`: what the caller fills it with, lowered in the caller's
+    /// view, else its default content, lowered in this one.
+    fn slot(&mut self, slot: &crate::ast::SlotItem, out: &mut Vec<UiItem>) {
+        let name = slot.slot_name();
+        let frame = &self.frames[self.current];
+        let filled = frame
             .fills
             .iter()
-            .find(|(slot, _)| *slot == name)
-            .map(|(_, items)| items.clone())
-        else {
-            return;
-        };
-        if self.depth != depth {
-            self.unmount((
-                origin,
-                format!(
-                    "the slot `{name}` is placed inside a `for` or `match` of the component, which its caller's items cannot run in"
-                ),
-            ));
-            return;
-        }
-        let callee = std::mem::replace(&mut self.current, caller);
-        for item in items {
-            self.item(item, out);
-        }
-        self.current = callee;
-    }
-
-    /// A `part` node: what the caller's `replace part` puts in its place,
-    /// lowered in the caller's view, else the node with the caller's
-    /// `override part` bindings.
-    fn part(&mut self, part: &crate::ast::PartNode, out: &mut Vec<UiItem>) {
-        let name = part
-            .name()
-            .map(|t| t.text().trim_start_matches("r#").to_string());
-        let origin = part.syntax().text_range();
-        let frame = &self.frames[self.current];
-        let replaced = name
-            .as_ref()
-            .and_then(|n| frame.replaces.iter().find(|(p, _)| p == n))
+            .find(|(n, _)| *n == name)
             .map(|(_, items)| items.clone());
-        let overrides = name
-            .as_ref()
-            .and_then(|n| frame.overrides.iter().find(|(p, _)| p == n))
-            .map(|(_, items)| items.clone());
-        if replaced.is_some() || overrides.is_some() {
-            let Some((caller, depth)) = frame.caller else {
-                return;
-            };
-            if self.depth != depth {
-                self.unmount((
-                    origin,
-                    format!(
-                        "the part `{}` is inside a `for` or `match`, which its caller's `override`/`replace` cannot run in",
-                        name.clone().unwrap_or_default()
-                    ),
-                ));
-            } else if let Some(items) = replaced {
+        match (filled, frame.caller) {
+            (Some(items), Some((caller, depth))) => {
+                if self.depth != depth {
+                    self.unmount((
+                        slot.syntax().text_range(),
+                        format!(
+                            "the slot `{name}` is placed inside a `match` of the component, which its caller's items cannot run in"
+                        ),
+                    ));
+                    return;
+                }
                 let callee = std::mem::replace(&mut self.current, caller);
                 for item in items {
                     self.item(item, out);
                 }
                 self.current = callee;
-                return;
-            } else {
-                self.overriding = overrides.map(|o| (o, self.frames[caller].instance));
+            }
+            _ => {
+                for item in slot.body().iter().flat_map(|b| b.items()) {
+                    self.item(item, out);
+                }
             }
         }
-        self.node(part.ty(), name, (part.primary(), part.body()), origin, out);
-        self.overriding = None;
-    }
-
-    /// A `use` of the library template the use names, inlined like a
-    /// component node whose parameters its arguments give, by position or
-    /// name.
-    fn template_use(&mut self, u: &crate::ast::TemplateUse, out: &mut Vec<UiItem>) {
-        let Some(ty) = u.ty() else { return };
-        let type_name = type_name_of(&ty);
-        let Some(head) = ty.segments().next() else {
-            return;
-        };
-        let Some(id) = self.names().heads.get(&head.text_range()).copied() else {
-            return;
-        };
-        let Some(template) = self.library.get(id) else {
-            return;
-        };
-        let inputs = &template.schema.inputs;
-        let mut args = Vec::new();
-        let mut next = 0;
-        for (label, value) in u.args() {
-            let slot = match label {
-                Some(label) => {
-                    let text = label.text();
-                    let name = text.trim_start_matches("r#");
-                    inputs.iter().position(|i| i.name == name)
-                }
-                None => {
-                    next += 1;
-                    (next <= inputs.len()).then_some(next - 1)
-                }
-            };
-            if let Some(slot) = slot {
-                args.push((slot as u32, value.syntax().text_range()));
-            }
-        }
-        let members = u.body().iter().flat_map(|b| b.members()).collect();
-        let origin = u.syntax().text_range();
-        self.component(id, type_name, None, members, args, origin, out);
     }
 
     /// Inlines a node of the library component `id`, whose body holds
@@ -1346,8 +1213,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
         }
         let parent = self.instance();
         let mut handlers = Vec::new();
-        let mut overrides: Vec<(String, Vec<ViewItem>)> = Vec::new();
-        let mut replaces: Vec<(String, Vec<ViewItem>)> = Vec::new();
         let mut forwarded = Vec::new();
         let mut forwarded_handlers = Vec::new();
         let mut fills: Vec<(String, Vec<ViewItem>)> = Vec::new();
@@ -1366,20 +1231,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let own = style::own_bindings(&members, primary);
         for member in members {
             match member {
-                ViewItem::Override(o) => {
-                    let name = o.name().map(|t| t.text()).unwrap_or_default();
-                    overrides.push((
-                        name.trim_start_matches("r#").to_string(),
-                        o.members().collect(),
-                    ));
-                }
-                ViewItem::Replace(r) => {
-                    let name = r.name().map(|t| t.text()).unwrap_or_default();
-                    replaces.push((
-                        name.trim_start_matches("r#").to_string(),
-                        r.body().iter().flat_map(|b| b.items()).collect(),
-                    ));
-                }
                 ViewItem::Property(prop) => {
                     let segments: Vec<String> = match prop.path() {
                         Some(path) => path.segments().map(|t| t.text()).collect(),
@@ -1493,8 +1344,6 @@ impl<'a, 'l> Lowering<'a, 'l> {
             unit: component.unit,
             chain,
             fills,
-            overrides,
-            replaces,
             caller: Some((self.current, self.depth)),
         });
         let caller = std::mem::replace(&mut self.current, self.frames.len() - 1);
@@ -1664,21 +1513,6 @@ fn laid_slots(laid: &[String]) -> Laid {
         rules: slots().any(LayoutSlot::is_rule),
         insets: slots().any(LayoutSlot::is_inset),
     }
-}
-
-/// Whether the override `o` rebinds what the node's own member `own` binds:
-/// the same property (by `:`, `( value )` binding `primary`, or `bind`) or a
-/// handler of the same event.
-fn same_binding(o: &ViewItem, own: &ViewItem, primary: Option<&str>) -> bool {
-    let bound = |m: &ViewItem| match m {
-        ViewItem::Property(p) => style::bound_name(p, primary).map(|n| (0, n)),
-        ViewItem::TwoWayBinding(b) => dotted(b.target()).map(|n| (0, n)),
-        ViewItem::Handler(h) => h
-            .event()
-            .map(|t| (1, t.text().trim_start_matches("r#").to_string())),
-        _ => None,
-    };
-    bound(o).is_some_and(|o| bound(own) == Some(o))
 }
 
 /// A property path's dotted text (`opacity`, `transition.opacity`).

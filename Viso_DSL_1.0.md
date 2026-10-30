@@ -81,7 +81,7 @@ Viso DSL 1.0 采用以下唯一规范规则：
 - **Level 1（Core UI）**：Component、Input、State、Computed、Action、View、Node、Property、Event、`if`/`match`/Keyed `for`、Record/Enum、基础 `fn`；
 - **Level 2（Core System/Shader）**：`system` 与 Native Schema 提供的 Scheduler Trait（如 `FixedUpdate`）、Shader Profile Entry；
 - **Level 3（Standard）**：Effect、Task、Resource、Slot、Style、Theme、Hot Reload Migration；
-- **Level 4（Advanced）**：用户定义 Trait/Impl、一般泛型、Const Generic、`dyn` Trait、Template/Part、手写 Native 声明、细粒度 Capability 标注。
+- **Level 4（Advanced）**：用户定义 Trait/Impl、一般泛型、Const Generic、`dyn` Trait、手写 Native 声明、细粒度 Capability 标注。
 
 Schema、IR 与 Compiler Plugin 属于工具链，不属于语言 Surface。高级特性不会污染 Level 1 的基本语法。
 
@@ -211,11 +211,11 @@ macro unsafe extern static yield try
 
 ```text
 input state computed event slot effect resource view
-style theme template part requires capability
+style theme requires capability
 on capture bubble emit transaction start move
 when run cleanup success error cancelled
-node fill bind using use override replace preserve key
-load policy scope empty
+node bind using preserve key
+load policy scope
 vertex fragment compute uniform instance varying texture sampler
 ```
 
@@ -228,9 +228,9 @@ Parser 只在下列位置、以至多 2 个 Token 的 Lookahead 把上下文关�
 | 位置                        | 识别形式                                                                                           |
 | --------------------------- | -------------------------------------------------------------------------------------------------- |
 | Statement/Expression 起始   | `emit IDENT`、`start IDENT`、`transaction {`、`move \|`（含 `move \|\|`）                          |
-| 顶层声明起始                | `style IDENT`、`theme IDENT`、`template IDENT`                                                     |
-| Component/System 成员起始   | `input`/`state`/`computed`/`event`/`slot`/`effect`/`resource` 后随 IDENT；`view {`                 |
-| Node Body / View Block 项起始 | `node IDENT :`、`part IDENT :`、`on IDENT`、`on capture`/`on bubble`、`bind IDENT`、`fill IDENT`、`use IDENT`、`override part`、`replace part` |
+| 顶层声明起始                | `style IDENT`、`theme IDENT`                                                                       |
+| Component/System 成员起始   | `input`/`state`/`computed`/`event`/`effect`/`resource` 后随 IDENT；`view {`                        |
+| Node Body / View Block 项起始 | `node IDENT :`、`on IDENT`、`on capture`/`on bubble`、`bind IDENT`、`slot`（其后不是 `:`/`.`）       |
 | View 控制结构               | `if` Header 后的 `preserve STRING`；View `for` Header 中的 `key`                                    |
 | Resource Item               | `load =`、`key =`、`policy =`、`scope =`                                                           |
 | Start Handler               | `policy =`、`success (`、`error (`、`cancelled {`                                                  |
@@ -238,7 +238,6 @@ Parser 只在下列位置、以至多 2 个 Token 的 Lookahead 把上下文关�
 | Callable 签名尾部           | `requires {`                                                                                       |
 | Two-way Binding / Style     | `bind` 之后的 `using`；Style Item 起始的 `when`                                                    |
 | Shader 成员                 | `uniform`/`instance`/`varying`/`texture`/`sampler` 后随 IDENT；`vertex (`、`fragment (`、`compute (` |
-| Slot Default                | `= empty ;`                                                                                        |
 
 不满足识别形式时按普通 identifier 解析，例如 `emit(x);` 是普通调用、`state: s;` 是名为 `state` 的 Property Binding、`let move = 1;` 声明名为 `move` 的局部变量。
 
@@ -867,7 +866,6 @@ attribute_arg     = expression
 | `@derive(Eq, Hash, ...)`   | `record`、`enum`          | 派生标准 Trait                                          |
 | `@deprecated(message: "")` | 任意声明                  | 使用时产生弃用警告                                      |
 | `@capability("path")`      | `native` 声明             | 声明所需 Capability（§33、§95）                         |
-| `@default`                 | Component 的 `slot` 成员   | 指定 Default Slot（§45.1）                              |
 | `@bindable(event)`         | Component 的 `input` 成员  | 与同名 Component 的 `event` 配对为双向属性（§U2.2）      |
 | `@styleable`               | Component 的 `input` 成员  | 允许 Style 绑定该 Input（§U2.3）                         |
 | `@selector`                | `Bool` 的 `input`/`state`/`computed` | 公开为 Style 状态选择器（§U2.3）               |
@@ -908,7 +906,6 @@ declaration_core = component_decl
                  | function_decl
                  | action_decl
                  | task_decl
-                 | template_decl
                  | style_decl
                  | theme_decl
                  | shader_decl
@@ -928,7 +925,7 @@ Core      component/input/state/computed/action/view/record/enum/system/basic fn
 Standard  effect/task/resource/slot/style/theme/hot-reload migration
 
 Advanced  user-defined trait/impl/general generics/const generics/dyn trait
-          template/part/handwritten native interface declarations
+          handwritten native interface declarations
           fine-grained capability annotations
 ```
 
@@ -1952,7 +1949,7 @@ task load_profile(id: I64) -> String {
 
 ---
 
-# 第七部分：完整语法——View、节点、Template、Style 与 Theme
+# 第七部分：完整语法——View、节点、Style 与 Theme
 
 ## 48. View 声明
 
@@ -3621,7 +3618,6 @@ ComponentInstanceId
 + SourceStableSymbolId
 + DynamicBranchNamespace
 + OptionalListKey
-+ TemplateExpansionPath
 ```
 
 ### 88.1 Named Node
@@ -4365,7 +4361,6 @@ DeclCore
      |  FunctionDecl
      |  ActionDecl
      |  TaskDecl
-     |  TemplateDecl
      |  StyleDecl
      |  ThemeDecl
      |  ShaderDecl
@@ -4615,7 +4610,6 @@ ComponentMember
         | StateDecl
         | ComputedDecl
         | EventDecl
-        | SlotDecl
         | ConstDecl
         | FunctionDecl
         | ActionDecl
@@ -4660,14 +4654,9 @@ EventParameterList
 EventParameter
     ::= IDENT ":" Type
 
-SlotDecl
-    ::= "slot" IDENT ":" Type ( "=" SlotDefault )? ItemEnd
-
-SlotDefault
-    ::= "None" | "empty"
 ```
 
-`InitExpression` 是 Expression，经 §42 初始化 Checker 验证；`empty` 是只在 Slot Default 位置识别的上下文词。
+`InitExpression` 是 Expression，经 §42 初始化 Checker 验证。
 
 ---
 
@@ -4732,20 +4721,16 @@ ViewStructureItem
     ::= Attribute*
         ( NamedNode
         | AnonymousNode
-        | PartNode
+        | SlotItem
         | ViewIf
         | ViewFor
-        | ViewMatch
-        | TemplateUse )
+        | ViewMatch )
 
 NamedNode
     ::= "node" IDENT ":" ComponentType PrimaryArgument? NodeBody?
 
 AnonymousNode
     ::= ComponentType PrimaryArgument? NodeBody?
-
-PartNode
-    ::= "part" IDENT ":" ComponentType PrimaryArgument? NodeBody?
 
 ComponentType
     ::= TypePath
@@ -4761,16 +4746,13 @@ NodeMember
         ( PropertyBinding
         | TwoWayBinding
         | EventHandler
-        | FillClause
+        | SlotFill
         | NamedNode
         | AnonymousNode
-        | PartNode
+        | SlotItem
         | ViewIf
         | ViewFor
-        | ViewMatch
-        | TemplateUse
-        | PartOverride
-        | PartReplace )
+        | ViewMatch )
 
 PropertyBinding
     ::= PropertyPath ":" Expression ItemEnd
@@ -4788,8 +4770,11 @@ EventHandler
 EventPhase
     ::= "capture" | "bubble"
 
-FillClause
-    ::= "fill" IDENT ViewBlock
+SlotFill
+    ::= IDENT ViewBlock
+
+SlotItem
+    ::= "slot" IDENT? ViewBlock?
 
 ViewIf
     ::= "if" HeadExpression ( "preserve" STRING_LITERAL )?
@@ -4804,40 +4789,15 @@ ViewMatch
 
 ViewMatchArm
     ::= Pattern ( "if" Expression )? "=>" ViewBlock
-
-PartOverride
-    ::= "override" "part" IDENT
-        "{" PartOverrideItem* "}"
-
-PartOverrideItem
-    ::= PropertyBinding | TwoWayBinding | EventHandler
-
-PartReplace
-    ::= "replace" "part" IDENT ViewBlock
 ```
 
-`ViewBlock` 的 Cardinality 由 HIR 检查。它不是普通 `Block`，因此不允许 Statement 或 Tail Expression。
+`ViewBlock` 的 Cardinality 由 HIR 检查。它不是普通 `Block`，因此不允许 Statement 或 Tail Expression。`SlotFill` 的 IDENT 以小写字母或 `_` 开头且与 `{` 同行；`SlotItem` 的 IDENT 与 `ViewBlock` 都须与 `slot` 同行。
 
 ---
 
-## A.9 Template、Style、Theme
+## A.9 Style、Theme
 
 ```ebnf
-TemplateDecl
-    ::= "template" IDENT GenericParams?
-        "(" ParameterList ")" WhereClause?
-        "{" TemplateMember+ "}"
-
-TemplateMember
-    ::= SlotDecl | ConstDecl | FunctionDecl | ViewDecl
-
-TemplateUse
-    ::= "use" TypePath "(" ArgumentList ")"
-        TemplateUseBody? ItemEnd
-
-TemplateUseBody
-    ::= "{" ( FillClause | PartOverride | PartReplace )* "}"
-
 StyleDecl
     ::= "style" IDENT "for" ComponentType StyleBaseClause?
         "{" StyleItem* "}"
@@ -5271,7 +5231,7 @@ RecordPatternField
 本附录的每个 Production 恰有一个成熟度：
 
 - `stable`：Core 与 Standard Surface（§25.1）的语法。语法与语义随 Viso 1.0 冻结，由 Parser Golden、Formatter 与语义测试锁定；改变它须提升 Package 固定的语言版本（§22）并提供迁移诊断。
-- `preview`：Advanced Surface（§25.1）的语法：用户定义 Trait/Impl、一般泛型与 Const Generic、`dyn` Trait、Template/Part、手写 Native 声明与细粒度 Capability 标注。已实现、可以使用，Parser、Formatter 与诊断码同样稳定；但 1.x 的次版本可以调整其语法或语义，调整随发布说明与迁移诊断一同给出。
+- `preview`：Advanced Surface（§25.1）的语法：用户定义 Trait/Impl、一般泛型与 Const Generic、`dyn` Trait、手写 Native 声明与细粒度 Capability 标注。已实现、可以使用，Parser、Formatter 与诊断码同样稳定；但 1.x 的次版本可以调整其语法或语义，调整随发布说明与迁移诊断一同给出。
 - `reserved`：Parser 接受并保留在 Lossless CST 中、Formatter 可以格式化，但 1.0 没有任何 Profile 接受其语义：编译报对应的稳定诊断（`ComputeEntry` 报 `E8106`）。保留给后续版本，届时成为 `preview` 或 `stable`。
 
 `crates/dsl/tests/ebnf_golden.rs` 要求下表与本附录的 Production 集合一一对应，每行的成熟度取上述三者之一。
@@ -5354,8 +5314,6 @@ RecordPatternField
 | `EventDecl`                 | A.6   | `stable`   |
 | `EventParameterList`        | A.6   | `stable`   |
 | `EventParameter`            | A.6   | `stable`   |
-| `SlotDecl`                  | A.6   | `stable`   |
-| `SlotDefault`               | A.6   | `stable`   |
 | `EffectDecl`                | A.7   | `stable`   |
 | `EffectDependencies`        | A.7   | `stable`   |
 | `EffectRunPolicy`           | A.7   | `stable`   |
@@ -5371,7 +5329,6 @@ RecordPatternField
 | `ViewStructureItem`         | A.8   | `stable`   |
 | `NamedNode`                 | A.8   | `stable`   |
 | `AnonymousNode`             | A.8   | `stable`   |
-| `PartNode`                  | A.8   | `preview`  |
 | `ComponentType`             | A.8   | `stable`   |
 | `PrimaryArgument`           | A.8   | `stable`   |
 | `NodeBody`                  | A.8   | `stable`   |
@@ -5381,18 +5338,12 @@ RecordPatternField
 | `TwoWayBinding`             | A.8   | `stable`   |
 | `EventHandler`              | A.8   | `stable`   |
 | `EventPhase`                | A.8   | `stable`   |
-| `FillClause`                | A.8   | `stable`   |
+| `SlotFill`                  | A.8   | `stable`   |
+| `SlotItem`                  | A.8   | `stable`   |
 | `ViewIf`                    | A.8   | `stable`   |
 | `ViewFor`                   | A.8   | `stable`   |
 | `ViewMatch`                 | A.8   | `stable`   |
 | `ViewMatchArm`              | A.8   | `stable`   |
-| `PartOverride`              | A.8   | `preview`  |
-| `PartOverrideItem`          | A.8   | `preview`  |
-| `PartReplace`               | A.8   | `preview`  |
-| `TemplateDecl`              | A.9   | `preview`  |
-| `TemplateMember`            | A.9   | `preview`  |
-| `TemplateUse`               | A.9   | `preview`  |
-| `TemplateUseBody`           | A.9   | `preview`  |
 | `StyleDecl`                 | A.9   | `stable`   |
 | `StyleBaseClause`           | A.9   | `stable`   |
 | `StyleItem`                 | A.9   | `stable`   |
@@ -5582,7 +5533,6 @@ RecordPatternField
 | E3001  | 已删除的 `child` 关键字                                 |
 | E3002  | View Cardinality 不满足                                 |
 | E3003  | Component 没有 Default Slot                             |
-| E3004  | 多个 Slot 标记 `@default`（§45.1）                      |
 | E3101  | 未知 Property                                           |
 | E3102  | Property 重复绑定                                       |
 | E3103  | Property 不支持双向绑定                                 |
@@ -5597,9 +5547,8 @@ RecordPatternField
 | E3301  | Conditional Preserve 必须是静态字符串，且在 Component 中唯一 |
 | E3401  | View For 缺少 Key                                       |
 | E3402  | Key Expression 不稳定（警告）                           |
-| E3501  | 未知 Slot/Part                                          |
-| E3502  | Slot Cardinality 冲突                                   |
-| E3601  | Template 无限递归，或 Template / `use` 体含不允许的项      |
+| E3501  | 未知 Slot                                               |
+| E3502  | Slot 放置或填充冲突                                     |
 | E3701  | `@bindable` 配对错误（§U2.2）                           |
 | E3702  | 父节点提供的 Property 用于错误或无法静态确定的父节点（§U3.8） |
 | E3703  | `transition` 用于不可动画 Property 或类型不符（§U6.1）  |

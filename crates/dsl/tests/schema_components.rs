@@ -1,6 +1,6 @@
 //! The schema of a package's own components: found by path or suffix beside
 //! the framework's widgets, each input's type, default and the dirty classes
-//! its view actually binds it to, its events, slots and parts, and where it is
+//! its view actually binds it to, its events and slots, and where it is
 //! declared, with a revision that follows its public surface only.
 
 use std::fs;
@@ -23,7 +23,6 @@ export component Card {
     input count: I64 = 0;
     input level: F32 = 0.5f32;
     event changed(value: String);
-    slot footer: OptionalSlot<Node>;
     view {
         Column {
             width: 200dp;
@@ -32,6 +31,7 @@ export component Card {
             if dense { Text("dense") }
             Text(value)
             Slider { value: level; }
+            slot footer
         }
     }
 }
@@ -137,7 +137,7 @@ fn a_component_reports_its_inputs_events_slots_and_origin() {
         panic!("one slot: {:?}", card.slots);
     };
     assert_eq!(footer.name, "footer");
-    assert_eq!(footer.cardinality, SlotCardinality::Optional);
+    assert_eq!(footer.cardinality, SlotCardinality::Many);
     assert!(!footer.default);
 
     let origin = card.origin.as_ref().expect("a package's");
@@ -271,12 +271,10 @@ enum Status {
 }
 
 export component Panel {
-    @default slot body: Slot<Node>;
-    slot extras: SlotList<Node> = empty;
     view {
         Column {
-            SlotOutlet { slot: body; }
-            SlotOutlet { slot: extras; }
+            slot
+            slot extras { Text("none") }
         }
     }
 }
@@ -345,7 +343,7 @@ fn a_package_record_and_enum_are_schema_symbols() {
     assert_eq!(
         slots,
         [
-            ("body", SlotCardinality::One, true),
+            ("children", SlotCardinality::Many, true),
             ("extras", SlotCardinality::Many, false)
         ]
     );

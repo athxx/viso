@@ -319,7 +319,6 @@ fn declaration_kind(cx: &FileCx<'_>, component: &HirComponent) -> &'static str {
         .map(|node| node.kind());
     match kind {
         Some(SyntaxKind::SystemDecl) => "system",
-        Some(SyntaxKind::TemplateDecl) => "template",
         _ => "component",
     }
 }
