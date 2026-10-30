@@ -48,11 +48,10 @@ export component Counter {
         Column {
             width: 320dp;
             gap: 16dp;
-            Text { width: 320dp; height: 40dp; text: "Clicked {clicks} times"; }
-            Button {
+            Text("Clicked {clicks} times") { width: 320dp; height: 40dp }
+            Button("Click") {
                 width: 320dp;
                 height: 40dp;
-                text: "Click";
                 on click { clicks += 1; }
             }
         }
@@ -144,8 +143,8 @@ import app::shout;
 export component App {
     view {
         Column {
-            Text { text: "plain"; }
-            Text { text: shout::loud("hi"); }
+            Text("plain")
+            Text(shout::loud("hi"))
         }
     }
 }
@@ -175,8 +174,8 @@ component Chart {
     effect warm { transaction { hovered = 1; } }
     view {
         Column {
-            Text { text: "inside"; }
-            Button { text: "pick"; on click { emit picked(hovered); } }
+            Text("inside")
+            Button("pick") { on click { emit picked(hovered); } }
         }
     }
 }
@@ -186,7 +185,7 @@ export component App {
     state last = 0;
     view {
         Column {
-            Text { text: "Picked {last}"; }
+            Text("Picked {last}")
             Island {
                 width: 200dp;
                 height: 100dp;

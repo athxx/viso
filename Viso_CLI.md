@@ -2545,9 +2545,8 @@ component Counter {
 
     view {
         Column {
-            Text { text: "{count}" }
-            Button {
-                text: "Add"
+            Text("{count}")
+            Button("Add") {
                 on click { count += 1 }
             }
         }

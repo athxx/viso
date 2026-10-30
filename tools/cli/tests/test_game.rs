@@ -247,7 +247,7 @@ fn a_run_is_drawn_as_a_sheet_of_its_frames() {
             ),
             (
                 "src/app.vs",
-                b"export component App { view { Text { text: \"Hi\"; } } }\n",
+                b"export component App { view { Text(\"Hi\") } }\n",
             ),
             (
                 "src/game.vs",

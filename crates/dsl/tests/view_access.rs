@@ -45,7 +45,7 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
     assert_eq!(
         lenient(
             "Row { semantics.role: Role::button; focusable: true; \
-             Text { text: \"Go\"; } on click { n += 1; } }"
+             Text(\"Go\"); on click { n += 1; } }"
         ),
         CLEAN
     );
@@ -58,7 +58,7 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
     );
     assert_eq!(
         lenient(
-            "Row { semantics.role: Role::group; focusable: true; Text { text: \"Go\"; } on click { n += 1; } }"
+            "Row { semantics.role: Role::group; focusable: true; Text(\"Go\"); on click { n += 1; } }"
         ),
         ["E3704"],
         "`group` is no role"
@@ -69,16 +69,13 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
         "no name"
     );
     assert_eq!(
-        lenient(
-            "Row { semantics.role: Role::button; Text { text: \"Go\"; } on click { n += 1; } }"
-        ),
+        lenient("Row { semantics.role: Role::button; Text(\"Go\"); on click { n += 1; } }"),
         ["E3708"],
         "not focusable"
     );
     assert_eq!(
         lenient(
-            "Row { semantics.role: Role::button; focusable: true; Text { text: \"Go\"; } \
-             on tap { n += 1; } }"
+            "Row { semantics.role: Role::button; focusable: true; Text(\"Go\"); on tap { n += 1; } }"
         ),
         ["E3708"],
         "a tap has no keyboard path"
@@ -89,7 +86,7 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
         "a raw pointer handler is no gesture"
     );
     assert_eq!(
-        lenient("Button { text: \"Go\"; on click { n += 1; } }"),
+        lenient("Button(\"Go\") { on click { n += 1; } }"),
         CLEAN,
         "a standard interactive widget"
     );
@@ -97,19 +94,19 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
 
 #[test]
 fn localizable_text_is_no_concatenation_or_literal_format() {
-    assert_eq!(lenient("Text { text: \"Inbox\"; }"), CLEAN);
-    assert_eq!(lenient("Text { text: \"{n}\"; }"), CLEAN);
-    assert_eq!(lenient("Text { text: name; }"), CLEAN);
-    assert_eq!(lenient("Text { text: \"Hi \" + name; }"), ["E3705"]);
-    assert_eq!(lenient("Text { text: (name + \"!\"); }"), ["E3705"]);
-    assert_eq!(lenient("Text { text: \"{n} new\"; }"), ["E3705"]);
-    assert_eq!(lenient("Text { text: \"{n}{n}\"; }"), ["E3705"]);
+    assert_eq!(lenient("Text(\"Inbox\")"), CLEAN);
+    assert_eq!(lenient("Text(\"{n}\")"), CLEAN);
+    assert_eq!(lenient("Text(name)"), CLEAN);
+    assert_eq!(lenient("Text(\"Hi \" + name)"), ["E3705"]);
+    assert_eq!(lenient("Text((name + \"!\"))"), ["E3705"]);
+    assert_eq!(lenient("Text(\"{n} new\")"), ["E3705"]);
+    assert_eq!(lenient("Text(\"{n}{n}\")"), ["E3705"]);
     assert_eq!(
-        lenient("Button { text: \"Name: \" + name; on click { n += 1; } }"),
+        lenient("Button(\"Name: \" + name) { on click { n += 1; } }"),
         ["E3705"]
     );
     assert_eq!(
-        lenient("Text { text: \"a\"; semantics.hint: Option::Some(\"x\" + name); }"),
+        lenient("Text(\"a\") { semantics.hint: Option::Some(\"x\" + name) }"),
         CLEAN,
         "an `Option` is no joined text"
     );
@@ -123,18 +120,15 @@ fn a_strict_profile_makes_the_findings_errors() {
         ..TargetProfile::default()
     };
     assert_eq!(
-        findings(
-            "Row { on click { n += 1; } Text { text: name; } }",
-            strict.clone()
-        ),
+        findings("Row { on click { n += 1; } Text(name) }", strict.clone()),
         [("E3704", true), ("E3708", true)]
     );
     assert_eq!(
-        findings("Text { text: \"Inbox\"; }", strict.clone()),
+        findings("Text(\"Inbox\")", strict.clone()),
         [("E3705", true)],
         "literal text too"
     );
-    assert_eq!(findings("Text { text: name; }", strict), []);
+    assert_eq!(findings("Text(name)", strict), []);
 }
 
 /// Each finding compiling a view placing `Card` as `node`, `Card`'s view
@@ -155,7 +149,7 @@ fn forwarded(root: &str, node: &str) -> Vec<&'static str> {
 
 #[test]
 fn handlers_a_caller_forwards_onto_a_component_check_its_root() {
-    let card = "Row { Text { text: title; } }";
+    let card = "Row { Text(title) }";
     assert_eq!(
         forwarded(card, "Card { title: \"Go\"; on picked { n += 1; } }"),
         CLEAN,
@@ -183,7 +177,7 @@ fn handlers_a_caller_forwards_onto_a_component_check_its_root() {
         "nothing names it"
     );
     assert_eq!(
-        forwarded("Button { text: title; }", "Card { on click { n += 1; } }"),
+        forwarded("Button(title)", "Card { on click { n += 1; } }"),
         CLEAN,
         "a standard interactive root"
     );

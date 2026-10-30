@@ -152,5 +152,5 @@ export component Core {
         i
     }
 
-    view { Text { text: "{total}" } }
+    view { Text("{total}") }
 }

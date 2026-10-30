@@ -11,9 +11,8 @@ export component Counter {
     event clicked(count: Int);
     view {
         Column {
-            Text { text: "Clicked {clicks} times"; }
-            Button {
-                text: "Click";
+            Text("Clicked {clicks} times")
+            Button("Click") {
                 on click { clicks += 1; emit clicked(clicks); }
             }
         }

@@ -29,7 +29,7 @@ component Counter {
         total
     }
 
-    view { Text { text: "{count}"; } }
+    view { Text("{count}") }
 }
 "#;
 

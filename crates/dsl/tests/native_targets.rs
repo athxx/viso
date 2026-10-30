@@ -34,7 +34,7 @@ export component Bell {
         n = haptics::strength();
         haptics::vibrate(30);
     }
-    view { Text { text: "ring"; on click { ring(); } } }
+    view { Text("ring") { on click { ring(); } } }
 }
 "#;
 

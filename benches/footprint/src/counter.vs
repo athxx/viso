@@ -5,11 +5,10 @@ export component Counter {
         Column {
             width: 420dp
             height: 96dp
-            Text { width: 420dp; height: 40dp; text: "Count: {count}" }
-            Button {
+            Text("Count: {count}") { width: 420dp; height: 40dp }
+            Button("Increment") {
                 width: 160dp
                 height: 40dp
-                text: "Increment"
                 on click { count += 1 }
             }
         }

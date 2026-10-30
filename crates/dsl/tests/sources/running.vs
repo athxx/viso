@@ -15,7 +15,7 @@ component Counter {
         start later() { success (v) { add(v) } }
     }
     view {
-        Text { text: "{label}={n}" }
+        Text("{label}={n}")
     }
 }
 
@@ -31,12 +31,10 @@ component Tally {
         scope = ResourceScope::shared
     }
     view {
-        Text {
-            text: match seen.state {
+        Text(match seen.state {
                 ResourceState::ready(s) => "tally=" + label + s
                 _ => "tally"
-            }
-        }
+            })
     }
 }
 
@@ -110,19 +108,19 @@ export component Demo {
 
     view {
         Column {
-            Text { text: "log=" + log }
-            Text { text: "runs={runs}" }
+            Text("log=" + log)
+            Text("runs={runs}")
             match results.state {
                 ResourceState::ready(items) => {
                     for item in items key item {
-                        Text { text: "item=" + item }
+                        Text("item=" + item)
                     }
                 }
                 ResourceState::error(message) => {
-                    Text { text: "error=" + message }
+                    Text("error=" + message)
                 }
                 _ => {
-                    Text { text: "loading" }
+                    Text("loading")
                 }
             }
             for name in names key name {

@@ -6,7 +6,7 @@ component Card {
     view {
         Column {
             gap: 8dp
-            Text { text: title }
+            Text(title)
             SlotOutlet { slot: content }
             Row {
                 gap: 8dp
@@ -22,10 +22,9 @@ export component Profile {
     view {
         Card {
             title: "Profile"
-            Text { text: "{likes}" }
+            Text("{likes}")
             fill actions {
-                Button {
-                    text: "Like"
+                Button("Like") {
                     on click { likes += 1 }
                 }
             }

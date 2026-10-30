@@ -5,7 +5,7 @@ component Logger {
         Column {
             width: 200dp
             height: 100dp
-            Text { width: 100dp; height: 50dp; text: log; on click { count += 1; log = "one" } }
+            Text(log) { width: 100dp; height: 50dp; on click { count += 1; log = "one" } }
         }
     }
 }

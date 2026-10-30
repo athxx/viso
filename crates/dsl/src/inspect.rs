@@ -175,7 +175,7 @@ style Primary for Button {
 component Tag {
     input text: String = \"t\";
     view {
-        Text { text: text; }
+        Text(text)
     }
 }
 
@@ -185,10 +185,10 @@ export component Home {
     view {
         Column {
             visible: shown;
-            node save: Button { text: \"Save\"; styles: [Primary]; }
+            node save: Button(\"Save\") { styles: [Primary] }
             Tag {}
             for item in items key item {
-                node row: Text { text: \"row\"; }
+                node row: Text(\"row\")
             }
         }
     }

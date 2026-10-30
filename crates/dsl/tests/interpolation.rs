@@ -100,7 +100,7 @@ component C {
     let asset = r#"
 component C {
     state n = 1
-    view { Image { source: asset("{n}.png") } }
+    view { Image(asset("{n}.png")) }
 }
 "#;
     assert_eq!(codes(asset), ["E3713"], "an asset path is a literal");
@@ -108,9 +108,8 @@ component C {
 
 #[test]
 fn localizable_text_with_holes_and_words_is_e3705() {
-    let view = |text: &str| {
-        format!("component C {{\n    state n = 1\n    view {{ Text {{ text: {text} }} }}\n}}\n")
-    };
+    let view =
+        |text: &str| format!("component C {{\n    state n = 1\n    view {{ Text({text}) }}\n}}\n");
     assert_eq!(codes(&view(r#""{n} items""#)), ["E3705"]);
     assert_eq!(codes(&view(r#""{n}{n}""#)), ["E3705"]);
     assert_eq!(codes(&view(r#""{n}""#)), Vec::<&str>::new());

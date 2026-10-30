@@ -356,7 +356,7 @@ export component Probe {
                 width: 20dp;
                 height: 20dp;
                 styles: [Pad];
-                Text { width: 10dp; height: 10dp; text: "a"; styles: [Ink]; }
+                Text("a") { width: 10dp; height: 10dp; styles: [Ink] }
             }
         }
     }

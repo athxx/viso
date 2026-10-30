@@ -49,5 +49,5 @@ export component Jobs {
         log = "{n}"
     }
 
-    view { Text { text: log } }
+    view { Text(log) }
 }

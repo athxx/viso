@@ -94,6 +94,8 @@ pub struct InputSchema {
     pub invalidates: Vec<&'static str>,
     /// Whether it may be the left side of `bind`.
     pub two_way: bool,
+    /// Whether it is the type's primary property, written `Type(value)`.
+    pub primary: bool,
 }
 
 /// An event a node type raises.
@@ -582,6 +584,7 @@ fn schema_of(symbol: Symbol<'_>, natives: &Natives) -> Schema {
                         required: false,
                         default: None,
                         two_way: p.two_way,
+                        primary: p.primary,
                     })
                     .collect(),
                 events: widget
@@ -683,6 +686,7 @@ fn function(entry: &NativeEntry, method: bool) -> FunctionSchema {
                 default: None,
                 invalidates: Vec::new(),
                 two_way: false,
+                primary: false,
             })
             .collect(),
         returns: f.ret.to_string(),
@@ -846,6 +850,10 @@ fn write_input(w: &mut JsonWriter, input: &InputSchema) {
     w.end_array();
     if input.two_way {
         w.name("two_way");
+        w.bool(true);
+    }
+    if input.primary {
+        w.name("primary");
         w.bool(true);
     }
     w.end_object();
@@ -1024,7 +1032,7 @@ mod tests {
                 r#"{"schema_version":"1.0","kind":"component","symbol":"viso::widgets::Button","#,
                 r#""version":"1","#,
                 r#""member":"text","inputs":[{"name":"text","type":"String","required":false,"#,
-                r#""default":null,"invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"]}],"#,
+                r#""default":null,"invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"],"primary":true}],"#,
                 r#""events":[],"slots":[],"parts":[],"capabilities":[],"origin":"framework"}"#
             )
         );

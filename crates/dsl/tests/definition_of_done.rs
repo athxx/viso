@@ -320,11 +320,11 @@ export component App {
     }
     view {
         Column {
-            Text { width: 20dp; height: 20dp; text: label; on click { add(); } }
-            Text { width: 20dp; height: 20dp; text: "Rotate"; on click { order.push(order.remove(0)); } }
+            Text(label) { width: 20dp; height: 20dp; on click { add(); } }
+            Text("Rotate") { width: 20dp; height: 20dp; on click { order.push(order.remove(0)); } }
             Column {
                 for id in order key id {
-                    Text { text: "{id}"; }
+                    Text("{id}")
                 }
             }
         }
@@ -376,7 +376,7 @@ fn a_component_runs_reacts_keeps_keys_and_survives_a_bad_reload() {
 
 #[test]
 fn diagnostics_carry_what_tools_and_ai_read() {
-    let src = "export component C { state count = 0; view { Text { text: \"{cuont}\"; } } }";
+    let src = "export component C { state count = 0; view { Text(\"{cuont}\") } }";
     let document = Document::new(src, &origin());
     let [diagnostic] = document.diagnostics() else {
         panic!("{:#?}", document.diagnostics());

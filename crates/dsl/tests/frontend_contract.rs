@@ -18,7 +18,7 @@ component Counter {
     view {
         Column {
             width: 120dp;
-            Text { text: \"{count}\"; }
+            Text(\"{count}\")
             Text { visible: enabled; }
         }
     }
@@ -55,7 +55,7 @@ fn component_body() -> String {
 }
 
 /// A stateless view, as a `ui!` fragment.
-const FRAGMENT: &str = "Column { width: 120dp; Text { text: \"0\"; } Text { visible: true; } }";
+const FRAGMENT: &str = "Column { width: 120dp; Text(\"0\"); Text { visible: true; } }";
 
 /// A file declaring `FRAGMENT` as a stateless component's view, the fragment at
 /// offset `at`.

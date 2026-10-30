@@ -4,7 +4,7 @@ component Counter {
     view {
         Column {
             width: 120dp
-            Text { text: "{count}" }
+            Text("{count}")
             Text { visible: enabled }
         }
     }

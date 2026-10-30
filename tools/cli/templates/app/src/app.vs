@@ -8,11 +8,10 @@ export component App {
             width: 320dp
             height: 96dp
             gap: 16dp
-            Text { width: 320dp; height: 40dp; text: tr("app.clicks", count: clicks) }
-            Button {
+            Text(tr("app.clicks", count: clicks)) { width: 320dp; height: 40dp }
+            Button(tr("app.click")) {
                 width: 320dp
                 height: 40dp
-                text: tr("app.click")
                 on click { clicks += 1 }
             }
         }

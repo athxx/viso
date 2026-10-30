@@ -15,9 +15,9 @@ export component Controls {
     state plain = 0;
     view {
         Column {
-            Button { width: 100dp; height: 20dp; ripple: true; text: "Ink"; }
+            Button("Ink") { width: 100dp; height: 20dp; ripple: true }
             Toggle { width: 40dp; height: 20dp; bind checked <=> on; }
-            Button { width: 100dp; height: 20dp; text: "Plain"; on click { plain += 1; } }
+            Button("Plain") { width: 100dp; height: 20dp; on click { plain += 1; } }
         }
     }
 }

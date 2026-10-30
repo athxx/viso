@@ -31,16 +31,16 @@ const FEED: &str = "component Feed {
         Column {
             width: 200dp;
             height: 300dp;
-            Button { width: 100dp; height: 20dp; text: \"middle\"; on click { list.scroll_to_index(500); } }
-            Button { width: 100dp; height: 20dp; text: \"more\"; on click { count += 1000; } }
-            Button { width: 100dp; height: 20dp; text: \"last\"; on click { list.scroll_to_key(count - 1); } }
+            Button(\"middle\") { width: 100dp; height: 20dp; on click { list.scroll_to_index(500); } }
+            Button(\"more\") { width: 100dp; height: 20dp; on click { count += 1000; } }
+            Button(\"last\") { width: 100dp; height: 20dp; on click { list.scroll_to_key(count - 1); } }
             node list: VirtualList {
                 width: 200dp;
                 height: 200dp;
                 estimated_extent: 20dp;
                 overscan: 2;
                 for i in 0..count key i {
-                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
+                    Text(\"{i}\") { width: 200dp; height: 20dp }
                 }
             }
         }
@@ -244,8 +244,8 @@ const GLIDING: &str = "component Feed {
         Column {
             width: 200dp;
             height: 300dp;
-            Button { width: 100dp; height: 20dp; text: \"middle\"; on click { list.scroll_to_index(500, smooth: true); } }
-            Button { width: 100dp; height: 20dp; text: \"more\"; on click { count += 1000; } }
+            Button(\"middle\") { width: 100dp; height: 20dp; on click { list.scroll_to_index(500, smooth: true); } }
+            Button(\"more\") { width: 100dp; height: 20dp; on click { count += 1000; } }
             node list: VirtualList {
                 width: 200dp;
                 height: 200dp;
@@ -253,7 +253,7 @@ const GLIDING: &str = "component Feed {
                 tail: true;
                 scroll_bars: false;
                 for i in 0..count key i {
-                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
+                    Text(\"{i}\") { width: 200dp; height: 20dp }
                 }
             }
         }
@@ -297,8 +297,8 @@ fn a_list_glides_to_a_row_and_a_tailing_one_follows_its_end() {
 #[test]
 fn a_list_body_is_one_keyed_for() {
     for body in [
-        "Text { text: \"head\"; } for i in 0..3 key i { Text { text: \"row\"; } }",
-        "for i in 0..3 { Text { text: \"row\"; } }",
+        "Text(\"head\"); for i in 0..3 key i { Text(\"row\") }",
+        "for i in 0..3 { Text(\"row\") }",
         "",
     ] {
         let source = format!("component Feed {{ view {{ VirtualList {{ {body} }} }} }}");
@@ -321,18 +321,18 @@ fn a_row_shows_its_item_and_its_handlers_see_it_as_the_items_move() {
                 Column {
                     width: 200dp;
                     height: 300dp;
-                    Button {
-                        width: 100dp; height: 20dp; text: \"flip\";
+                    Button(\"flip\") {
+                        width: 100dp; height: 20dp; 
                         on click { names = [\"c\", \"b\", \"a\", \"d\"]; }
                     }
-                    Text { width: 100dp; height: 20dp; text: picked; }
+                    Text(picked) { width: 100dp; height: 20dp }
                     VirtualList {
                         width: 200dp;
                         height: 200dp;
                         estimated_extent: 20dp;
                         for name in names key name {
-                            Button {
-                                width: 200dp; height: 20dp; text: name;
+                            Button(name) {
+                                width: 200dp; height: 20dp; 
                                 on click { picked = name; }
                             }
                         }
@@ -367,8 +367,8 @@ fn a_list_reports_the_rows_it_shows_and_a_scroll_its_offset() {
                 Column {
                     width: 200dp;
                     height: 300dp;
-                    Text { width: 200dp; height: 20dp; text: shown; }
-                    Text { width: 200dp; height: 20dp; text: \"{top}\"; }
+                    Text(shown) { width: 200dp; height: 20dp }
+                    Text(\"{top}\") { width: 200dp; height: 20dp }
                     VirtualList {
                         width: 200dp;
                         height: 100dp;
@@ -376,13 +376,13 @@ fn a_list_reports_the_rows_it_shows_and_a_scroll_its_offset() {
                         on visible_range_changed(range) {
                             shown = \"{range.first}..{range.last} of {range.count}\";
                         }
-                        for i in 0..50 key i { Text { width: 200dp; height: 20dp; text: \"row\"; } }
+                        for i in 0..50 key i { Text(\"row\") { width: 200dp; height: 20dp } }
                     }
                     Scroll {
                         width: 200dp;
                         height: 50dp;
                         on scroll_changed(event) { top = event.content.height; }
-                        Text { width: 200dp; height: 400dp; text: \"tall\"; }
+                        Text(\"tall\") { width: 200dp; height: 400dp }
                     }
                 }
             }
@@ -430,7 +430,7 @@ fn a_row_can_hold_a_list_of_its_own() {
                                 axis: Axis::row;
                                 estimated_extent: 50dp;
                                 for b in 0..1000 key b {
-                                    Text { width: 50dp; height: 40dp; text: \"{s}/{b}\"; }
+                                    Text(\"{s}/{b}\") { width: 50dp; height: 40dp }
                                 }
                             }
                         }
@@ -487,7 +487,7 @@ const REFRESHING: &str = "component Feed {
         Column {
             width: 200dp;
             height: 300dp;
-            Button { width: 100dp; height: 20dp; text: \"done\"; on click { loading = false; } }
+            Button(\"done\") { width: 100dp; height: 20dp; on click { loading = false; } }
             VirtualList {
                 width: 200dp;
                 height: 120dp;
@@ -495,7 +495,7 @@ const REFRESHING: &str = "component Feed {
                 refreshing: loading;
                 on refresh { loading = true; asked += 1; }
                 for i in 0..100 key i {
-                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
+                    Text(\"{i}\") { width: 200dp; height: 20dp }
                 }
             }
             VirtualList {
@@ -505,7 +505,7 @@ const REFRESHING: &str = "component Feed {
                 refreshing: false;
                 on refresh { asked += 1; }
                 for i in 0..100 key i {
-                    Text { width: 200dp; height: 20dp; text: \"{i}\"; }
+                    Text(\"{i}\") { width: 200dp; height: 20dp }
                 }
             }
         }
@@ -558,14 +558,14 @@ const SECTIONS: &str = "component Feed {
         Column {
             width: 200dp;
             height: 300dp;
-            Button { width: 100dp; height: 20dp; text: \"flat\"; on click { grouped = false; } }
+            Button(\"flat\") { width: 100dp; height: 20dp; on click { grouped = false; } }
             VirtualList {
                 width: 200dp;
                 height: 100dp;
                 estimated_extent: 20dp;
                 overscan: 1;
                 for i in 0..100 key i {
-                    Text { width: 200dp; height: 20dp; sticky: grouped && i % 10 == 0; text: \"{i}\"; }
+                    Text(\"{i}\") { width: 200dp; height: 20dp; sticky: grouped && i % 10 == 0 }
                 }
             }
             Scroll {
@@ -574,11 +574,11 @@ const SECTIONS: &str = "component Feed {
                 Column {
                     Column {
                         height: 200dp;
-                        Text { width: 200dp; height: 20dp; sticky: true; text: \"a\"; }
+                        Text(\"a\") { width: 200dp; height: 20dp; sticky: true }
                     }
                     Column {
                         height: 200dp;
-                        Text { width: 200dp; height: 20dp; sticky: true; text: \"b\"; }
+                        Text(\"b\") { width: 200dp; height: 20dp; sticky: true }
                     }
                 }
             }
@@ -659,7 +659,7 @@ const PAGES: &str = "component Tour {
         Column {
             width: 200dp;
             height: 300dp;
-            Text { width: 200dp; height: 20dp; text: \"{page}\"; }
+            Text(\"{page}\") { width: 200dp; height: 20dp }
             VirtualList {
                 axis: Axis::row;
                 width: 200dp;
@@ -668,7 +668,7 @@ const PAGES: &str = "component Tour {
                 page_dots: true;
                 on snap_changed(e) { page = e.value; }
                 for i in 0..5 key i {
-                    Text { text: \"{i}\"; }
+                    Text(\"{i}\")
                 }
             }
             Scroll {
@@ -681,7 +681,7 @@ const PAGES: &str = "component Tour {
                     padding: 16dp;
                     gap: 8dp;
                     for i in 0..6 key i {
-                        Text { width: 120dp; height: 20dp; text: \"{i}\"; }
+                        Text(\"{i}\") { width: 120dp; height: 20dp }
                     }
                 }
             }
@@ -766,7 +766,7 @@ const GRID: &str = "component Photos {
             gap: 10dp;
             column_gap: 5dp;
             for i in 0..30 key i {
-                Text { height: 50dp; list.full_line: i == 3; text: \"{i}\"; }
+                Text(\"{i}\") { height: 50dp; list.full_line: i == 3 }
             }
         }
     }

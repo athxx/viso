@@ -165,7 +165,7 @@ const TEXT_STYLE: &[WidgetProperty] = &[
     prop("locale", "Option<Locale>"),
 ];
 
-const TEXT: &[WidgetProperty] = &[prop("text", "String").localizable()];
+const TEXT: &[WidgetProperty] = &[prop("text", "String").localizable().primary()];
 
 /// A `Text`'s pieces drawn each its own way, which replace its `text`, and
 /// whether its text can be selected and copied.
@@ -196,7 +196,7 @@ const NUMBER_FIELD: &[WidgetProperty] = &[
 
 const CHECK: &[WidgetProperty] = &[
     two_way("checked", "Bool"),
-    prop("label", "String").localizable(),
+    prop("label", "String").localizable().primary(),
 ];
 
 /// A `Chip`'s `selected`, none for a chip that does not select, whether it
@@ -325,7 +325,7 @@ const GAME_VIEWPORT: &[WidgetProperty] = &[prop("camera", "Option<viso::game::ki
 /// loader fetches in its place, how it fills the box, and whether an
 /// animated one plays.
 const IMAGE: &[WidgetProperty] = &[
-    prop("source", "ImageAsset"),
+    prop("source", "ImageAsset").primary(),
     prop("url", "String"),
     look("fit", "ImageFit"),
     look("tint", "Option<Color>"),
@@ -337,7 +337,7 @@ const IMAGE: &[WidgetProperty] = &[
 /// the box, and how it plays: paused unless `playing`, at full `volume` and
 /// its own speed (`rate` 1) unless they say otherwise.
 const VIDEO: &[WidgetProperty] = &[
-    prop("source", "Option<VideoAsset>"),
+    prop("source", "Option<VideoAsset>").primary(),
     prop("url", "String"),
     look("fit", "ImageFit"),
     look("tint", "Option<Color>"),
@@ -365,7 +365,7 @@ const CAMERA_VIEW: &[WidgetProperty] = &[
 
 /// An `Svg`'s scene, from `asset("…")`, and how it fills the box.
 const SVG: &[WidgetProperty] = &[
-    prop("source", "SvgAsset"),
+    prop("source", "SvgAsset").primary(),
     look("fit", "ImageFit"),
     look("tint", "Option<Color>"),
 ];

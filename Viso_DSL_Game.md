@@ -648,9 +648,7 @@ export component GameScreen {
             GameViewport {}
 
             Column {
-                Text {
-                    text: "Score: {game.score()}"
-                }
+                Text("Score: {game.score()}")
 
                 if game.is_paused() preserve "pause-menu" {
                     PauseMenu {

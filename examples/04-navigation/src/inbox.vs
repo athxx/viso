@@ -7,8 +7,8 @@ component Inbox {
         Column {
             padding: 16dp
             gap: 8dp
-            Text { width: 200dp; height: 24dp; text: "{drafts} drafts" }
-            Button { width: 120dp; height: 32dp; text: "New draft"; on click { drafts += 1 } }
+            Text("{drafts} drafts") { width: 200dp; height: 24dp }
+            Button("New draft") { width: 120dp; height: 32dp; on click { drafts += 1 } }
         }
     }
 }

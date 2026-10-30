@@ -2063,6 +2063,9 @@ impl<'a> ModulePass<'a> {
                 if let Some(ty) = a.ty() {
                     self.resolve_node_type(&ty);
                 }
+                if let Some(primary) = a.primary() {
+                    self.resolve_property(&primary);
+                }
                 if let Some(body) = a.body() {
                     let node = self.instantiated(a.ty());
                     self.resolve_node_body(&body, node);
@@ -2134,6 +2137,9 @@ impl<'a> ModulePass<'a> {
                 if let Some(ty) = part.ty() {
                     self.resolve_node_type(&ty);
                 }
+                if let Some(primary) = part.primary() {
+                    self.resolve_property(&primary);
+                }
                 if let Some(body) = part.body() {
                     let instantiated = self.instantiated(part.ty());
                     self.resolve_node_body(&body, instantiated);
@@ -2185,6 +2191,9 @@ impl<'a> ModulePass<'a> {
         }
         if let Some(ty) = node.ty() {
             self.resolve_node_type(&ty);
+        }
+        if let Some(primary) = node.primary() {
+            self.resolve_property(&primary);
         }
         if let Some(body) = node.body() {
             let instantiated = self.instantiated(node.ty());
@@ -3107,7 +3116,7 @@ mod tests {
         let app = unit(
             &mut interner,
             &["app"],
-            "component A { view { Row { for item in items key item.id { Text { text: item; } } } } }",
+            "component A { view { Row { for item in items key item.id { Text(item) } } } }",
         );
         let mods = resolve_all(vec![app], &mut interner);
         // `item` (the for-binding) and its use both appear as local resolutions.

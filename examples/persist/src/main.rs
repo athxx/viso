@@ -41,15 +41,13 @@ mod tests {
                 Column {
                     width: 300dp
                     height: 80dp
-                    Text {
+                    Text("{count} in all, {taps} this run") {
                         width: 300dp
                         height: 40dp
-                        text: "{count} in all, {taps} this run"
                     }
-                    Button {
+                    Button("Count") {
                         width: 300dp
                         height: 40dp
-                        text: "Count"
                         on click { count += 1; taps += 1 }
                     }
                 }

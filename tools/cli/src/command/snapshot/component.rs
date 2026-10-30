@@ -217,7 +217,7 @@ mod tests {
             path: "ui::Badge".into(),
             module: vec!["ui".into()],
             file: PathBuf::from("src/ui.vs"),
-            source: "export component Badge {\n    input label: String = \"new\";\n    view { Text { text: label; } }\n}\n".into(),
+            source: "export component Badge {\n    input label: String = \"new\";\n    view { Text(label) }\n}\n".into(),
             line: 1,
             required: Vec::new(),
         };

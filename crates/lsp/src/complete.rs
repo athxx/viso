@@ -319,6 +319,9 @@ fn properties(doc: &OpenDoc, root: &SyntaxNode, body: &SyntaxNode, out: &mut Vec
     };
     if let Some(own) = component(root, &ty) {
         for (name, decl) in declared(&own, SyntaxKind::InputDecl) {
+            if is_primary(&decl) {
+                continue;
+            }
             let detail = type_text(&decl);
             out.push(property(name, detail));
         }
@@ -329,7 +332,7 @@ fn properties(doc: &OpenDoc, root: &SyntaxNode, body: &SyntaxNode, out: &mut Vec
     }
     let catalog = Catalog::framework(doc.natives.clone());
     if let Ok(schema) = schema::query(&ty, &catalog) {
-        for input in schema.inputs {
+        for input in schema.inputs.into_iter().filter(|i| !i.primary) {
             out.push(property(input.name, Some(input.ty)));
         }
     }
@@ -380,19 +383,43 @@ fn events(doc: &OpenDoc, root: &SyntaxNode, body: &SyntaxNode, out: &mut Vec<Com
 
 /// The widgets and this document's components, each a node to write.
 fn nodes(doc: &OpenDoc, root: &SyntaxNode, out: &mut Vec<Completion>) {
-    let node = |name: &str, detail: &str| {
+    // A type with a primary property is written `Type(value)` first.
+    let node = |name: &str, detail: &str, primary: bool| {
+        let snippet = if primary {
+            format!("{name}($0)")
+        } else {
+            format!("{name} {{\n\t$0\n}}")
+        };
         Completion::new(name, CompletionKind::Class)
             .detail(detail)
-            .snippet(format!("{name} {{\n\t$0\n}}"))
+            .snippet(snippet)
     };
     for entry in doc.natives.widgets() {
-        out.push(node(entry.widget.name, entry.library.path));
+        let primary = entry.widget.primary().is_some();
+        out.push(node(entry.widget.name, entry.library.path, primary));
     }
     for decl in top_level(root, SyntaxKind::ComponentDecl) {
         if let Some(name) = name_of(&decl) {
-            out.push(node(&name.text(), "component"));
+            let primary = declared(&decl, SyntaxKind::InputDecl)
+                .iter()
+                .any(|(_, input)| is_primary(input));
+            out.push(node(&name.text(), "component", primary));
         }
     }
+}
+
+/// Whether the input `decl` is marked `@primary`, which its node's
+/// `( value )` gives in place of a body binding.
+fn is_primary(decl: &SyntaxNode) -> bool {
+    let mut at = decl.prev_sibling();
+    while let Some(attr) = at.filter(|n| n.kind() == SyntaxKind::Attribute) {
+        let text: String = attr.text().split_whitespace().collect();
+        if text == "@primary" {
+            return true;
+        }
+        at = attr.prev_sibling();
+    }
+    false
 }
 
 /// The names an expression at `at` under `node` can read.
@@ -792,7 +819,7 @@ mod tests {
             counter("    computed c: I32 = |;")
         ));
         assert!(has(&top, "double", CompletionKind::Function), "{top:?}");
-        let binding = labels(&counter("    view { Text { text: | } }"));
+        let binding = labels(&counter("    view { Text(|) }"));
         assert!(
             has(&binding, "count", CompletionKind::Property),
             "{binding:?}"

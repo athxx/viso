@@ -17,9 +17,9 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-const MESSY: &str = "component App {\n  view {\n      Text {   text: \"hi\" ; }\n  }\n}\n";
-const TIDY: &str = "component App {\n    view {\n        Text { text: \"hi\"; }\n    }\n}\n";
-const BROKEN: &str = "component Broken {\n  view {\n    Text { text: \"open; }\n";
+const MESSY: &str = "component App {\n  view {\n      Text(\"hi\")\n  }\n}\n";
+const TIDY: &str = "component App {\n    view {\n        Text(\"hi\")\n    }\n}\n";
+const BROKEN: &str = "component Broken {\n  view {\n    Text(\"open; })";
 
 fn project(label: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("fmt-{label}"));

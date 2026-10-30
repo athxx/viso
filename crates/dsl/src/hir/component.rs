@@ -96,6 +96,7 @@ pub(crate) fn lower_component(
         .collect();
     let mut computed_order: Vec<ComputedEntry> = Vec::new();
 
+    let primary = super::lower::primary_input(decl);
     // A template's parameters are its inputs.
     for param in decl.template_params() {
         let member_name = token_text(param.name());
@@ -113,6 +114,7 @@ pub(crate) fn lower_component(
         );
         schema.inputs.push(HirInput {
             name: member_name,
+            primary: false,
             meta,
         });
     }
@@ -136,6 +138,7 @@ pub(crate) fn lower_component(
                     input.syntax().text_range(),
                 );
                 schema.inputs.push(HirInput {
+                    primary: primary.as_deref() == Some(member_name.as_str()),
                     name: member_name,
                     meta,
                 });

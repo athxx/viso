@@ -18,7 +18,7 @@ const FONT: &[u8] = include_bytes!("../../../crates/viso/fixtures/DejaVuSans-sub
 const VIEW: &str = r#"component Probe {
     view {
         Column {
-            Text { text: "Ag"; }
+            Text("Ag")
             Column { width: 40dp; height: 40dp; }
         }
     }

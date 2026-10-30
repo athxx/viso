@@ -434,9 +434,9 @@ export component Stepper {
 
     view {
         Row {
-            Button { text: "-"; on click { emit changed(value - step) } }
-            Text { text: "{value}" }
-            Button { text: "+"; on click { emit changed(value + step) } }
+            Button("-") { on click { emit changed(value - step) } }
+            Text("{value}")
+            Button("+") { on click { emit changed(value + step) } }
         }
     }
 }
@@ -468,7 +468,7 @@ export component Chip {
     view {
         Row {
             background: tint.unwrap_or(theme.colors.surface)
-            Text { text: label }
+            Text(label)
         }
     }
 }
@@ -820,12 +820,10 @@ state dark = false
 
 view {
     Row {
-        Image {
-            source: if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }
+        Image(if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }) {
             width: 48dp
         }
-        Svg {
-            source: asset("icons/close.svg")
+        Svg(asset("icons/close.svg")) {
             tint: theme.colors.foreground
             width: 16dp
             height: 16dp
@@ -1273,7 +1271,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 ```viso
 // fn tr(key: MessageKey, name: value, ..) -> String;
 
-Text { text: tr("inbox.unread", count: unread) }
+Text(tr("inbox.unread", count: unread))
 ```
 
 - 消息参数以 Named Argument 按消息占位符的名字传入，每个恰好一次；
@@ -1308,7 +1306,7 @@ export component Shell {
 
     view {
         Column {
-            Button { text: tr("nav.settings"); on click { nav.push(Route::settings) } }
+            Button(tr("nav.settings")) { on click { nav.push(Route::settings) } }
             RouterView {
                 navigator: nav
                 height: 100%
@@ -1421,8 +1419,7 @@ export component SettingsSection {
             width: Sizing::fill {}
             gap: theme.spacing.small
             padding: EdgeInsets::axes(inline: theme.spacing.large, block: theme.spacing.medium)
-            Text {
-                text: title
+            Text(title) {
                 font_size: theme.typography.title_size
                 font_weight: FontWeight::semibold
                 semantics.role: Role::heading
@@ -1443,11 +1440,10 @@ export component SettingsPage {
                 max_width: 640dp
                 SettingsSection {
                     title: tr("settings.general")
-                    Toggle {
-                        label: tr("settings.notifications")
+                    Toggle(tr("settings.notifications")) {
                         bind checked <=> settings.notifications
                     }
-                    Toggle { label: tr("settings.dark_mode"); bind checked <=> settings.dark_mode }
+                    Toggle(tr("settings.dark_mode")) { bind checked <=> settings.dark_mode }
                 }
                 SettingsSection {
                     title: tr("settings.sound")
@@ -1455,7 +1451,7 @@ export component SettingsPage {
                         width: Sizing::fill {}
                         gap: theme.spacing.medium
                         align: Align::center
-                        Text { text: tr("settings.volume") }
+                        Text(tr("settings.volume"))
                         Slider {
                             width: Sizing::fill {}
                             enabled: settings.notifications
@@ -1497,14 +1493,12 @@ component MessageBubble {
                 corner_radius: theme.radius.large
                 background: if message.mine { theme.colors.primary } else { theme.colors.surface }
                 if !message.mine {
-                    Text {
-                        text: message.author
+                    Text(message.author) {
                         font_size: theme.typography.caption_size
                         color: theme.colors.muted
                     }
                 }
-                Text {
-                    text: message.body
+                Text(message.body) {
                     soft_wrap: true
                     selectable: true
                     color: if message.mine { theme.colors.on_primary } else {
@@ -1582,8 +1576,7 @@ component FieldError {
     view {
         match issue {
             Option::Some(found) => {
-                Text {
-                    text: tr(issue_key(found))
+                Text(tr(issue_key(found))) {
                     color: theme.colors.error
                     semantics.live: LiveRegion::polite
                 }
@@ -1639,8 +1632,7 @@ export component SignupPage {
                 on submitted { submit() }
             }
             FieldError { issue: password_issue }
-            Button {
-                text: tr("form.create_account")
+            Button(tr("form.create_account")) {
                 enabled: valid && !submitting
                 on click { submit() }
             }
@@ -1649,8 +1641,7 @@ export component SignupPage {
                     Spinner { semantics.label: tr("form.submitting") }
                 }
                 SubmitPhase::failed(message) => {
-                    Text {
-                        text: message
+                    Text(message) {
                         color: theme.colors.error
                         semantics.live: LiveRegion::assertive
                     }

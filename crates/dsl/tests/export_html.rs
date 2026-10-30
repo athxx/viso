@@ -59,11 +59,11 @@ export component Card {
             padding: 16dp;
             semantics.role: Role::region;
             semantics.label: "Welcome";
-            Text { width: 200dp; height: 20dp; text: "Hello <world>"; color: theme.colors.primary; }
+            Text("Hello <world>") { width: 200dp; height: 20dp; color: theme.colors.primary }
             Row {
                 justify: Justify::center;
                 align: Align::center;
-                Button { width: Sizing::fill { weight: 2.0 }; height: 32dp; text: "Go"; }
+                Button("Go") { width: Sizing::fill { weight: 2.0 }; height: 32dp; }
                 Toggle { width: 40dp; height: 24dp; checked: true; }
             }
         }
@@ -293,15 +293,15 @@ export component Shaken {
     state ended = false;
     view {
         Column {
-            Button {
-                width: 40dp; height: 20dp; text: "Shake";
+            Button("Shake") {
+                width: 40dp; height: 20dp; 
                 on click {
                     let shake = card.animate(Animate::rotation(10deg), Transition { duration: 80ms });
                     if shake.is_running() { shake.finish(); }
                 }
             }
-            node card: Text {
-                width: 40dp; height: 20dp; text: "card";
+            node card: Text("card") {
+                width: 40dp; height: 20dp; 
                 on animation_end(e) { ended = e.finished; }
             }
         }
@@ -330,8 +330,8 @@ export component Pulsed {
     state faded = false;
     view {
         Column {
-            Button {
-                width: 40dp; height: 20dp; text: "Pulse";
+            Button("Pulse") {
+                width: 40dp; height: 20dp; 
                 on click {
                     let track = Keyframes {
                         stops: [
@@ -345,8 +345,8 @@ export component Pulsed {
                     card.play(track);
                 }
             }
-            Button {
-                width: 40dp; height: 20dp; text: "Spin";
+            Button("Spin") {
+                width: 40dp; height: 20dp; 
                 on click {
                     let track = Keyframes {
                         stops: [Keyframe { at: 1.0f32, value: Animate::opacity(0.0f32) }],
@@ -356,15 +356,15 @@ export component Pulsed {
                     if spin.is_running() { spin.finish(); }
                 }
             }
-            node card: Text {
-                width: 40dp; height: 20dp; text: "card";
+            node card: Text("card") {
+                width: 40dp; height: 20dp; 
                 on animation_end(e) {
                     scaled = match e.target { Animate::scale(_) => e.finished, _ => scaled };
                     faded = match e.target { Animate::opacity(_) => e.finished, _ => faded };
                 }
             }
-            Text { text: "scaled={scaled}"; }
-            Text { text: "faded={faded}"; }
+            Text("scaled={scaled}")
+            Text("faded={faded}")
         }
     }
 }
@@ -408,7 +408,7 @@ export component Guarded {
     state on = true;
     view {
         Column {
-            Button { width: 40dp; height: 20dp; text: "Off"; enabled: false; }
+            Button("Off") { width: 40dp; height: 20dp; enabled: false }
             Text { width: 40dp; height: 20dp; enabled: on; on click { on = !on; } }
             TextInput { width: 100dp; height: 20dp; autofocus: true; }
         }
@@ -501,8 +501,8 @@ export component Tapped {
                 on tap { taps += 1; }
                 on double_tap(event) { doubles += 1; }
             }
-            Text { text: "taps={taps}"; }
-            Text { text: "doubles={doubles}"; }
+            Text("taps={taps}")
+            Text("doubles={doubles}")
         }
     }
 }
@@ -541,8 +541,8 @@ export component Swiped {
                 on swipe(event) { lefts += match event.direction { SwipeDirection::left => 1, _ => 0 }; }
                 on drag_end(event) { ends += 1; }
             }
-            Text { text: "lefts={lefts}"; }
-            Text { text: "ends={ends}"; }
+            Text("lefts={lefts}")
+            Text("ends={ends}")
         }
     }
 }
@@ -581,8 +581,8 @@ export component Pinched {
                 on pinch_move(event) { zoom = event.scale; }
                 on pinch_end(event) { ends += 1; }
             }
-            Text { text: "zoom={zoom}"; }
-            Text { text: "ends={ends}"; }
+            Text("zoom={zoom}")
+            Text("ends={ends}")
         }
     }
 }
@@ -698,11 +698,11 @@ export component Inbox {
                 Column { width: 100%; height: 100%; }
                 SwipeActions {
                     edge: SwipeEdge::trailing;
-                    Button { width: 70dp; height: 40dp; text: "Flag"; }
-                    Button { width: 70dp; height: 40dp; text: "Delete"; on click { deleted += 10; } }
+                    Button("Flag") { width: 70dp; height: 40dp }
+                    Button("Delete") { width: 70dp; height: 40dp; on click { deleted += 10; } }
                 }
             }
-            Text { text: "deleted={deleted}"; }
+            Text("deleted={deleted}")
         }
     }
 }
@@ -755,8 +755,8 @@ export component Page {
     state asks = 0;
     view {
         Column {
-            Button { text: "Open"; on click { shown = true; } }
-            Text { text: "rest={rest} shown={shown} asks={asks}."; }
+            Button("Open") { on click { shown = true; } }
+            Text("rest={rest} shown={shown} asks={asks}.")
             Sheet {
                 bind open <=> shown;
                 bind detent <=> rest;
@@ -823,7 +823,7 @@ export component Groceries {
                 Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move eggs"; } }
                 Row { width: 300dp; height: 40dp; ReorderHandle { width: 40dp; height: 40dp; semantics.label: "Move bread"; } }
             }
-            Text { text: "moved={moved}"; }
+            Text("moved={moved}")
         }
     }
 }
@@ -986,8 +986,8 @@ export component Note {
     state pick = false;
     view {
         Column {
-            Text { text: "always"; selectable: true; }
-            Text { text: "sometimes"; selectable: pick; on click { pick = !pick; } }
+            Text("always") { selectable: true }
+            Text("sometimes") { selectable: pick; on click { pick = !pick; } }
         }
     }
 }
@@ -1016,7 +1016,7 @@ export component Login {
         Column {
             TextInput { width: 100dp; height: 20dp; placeholder: "Password"; secure: true; }
             TextInput { width: 100dp; height: 20dp; placeholder: "Name"; secure: hidden; }
-            CheckBox { width: 20dp; height: 20dp; label: "Remember"; }
+            CheckBox("Remember") { width: 20dp; height: 20dp }
         }
     }
 }
@@ -1147,11 +1147,10 @@ export component Counter {
     state count = 0;
     view {
         Column {
-            Text { width: 100dp; height: 20dp; text: "{count}"; }
-            Button {
+            Text("{count}") { width: 100dp; height: 20dp }
+            Button("Add") {
                 width: 100dp;
                 height: 32dp;
-                text: "Add";
                 on click { count += 1; }
             }
         }
@@ -1209,12 +1208,12 @@ export component Todo {
     view {
         Column {
             if open {
-                Text { width: 100dp; height: 20dp; text: "Open"; }
+                Text("Open") { width: 100dp; height: 20dp }
             } else {
-                Text { width: 100dp; height: 20dp; text: "Closed"; }
+                Text("Closed") { width: 100dp; height: 20dp }
             }
             for item in items key item {
-                Text { width: 100dp; height: 20dp; text: item; }
+                Text(item) { width: 100dp; height: 20dp }
             }
         }
     }
@@ -1259,7 +1258,7 @@ fn a_virtual_list_is_a_list_of_its_rows() {
                     width: 200dp;
                     height: 100dp;
                     for i in items key i {
-                        Column { width: 200dp; height: 20dp; Button { text: \"go\"; } }
+                        Column { width: 200dp; height: 20dp; Button(\"go\") }
                     }
                 }
             }
@@ -1318,7 +1317,7 @@ fn translated(static_only: bool) -> HtmlExport {
         messages: Some(Rc::new(messages)),
         ..TargetProfile::default()
     };
-    let source = "import viso::i18n::{tr};\nexport component Inbox {\n    view {\n        Column {\n            Text { text: tr(\"inbox.title\"); }\n            Text { text: tr(\"inbox.unread\", count: 1); }\n        }\n    }\n}\n";
+    let source = "import viso::i18n::{tr};\nexport component Inbox {\n    view {\n        Column {\n            Text(tr(\"inbox.title\"))\n            Text(tr(\"inbox.unread\", count: 1))\n        }\n    }\n}\n";
     let compiled = compile_file_for(source, &origin(), Natives::standard(), profile);
     let errors: Vec<_> = compiled.errors().collect();
     assert!(errors.is_empty(), "{errors:#?}");
@@ -1395,7 +1394,7 @@ fn a_page_writes_dates_and_times_as_its_reader_does() {
         messages: Some(Rc::new(messages)),
         ..TargetProfile::default()
     };
-    let source = "import viso::i18n::{tr};\nexport component Agenda {\n    state day = Date { year: 2026, month: 10, day: 26 };\n    view { Text { text: tr(\"when\", at: DateTime { date: day, time: Time { hour: 16, minute: 5 } }, d: day, n: 2.5); } }\n}\n";
+    let source = "import viso::i18n::{tr};\nexport component Agenda {\n    state day = Date { year: 2026, month: 10, day: 26 };\n    view { Text(tr(\"when\", at: DateTime { date: day, time: Time { hour: 16, minute: 5 } }, d: day, n: 2.5)) }\n}\n";
     let compiled = compile_file_for(source, &origin(), Natives::standard(), profile);
     let errors: Vec<_> = compiled.errors().collect();
     assert!(errors.is_empty(), "{errors:#?}");
@@ -1623,8 +1622,8 @@ export component Rings {
     state plain = true;
     view {
         Column {
-            Button { text: "Own"; focus_ring: false; }
-            Button { text: "Bound"; focus_ring: plain; on click { plain = false; } }
+            Button("Own") { focus_ring: false }
+            Button("Bound") { focus_ring: plain; on click { plain = false; } }
         }
     }
 }
@@ -1642,8 +1641,8 @@ export component Keys {
     state key = "o";
     view {
         Column {
-            Button { text: "Save"; access_key: "s"; }
-            Button { text: "Open"; access_key: key; on click { key = "p"; } }
+            Button("Save") { access_key: "s" }
+            Button("Open") { access_key: key; on click { key = "p"; } }
         }
     }
 }
@@ -1662,8 +1661,8 @@ export component Sizes {
     view {
         RadioGroup {
             bind selected <=> size;
-            Text { text: "Small"; }
-            Row { Text { text: "Composed"; } }
+            Text("Small")
+            Row { Text("Composed") }
         }
     }
 }
@@ -1685,8 +1684,8 @@ export component Panel {
     view {
         Disclosure {
             bind expanded <=> open;
-            Text { text: "More"; }
-            Text { text: "Body"; }
+            Text("More")
+            Text("Body")
         }
     }
 }
@@ -1741,11 +1740,11 @@ export component Page {
         Column {
             Modal {
                 bind open <=> shown;
-                Text { text: "Sure?"; }
+                Text("Sure?")
             }
             Toast {
                 open: false;
-                Text { text: "Saved"; }
+                Text("Saved")
             }
         }
     }
@@ -1788,7 +1787,7 @@ fn a_list_in_lanes_is_a_css_grid() {
                     column_gap: 4dp;
                     masonry: true;
                     for i in 0..20 key i {
-                        Text { height: 40dp; sticky: i == 0; text: \"card\"; }
+                        Text(\"card\") { height: 40dp; sticky: i == 0 }
                     }
                 }
             }
@@ -1887,8 +1886,8 @@ export component Pages {
             height: 100dp;
             page_transition: PageTransition::shared_axis;
             bind current <=> page;
-            Button { text: "Next"; width: 40dp; height: 20dp; on click { page = 1; } }
-            Text { text: "Second"; }
+            Button("Next") { width: 40dp; height: 20dp; on click { page = 1; } }
+            Text("Second")
         }
     }
 }
@@ -1949,8 +1948,8 @@ export component Pages {
             height: 300dp;
             page_transition: PageTransition::fade;
             bind current <=> page;
-            Button { text: "Open"; width: 40dp; height: 40dp; hero: "card"; on click { page = 1; } }
-            Text { text: "Card"; width: 80dp; height: 80dp; hero: "card"; }
+            Button("Open") { width: 40dp; height: 40dp; hero: "card"; on click { page = 1; } }
+            Text("Card") { width: 80dp; height: 80dp; hero: "card" }
         }
     }
 }
@@ -2002,7 +2001,7 @@ export component Board {
                 on drop_enter(e) { enters += 1; }
                 on drop(e) { taken = e.text; kind = e.kind; }
             }
-            Text { text: "taken={taken} kind={kind} enters={enters} ended={ended == Some(DropOperation::copy)}"; }
+            Text("taken={taken} kind={kind} enters={enters} ended={ended == Some(DropOperation::copy)}")
         }
     }
 }
@@ -2094,8 +2093,8 @@ export component Links {
     state to: String = "https://example.org/b";
     view {
         Column {
-            LinkLabel { text: "Docs"; url: "https://example.org/docs"; }
-            LinkLabel { text: "Next"; url: to; on click { to = "https://example.org/c"; } }
+            LinkLabel("Docs") { url: "https://example.org/docs" }
+            LinkLabel("Next") { url: to; on click { to = "https://example.org/c"; } }
         }
     }
 }
@@ -2233,8 +2232,8 @@ export component Ranges {
             SegmentedControl {
                 bind selected <=> range;
                 tint: Option::Some(#3366ee);
-                Text { text: "Day"; }
-                Text { text: "Week"; }
+                Text("Day")
+                Text("Week")
             }
         }
     }
@@ -2451,8 +2450,7 @@ export component Clip {
     state full = false;
     view {
         Column {
-            Video {
-                source: asset("clips/intro.mp4");
+            Video(asset("clips/intro.mp4")) {
                 width: 64dp; height: 48dp;
                 controls: true;
                 bind fullscreen <=> full;
@@ -2532,8 +2530,8 @@ export component Tags {
         Wrap {
             gap: 8dp;
             row_gap: 4dp;
-            Text { width: 40dp; height: 20dp; text: "a"; }
-            Text { width: Sizing::fill; height: 20dp; text: "b"; }
+            Text("a") { width: 40dp; height: 20dp }
+            Text("b") { width: Sizing::fill; height: 20dp }
         }
     }
 }

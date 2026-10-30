@@ -24,8 +24,8 @@ export component Notes {
     state note = "hi";
     view {
         Column {
-            Text { text: note; on click { copies += 1; clipboard::write_text(note); } }
-            Text { text: "plain"; on click { copies += 100; } }
+            Text(note) { on click { copies += 1; clipboard::write_text(note); } }
+            Text("plain") { on click { copies += 100; } }
         }
     }
 }

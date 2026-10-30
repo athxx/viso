@@ -17,7 +17,7 @@ viso::component! {
         view {
             Column {
                 width: 120dp;
-                Text { text: "{count}"; }
+                Text("{count}")
                 Text { visible: enabled; }
             }
         }
@@ -147,7 +147,7 @@ fn fragment() -> Mounted {
     let build = viso::ui! {
         Column {
             width: 120dp;
-            Text { text: "0"; }
+            Text("0")
             Text { visible: true; }
         }
     };

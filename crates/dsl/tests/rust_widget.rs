@@ -102,7 +102,7 @@ fn a_rust_widget_types_its_properties_and_takes_no_children() {
         "an undeclared property is an error"
     );
 
-    let children = compile("export component P { view { Gauge { Text { text: \"x\"; } } } }");
+    let children = compile("export component P { view { Gauge { Text(\"x\") } } }");
     assert!(
         children.errors().next().is_some(),
         "a Rust widget takes no children"

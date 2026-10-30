@@ -21,7 +21,7 @@ fn source(members: usize) -> String {
              if next > 100 {{ count = 0; }} else {{ count = next; }}\n    }}\n\n"
         ));
     }
-    text.push_str("    view {\n        Text { text: \"{count}\"; }\n    }\n}\n");
+    text.push_str("    view {\n        Text(\"{count}\")\n    }\n}\n");
     text
 }
 

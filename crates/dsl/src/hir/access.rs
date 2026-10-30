@@ -13,7 +13,7 @@ use viso_behavior::native::NativeWidget;
 
 use crate::ast::{
     AstNode, ComponentDecl, Expr, InterpolatedString, NodeBody, PathExpr, PropertyBinding,
-    StringPart, ViewItem, string_part_body,
+    StringPart, TypePath, ViewItem, string_part_body,
 };
 use crate::diag::Diagnostic;
 use crate::hir::style::path_name;
@@ -42,12 +42,15 @@ fn report(strict: bool, code: &'static str, at: TextRange, message: String) -> D
 pub(crate) struct ViewRoot {
     pub(crate) ty: String,
     pub(crate) body: Option<NodeBody>,
+    /// The root node itself.
+    pub(crate) node: SyntaxNode,
 }
 
 /// The root node of the view of `decl`: the view's first item, when it is a
 /// node.
 pub(crate) fn root_of(decl: &ComponentDecl) -> Option<ViewRoot> {
     let item = decl.view()?.block()?.items().next()?;
+    let node = item.syntax().clone();
     let (ty, body) = match item {
         ViewItem::Named(node) => (node.ty()?, node.body()),
         ViewItem::Anonymous(node) => (node.ty()?, node.body()),
@@ -61,6 +64,7 @@ pub(crate) fn root_of(decl: &ComponentDecl) -> Option<ViewRoot> {
     Some(ViewRoot {
         ty: head.text().trim_start_matches("r#").to_string(),
         body,
+        node,
     })
 }
 
@@ -74,7 +78,7 @@ pub(crate) fn check_node(
     out: &mut Vec<Diagnostic>,
 ) {
     let members: Vec<ViewItem> = body.members().collect();
-    check_members(native, at, &members, named(body.syntax()), strict, out);
+    check_members(native, at, &members, named(&node_of(body)), strict, out);
 }
 
 /// Checks a component node at `at` whose caller's body is `body`: the
@@ -91,7 +95,7 @@ pub(crate) fn check_forwarded(
 ) {
     let mut members: Vec<ViewItem> = root.body.iter().flat_map(|b| b.members()).collect();
     members.extend(forwarded);
-    let named = named(body.syntax()) || root.body.as_ref().is_some_and(|b| named(b.syntax()));
+    let named = named(&node_of(body)) || named(&root.node);
     check_members(native, at, &members, named, strict, out);
 }
 
@@ -168,14 +172,43 @@ fn check_members(
     }
 }
 
+/// The node whose body is `body`.
+fn node_of(body: &NodeBody) -> SyntaxNode {
+    body.syntax()
+        .parent()
+        .unwrap_or_else(|| body.syntax().clone())
+}
+
 /// Whether the node or something inside it binds a `semantics.label` or a
 /// `text`.
 fn named(body: &SyntaxNode) -> bool {
     body.descendants()
         .into_iter()
         .filter_map(PropertyBinding::cast)
-        .filter_map(|p| p.path())
-        .any(|path| matches!(path_name(&path).as_str(), "semantics.label" | "text"))
+        .any(|p| match p.path() {
+            Some(path) => matches!(path_name(&path).as_str(), "semantics.label" | "text"),
+            None => shows_text(&p),
+        })
+}
+
+/// Whether the node's `( value )` `primary` binds text a user reads: the
+/// localizable primary property of a standard widget (`Text("Save")`).
+fn shows_text(primary: &PropertyBinding) -> bool {
+    let Some(ty) = primary
+        .syntax()
+        .parent()
+        .and_then(|node| node.children().into_iter().find_map(TypePath::cast))
+    else {
+        return false;
+    };
+    let Some(name) = ty.segments().last().map(|t| t.text()) else {
+        return false;
+    };
+    viso_schema::widgets::STANDARD
+        .iter()
+        .find(|w| w.name == name)
+        .and_then(|w| w.primary())
+        .is_some_and(|p| p.localizable)
 }
 
 fn is_path(value: &Expr, want: &[&str]) -> bool {

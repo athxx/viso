@@ -82,6 +82,8 @@ pub struct WidgetProperty {
     pub styleable: bool,
     /// Whether it shows text a user reads, which a translation replaces.
     pub localizable: bool,
+    /// Whether it is the widget's primary property, written `Type(value)`.
+    pub primary: bool,
 }
 
 impl WidgetProperty {
@@ -94,7 +96,14 @@ impl WidgetProperty {
             percent_basis: false,
             styleable: false,
             localizable: false,
+            primary: false,
         }
+    }
+
+    /// The widget's primary property, written `Type(value)`.
+    pub const fn primary(mut self) -> WidgetProperty {
+        self.primary = true;
+        self
     }
 
     /// It shows text a user reads.
@@ -360,6 +369,13 @@ impl NativeWidget {
         self.own_properties()
             .find(|p| p.name == name)
             .or_else(|| self.base()?.property(name))
+    }
+
+    /// The primary property, written `Type(value)`: its own, else its box's.
+    pub fn primary(&self) -> Option<&'static WidgetProperty> {
+        self.own_properties()
+            .find(|p| p.primary)
+            .or_else(|| self.base()?.primary())
     }
 
     /// The group written with `prefix`: its own, else its box's.

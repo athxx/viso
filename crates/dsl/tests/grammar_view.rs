@@ -75,8 +75,8 @@ fn anonymous_node_is_a_bare_type_with_a_body() {
 
 #[test]
 fn property_binding_uses_colon_not_equals() {
-    // `text: label;` binds a property with `:` and a terminating `;`.
-    let root = unit(&view_of("Text { text: label; color: palette.fg; }"));
+    // `color: x` binds a property with `:`.
+    let root = unit(&view_of("Text(label) { color: palette.fg; opacity: 1.0 }"));
     assert_eq!(count(&root, SyntaxKind::PropertyBinding), 2);
     let binding = first(&root, SyntaxKind::PropertyBinding).expect("a PropertyBinding");
     assert!(
@@ -206,17 +206,37 @@ fn a_reserved_child_before_a_type_is_removed_by_its_fix() {
 #[test]
 fn view_fragment_entry_parses_bare_items() {
     // `ui!` parses view items with no surrounding component/view wrapper.
-    let root = fragment("Button { text: \"Save\"; on click { } }");
+    let root = fragment("Button(\"Save\") { on click { } }");
     assert_eq!(root.kind(), SyntaxKind::ViewFragment);
     assert!(first(&root, SyntaxKind::AnonymousNode).is_some());
-    assert!(first(&root, SyntaxKind::PropertyBinding).is_some());
+    assert!(first(&root, SyntaxKind::PrimaryArgument).is_some());
     assert!(first(&root, SyntaxKind::EventHandler).is_some());
+}
+
+#[test]
+fn a_node_takes_a_primary_argument_and_an_optional_body() {
+    let root = fragment(
+        "Column {\n    Text(\"a\")\n    Spinner\n    node n: Button(label) { on click { } }\n}",
+    );
+    assert_eq!(count(&root, SyntaxKind::PrimaryArgument), 2);
+    assert_eq!(count(&root, SyntaxKind::AnonymousNode), 3);
+    assert_eq!(count(&root, SyntaxKind::NodeBody), 2);
+    let src = "Column { Text(\"a\") Spinner }";
+    let errors = parse_entry(&tokenize(src), src, Entry::ViewFragment).errors;
+    assert_eq!(errors.iter().map(|e| e.code).collect::<Vec<_>>(), ["E1404"]);
+    // The argument and the body start on the type's line.
+    let src = "Column {\n    Text\n    (\"a\")\n}";
+    assert!(
+        !parse_entry(&tokenize(src), src, Entry::ViewFragment)
+            .errors
+            .is_empty()
+    );
 }
 
 #[test]
 fn view_losslessness_holds_over_a_corpus() {
     let corpus = [
-        view_of("node label: Text { text: title; }"),
+        view_of("node label: Text(title)"),
         view_of("Column { Text { } Row { } }"),
         view_of("Button { on capture click(e) { doit(e); } }"),
         view_of("Field { bind value <=> model.text using Codec; }"),

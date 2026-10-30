@@ -6,16 +6,16 @@ export component Ticker {
             height: 100%
             padding: 8dp
             gap: 8dp
-            Text { width: 100dp; height: 24dp; text: "Tick"; on click { count += 1 } }
-            Text { width: 200dp; height: 24dp; text: "{count}" }
-            Text { width: 400dp; height: 24dp; text: "A steady page around one changing label" }
+            Text("Tick") { width: 100dp; height: 24dp; on click { count += 1 } }
+            Text("{count}") { width: 200dp; height: 24dp }
+            Text("A steady page around one changing label") { width: 400dp; height: 24dp }
             Row {
                 gap: 8dp
-                Text { width: 120dp; height: 24dp; text: "Inbox" }
-                Text { width: 120dp; height: 24dp; text: "Drafts" }
-                Text { width: 120dp; height: 24dp; text: "Archive" }
+                Text("Inbox") { width: 120dp; height: 24dp }
+                Text("Drafts") { width: 120dp; height: 24dp }
+                Text("Archive") { width: 120dp; height: 24dp }
             }
-            Text { width: 400dp; height: 24dp; text: "Nothing else on it changes" }
+            Text("Nothing else on it changes") { width: 400dp; height: 24dp }
         }
     }
 }

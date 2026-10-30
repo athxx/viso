@@ -68,7 +68,7 @@ component Tally {
     state n: I64 = 0;
     native action beep(times: I64) requires { audio::play };
     action go() { n = hash("abc"); beep(2); }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#;
 
@@ -145,7 +145,7 @@ fn a_declaration_beside_its_registered_library_runs() {
                   component Tally {\n\
                       state n: I64 = 0;\n\
                       action go() { n = hash(\"abc\"); }\n\
-                      view { Text { text: \"a\"; } }\n\
+                      view { Text(\"a\") }\n\
                   }";
     let module = module(source, host());
     let component = module.component("Tally").expect("component");
@@ -250,7 +250,7 @@ fn a_declaration_is_written_in_schema_types() {
 
 #[test]
 fn a_declared_native_is_typed_and_effect_checked_as_any_native() {
-    let tail = "\nview { Text { text: \"a\"; } } }";
+    let tail = "\nview { Text(\"a\") } }";
     let found = codes(
         &format!(
             "native fn hash(text: String) -> I64;\ncomponent A {{ state n: String = \"\"; action go() {{ n = hash(\"a\"); }}{tail}"

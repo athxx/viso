@@ -500,7 +500,7 @@ fn bad_color_and_stray_chars() {
 #[test]
 fn cst_round_trips_source() {
     let corpus = [
-        "component Counter { state count: 0; view { Text { text: count; } } }",
+        "component Counter { state count: 0; view { Text(count) } }",
         "// leading comment\n\nlet x = 50%;\n",
         "\"unterminated string across\nlines",
         "/* nested /* block */ comment */ 0xFF 3.14 #ff00ff",
@@ -527,7 +527,7 @@ fn cst_round_trips_source() {
 
 #[test]
 fn incremental_equals_full_relex() {
-    let base = "component App { state n: 0; view { Text { text: n; } } }";
+    let base = "component App { state n: 0; view { Text(n) } }";
     // A spread of single edits: insert, delete, replace, at various positions.
     let edits: &[(usize, usize, &str)] = &[
         (16, 16, "count"),                            // insert into an identifier

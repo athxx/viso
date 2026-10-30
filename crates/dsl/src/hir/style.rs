@@ -243,6 +243,15 @@ pub(crate) fn style_items(style: &StyleDecl) -> impl Iterator<Item = StyleItem> 
 }
 
 /// A property path as one dotted name.
+/// The property `binding` binds: its path's, or for a node's `( value )` its
+/// type's primary property `primary`.
+pub(crate) fn bound_name(binding: &PropertyBinding, primary: Option<&str>) -> Option<String> {
+    match binding.path() {
+        Some(path) => Some(path_name(&path)),
+        None => primary.map(str::to_owned),
+    }
+}
+
 pub(crate) fn path_name(path: &PropertyPath) -> String {
     path.segments()
         .map(|t| t.text().trim_start_matches("r#").to_string())
@@ -546,13 +555,13 @@ pub(crate) struct NodePlan {
     pub(crate) unmounted: Vec<(usize, TextRange, String)>,
 }
 
-/// The node's own bindings: each property it binds by `:` or `bind`, and the
-/// value of each.
-pub(crate) fn own_bindings(members: &[ViewItem]) -> Vec<(String, Own)> {
+/// The node's own bindings: each property it binds by `:`, `( value )` (its
+/// `primary` property) or `bind`, and the value of each.
+pub(crate) fn own_bindings(members: &[ViewItem], primary: Option<&str>) -> Vec<(String, Own)> {
     members
         .iter()
         .filter_map(|member| match member {
-            ViewItem::Property(p) => Some((path_name(&p.path()?), Own::Value(p.value()?))),
+            ViewItem::Property(p) => Some((bound_name(p, primary)?, Own::Value(p.value()?))),
             ViewItem::TwoWayBinding(b) => Some((path_name(&b.target()?), Own::Lens(b.source()?))),
             _ => None,
         })

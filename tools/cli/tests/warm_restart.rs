@@ -19,7 +19,7 @@ const VIEW: &str = r#"component Probe {
         Column {
             width: 200dp;
             height: 40dp;
-            Text { width: 200dp; height: 40dp; text: "{count}"; }
+            Text("{count}") { width: 200dp; height: 40dp }
         }
     }
 }

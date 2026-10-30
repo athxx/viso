@@ -1,5 +1,5 @@
 error: E1405: expected an expression
- --> tests/compile_fail/ui_missing_value.rs:4:26
+ --> tests/compile_fail/ui_missing_value.rs:4:18
   |
-4 |             Text { text: ; }
-  |                          ^
+4 |             Text()
+  |                  ^

@@ -1,5 +1,5 @@
 error: E2001: no value named `label` is in scope
- --> tests/compile_fail/ui_unknown_value.rs:5:22
+ --> tests/compile_fail/ui_unknown_value.rs:5:14
   |
-5 |         Text { text: label; }
-  |                      ^^^^^
+5 |         Text(label)
+  |              ^^^^^

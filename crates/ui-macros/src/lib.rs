@@ -30,7 +30,7 @@ use proc_macro::TokenStream;
 /// a `component!`.
 ///
 /// ```ignore
-/// let build = ui! { Column { Text { text: "Save"; align: TextAlign::center; } Counter {} } };
+/// let build = ui! { Column { Text("Save") { align: TextAlign::center } Counter {} } };
 /// ```
 #[proc_macro]
 pub fn ui(input: TokenStream) -> TokenStream {
@@ -43,7 +43,7 @@ pub fn ui(input: TokenStream) -> TokenStream {
 /// from the invoking file, the package and language version from `Viso.toml`.
 ///
 /// ```ignore
-/// component! { Counter { state count = 0; view { Text { text: "{count}"; } } } }
+/// component! { Counter { state count = 0; view { Text("{count}") } } }
 /// ```
 #[proc_macro]
 pub fn component(input: TokenStream) -> TokenStream {

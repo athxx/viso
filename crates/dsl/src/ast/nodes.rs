@@ -386,9 +386,19 @@ impl PartNode {
         support::child(&self.syntax)
     }
 
+    /// The part's `( value )`, binding its primary property.
+    pub fn primary(&self) -> Option<PropertyBinding> {
+        primary_of(&self.syntax)
+    }
+
     /// The part's body.
     pub fn body(&self) -> Option<NodeBody> {
         support::child(&self.syntax)
+    }
+
+    /// The part's members: its primary binding, then its body's.
+    pub fn members(&self) -> impl Iterator<Item = ViewItem> {
+        node_members(self.primary(), self.body())
     }
 }
 
@@ -1549,21 +1559,38 @@ ast_node!(
     ViewBlock = ViewBlock
 );
 ast_node!(
-    /// `node IDENT : ComponentType NodeBody` — a named child node.
+    /// `node IDENT : ComponentType ( Expr )? NodeBody?` — a named child node.
     NamedNode = NamedNode
 );
 ast_node!(
-    /// `ComponentType NodeBody` — an anonymous child node.
+    /// `ComponentType ( Expr )? NodeBody?` — an anonymous child node.
     AnonymousNode = AnonymousNode
 );
 ast_node!(
     /// A `{ NodeMember* }` node body.
     NodeBody = NodeBody
 );
-ast_node!(
-    /// `PropertyPath : Expr ;` — a declarative property binding.
-    PropertyBinding = PropertyBinding
-);
+/// `PropertyPath : Expr ;` — a declarative property binding; or a node's
+/// `( Expr )`, which binds its type's primary property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyBinding {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for PropertyBinding {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::PropertyBinding | SyntaxKind::PrimaryArgument
+        )
+    }
+    fn cast(node: SyntaxNode) -> Option<Self> {
+        Self::can_cast(node.kind()).then_some(PropertyBinding { syntax: node })
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
 ast_node!(
     /// An `IDENT ("." IDENT)*` property path.
     PropertyPath = PropertyPath
@@ -1732,9 +1759,19 @@ impl NamedNode {
         support::child(&self.syntax)
     }
 
+    /// The node's `( value )`, binding its primary property.
+    pub fn primary(&self) -> Option<PropertyBinding> {
+        primary_of(&self.syntax)
+    }
+
     /// The node's body.
     pub fn body(&self) -> Option<NodeBody> {
         support::child(&self.syntax)
+    }
+
+    /// The node's members: its primary binding, then its body's.
+    pub fn members(&self) -> impl Iterator<Item = ViewItem> {
+        node_members(self.primary(), self.body())
     }
 }
 
@@ -1744,10 +1781,40 @@ impl AnonymousNode {
         support::child(&self.syntax)
     }
 
+    /// The node's `( value )`, binding its primary property.
+    pub fn primary(&self) -> Option<PropertyBinding> {
+        primary_of(&self.syntax)
+    }
+
     /// The node's body.
     pub fn body(&self) -> Option<NodeBody> {
         support::child(&self.syntax)
     }
+
+    /// The node's members: its primary binding, then its body's.
+    pub fn members(&self) -> impl Iterator<Item = ViewItem> {
+        node_members(self.primary(), self.body())
+    }
+}
+
+/// The `( value )` child of the node `node`.
+fn primary_of(node: &SyntaxNode) -> Option<PropertyBinding> {
+    node.children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::PrimaryArgument)
+        .map(|syntax| PropertyBinding { syntax })
+}
+
+/// A node's members: its primary binding, then those of its body.
+fn node_members(
+    primary: Option<PropertyBinding>,
+    body: Option<NodeBody>,
+) -> impl Iterator<Item = ViewItem> {
+    let mut members: Vec<ViewItem> = primary.map(ViewItem::Property).into_iter().collect();
+    if let Some(body) = body {
+        members.extend(body.members());
+    }
+    members.into_iter()
 }
 
 impl NodeBody {
@@ -1758,9 +1825,15 @@ impl NodeBody {
 }
 
 impl PropertyBinding {
-    /// The bound property path (the left side, before the `:`).
+    /// The bound property path (the left side, before the `:`); `None` for a
+    /// node's `( value )`, whose property its type names.
     pub fn path(&self) -> Option<PropertyPath> {
         support::child(&self.syntax)
+    }
+
+    /// Whether this is a node's `( value )`, binding its primary property.
+    pub fn is_primary(&self) -> bool {
+        self.syntax.kind() == SyntaxKind::PrimaryArgument
     }
 
     /// The bound value expression (the right side, after the `:`).
@@ -2494,6 +2567,7 @@ impl AstNode for ViewItem {
             SyntaxKind::NamedNode
                 | SyntaxKind::AnonymousNode
                 | SyntaxKind::PropertyBinding
+                | SyntaxKind::PrimaryArgument
                 | SyntaxKind::EventHandler
                 | SyntaxKind::TwoWayBinding
                 | SyntaxKind::ViewIf
@@ -2510,7 +2584,9 @@ impl AstNode for ViewItem {
         let item = match node.kind() {
             SyntaxKind::NamedNode => ViewItem::Named(NamedNode { syntax: node }),
             SyntaxKind::AnonymousNode => ViewItem::Anonymous(AnonymousNode { syntax: node }),
-            SyntaxKind::PropertyBinding => ViewItem::Property(PropertyBinding { syntax: node }),
+            SyntaxKind::PropertyBinding | SyntaxKind::PrimaryArgument => {
+                ViewItem::Property(PropertyBinding { syntax: node })
+            }
             SyntaxKind::EventHandler => ViewItem::Handler(EventHandler { syntax: node }),
             SyntaxKind::TwoWayBinding => ViewItem::TwoWayBinding(TwoWayBinding { syntax: node }),
             SyntaxKind::ViewIf => ViewItem::If(ViewIf { syntax: node }),

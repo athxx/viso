@@ -68,8 +68,8 @@ export component App {
     state count = 0;
     view {
         Column {
-            Text { width: 100dp; height: 20dp; text: \"Count\"; }
-            Button { width: 100dp; height: 32dp; text: \"Add\"; on click { count += 1; } }
+            Text(\"Count\") { width: 100dp; height: 20dp }
+            Button(\"Add\") { width: 100dp; height: 32dp; on click { count += 1; } }
         }
     }
 }
@@ -177,8 +177,8 @@ fn a_named_component_exports_alone() {
     let s = Scratch::new("named");
     s.write("Viso.toml", MANIFEST).write(
         "src/ui.vs",
-        "export component Card {\n    input title: String = \"Hi\";\n    view { Text { width: 80dp; height: 20dp; text: title; } }\n}\n\
-         export component Needy {\n    input title: String;\n    view { Text { text: title; } }\n}\n",
+        "export component Card {\n    input title: String = \"Hi\";\n    view { Text(title) { width: 80dp; height: 20dp } }\n}\n\
+         export component Needy {\n    input title: String;\n    view { Text(title) }\n}\n",
     );
     let out = viso(&s.0, &["export", "html"]);
     assert_eq!(code(&out), 1);
@@ -217,8 +217,8 @@ fn a_message_translates_on_the_page() {
     .write(
         "src/app.vs",
         "import viso::i18n::tr;\n\nexport component App {\n    state clicks = 0;\n    view {\n        Column {\n            \
-         Text { width: 100dp; height: 20dp; text: tr(\"app.clicks\", count: clicks); }\n            \
-         Button { width: 100dp; height: 20dp; text: tr(\"app.click\"); on click { clicks += 1; } }\n        }\n    }\n}\n",
+         Text(tr(\"app.clicks\", count: clicks)) { width: 100dp; height: 20dp }\n            \
+         Button(tr(\"app.click\")) { width: 100dp; height: 20dp; on click { clicks += 1; } }\n        }\n    }\n}\n",
     );
     let out = viso(&s.0, &["export", "html"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));

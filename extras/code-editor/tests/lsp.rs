@@ -83,7 +83,7 @@ fn viso_lsp(uri: &str, text: &str) -> LspClient {
     client
 }
 
-const SOURCE: &str = "component C {\n  state count = 0;\n  computed d = count;\n  view { Text { text: missing; } }\n}\n";
+const SOURCE: &str = "component C {\n  state count = 0;\n  computed d = count;\n  view { Text(missing) }\n}\n";
 
 fn snapshot(doc: &Document) -> Snapshot {
     Snapshot {

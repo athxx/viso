@@ -63,7 +63,7 @@ component Counter {
         emit changed(count);
     }
 
-    view { Text { text: "{doubled}"; } }
+    view { Text("{doubled}") }
 }
 "#,
     );
@@ -109,7 +109,7 @@ component Shapes {
         }
     }
 
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 "#,
     );
@@ -156,7 +156,7 @@ component Loops {
         add(3)
     }
 
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 "#,
     );
@@ -186,7 +186,7 @@ component Records {
         Some(n)
     }
 
-    view { Text { text: "{point.x}"; } }
+    view { Text("{point.x}") }
 }
 "#,
     );

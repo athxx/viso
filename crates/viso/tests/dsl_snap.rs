@@ -17,8 +17,8 @@ fn a_fragment_s_viewport_snaps_and_shows_its_dots() {
             snap_inset: 8dp;
             page_dots: true;
             Row {
-                Text { width: 120dp; text: "a"; }
-                Text { width: 120dp; text: "b"; }
+                Text("a") { width: 120dp }
+                Text("b") { width: 120dp }
             }
         }
     };

@@ -81,14 +81,13 @@ fn view_structure_item(p: &mut Parser) {
     }
 }
 
-/// `"node" IDENT ":" ComponentType NodeBody`.
+/// `"node" IDENT ":" NodeHead`.
 fn named_node(p: &mut Parser) {
     let m = p.start();
     p.bump_as(SyntaxKind::NodeKw);
     name(p);
     p.expect(SyntaxKind::Colon);
-    component_type(p);
-    node_body(p);
+    node_head(p);
     m.complete(p, SyntaxKind::NamedNode);
 }
 
@@ -98,22 +97,41 @@ fn part_node(p: &mut Parser) {
     p.bump_as(SyntaxKind::PartKw);
     name(p);
     p.expect(SyntaxKind::Colon);
-    component_type(p);
-    node_body(p);
+    node_head(p);
     m.complete(p, SyntaxKind::PartNode);
 }
 
-/// `ComponentType NodeBody` — an unnamed node, identified only by its type.
+/// `NodeHead` — an unnamed node, identified only by its type.
 fn anonymous_node(p: &mut Parser) {
     let m = p.start();
-    component_type(p);
-    node_body(p);
+    node_head(p);
     m.complete(p, SyntaxKind::AnonymousNode);
+}
+
+/// `ComponentType PrimaryArgument? NodeBody?`. The argument and the body
+/// start on the type's line; a node with neither ends at its type.
+fn node_head(p: &mut Parser) {
+    component_type(p);
+    if p.at(SyntaxKind::LParen) && !p.at_line_break() {
+        primary_argument(p);
+    }
+    if p.at(SyntaxKind::LBrace) && !p.at_line_break() {
+        node_body(p);
+    }
 }
 
 /// A node's component type: a plain [`TypePath`](super::types).
 fn component_type(p: &mut Parser) {
     super::types::type_(p);
+}
+
+/// `"(" Expr ")"` — the value of the node's primary property.
+fn primary_argument(p: &mut Parser) {
+    let m = p.start();
+    p.bump_any();
+    super::expr::expr(p);
+    p.expect(SyntaxKind::RParen);
+    m.complete(p, SyntaxKind::PrimaryArgument);
 }
 
 /// `"{" NodeMember* "}"` — the body of any node.
@@ -196,9 +214,9 @@ fn view_keyword(p: &Parser) -> Option<SyntaxKind> {
 }
 
 /// Whether the upcoming tokens are an anonymous node rather than a property
-/// binding: a type path (`Ident (:: Ident)* (< ... >)?`) immediately followed by
-/// a `{`. A property binding instead reaches a `:` (with no `::`) or `.` before
-/// any brace.
+/// binding: a type path (`Ident (:: Ident)* (< ... >)?`) followed by its
+/// argument, its body or the item's end. A property binding instead reaches
+/// a `:` (with no `::`) or `.`.
 fn starts_anonymous_node(p: &Parser) -> bool {
     let mut i = 0;
     // Walk a `::`-separated path of identifiers; generic args make it a type.
@@ -212,10 +230,9 @@ fn starts_anonymous_node(p: &Parser) -> bool {
                 i += 1;
                 continue;
             }
-            // A generic argument list or an immediate brace makes this a node.
-            SyntaxKind::Lt => return true,
-            SyntaxKind::LBrace => return true,
-            _ => return false,
+            SyntaxKind::Lt | SyntaxKind::LParen | SyntaxKind::LBrace => return true,
+            SyntaxKind::Colon | SyntaxKind::Dot => return false,
+            _ => return p.nth_at_item_end(i),
         }
     }
 }

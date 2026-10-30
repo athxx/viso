@@ -6,8 +6,7 @@ export component Player {
         Column {
             width: 640dp
             gap: 8dp
-            Video {
-                source: asset("clip.mp4")
+            Video(asset("clip.mp4")) {
                 width: 640dp
                 height: 360dp
                 controls: true
@@ -17,16 +16,14 @@ export component Player {
             }
             Row {
                 gap: 8dp
-                Button {
+                Button(if playing { "Pause" } else { "Play" }) {
                     width: 120dp
                     height: 32dp
-                    text: if playing { "Pause" } else { "Play" }
                     on click { playing = !playing }
                 }
-                Button {
+                Button(if looping { "Play once" } else { "Loop" }) {
                     width: 160dp
                     height: 32dp
-                    text: if looping { "Play once" } else { "Loop" }
                     on click { looping = !looping }
                 }
             }

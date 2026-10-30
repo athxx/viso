@@ -48,7 +48,7 @@ pub use infer::{FieldInfo, InferCx, TypeEnv, TypeSchemas, VariantInfo, VariantPa
 pub use lower::{
     CheckedShader, InputDevices, LoweredPackage, Migrator, ShaderPaint, TargetProfile, lower,
 };
-pub(crate) use lower::{lower_with, persists, selectors_of, write_backs};
+pub(crate) use lower::{lower_with, persists, primary_input, selectors_of, write_backs};
 pub use nodes::{
     CallableKind, ComponentSchema, ConstValue, HirCallable, HirComponent, HirComputed, HirEvent,
     HirInput, HirMeta, HirSlot, HirState, OwnershipMode,

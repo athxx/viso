@@ -4,7 +4,7 @@ viso::component! {
     Form {
         view {
             Column {
-                node save_button: Button { text: "Save"; }
+                node save_button: Button("Save")
             }
         }
     }

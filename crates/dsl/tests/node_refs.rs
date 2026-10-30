@@ -142,18 +142,18 @@ fn a_handler_focuses_blurs_and_scrolls_its_named_nodes() {
                 Column {
                     width: 200dp;
                     height: 300dp;
-                    Button {
-                        width: 100dp; height: 20dp; text: \"go\";
+                    Button(\"go\") {
+                        width: 100dp; height: 20dp; 
                         on click { field.focus(); list.scroll_to(Offset { x: 0dp, y: 30dp }); }
                     }
-                    Button {
-                        width: 100dp; height: 20dp; text: \"more\";
+                    Button(\"more\") {
+                        width: 100dp; height: 20dp; 
                         on click { list.scroll_by(Offset { x: 0dp, y: 15dp }); field.blur(); }
                     }
                     node field: TextInput { width: 100dp; height: 20dp; }
                     node list: Scroll {
                         width: 100dp; height: 50dp;
-                        Text { width: 100dp; height: 400dp; text: \"tall\"; }
+                        Text(\"tall\") { width: 100dp; height: 400dp }
                     }
                 }
             }
@@ -181,7 +181,7 @@ fn each_instance_of_a_for_reaches_its_own_named_node() {
             view {
                 Column {
                     width: 100dp; height: 40dp;
-                    Button { width: 100dp; height: 20dp; text: \"edit\"; on click { field.focus(); } }
+                    Button(\"edit\") { width: 100dp; height: 20dp; on click { field.focus(); } }
                     node field: TextInput { width: 100dp; height: 20dp; }
                 }
             }
@@ -213,23 +213,23 @@ const SHAKE: &str = "component Shake {
         Column {
             width: 200dp;
             height: 300dp;
-            Button {
-                width: 100dp; height: 20dp; text: \"shake\";
+            Button(\"shake\") {
+                width: 100dp; height: 20dp; 
                 on click {
                     let spec = Transition { duration: 100ms, easing: Easing::linear };
                     shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec));
                     running = match shaking { Option::Some(a) => a.is_running(), Option::None => false };
                 }
             }
-            Button {
-                width: 100dp; height: 20dp; text: \"stop\";
+            Button(\"stop\") {
+                width: 100dp; height: 20dp; 
                 on click {
                     match shaking { Option::Some(a) => a.cancel(), Option::None => {} }
                     running = match shaking { Option::Some(a) => a.is_running(), Option::None => false };
                 }
             }
-            Button {
-                width: 100dp; height: 20dp; text: \"check\";
+            Button(\"check\") {
+                width: 100dp; height: 20dp; 
                 on click { running = match shaking { Option::Some(a) => a.is_running(), Option::None => false }; }
             }
             node card: Column {
@@ -241,8 +241,8 @@ const SHAKE: &str = "component Shake {
                     };
                 }
             }
-            Text { width: 100dp; height: 20dp; text: ended; }
-            Text { width: 100dp; height: 20dp; text: \"{running}\"; }
+            Text(ended) { width: 100dp; height: 20dp }
+            Text(\"{running}\") { width: 100dp; height: 20dp }
         }
     }
 }";
@@ -285,8 +285,8 @@ const PULSE: &str = "component Pulse {
         Column {
             width: 200dp;
             height: 300dp;
-            Button {
-                width: 100dp; height: 20dp; text: \"pulse\";
+            Button(\"pulse\") {
+                width: 100dp; height: 20dp; 
                 on click {
                     let track = Keyframes {
                         stops: [
@@ -300,8 +300,8 @@ const PULSE: &str = "component Pulse {
                     pulse = Option::Some(card.play(track));
                 }
             }
-            Button {
-                width: 100dp; height: 20dp; text: \"forever\";
+            Button(\"forever\") {
+                width: 100dp; height: 20dp; 
                 on click {
                     let track = Keyframes {
                         stops: [Keyframe { at: 1.0f32, value: Animate::opacity(0.0f32) }],
@@ -311,8 +311,8 @@ const PULSE: &str = "component Pulse {
                     pulse = Option::Some(card.play(track));
                 }
             }
-            Button {
-                width: 100dp; height: 20dp; text: \"finish\";
+            Button(\"finish\") {
+                width: 100dp; height: 20dp; 
                 on click { match pulse { Option::Some(a) => a.finish(), Option::None => {} } }
             }
             node card: Column {
@@ -325,7 +325,7 @@ const PULSE: &str = "component Pulse {
                     };
                 }
             }
-            Text { width: 100dp; height: 20dp; text: ended; }
+            Text(ended) { width: 100dp; height: 20dp }
         }
     }
 }";
@@ -363,7 +363,7 @@ fn a_named_node_is_a_node_ref_only_in_handlers_and_actions() {
         view {
             Column {
                 node field: TextInput { width: 100dp; height: 20dp; }
-                Text { text: \"{field}\"; }
+                Text(\"{field}\")
             }
         }
     }";

@@ -37,7 +37,7 @@ impl Scratch {
         .unwrap();
         fs::write(
             dir.join("src/main.vs"),
-            "export component App { view { Text { text: \"Hi\"; } } }\n",
+            "export component App { view { Text(\"Hi\") } }\n",
         )
         .unwrap();
         Self(dir)
@@ -122,8 +122,8 @@ fn a_headless_run_is_profiled_frame_by_frame() {
             (
                 "src/app.vs",
                 b"export component App {\n    state taps = 0;\n    view {\n        Column {\n            \
-                  Text { text: \"{taps} taps\"; }\n            \
-                  Button { width: 120dp; height: 40dp; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
+                  Text(\"{taps} taps\")\n            \
+                  Button(\"Tap\") { width: 120dp; height: 40dp; on click { taps += 1; } }\n        }\n    }\n}\n",
             ),
             (
                 "tests/ui/taps.tape",

@@ -935,9 +935,9 @@ Do not require application authors to know that module A must be manually regist
 Canonical Rust-side entry points are:
 
 ```rust
-ui! { Button { text: "Save"; } }       // ViewFragment
-view!("view.vs")                        // external .vs
-component! { Tiny { view { Text {} } } } // ComponentDecl
+ui! { Button("Save") }                    // ViewFragment
+view!("view.vs")                          // external .vs
+component! { Tiny { view { Text("hi") } } } // ComponentDecl
 ```
 
 Rules:
@@ -978,11 +978,10 @@ Advanced features MUST NOT block the first production vertical slice and MUST NO
 
 ### 21.5.2 Declarative property syntax
 
-In View/Style authoring, property binding uses `:` and a terminating semicolon:
+In View/Style authoring, property binding uses `:`, one per line (`;` separates bindings on one line); a type's primary property goes in parentheses after it:
 
 ```viso
-Text {
-    text: label
+Text(label) {
     color: theme.colors.foreground
 }
 ```

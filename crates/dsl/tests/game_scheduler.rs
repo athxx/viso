@@ -317,10 +317,7 @@ fn an_order_argument_must_name_a_system() {
 
 #[test]
 fn a_system_declares_no_view_event_or_slot() {
-    assert_eq!(
-        codes("system A { view { Text { text: \"a\"; } } }"),
-        ["E9109"]
-    );
+    assert_eq!(codes("system A { view { Text(\"a\") } }"), ["E9109"]);
     assert_eq!(codes("system A { event done(); }"), ["E9109"]);
 }
 

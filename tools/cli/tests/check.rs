@@ -433,14 +433,14 @@ fn tr_checks_against_the_catalogs_and_a_catalog_error_points_into_its_file() {
         .write("i18n/en.toml", "[inbox]\ntitle = \"Inbox\"\n")
         .write(
             "src/app.vs",
-            "import viso::i18n::tr;\ncomponent App { view { Text { text: tr(\"inbox.title\"); } } }",
+            "import viso::i18n::tr;\ncomponent App { view { Text(tr(\"inbox.title\")) } }",
         );
     let out = viso(&s.0, &["check"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
     s.write(
         "src/app.vs",
-        "import viso::i18n::tr;\ncomponent App { view { Text { text: tr(\"inbox.titel\"); } } }",
+        "import viso::i18n::tr;\ncomponent App { view { Text(tr(\"inbox.titel\")) } }",
     );
     let out = viso(&s.0, &["check"]);
     assert_eq!(code(&out), 1);
@@ -537,7 +537,7 @@ fn strict_makes_accessibility_and_localization_findings_errors() {
 
     s.write(
         "src/app.vs",
-        "component App {\n    view { Text { text: \"Hello\"; } }\n}\n",
+        "component App {\n    view { Text(\"Hello\") }\n}\n",
     );
     assert_eq!(code(&viso(&s.0, &["check"])), 0);
     let strict = viso(&s.0, &["check", "--i18n", "strict"]);

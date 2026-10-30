@@ -43,7 +43,7 @@ impl Scratch {
         .unwrap();
         fs::write(
             dir.join("src/main.vs"),
-            "export component App { view { Text { text: \"Hi\"; } } }\n",
+            "export component App { view { Text(\"Hi\") } }\n",
         )
         .unwrap();
         Self(dir)
@@ -348,9 +348,9 @@ fn a_headless_run_is_queried_and_scenarios_select_by_the_same_selectors() {
                 "src/app.vs",
                 b"style Primary for Button {\n    opacity: 0.9f32;\n}\n\n\
                   export component App {\n    state on = false;\n    view {\n        Column {\n            \
-                  node title: Text { width: 60dp; height: 20dp; text: \"Hi\"; }\n            \
-                  node flip: Button { width: 120dp; height: 40dp; text: \"Flip\"; styles: [Primary]; on click { on = !on; } }\n            \
-                  if on {\n                node done: Text { width: 60dp; height: 20dp; text: \"Done\"; }\n            }\n        }\n    }\n}\n",
+                  node title: Text(\"Hi\") { width: 60dp; height: 20dp }\n            \
+                  node flip: Button(\"Flip\") { width: 120dp; height: 40dp; styles: [Primary]; on click { on = !on; } }\n            \
+                  if on {\n                node done: Text(\"Done\") { width: 60dp; height: 20dp }\n            }\n        }\n    }\n}\n",
             ),
             (
                 "tests/ui/press.tape",
@@ -446,8 +446,8 @@ fn a_headless_run_shows_its_tree_its_nodes_and_its_frame() {
             (
                 "src/app.vs",
                 b"export component App {\n    state taps = 0;\n    view {\n        Column {\n            \
-                  node count: Text { width: 160dp; height: 20dp; text: \"{taps} taps\"; }\n            \
-                  node tap: Button { width: 120dp; height: 40dp; background: #2266ff; text: \"Tap\"; on click { taps += 1; } }\n        }\n    }\n}\n",
+                  node count: Text(\"{taps} taps\") { width: 160dp; height: 20dp }\n            \
+                  node tap: Button(\"Tap\") { width: 120dp; height: 40dp; background: #2266ff; on click { taps += 1; } }\n        }\n    }\n}\n",
             ),
             (
                 "tests/ui/taps.tape",

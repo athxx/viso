@@ -23,9 +23,9 @@ export component Arena {
     view {
         Column {
             if env.input.gamepad_available {
-                Text { text: "pad" }
+                Text("pad")
             } else {
-                Text { text: "keys" }
+                Text("keys")
             }
         }
     }

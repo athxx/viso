@@ -103,7 +103,7 @@ view Counter
     n2 Button leaf @19:13
       bind text: "Add"  MEASURE | LAYOUT | PAINT | SEMANTICS
       control text: "Add"
-      on click @19:35
+      on click @19:29
     for name in names key name @20:13
       n3 Text leaf @20:42
         bind text: name  MEASURE | LAYOUT | PAINT | SEMANTICS
@@ -114,7 +114,7 @@ view Counter
           bind text: "many"  MEASURE | LAYOUT | PAINT | SEMANTICS
           control text: "many"
       else
-        n5 Text leaf @21:60
+        n5 Text leaf @21:50
           bind text: "few"  MEASURE | LAYOUT | PAINT | SEMANTICS
           control text: "few"
 
@@ -182,6 +182,6 @@ system#0 Runner
   state[1] x simulation
 
 $ viso dump hir Counter --json
-{"kind":"hir","input":"Counter","ir":{"dump_version":1,"sections":[{"file":"src/counter.vs","module":"counter","ir":{"items":[{"kind":"component","name":"Counter","symbol_id":"3742120144c5f74ad8e949f422124058","span":{"start":36,"end":626,"line":3,"column_utf16":8},"members":[{"kind":"input","name":"label","type":"String","symbol_id":"ac84802cfcfceaa987abed575db0852b","effect":"read","ownership":"borrowed","capabilities":[],"reads":[],"constant":null,"span":{"start":60,"end":90,"line":4,"column_utf16":5}},{"kind":"state","name":"count","type":"I64","symbol_id":"5516f0399d0443338f03f5bff964ce47","effect":"read","ownership":"owned","capabilities":[],"reads":[],"constant":null,"span":{"start":95,"end":111,"line":5,"column_utf16":5}},{"kind":"state","name":"names","type":"List<String>","symbol_id":"1dc5d1b5690443338f03e842b80fb428","effect":"read","ownership":"owned","capabilities":[],"reads":[],"constant":null,"span":{"start":116,"end":151,"line":6,"column_utf16":5}},{"kind":"computed","name":"doubled","type":"I64","symbol_id":"6916ecd9b7b4309b2aff7a6972137aaa","effect":"read","ownership":"derived","capabilities":[],"reads":["count"],"constant":null,"span":{"start":156,"end":190,"line":7,"column_utf16":5}},{"kind":"event","name":"changed","type":"(value: I64)","symbol_id":"8c73d0a8da0d3e411f5aaf90e1a0e7a0","effect":"pure","ownership":"none","capabilities":[],"reads":[],"constant":null,"span":{"start":195,"end":221,"line":8,"column_utf16":5}},{"kind":"action","name":"increment","type":"() -> Unit","symbol_id":"a0346f4cfc7aa4e54d6676c94962ae9a","effect":"action","ownership":"none","capabilities":[],"reads":[],"constant":null,"span":{"start":227,"end":302,"line":10,"column_utf16":5}}]}]}}]}}
+{"kind":"hir","input":"Counter","ir":{"dump_version":1,"sections":[{"file":"src/counter.vs","module":"counter","ir":{"items":[{"kind":"component","name":"Counter","symbol_id":"3742120144c5f74ad8e949f422124058","span":{"start":36,"end":580,"line":3,"column_utf16":8},"members":[{"kind":"input","name":"label","type":"String","symbol_id":"ac84802cfcfceaa987abed575db0852b","effect":"read","ownership":"borrowed","capabilities":[],"reads":[],"constant":null,"span":{"start":60,"end":90,"line":4,"column_utf16":5}},{"kind":"state","name":"count","type":"I64","symbol_id":"5516f0399d0443338f03f5bff964ce47","effect":"read","ownership":"owned","capabilities":[],"reads":[],"constant":null,"span":{"start":95,"end":111,"line":5,"column_utf16":5}},{"kind":"state","name":"names","type":"List<String>","symbol_id":"1dc5d1b5690443338f03e842b80fb428","effect":"read","ownership":"owned","capabilities":[],"reads":[],"constant":null,"span":{"start":116,"end":151,"line":6,"column_utf16":5}},{"kind":"computed","name":"doubled","type":"I64","symbol_id":"6916ecd9b7b4309b2aff7a6972137aaa","effect":"read","ownership":"derived","capabilities":[],"reads":["count"],"constant":null,"span":{"start":156,"end":190,"line":7,"column_utf16":5}},{"kind":"event","name":"changed","type":"(value: I64)","symbol_id":"8c73d0a8da0d3e411f5aaf90e1a0e7a0","effect":"pure","ownership":"none","capabilities":[],"reads":[],"constant":null,"span":{"start":195,"end":221,"line":8,"column_utf16":5}},{"kind":"action","name":"increment","type":"() -> Unit","symbol_id":"a0346f4cfc7aa4e54d6676c94962ae9a","effect":"action","ownership":"none","capabilities":[],"reads":[],"constant":null,"span":{"start":227,"end":302,"line":10,"column_utf16":5}}]}]}}]}}
 $ viso dump reactive-ir Counter --json
 {"kind":"reactive-ir","input":"Counter","ir":{"dump_version":1,"sections":[{"file":"src/counter.vs","module":"counter","ir":{"view":"Counter","sources":[{"name":"count","kind":"state","symbol_id":"5516f0399d0443338f03f5bff964ce47","invalidates":["STRUCTURE"]},{"name":"names","kind":"state","symbol_id":"1dc5d1b5690443338f03e842b80fb428","invalidates":["STRUCTURE"]},{"name":"label","kind":"input","symbol_id":"ac84802cfcfceaa987abed575db0852b","invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"]},{"name":"doubled","kind":"computed","symbol_id":"6916ecd9b7b4309b2aff7a6972137aaa","invalidates":[]}],"edges":[{"source":"label","node":1,"node_type":"Text","property":"text","invalidates":["MEASURE","LAYOUT","PAINT","SEMANTICS"],"kind":"static"}],"dynamic_fallback_nodes":0}}]}}

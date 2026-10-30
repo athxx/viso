@@ -48,7 +48,7 @@ const LOOK: &str = "export component C {\n    state lit = false;\n    state gone
     Text { width: 20dp; height: 20dp; on click { lit = !lit; } }\n            \
     Text { width: 20dp; height: 20dp; on click { gone = !gone; } }\n            \
     Column {\n                width: 100dp; height: 20dp; visible: !gone;\n                \
-    background: if lit { #ff0000 } else { #00ff00 };\n                Text { text: \"x\"; }\n            }\n        }\n    }\n}\n";
+    background: if lit { #ff0000 } else { #00ff00 };\n                Text(\"x\")\n            }\n        }\n    }\n}\n";
 
 #[test]
 fn a_paint_only_write_lays_nothing_out() {

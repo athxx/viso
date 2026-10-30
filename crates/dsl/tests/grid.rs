@@ -199,22 +199,22 @@ fn a_template_or_cell_layout_does_not_take_is_reported() {
             "every row of `areas` names the same number of cells",
         ),
         (
-            "Grid { areas: [\"a\"]; Text { text: \"x\"; grid.area: \"b\"; } }",
+            "Grid { areas: [\"a\"]; Text(\"x\") { grid.area: \"b\" } }",
             "E3108",
             "`b` names no area of this grid's `areas`",
         ),
         (
-            "Grid { if n > 0 { Text { text: \"x\"; grid.area: \"b\"; } } }",
+            "Grid { if n > 0 { Text(\"x\") { grid.area: \"b\" } } }",
             "E3108",
             "this grid declares no `areas`",
         ),
         (
-            "Grid { areas: [\"a\"]; Text { text: \"x\"; grid.area: \"a\"; grid.column: 0; } }",
+            "Grid { areas: [\"a\"]; Text(\"x\") { grid.area: \"a\"; grid.column: 0 } }",
             "E3108",
             "a `grid.area` places the node by itself",
         ),
         (
-            "Grid { Text { text: \"x\"; grid.row_span: 0; } }",
+            "Grid { Text(\"x\") { grid.row_span: 0 } }",
             "E3108",
             "a `grid.row_span` spans at least one track",
         ),

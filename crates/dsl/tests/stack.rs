@@ -127,14 +127,14 @@ fn errors(view: &str) -> Vec<(&'static str, String)> {
 fn a_placement_that_reads_a_value_lays_out() {
     for view in [
         "Stack { content_align: if n > 0 { Alignment2D::top } else { Alignment2D::center }; }",
-        "Stack { Text { text: \"a\"; stack.layer: if n > 0 { 1i32 } else { 2i32 }; } }",
-        "Absolute { Text { text: \"a\"; absolute.top: if n > 0 { 1dp } else { 2dp }; } }",
+        "Stack { Text(\"a\") { stack.layer: if n > 0 { 1i32 } else { 2i32 }; } }",
+        "Absolute { Text(\"a\") { absolute.top: if n > 0 { 1dp } else { 2dp }; } }",
     ] {
         assert_eq!(errors(view), [], "{view}");
     }
     assert_eq!(
         errors(
-            "Absolute { padding: 4dp; Text { text: \"a\"; absolute.bottom: Option::None; absolute.end: 50% - 2dp; } }"
+            "Absolute { padding: 4dp; Text(\"a\") { absolute.bottom: Option::None; absolute.end: 50% - 2dp } }"
         ),
         []
     );

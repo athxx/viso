@@ -83,7 +83,7 @@ fn a_padding_the_runtime_cannot_lay_out_is_reported() {
         "Column { padding: 10%; }",
         "Column { padding: EdgeInsets::axes(inline: 5% + 2dp, block: 1sp); }",
         "Column { margin: -4dp; }",
-        "Text { text: \"a\"; margin: EdgeInsets { start: 1sp }; min_width: 10%; }",
+        "Text(\"a\") { margin: EdgeInsets { start: 1sp }; min_width: 10%; }",
         "Column { min_height: 20dp; max_height: Option::None; max_width: 640dp; }",
         "Column { padding: if wide { 8dp } else { 4dp }; }",
         "Column { margin: if wide { 8dp } else { 4dp }; }",

@@ -390,14 +390,14 @@ mod tests {
 
     #[test]
     fn valid_fragment_compiles_to_a_plan() {
-        let plan = plan("Text { text: \"label\"; }").expect("valid fragment compiles");
+        let plan = plan("Text(\"label\")").expect("valid fragment compiles");
         assert_eq!(plan.tree.items.len(), 1, "one root node");
         assert!(plan.sources.is_empty(), "a fragment declares no state");
     }
 
     #[test]
     fn a_fragment_names_no_value_it_does_not_declare() {
-        let source = "Text { text: label; }";
+        let source = "Text(label)";
         let err = plan(source).expect_err("an unknown name is fatal");
         assert_eq!(err.iter().map(|d| d.code).collect::<Vec<_>>(), ["E2001"]);
         let at: std::ops::Range<usize> = err[0].primary.into();
@@ -424,7 +424,7 @@ mod tests {
             )
             .expect("compiles")
         };
-        let a = view("Text { text: \"{count}\"; }");
+        let a = view("Text(\"{count}\")");
         let b = view("Column { Text { visible: count > 0; } }");
         assert_eq!(
             a.symbol_for_name("count"),
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn malformed_source_is_rejected_without_a_plan() {
-        let err = plan("Text { text: ;;; }").expect_err("malformed fragment is fatal");
+        let err = plan("Text()").expect_err("malformed fragment is fatal");
         assert!(!err.is_empty(), "carries at least one fatal diagnostic");
         assert!(
             err.iter().all(|d| d.severity == Severity::Error),

@@ -21,9 +21,9 @@ viso::component! {
                 SegmentedControl {
                     width: 240dp;
                     bind selected <=> range;
-                    Text { text: "Day"; }
-                    Text { text: "Week"; }
-                    Text { text: "Month"; }
+                    Text("Day")
+                    Text("Week")
+                    Text("Month")
                 }
             }
         }

@@ -11,9 +11,9 @@ viso::component! {
     Toolbar {
         view {
             Row {
-                node back: Button { text: "Back"; }
-                Text { text: "Inbox"; }
-                node compose: Button { text: "Compose"; }
+                node back: Button("Back")
+                Text("Inbox")
+                node compose: Button("Compose")
             }
         }
     }

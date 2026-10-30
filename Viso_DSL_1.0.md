@@ -666,8 +666,7 @@ MixedLength = dp·1dp + px·1px + sp·1sp + em·1em + pct·1%
 Column {
     padding: 1em
 
-    Text {
-        text: title
+    Text(title) {
         font_size: 1.25em
     }
 
@@ -1642,9 +1641,9 @@ input_decl           = "input", identifier, ":", type,
 - 没有默认值的 Input 是必填属性；
 - Input 类型是 Component Schema 的一部分，改变类型属于接口兼容性变更；
 - Input 变化会根据实际依赖使 Computed、View、Effect 或 Resource Key 失效；
-- 至多一个 Input 可以标 `@primary`，调用方以 `Card("Profile")` 的形式给出它（§50.1）；多于一个报 `E3109`。
+- 至多一个单向 Input 可以标 `@primary`，调用方以 `Card("Profile")` 的形式给出它（§50.1）；多于一个、标在 Input 以外的成员上或与 `@bindable` 同标报 `E3109`。
 
-```viso-pending
+```viso
 @primary input title: String
 input enabled: Bool = true
 ```
@@ -2016,19 +2015,17 @@ node_member          = { attribute },
 
 唯一规则：
 
-```viso-pending
-node root: Window {
-    Column {
-        Text("Hello")
-        Divider
-    }
+```viso
+node root: Column {
+    Text("Hello")
+    Spinner
 }
 ```
 
 解释：
 
-- `node root: Window` 创建具有显式局部名称和稳定身份种子的节点；
-- `Column`、`Text` 和 `Divider` 是匿名子节点；没有 Property 与子项的节点省略 `{}`；
+- `node root: Column` 创建具有显式局部名称和稳定身份种子的节点；
+- `Text` 和 `Spinner` 是匿名子节点；没有 Property 与子项的节点省略 `{}`；
 - 语言不存在 `child Column {}`；
 - `child` 是保留的迁移错误词，出现时诊断 `E3001`；
 - 匿名节点仍具有编译器生成的 Structural Node ID，但源码插入兄弟节点可能改变它；
@@ -2059,8 +2056,7 @@ property_path        = label, { ".", label } ;
 在 Node Body 中：
 
 ```viso
-Text {
-    text: label
+Text(label) {
     layout.width: 120dp
     color: theme.colors.foreground
 }
@@ -2082,7 +2078,7 @@ Text {
 
 Widget Schema 或用户 Component 至多把一个单向 Property 标为主属性（Component 中写作 `@primary input text: String`）。主属性写在节点类型之后的括号中：
 
-```viso-pending
+```viso
 Text("Hello")
 Text(label) { color: theme.colors.muted }
 Button("Save") { on click { save() } }
@@ -2092,8 +2088,9 @@ Image(asset("logo.png"))
 - `T(expr)` 与在 Node Body 中写主属性的 Property Binding 语义相同：单向 Reactive Binding，失效类别、诊断与 Hot Reload 身份不变；
 - 主属性只能这样写：在 Node Body 中以 `name: expr` 绑定主属性报 `E3109`（附改写为括号形式的 Fix）；
 - 没有主属性的类型写括号实参报 `E3101`；
+- 实参与类型写在同一行，Node Body 的 `{` 同样如此（§14）；既无实参也无 Body 的节点省略 `{}`（`Spinner`）；
 - 主属性不能是 Two-way Property，也不是 Event；
-- 标准 Widget 的主属性：`Text.text`、`Button.text`、`Link.text`、`Image.source`、`Svg.source`、`Video.source`、`Icon.name`（以 `viso::widgets` Schema 的 `primary` 标记为准）。
+- 标准 Widget 的主属性：`Text.text`、`Button.text`、`LinkLabel.text`、`Toggle.label`、`CheckBox.label`、`Image.source`、`Svg.source`、`Video.source`（以 `viso::widgets` Schema 的 `primary` 标记为准）。
 
 ---
 
@@ -4742,16 +4739,19 @@ ViewStructureItem
         | TemplateUse )
 
 NamedNode
-    ::= "node" IDENT ":" ComponentType NodeBody
+    ::= "node" IDENT ":" ComponentType PrimaryArgument? NodeBody?
 
 AnonymousNode
-    ::= ComponentType NodeBody
+    ::= ComponentType PrimaryArgument? NodeBody?
 
 PartNode
-    ::= "part" IDENT ":" ComponentType NodeBody
+    ::= "part" IDENT ":" ComponentType PrimaryArgument? NodeBody?
 
 ComponentType
     ::= TypePath
+
+PrimaryArgument
+    ::= "(" Expression ")"
 
 NodeBody
     ::= "{" NodeMember* "}"
@@ -5373,6 +5373,7 @@ RecordPatternField
 | `AnonymousNode`             | A.8   | `stable`   |
 | `PartNode`                  | A.8   | `preview`  |
 | `ComponentType`             | A.8   | `stable`   |
+| `PrimaryArgument`           | A.8   | `stable`   |
 | `NodeBody`                  | A.8   | `stable`   |
 | `NodeMember`                | A.8   | `stable`   |
 | `PropertyBinding`           | A.8   | `stable`   |
@@ -5590,6 +5591,7 @@ RecordPatternField
 | E3106  | 长度解析为非有限值（Debug Runtime 警告，§19.8）         |
 | E3107  | `bind` 右侧不是 State Lens（§51）                       |
 | E3108  | Grid 的 `areas` 或子节点的 `grid.*` 不指向任何单元：各行单元数不同、区域不是矩形、`grid.area` 名字未知或与行列号同写、跨度为 `0`（§U3.5） |
+| E3109  | 主属性用错：在 Node Body 中按名字绑定主属性（Fix 改写为 `Type(value)`）、多于一个 `@primary`、`@primary` 不在 `input` 上或标在 `@bindable` Input 上（§50.1） |
 | E3201  | 已删除的事件箭头语法                                    |
 | E3202  | 未知 Event 或错误 Payload                               |
 | E3301  | Conditional Preserve 必须是静态字符串，且在 Component 中唯一 |

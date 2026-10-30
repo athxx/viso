@@ -61,12 +61,11 @@ fn an_asset_is_typed_by_its_format_and_shown_by_its_node() {
     state photo = asset(\"images/photo.jpg\");
     view {
         Column {
-            Image {
-                source: if dark { asset(\"images//logo.png\") } else { photo };
+            Image(if dark { asset(\"images//logo.png\") } else { photo }) {
                 fit: ImageFit::cover;
                 width: 64dp;
             }
-            Svg { source: asset(\"icons/close.svg\"); tint: #ff0000; }
+            Svg(asset(\"icons/close.svg\")) { tint: #ff0000 }
         }
     }
 }";
@@ -98,12 +97,11 @@ fn an_image_reports_its_source_loading() {
     state wide = 0dp;
     view {
         Column {
-            Image {
-                source: asset(\"images/photo.jpg\");
+            Image(asset(\"images/photo.jpg\")) {
                 on loaded(size) { ready = true; wide = size.width; }
                 on failed { broken = true; }
             }
-            Svg { source: asset(\"icons/close.svg\"); on loaded(size) { ready = true; } }
+            Svg(asset(\"icons/close.svg\")) { on loaded(size) { ready = true; } }
         }
     }
 }";
@@ -125,8 +123,7 @@ fn a_video_plays_its_asset_or_url_under_its_controls_and_writes_back_its_playing
     state full = false;
     view {
         Column {
-            Video {
-                source: asset(\"clips/intro.mp4\");
+            Video(asset(\"clips/intro.mp4\")) {
                 controls: true;
                 bind fullscreen <=> full;
                 on fullscreen_changed(on) { done = on; }
@@ -152,17 +149,17 @@ fn a_video_plays_its_asset_or_url_under_its_controls_and_writes_back_its_playing
             .iter()
             .any(|a| a.path == "clips/intro.mp4" && a.format == AssetFormat::Mp4)
     );
-    let wrong = "export component C { view { Video { source: asset(\"images/logo.png\"); } } }";
+    let wrong = "export component C { view { Video(asset(\"images/logo.png\")) } }";
     assert_eq!(
         compile(wrong).errors().map(|d| d.code).collect::<Vec<_>>(),
         ["E2103"]
     );
-    let wrong = "export component C { view { Image { source: asset(\"clips/intro.mp4\"); } } }";
+    let wrong = "export component C { view { Image(asset(\"clips/intro.mp4\")) } }";
     assert_eq!(
         compile(wrong).errors().map(|d| d.code).collect::<Vec<_>>(),
         ["E2103"]
     );
-    let built = "export component C { view { Video { source: VideoAsset { resource: 1 }; } } }";
+    let built = "export component C { view { Video(VideoAsset { resource: 1 }) } }";
     assert_eq!(
         compile(built).errors().map(|d| d.code).collect::<Vec<_>>(),
         ["E3713"]
@@ -192,19 +189,19 @@ fn a_camera_view_names_its_camera_by_facing_or_device() {
 
 #[test]
 fn a_node_takes_only_its_kind_of_asset() {
-    let wrong = "export component C { view { Image { source: asset(\"icons/close.svg\"); } } }";
+    let wrong = "export component C { view { Image(asset(\"icons/close.svg\")) } }";
     let compiled = compile(wrong);
     assert_eq!(
         compiled.errors().map(|d| d.code).collect::<Vec<_>>(),
         ["E2103"]
     );
-    let wrong = "export component C { view { Svg { source: asset(\"images/logo.png\"); } } }";
+    let wrong = "export component C { view { Svg(asset(\"images/logo.png\")) } }";
     let compiled = compile(wrong);
     assert_eq!(
         compiled.errors().map(|d| d.code).collect::<Vec<_>>(),
         ["E2103"]
     );
-    let wrong = "export component C { view { Image { source: \"images/logo.png\"; } } }";
+    let wrong = "export component C { view { Image(\"images/logo.png\") } }";
     let compiled = compile(wrong);
     assert_eq!(
         compiled.errors().map(|d| d.code).collect::<Vec<_>>(),
@@ -214,9 +211,8 @@ fn a_node_takes_only_its_kind_of_asset() {
 
 /// The one error compiling a view showing `value` raises.
 fn misuse(value: &str, catalog: AssetCatalog) -> (String, String, Vec<String>) {
-    let source = format!(
-        "export component C {{ state name = \"logo.png\"; view {{ Image {{ source: {value}; }} }} }}"
-    );
+    let source =
+        format!("export component C {{ state name = \"logo.png\"; view {{ Image({value}) }} }}");
     let compiled = compile_with(&source, catalog);
     let found: Vec<_> = compiled.errors().collect();
     assert_eq!(found.len(), 1, "{value}: {found:#?}");
@@ -251,7 +247,8 @@ fn every_misuse_of_an_asset_is_reported() {
     );
     // Not interpolation, which the language does not have: an invalid escape,
     // and a path that is not the literal it reads as.
-    let source = "export component C { state name = \"logo.png\"; view { Image { source: asset(\"\\{name}\"); } } }";
+    let source =
+        "export component C { state name = \"logo.png\"; view { Image(asset(\"\\{name}\")) } }";
     let compiled = compile_with(source, none());
     assert_eq!(
         compiled.errors().map(|d| d.code).collect::<Vec<_>>(),
@@ -292,7 +289,7 @@ fn every_misuse_of_an_asset_is_reported() {
 
 #[test]
 fn a_compile_without_assets_says_so() {
-    let source = "export component C { view { Image { source: asset(\"logo.png\"); } } }";
+    let source = "export component C { view { Image(asset(\"logo.png\")) } }";
     let compiled = compile_file(source, &origin());
     let found = errors(&compiled);
     assert_eq!(found.len(), 1, "{found:?}");

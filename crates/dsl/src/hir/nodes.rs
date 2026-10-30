@@ -125,6 +125,8 @@ impl HirMeta {
 pub struct HirInput {
     /// The input's name, for schema and diagnostics.
     pub name: String,
+    /// Whether `@primary` makes it the input `Component(value)` gives.
+    pub primary: bool,
     /// The node contract.
     pub meta: HirMeta,
 }

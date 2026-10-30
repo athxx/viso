@@ -20,7 +20,7 @@ const CARDS: usize = 300;
 const EDITED: usize = CARDS / 2;
 
 /// The inserted node.
-const INSERT: &str = "            Text { text: \"new\"; }\n";
+const INSERT: &str = "            Text(\"new\")\n";
 
 /// A counter with a label and a handler, `insert` appended to its column.
 fn small(insert: &str) -> String {
@@ -31,8 +31,8 @@ fn small(insert: &str) -> String {
     action bump() {{ count += 1; }}
     view {{
         Column {{
-            Text {{ text: "{{label}}: {{count}}"; on click {{ bump(); }} }}
-            Text {{ text: "hint"; }}
+            Text("{{label}}: {{count}}") {{ on click {{ bump(); }} }}
+            Text("hint")
 {insert}        }}
     }}
 }}
@@ -52,7 +52,7 @@ fn large(edited: Option<usize>) -> String {
     action tap() {{ taps += 1; }}
     view {{
         Row {{
-            Text {{ text: "card {i}: {{taps}}"; on click {{ tap(); }} }}
+            Text("card {i}: {{taps}}") {{ on click {{ tap(); }} }}
 {insert}        }}
     }}
 }}

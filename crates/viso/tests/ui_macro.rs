@@ -56,8 +56,7 @@ fn constant_control_values_reach_the_text_request() {
 
     let build = viso::ui! {
         Column {
-            Text {
-                text: "Title";
+            Text("Title") {
                 color: #ff0000;
                 align: TextAlign::center;
                 max_lines: Option::Some(2);
@@ -542,7 +541,7 @@ impl viso::ui::Component for Swatch {
 viso::component! {
     Tally {
         state count = 0;
-        view { Button { text: "Tally"; on click { count += 1; } } }
+        view { Button("Tally") { on click { count += 1; } } }
     }
 }
 

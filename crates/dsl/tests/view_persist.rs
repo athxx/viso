@@ -348,7 +348,7 @@ fn a_persisting_component_mounts_only_as_the_view_s_own() {
 component Inner {
     @persist("k")
     state n = 0;
-    view { Text { text: "x"; } }
+    view { Text("x") }
 }
 
 export component Outer {

@@ -156,7 +156,7 @@ fn what_stops_a_build_before_cargo_runs() {
     let root = project("unchecked");
     fs::write(
         root.join("src/app.vs"),
-        "component App {\n    view { Text { text: ; } }\n}\n",
+        "component App {\n    view { Text() }\n}\n",
     )
     .unwrap();
     let out = viso(&root, &["build", "--json"]);
@@ -241,12 +241,12 @@ fn a_device_target_builds_for_its_board() {
     // inline view's.
     fs::write(
         root.join("src/app.vs"),
-        "export component App {\n    view { Text { text: \"Grüße\"; } }\n}\n",
+        "export component App {\n    view { Text(\"Grüße\") }\n}\n",
     )
     .unwrap();
     fs::write(
         root.join("src/panel.rs"),
-        "fn panel() { let _ = viso::ui! { Text { text: \"温度\"; } }; }\n",
+        "fn panel() { let _ = viso::ui! { Text(\"温度\") }; }\n",
     )
     .unwrap();
     // The app turns the facade's defaults on through its own, as `viso new`

@@ -1102,7 +1102,7 @@ mod tests {
         let mut text = String::new();
         for i in 0..200 {
             text.push_str(&format!(
-                "component Card{i} {{\n    state count = {i};\n    view {{\n        Column {{\n            Text {{ width: 120dp; text: \"card {i}\"; }}\n            Text {{ visible: count > 0; }}\n        }}\n    }}\n}}\n"
+                "component Card{i} {{\n    state count = {i};\n    view {{\n        Column {{\n            Text(\"card {i}\") {{ width: 120dp; }}\n            Text {{ visible: count > 0; }}\n        }}\n    }}\n}}\n"
             ));
         }
         text.push_str("export component Main {\n    view { Column { Card100 { } } }\n}\n");
@@ -1170,7 +1170,7 @@ mod tests {
         let i18n = dir.join("i18n");
         std::fs::create_dir_all(&i18n).unwrap();
         let i18n = i18n.canonicalize().unwrap();
-        let view = "import viso::i18n::tr;\ncomponent Title {\n    view { Text { text: tr(\"title\"); } }\n}\n";
+        let view = "import viso::i18n::tr;\ncomponent Title {\n    view { Text(tr(\"title\")) }\n}\n";
         let mut sources = Sources::default();
         let mut mounts = Mounts::default();
         sources.change(&i18n.join("en.toml"), "title = \"Title\"\n".into());

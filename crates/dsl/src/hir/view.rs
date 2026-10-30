@@ -57,10 +57,10 @@ use crate::behavior::lower::{
     unsupported_with,
 };
 use crate::behavior::{FunctionKind, Site};
-use crate::diag::{Diagnostic, Related, Severity};
+use crate::diag::{Applicability, Diagnostic, Fix, Related, Severity, TextEdit};
 use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId, SymbolKind};
-use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
+use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize};
 
 /// One `input` of a user component, as a property of its nodes.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +71,8 @@ pub(crate) struct InputProp {
     pub(crate) two_way: bool,
     /// Whether `@styleable` lets a style bind it.
     pub(crate) styleable: bool,
+    /// Whether `@primary` makes it the property `Component(value)` binds.
+    pub(crate) primary: bool,
     pub(crate) declared_at: TextRange,
     /// The input's member symbol, which references to it in its component resolve to.
     pub(crate) symbol: Option<SymbolId>,
@@ -377,21 +379,32 @@ impl Owner<'_> {
     /// control's value or range, a label's text, or its look; one its
     /// list reads of it as a row, its `list.full_line`; or a Rust widget's
     /// own property, which its implementation takes.
-    fn reads_control(&self, path: &PropertyPath) -> bool {
-        let name = path_text(path);
+    fn reads_control(&self, name: &str) -> bool {
         let widget = self.schema.native();
         self.component.is_none()
-            && (ControlKind::of(&self.name).input(&name).is_some()
+            && (ControlKind::of(&self.name).input(name).is_some()
                 || name == "list.full_line"
-                || (widget.is_rust() && widget.own_property(&name).is_some()))
+                || (widget.is_rust() && widget.own_property(name).is_some()))
     }
 
     /// Whether `path` is a layout property a native node sets from its value
     /// when the value is no constant: its own, or that of a component's view
     /// root it is forwarded to.
-    fn reads_layout(&self, path: &PropertyPath) -> bool {
-        let name = path_text(path);
-        LayoutSlot::of(&name).is_some() && !self.inputs.iter().any(|i| i.name == name)
+    fn reads_layout(&self, name: &str) -> bool {
+        LayoutSlot::of(name).is_some() && !self.inputs.iter().any(|i| i.name == name)
+    }
+
+    /// The property `Type(value)` binds: a component's `@primary` input, else
+    /// the widget's primary property.
+    fn primary(&self) -> Option<&str> {
+        match self.component {
+            Some(_) => self
+                .inputs
+                .iter()
+                .find(|i| i.primary)
+                .map(|i| i.name.as_str()),
+            None => self.schema.native().primary().map(|p| p.name),
+        }
     }
 
     /// Whether this is a `SlotOutlet`.
@@ -591,9 +604,15 @@ impl<'a> ViewWalk<'a> {
         let mut bound: HashMap<String, TextRange> = HashMap::new();
         for item in items {
             match item {
-                ViewItem::Named(node) => self.node(node.ty(), node.body(), scope.inner),
-                ViewItem::Anonymous(node) => self.node(node.ty(), node.body(), scope.inner),
-                ViewItem::Part(part) => self.node(part.ty(), part.body(), scope.inner),
+                ViewItem::Named(node) => {
+                    self.node(node.ty(), node.primary(), node.body(), scope.inner)
+                }
+                ViewItem::Anonymous(node) => {
+                    self.node(node.ty(), node.primary(), node.body(), scope.inner)
+                }
+                ViewItem::Part(part) => {
+                    self.node(part.ty(), part.primary(), part.body(), scope.inner)
+                }
                 ViewItem::Use(template) => self.template_use(&template, scope.inner),
                 ViewItem::Override(o) => self.part_override(&o, scope.owner),
                 ViewItem::Replace(r) => self.part_replace(&r, scope.owner),
@@ -619,8 +638,14 @@ impl<'a> ViewWalk<'a> {
         }
     }
 
-    /// A node whose parent is `parent`.
-    fn node(&mut self, ty: Option<TypePath>, body: Option<NodeBody>, parent: Parent<'_>) {
+    /// A node whose parent is `parent`, with its `( value )` `primary`.
+    fn node(
+        &mut self,
+        ty: Option<TypePath>,
+        primary: Option<PropertyBinding>,
+        body: Option<NodeBody>,
+        parent: Parent<'_>,
+    ) {
         let at = ty.as_ref().map(|ty| ty.syntax().text_range());
         let owner = ty.and_then(|ty| self.owner_of(&ty));
         if let (Some(owner), Some(at)) = (&owner, at)
@@ -645,9 +670,9 @@ impl<'a> ViewWalk<'a> {
             }
             self.slots(owner, body.as_ref(), at);
         }
-        let Some(body) = body else {
+        if body.is_none() && primary.is_none() {
             return;
-        };
+        }
         let inner = match &owner {
             Some(owner) if owner.schema.is_fragment() => parent,
             Some(owner) if owner.component.is_some() => Parent::Unknown,
@@ -662,17 +687,25 @@ impl<'a> ViewWalk<'a> {
             outer: parent,
             inner,
         };
-        self.items(body.members(), scope);
+        let members: Vec<ViewItem> = primary
+            .map(ViewItem::Property)
+            .into_iter()
+            .chain(body.iter().flat_map(|b| b.members()))
+            .collect();
+        self.items(members.iter().cloned(), scope);
+        let Some(body) = body else {
+            return;
+        };
         if let (Some(owner), Some(at)) = (&owner, at)
             && let Some(component) = owner.component
         {
-            self.styled(owner, &body);
+            self.styled(owner, &members);
             self.forwarded_access(component, at, &body);
         }
         if let Some(owner) = &owner
             && owner.component.is_none()
         {
-            self.styled(owner, &body);
+            self.styled(owner, &members);
             if !owner.schema.native().interactive
                 && let Some(at) = at
             {
@@ -742,12 +775,11 @@ impl<'a> ViewWalk<'a> {
     /// `body`) have the runtime evaluate, at its part of the node's styles.
     /// The style declaration reports what is wrong with a value; typing it
     /// here again only decides whether it lowers.
-    fn styled(&mut self, owner: &Owner<'a>, body: &NodeBody) {
+    fn styled(&mut self, owner: &Owner<'a>, members: &[ViewItem]) {
         let Some((books, module)) = self.env.styles() else {
             return;
         };
-        let members: Vec<ViewItem> = body.members().collect();
-        let Some(value) = styles_of(&members) else {
+        let Some(value) = styles_of(members) else {
             return;
         };
         let Ok(uses) = style::uses(books, module, &value) else {
@@ -757,7 +789,7 @@ impl<'a> ViewWalk<'a> {
         if list.is_empty() {
             return;
         }
-        let own = style::own_bindings(&members);
+        let own = style::own_bindings(members, owner.primary());
         let parts = match owner.component {
             Some(component) => {
                 let selectors = self.env.component_selectors(component);
@@ -1734,9 +1766,23 @@ impl<'a> ViewWalk<'a> {
         bound: &mut HashMap<String, TextRange>,
     ) {
         let errors = self.error_count();
-        let declared = binding
-            .path()
-            .and_then(|path| self.declared(&path, scope, bound));
+        // The bound property's name: the path's, or the primary property's.
+        let name = match binding.path() {
+            Some(path) => Some(path_text(&path)),
+            None => scope.owner.and_then(Owner::primary).map(str::to_owned),
+        };
+        let declared = match binding.path() {
+            // A body binding of a primary the node's `( value )` binds already
+            // is only misplaced.
+            Some(path)
+                if self.misplaced_primary(binding, &path, scope)
+                    && bound.contains_key(&path_text(&path)) =>
+            {
+                None
+            }
+            Some(path) => self.declared(&path, scope, bound),
+            None => self.primary_declared(binding, scope, bound),
+        };
         let Some(value) = binding.value() else {
             return;
         };
@@ -1759,13 +1805,13 @@ impl<'a> ViewWalk<'a> {
             Some(want) => self.cx.infer_promoted(&value, want),
             None => self.cx.infer_expr(&value, None),
         };
-        if let (Some(declared), Some(path)) = (&declared, binding.path())
+        if let (Some(declared), Some(name)) = (&declared, &name)
             && declared.localizable
         {
             let strict = self.env.profile().i18n_strict;
             let cx = &self.cx;
             access::check_text(
-                &path_text(&path),
+                name,
                 &value,
                 &|e| cx.type_of(e).cloned(),
                 strict,
@@ -1791,17 +1837,17 @@ impl<'a> ViewWalk<'a> {
             self.diagnostics
                 .push(Diagnostic::error("E3703", at, message));
         }
-        let (Some(declared), Some(path)) = (&declared, binding.path()) else {
+        let (Some(declared), Some(name)) = (&declared, name) else {
             return;
         };
         if matches!(declared.basis, Basis::Input(_)) {
             // The inlined component reads its input through this argument.
             self.region_entry(errors, "arg", at, &RegionEntry::Value(&value));
         }
-        if scope.owner.is_some_and(|owner| owner.reads_control(&path)) {
+        if scope.owner.is_some_and(|owner| owner.reads_control(&name)) {
             // The native node reads its current value or range here.
             self.region_entry(errors, "value", at, &RegionEntry::Value(&value));
-        } else if scope.owner.is_some_and(|owner| owner.reads_layout(&path))
+        } else if scope.owner.is_some_and(|owner| owner.reads_layout(&name))
             && !self.folds(value.syntax())
         {
             // The node lays out by the value as it changes.
@@ -1810,7 +1856,7 @@ impl<'a> ViewWalk<'a> {
         let to = match declared.basis {
             Basis::Yes => return,
             Basis::No if !holds_length(declared.ty.as_ref()) => return,
-            Basis::No => SinkTo::Unbased(path_text(&path)),
+            Basis::No => SinkTo::Unbased(name),
             Basis::Input(key) => SinkTo::Input(key),
         };
         let carry = self.cx.carry(value.syntax());
@@ -1880,7 +1926,7 @@ impl<'a> ViewWalk<'a> {
         {
             // The native widget's change event writes the source; a control
             // reads the source as its current value.
-            let reads = owner.reads_control(&path);
+            let reads = owner.reads_control(&path_text(&path));
             let whole = owner.schema.native().is_rust();
             self.write_back(errors, binding, &lens, reads, converter.as_ref(), whole);
         }
@@ -1924,8 +1970,87 @@ impl<'a> ViewWalk<'a> {
         scope: Scope<'_, 'a>,
         bound: &mut HashMap<String, TextRange>,
     ) -> Option<Declared> {
-        let text = path_text(path);
-        let range = path.syntax().text_range();
+        let segments: Vec<String> = path
+            .segments()
+            .map(|t| t.text().trim_start_matches("r#").to_string())
+            .collect();
+        self.declared_named(
+            &segments,
+            path_text(path),
+            path.syntax().text_range(),
+            scope,
+            bound,
+        )
+    }
+
+    /// A node's `( value )`: the primary property of its type, which one
+    /// without any reports (`E3101`).
+    fn primary_declared(
+        &mut self,
+        binding: &PropertyBinding,
+        scope: Scope<'_, 'a>,
+        bound: &mut HashMap<String, TextRange>,
+    ) -> Option<Declared> {
+        let owner = scope.owner?;
+        let range = binding.syntax().text_range();
+        let Some(name) = owner.primary().map(str::to_owned) else {
+            self.diagnostics.push(Diagnostic::error(
+                "E3101",
+                range,
+                format!(
+                    "`{}` has no primary property, so it takes no `( value )`; bind the property by name in its body",
+                    owner.name
+                ),
+            ));
+            return None;
+        };
+        self.declared_named(&[name.clone()], name, range, scope, bound)
+    }
+
+    /// A body binding of the node's primary property, which is written
+    /// `Type(value)` instead (`E3109`, with the rewrite as its fix).
+    fn misplaced_primary(
+        &mut self,
+        binding: &PropertyBinding,
+        path: &PropertyPath,
+        scope: Scope<'_, 'a>,
+    ) -> bool {
+        let Some(primary) = scope.owner.and_then(Owner::primary) else {
+            return false;
+        };
+        let in_body = binding
+            .syntax()
+            .parent()
+            .is_some_and(|p| p.kind() == SyntaxKind::NodeBody);
+        if path_text(path) != primary || !in_body {
+            return false;
+        }
+        let mut diagnostic = Diagnostic::error(
+            "E3109",
+            path.syntax().text_range(),
+            format!(
+                "`{primary}` is the primary property of `{}`: write it `{}(value)`",
+                scope.owner.map_or("", |o| o.name.as_str()),
+                scope.owner.map_or("", |o| o.name.as_str()),
+            ),
+        );
+        if let Some(fix) = primary_fix(binding) {
+            diagnostic.fixes.push(fix);
+        }
+        self.diagnostics.push(diagnostic);
+        true
+    }
+
+    /// Records a binding of the property `text` (its `segments`, at `range`)
+    /// and looks it up, as [`declared`](Self::declared).
+    fn declared_named(
+        &mut self,
+        segments: &[String],
+        text: String,
+        range: TextRange,
+        scope: Scope<'_, 'a>,
+        bound: &mut HashMap<String, TextRange>,
+    ) -> Option<Declared> {
         if let Some(first) = bound.get(&text) {
             let mut diagnostic = Diagnostic::error(
                 "E3102",
@@ -1940,18 +2065,14 @@ impl<'a> ViewWalk<'a> {
             bound.insert(text.clone(), range);
         }
 
-        let segments: Vec<String> = path
-            .segments()
-            .map(|t| t.text().trim_start_matches("r#").to_string())
-            .collect();
-        if let [prefix, members @ ..] = segments.as_slice()
+        if let [prefix, members @ ..] = segments
             && !members.is_empty()
             && let Some(group) = widget::child_props(self.env.widgets(), prefix)
         {
             return self.provided(group, members, &text, range, scope.outer);
         }
         let owner = scope.owner?;
-        if let [name] = segments.as_slice()
+        if let [name] = segments
             && let Some(index) = owner.inputs.iter().position(|i| i.name == *name)
         {
             let input = &owner.inputs[index];
@@ -2430,6 +2551,63 @@ fn is_transition(path: &PropertyPath) -> bool {
 }
 
 /// The dotted source text of a property path.
+/// The rewrite of `binding`, a body binding of its node's primary property,
+/// to the node's `( value )`: `Text(x)` becomes `Text(x)`.
+fn primary_fix(binding: &PropertyBinding) -> Option<Fix> {
+    let value = binding.value()?;
+    let body = binding
+        .syntax()
+        .parent()
+        .filter(|b| b.kind() == SyntaxKind::NodeBody)?;
+    let node = body.parent()?;
+    let children = node.children();
+    if children
+        .iter()
+        .any(|c| c.kind() == SyntaxKind::PrimaryArgument)
+    {
+        return None;
+    }
+    let ty = children.iter().find(|c| c.kind() == SyntaxKind::TypePath)?;
+    let argument = format!("({})", value.syntax().text());
+    let (start, end) = (ty.text_range().end(), body.text_range().end());
+    let text = body.text();
+    let base = body.text_range().start();
+    let local = |at: TextSize| (at - base).to_u32() as usize;
+    let range = binding.syntax().text_range();
+    let (from, to) = (local(range.start()), local(range.end()));
+    let rest = format!("{}{}", &text[..from], &text[to..]);
+    let edits = if rest
+        .chars()
+        .all(|c| c.is_whitespace() || matches!(c, '{' | '}' | ';'))
+    {
+        // The binding is all the body holds.
+        vec![TextEdit::new(TextRange::new(start, end), argument)]
+    } else {
+        let before = text[..from].trim_end_matches([' ', '\t']);
+        let mut to = to;
+        let from = if before.ends_with('\n') {
+            // Its own line goes, from the break before it.
+            before.len() - 1
+        } else {
+            // One of several on a line: it goes with the `;` and spaces after it.
+            let after = &text[to..];
+            let trimmed = after.trim_start_matches(';').trim_start_matches(' ');
+            to += after.len() - trimmed.len();
+            from
+        };
+        let at = |i: usize| base + TextSize::new(i as u32);
+        vec![
+            TextEdit::new(TextRange::empty(start), argument),
+            TextEdit::new(TextRange::new(at(from), at(to)), ""),
+        ]
+    };
+    Some(Fix {
+        title: "write the primary property as `Type(value)`".to_string(),
+        applicability: Applicability::MachineApplicable,
+        edits,
+    })
+}
+
 fn path_text(path: &PropertyPath) -> String {
     path.segments()
         .map(|t| t.text().trim_start_matches("r#").to_string())

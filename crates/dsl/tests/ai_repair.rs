@@ -119,7 +119,7 @@ export component Counter {
     state count = 0;
     view {
         Column {
-            child Text { width: 20dp; height: 20dp; text: "Add"; on click => count += 1; }
+            child Text("Add") { width: 20dp; height: 20dp; on click => count += 1 }
         }
     }
 }
@@ -139,7 +139,7 @@ export component Switch {
     state on = false;
     view {
         Column {
-            Text { width: 20dp; heigth: 20dp; text: "Toggle"; on clik { on = !on; } }
+            Text("Toggle") { width: 20dp; heigth: 20dp; on clik { on = !on; } }
         }
     }
 }
@@ -158,7 +158,7 @@ export component Clicks {
     state count = 0;
     view {
         Column {
-            Text { width: 20dp; height: 20dp; text: count; on click { count += 1; } }
+            Text(count) { width: 20dp; height: 20dp; on click { count += 1; } }
         }
     }
 }
@@ -180,7 +180,7 @@ export component Scaled {
     state total = 0.0;
     view {
         Column {
-            Text { width: 20dp; height: 20dp; text: "Add"; on click { total = total + count * scale; } }
+            Text("Add") { width: 20dp; height: 20dp; on click { total = total + count * scale; } }
         }
     }
 }
@@ -203,9 +203,9 @@ export component Names {
     }
     view {
         Column {
-            Text { width: 20dp; height: 20dp; text: "Add"; on click { add(); } }
+            Text("Add") { width: 20dp; height: 20dp; on click { add(); } }
             for name in names key name {
-                Text { text: name; }
+                Text(name)
             }
         }
     }
@@ -228,7 +228,7 @@ export component Mover {
     state seen = 0;
     view {
         Column {
-            Text { width: 20dp; height: 20dp; text: "Move"; on click { at = Point { x: at?.x + 1, y: at.y }; seen = at.x; } }
+            Text("Move") { width: 20dp; height: 20dp; on click { at = Point { x: at?.x + 1, y: at.y }; seen = at.x; } }
         }
     }
 }

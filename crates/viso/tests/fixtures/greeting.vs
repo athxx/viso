@@ -4,7 +4,7 @@ component Greeting {
 
     view {
         Column {
-            node line: Text { text: "{count} x hello, {name}" }
+            node line: Text("{count} x hello, {name}")
         }
     }
 }

@@ -438,9 +438,9 @@ pub enum SyntaxKind {
     ViewDecl,
     /// A `"{" ViewStructureItem* "}"` view block.
     ViewBlock,
-    /// `node IDENT ":" ComponentType NodeBody`.
+    /// `node IDENT ":" ComponentType PrimaryArgument? NodeBody?`.
     NamedNode,
-    /// `ComponentType NodeBody` — an anonymous child node.
+    /// `ComponentType PrimaryArgument? NodeBody?` — an anonymous child node.
     AnonymousNode,
     /// `part IDENT ":" ComponentType NodeBody`.
     PartNode,
@@ -452,6 +452,8 @@ pub enum SyntaxKind {
     PartReplace,
     /// A `"{" NodeMember* "}"` node body.
     NodeBody,
+    /// `"(" Expr ")"` after a node's type: the value of its primary property.
+    PrimaryArgument,
     /// `PropertyPath ":" Expr ";"` — a property binding.
     PropertyBinding,
     /// An `IDENT ("." IDENT)*` property path.
@@ -893,6 +895,7 @@ impl SyntaxKind {
             Self::PartOverride => "PartOverride",
             Self::PartReplace => "PartReplace",
             Self::NodeBody => "NodeBody",
+            Self::PrimaryArgument => "PrimaryArgument",
             Self::PropertyBinding => "PropertyBinding",
             Self::PropertyPath => "PropertyPath",
             Self::TwoWayBinding => "TwoWayBinding",

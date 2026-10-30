@@ -152,12 +152,13 @@ const ROWS: &[Row] = &[
     // A.7 View
     row("ViewDecl", C, "view { Text {} }", "view Text {}", &["E1402", "E1403"]),
     row("ViewBlock", C, "view { }", "view { Text {}", &["E1401"]),
-    row("ViewStructureItem", F, "@a Text {} node n: Text {} part p: Text {} if a { } for x in xs key x { } match m { _ => { } } use T(1);", "x = 1;", &["E1401", "E1403", "E1404"]),
-    row("NamedNode", F, "node n: Text { }", "node n Text { }", &["E1401", "E1404"]),
-    row("AnonymousNode", F, "Text { }", "Text", &["E1401", "E1404"]),
-    row("PartNode", F, "part p: Text { }", "part p Text { }", &["E1401", "E1404"]),
+    row("ViewStructureItem", F, "@a Text {} node n: Text {} part p: Text {} if a { } for x in xs key x { } match m { _ => { } } use T(1);", "x = 1;", &["E1403", "E1404"]),
+    row("NamedNode", F, "node n: Text(a) { }", "node n Text { }", &["E1404"]),
+    row("AnonymousNode", F, "Text(a) { }", "Text { ", &["E1401"]),
+    row("PartNode", F, "part p: Text(a) { }", "part p Text { }", &["E1404"]),
     row("ComponentType", F, "a::Card<I64> { }", "a:: { }", &["E1404"]),
-    row("NodeBody", F, "Text { text: a; }", "Text { text: a;", &["E1401"]),
+    row("PrimaryArgument", F, "Text(a)", "Text(a", &["E1401"]),
+    row("NodeBody", F, "Text { color: a; }", "Text { color: a;", &["E1401"]),
     row("NodeMember", N, "@a text: a; bind v <=> s; on click { } fill f { } node n: T {} T {} part p: T {} if a { } for x in xs key x { } match m { _ => { } } use U(); override part p { } replace part q { }", "let x = 1;", &["E1403", "E1404", "E1405"]),
     row("PropertyBinding", N, "text: a;", "text = a;", &["E1404", "E1405"]),
     row("PropertyPath", N, "style.type.x: 1;", "style.: 1;", &["E1404"]),
@@ -386,7 +387,7 @@ fn a_reserved_production_parses_but_does_not_compile() {
         let row = ROWS.iter().find(|r| r.production == production).unwrap();
         assert_eq!(row.entry, U, "{production}: a compilation unit");
         let source = format!(
-            "{}\ncomponent Main {{ view {{ Text {{ text: \"\"; }} }} }}\n",
+            "{}\ncomponent Main {{ view {{ Text(\"\") }} }}\n",
             row.positive
         );
         let compiled = compile_file(&source, &origin);

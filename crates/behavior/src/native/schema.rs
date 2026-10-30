@@ -283,6 +283,8 @@ fn widget(widget: &NativeWidget) -> String {
         w.bool(p.styleable);
         w.name("localizable");
         w.bool(p.localizable);
+        w.name("primary");
+        w.bool(p.primary);
         w.end_object();
     }
     w.end_array();
@@ -493,6 +495,7 @@ fn read_widget(json: &JsonValue) -> Result<NativeWidget, String> {
                 percent_basis: flag(p, "percent_basis")?,
                 styleable: flag(p, "styleable")?,
                 localizable: flag(p, "localizable")?,
+                primary: flag(p, "primary")?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

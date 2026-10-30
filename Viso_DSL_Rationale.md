@@ -41,12 +41,9 @@ export component Counter {
     view {
         Window {
             Column {
-                Text {
-                    text: label
-                }
+                Text(label)
 
-                node add_button: Button {
-                    text: "Add"
+                node add_button: Button("Add") {
                     on click {
                         count += 1
                     }

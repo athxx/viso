@@ -148,7 +148,7 @@ viso::component! {
         state count = 0;
         view {
             Column {
-                Text { text: "{count}"; }
+                Text("{count}")
             }
         }
     }
@@ -239,8 +239,8 @@ viso::component! {
             Column {
                 width: 200dp;
                 height: 100dp;
-                Text { text: "hello"; }
-                RadioGroup { Text { text: "one"; } }
+                Text("hello")
+                RadioGroup { Text("one") }
             }
         }
     }

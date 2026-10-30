@@ -178,7 +178,7 @@ language = "1.0"
 const café = 2;
 
 component Menu {
-    view { Text { text: "menu"; } }
+    view { Text("menu") }
 }
 "#,
         ),
@@ -207,7 +207,7 @@ const cafe_count = 2;
         example: Example::Source(
             r#"component Checkout {
     state pаy = 0;
-    view { Text { text: "checkout"; } }
+    view { Text("checkout") }
 }
 "#,
         ),
@@ -233,7 +233,7 @@ const cafe_count = 2;
         example: Example::Source(
             r#"component Greeting {
     state message = "hello;
-    view { Text { text: message; } }
+    view { Text(message) }
 }
 "#,
         ),
@@ -258,7 +258,7 @@ const cafe_count = 2;
             r#"component Notes {
     /* draft notes
     state count = 0;
-    view { Text { text: "notes"; } }
+    view { Text("notes") }
 }
 "#,
         ),
@@ -284,7 +284,7 @@ state count = 0;
         example: Example::Source(
             r#"component Spacer {
     state gap = 1e2dp;
-    view { Text { text: "spacer"; } }
+    view { Text("spacer") }
 }
 "#,
         ),
@@ -312,7 +312,7 @@ state count = 0;
         example: Example::Source(
             r#"component Title {
     view {
-        Text { text: "title"; font_size: 12pt; }
+        Text("title") { font_size: 12pt }
     }
 }
 "#,
@@ -320,7 +320,7 @@ state count = 0;
         fix: "Use one of the supported unit suffixes (for font sizes usually `sp`), or construct \
             a custom quantity with a function or newtype instead of a suffix.",
         fixed: Some(
-            r#"Text { text: "title"; font_size: 12sp; }
+            r#"Text("title") { font_size: 12sp }
 "#,
         ),
         commands: &[],
@@ -339,7 +339,7 @@ state count = 0;
         example: Example::Source(
             r#"component Path {
     state label = "C:\qtemp";
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 "#,
         ),
@@ -364,7 +364,7 @@ state count = 0;
         example: Example::Source(
             r#"component Budget {
     state limit = 1__000;
-    view { Text { text: "budget"; } }
+    view { Text("budget") }
 }
 "#,
         ),
@@ -388,14 +388,14 @@ state count = 0;
         example: Example::Source(
             r#"component Badge {
     view {
-        Text { text: "new"; color: #12345; }
+        Text("new") { color: #12345 }
     }
 }
 "#,
         ),
         fix: "Write the color with 3, 4, 6 or 8 hex digits.",
         fixed: Some(
-            r#"Text { text: "new"; color: #123456; }
+            r#"Text("new") { color: #123456 }
 "#,
         ),
         commands: &[],
@@ -412,7 +412,7 @@ state count = 0;
         example: Example::Source(
             r#"component Initial {
     state initial = 'ab';
-    view { Text { text: "initial"; } }
+    view { Text("initial") }
 }
 "#,
         ),
@@ -437,7 +437,7 @@ state count = 0;
         example: Example::Source(
             r#"component Shop {
     state price = 0;
-    view { Text { text: "shop"; } }
+    view { Text("shop") }
     ¡
 }
 "#,
@@ -458,7 +458,7 @@ state count = 0;
             255 `#` exceeds the format's limit and is rejected. In practice one or two `#` are \
             always enough to enclose any text.",
         example: Example::Source(
-            "component Banner {\n    state art = r################################################################################################################################################################################################################################################################\"x\"################################################################################################################################################################################################################################################################;\n    view { Text { text: \"banner\"; } }\n}\n",
+            "component Banner {\n    state art = r################################################################################################################################################################################################################################################################\"x\"################################################################################################################################################################################################################################################################;\n    view { Text(\"banner\") }\n}\n",
         ),
         fix: "Use the smallest number of `#` that does not appear after a quote inside the text, \
             usually one.",
@@ -486,7 +486,7 @@ state count = 0;
     action run_query() {
         let match = 1;
     }
-    view { Text { text: "search"; } }
+    view { Text("search") }
 }
 "#,
         ),
@@ -510,7 +510,7 @@ state count = 0;
         example: Example::Source(
             r#"component Total {
     state total = 0;
-    view { Text { text: "total"; } }
+    view { Text("total") }
 "#,
         ),
         fix: "Add the missing closing delimiter where the construct ends (here, the `}` that \
@@ -529,7 +529,7 @@ state count = 0;
             component.",
         example: Example::Source(
             r#"component Panel {
-    view { Text { text: "panel"; } }
+    view { Text("panel") }
 }
 }
 "#,
@@ -551,7 +551,7 @@ state count = 0;
         example: Example::Source(
             r#"component Card {
     %
-    view { Text { text: "card"; } }
+    view { Text("card") }
 }
 "#,
         ),
@@ -574,7 +574,7 @@ state count = 0;
             r#"type Id I64
 
 component Profile {
-    view { Text { text: "profile" } }
+    view { Text("profile") }
 }
 "#,
         ),
@@ -597,7 +597,7 @@ component Profile {
         example: Example::Source(
             r#"component Sum {
     state total = 1 +;
-    view { Text { text: "sum"; } }
+    view { Text("sum") }
 }
 "#,
         ),
@@ -623,7 +623,7 @@ component Profile {
 // written with 257 nested parentheses:
 component Deep {
     state n = ((((((((/* ...257 levels in total... */ 1))))))));
-    view { Text { text: "deep"; } }
+    view { Text("deep") }
 }
 "#,
         ),
@@ -670,7 +670,7 @@ const TABLE: List<I64> = [0, 1, 2, 3, /* ...over a million more... */];
     action increment() {
         count = cuont + 1;
     }
-    view { Text { text: "counter"; } }
+    view { Text("counter") }
 }
 "#,
         ),
@@ -697,7 +697,7 @@ const TABLE: List<I64> = [0, 1, 2, 3, /* ...over a million more... */];
             r#"component Counter {
     state count = 0;
     state count = 1;
-    view { Text { text: "counter"; } }
+    view { Text("counter") }
 }
 "#,
         ),
@@ -725,7 +725,7 @@ state total = 1;
 theme Night: Dark {}
 
 component Screen {
-    view { Text { text: "screen"; } }
+    view { Text("screen") }
 }
 "#,
         ),
@@ -751,7 +751,7 @@ component Screen {
     action load() {
         let items = decode<I64>("1");
     }
-    view { Text { text: "loader"; } }
+    view { Text("loader") }
 }
 "#,
         ),
@@ -784,7 +784,7 @@ component Screen {
             from the file that declares it.",
         fixed: Some(
             r#"component App {
-    view { Text { text: "app"; } }
+    view { Text("app") }
 }
 "#,
         ),
@@ -802,7 +802,7 @@ component Screen {
             total, makes the entry point unambiguous.",
         example: Example::Source(
             r#"component Header {
-    view { Text { text: "header"; } }
+    view { Text("header") }
 }
 
 component Page {
@@ -834,7 +834,7 @@ component Page {
         example: Example::Source(
             r#"component Gauge {
     state level: Float = 0.5;
-    view { Text { text: "gauge"; } }
+    view { Text("gauge") }
 }
 "#,
         ),
@@ -860,7 +860,7 @@ component Page {
             r#"component Counter {
     state n: I64 = 3;
     fn half() -> F64 { n }
-    view { Text { text: "counter"; } }
+    view { Text("counter") }
 }
 "#,
         ),
@@ -885,7 +885,7 @@ component Page {
         example: Example::Source(
             r#"component A {
     state n: I64 = "x";
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -911,7 +911,7 @@ component Page {
             r#"component A {
     state total = count * 2;
     state count = 1;
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -938,7 +938,7 @@ state total = count * 2;
             r#"component A {
     computed a: I64 = b + 1;
     computed b: I64 = a;
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -965,7 +965,7 @@ computed b: I64 = base;
         example: Example::Source(
             r#"component A {
     fn gap() -> Dp { 10dp + 5px }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -990,7 +990,7 @@ computed b: I64 = base;
         example: Example::Source(
             r#"component A {
     fn narrow() -> Bool { (100% - 8dp) < 200dp }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1019,14 +1019,14 @@ computed b: I64 = base;
 
 component A {
     state at = Point { x: 1, y: 2 }
-    view { Text { text: "at {at} {}" } }
+    view { Text("at {at} {}") }
 }
 "#,
         ),
         fix: "Show a displayable value in each hole, such as a field of the record, and put \
             something in every hole.",
         fixed: Some(
-            r#"    view { Text { text: "at {at.x}, {at.y}" } }
+            r#"    view { Text("at {at.x}, {at.y}") }
 "#,
         ),
         commands: &[],
@@ -1044,7 +1044,7 @@ component A {
         example: Example::Source(
             r#"component A {
     fn cell() -> Dp { 8dp / (1 - 1) }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1070,7 +1070,7 @@ component A {
             r#"component A {
     input limit: I64;
     action reset() { limit = 0; }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1099,7 +1099,7 @@ action reset() { limit = 0; }
         example: Example::Source(
             r#"component A {
     state scale = env.text_scale;
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1107,7 +1107,7 @@ action reset() { limit = 0; }
             that needs it.",
         fixed: Some(
             r#"fn scaled(scale: F32) -> F32 { scale * 2.0 }
-view { Text { text: "{scaled(env.text_scale)}"; } }
+view { Text("{scaled(env.text_scale)}") }
 "#,
         ),
         commands: &[],
@@ -1163,7 +1163,7 @@ fn total<T: Shape>(x: T) -> I64 { return x.area(); }
 component A {
     state n = 0;
     action go() { n = total(1); }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1198,7 +1198,7 @@ impl Shape for Square { fn area(self) -> I64 { return self.side * self.side; } }
 impl Shape for Square { fn area(self) -> I64 { return 0; } }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1229,7 +1229,7 @@ fn grow<T>(x: T, n: I64) -> I64 {
 component A {
     state k = 0;
     action go() { k = grow(1, 3); }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1255,7 +1255,7 @@ component A {
     state tab = Tab::Home;
     view {
         match tab {
-            Tab::Home => { Text { text: "home"; } },
+            Tab::Home => { Text("home") },
         }
     }
 }
@@ -1265,8 +1265,8 @@ component A {
             result.",
         fixed: Some(
             r#"match tab {
-    Tab::Home => { Text { text: "home"; } },
-    Tab::Settings => { Text { text: "settings"; } },
+    Tab::Home => { Text("home") },
+    Tab::Settings => { Text("settings") },
 }
 "#,
         ),
@@ -1292,7 +1292,7 @@ fn size(s: Shape) -> I64 {
 }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1322,7 +1322,7 @@ component A {
         let Some(x) = o;
         x
     }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1353,7 +1353,7 @@ component A {
     fn make() {
         let same = |x| x;
     }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1380,7 +1380,7 @@ let same: Fn(I64) -> I64 = |x| x;
             r#"component A {
     state n: I64 = 0;
     fn bump() { n += 1; }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1406,7 +1406,7 @@ let same: Fn(I64) -> I64 = |x| x;
             r#"component A {
     state n: I64 = 0;
     computed doubled: I64 = { n = 2; n * 2 };
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1435,7 +1435,7 @@ let same: Fn(I64) -> I64 = |x| x;
 fn load() -> String requires { timer } { fetch("https://example.com") }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1463,7 +1463,7 @@ component A {
     state xs = [1.5, 2.5];
     view {
         Column {
-            for x in xs key x { Text { text: "row"; } }
+            for x in xs key x { Text("row") }
         }
     }
 }
@@ -1474,7 +1474,7 @@ component A {
         fixed: Some(
             r#"record Row { id: I64; value: F64; }
 state xs = [Row { id: 1, value: 1.5 }];
-for x in xs key x.id { Text { text: "row"; } }
+for x in xs key x.id { Text("row") }
 "#,
         ),
         commands: &[],
@@ -1498,7 +1498,7 @@ for x in xs key x.id { Text { text: "row"; } }
         state rows = [Row { id: 1, name: "a" }, Row { id: 1, name: "b" }];
         view {
             Column {
-                for row in rows key row.id { Text { text: row.name; } }
+                for row in rows key row.id { Text(row.name) }
             }
         }
     }
@@ -1529,7 +1529,7 @@ fn check() -> Bool {
 }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1553,7 +1553,7 @@ component A {
             r#"fn between(a: I64, b: I64, c: I64) -> Bool { a < b < c }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1578,7 +1578,7 @@ component A {
         example: Example::Source(
             r#"component A {
     fn stop() { break; }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -1605,7 +1605,7 @@ component A {
             r#"component A {
     view {
         Column {
-            child Text { text: "a"; }
+            child Text("a")
         }
     }
 }
@@ -1616,7 +1616,7 @@ component A {
             that removes the word.",
         fixed: Some(
             r#"Column {
-    Text { text: "a"; }
+    Text("a")
 }
 "#,
         ),
@@ -1636,8 +1636,8 @@ component A {
         example: Example::Text(
             r#"// Rust: a `ui!` fragment must generate exactly one root node.
 let fragment = ui! {
-    Text { text: "Title"; }
-    Text { text: "Subtitle"; }
+    Text("Title")
+    Text("Subtitle")
 };
 "#,
         ),
@@ -1646,8 +1646,8 @@ let fragment = ui! {
         fixed: Some(
             r#"let fragment = ui! {
     Column {
-        Text { text: "Title"; }
-        Text { text: "Subtitle"; }
+        Text("Title")
+        Text("Subtitle")
     }
 };
 "#,
@@ -1670,9 +1670,8 @@ let fragment = ui! {
             r#"component A {
     view {
         Column {
-            Text {
-                text: "Title";
-                Text { text: "Subtitle"; }
+            Text("Title") {
+                Text("Subtitle")
             }
         }
     }
@@ -1684,8 +1683,8 @@ let fragment = ui! {
             mark one of its slots `@default`.",
         fixed: Some(
             r#"Column {
-    Text { text: "Title"; }
-    Text { text: "Subtitle"; }
+    Text("Title")
+    Text("Subtitle")
 }
 "#,
         ),
@@ -1745,7 +1744,7 @@ slot body: SlotList<Node> = empty;
         example: Example::Source(
             r#"component A {
     view {
-        Text { text: "a"; opacty: 0.5; }
+        Text("a") { opacty: 0.5 }
     }
 }
 "#,
@@ -1753,7 +1752,7 @@ slot body: SlotList<Node> = empty;
         fix: "Use a property the schema declares (often the suggested spelling); query the \
             schema to see every property of the type.",
         fixed: Some(
-            r#"Text { text: "a"; opacity: 0.5; }
+            r#"Text("a") { opacity: 0.5 }
 "#,
         ),
         commands: &["viso schema <Component>", "viso schema <Component> --json"],
@@ -1771,7 +1770,7 @@ slot body: SlotList<Node> = empty;
         example: Example::Source(
             r#"component A {
     view {
-        Text { text: "a"; text: "b"; }
+        Text("a") { opacity: 0.5; opacity: 1.0 }
     }
 }
 "#,
@@ -1779,7 +1778,7 @@ slot body: SlotList<Node> = empty;
         fix: "Keep a single binding for the property; to choose between values, put the choice \
             in the expression.",
         fixed: Some(
-            r#"Text { text: if wide { "long label" } else { "a" }; }
+            r#"Text("a") { opacity: if dim { 0.5 } else { 1.0 } }
 "#,
         ),
         commands: &[],
@@ -1808,7 +1807,7 @@ slot body: SlotList<Node> = empty;
         fix: "Bind the property one way with `:`; for a component input, mark it \
             `@bindable(event)` if the component should write it back.",
         fixed: Some(
-            r#"Text { text: label; }
+            r#"Text(label)
 "#,
         ),
         commands: &["viso schema <Component>"],
@@ -1828,8 +1827,7 @@ slot body: SlotList<Node> = empty;
         example: Example::Source(
             r#"component A {
     view {
-        Text {
-            text: "a";
+        Text("a") {
             translate: Offset { x: 50%, y: 0dp };
         }
     }
@@ -1839,8 +1837,7 @@ slot body: SlotList<Node> = empty;
         fix: "Use an absolute length (such as `dp`) for this property, or move the percentage to \
             a property that has a percent basis, like `width`.",
         fixed: Some(
-            r#"Text {
-    text: "a";
+            r#"Text("a") {
     translate: Offset { x: 24dp, y: 0dp };
 }
 "#,
@@ -1865,7 +1862,7 @@ slot body: SlotList<Node> = empty;
 Scroll {
     Column {
         height: 50%;
-        Text { text: "a"; }
+        Text("a")
     }
 }
 // debug runtime: E3105 warning: the percent basis of `height` is indefinite
@@ -1896,7 +1893,7 @@ Scroll {
         Row {
             // `parts` is 0 at run time, so the width is infinite.
             width: 320dp / parts;
-            Text { text: "a"; }
+            Text("a")
         }
     }
 }
@@ -1959,7 +1956,7 @@ Scroll {
     view {
         Grid {
             areas: ["head head", "side main"];
-            Text { text: "a"; grid.area: "foot"; }
+            Text("a") { grid.area: "foot" }
         }
     }
 }
@@ -1967,7 +1964,35 @@ Scroll {
         ),
         fix: "Name an area of the grid's `areas`, or add the area to the template.",
         fixed: Some(
-            r#"Text { text: "a"; grid.area: "main"; }
+            r#"Text("a") { grid.area: "main" }
+"#,
+        ),
+        commands: &[],
+        reserved: false,
+    },
+    CodeInfo {
+        code: "E3109",
+        severity: Severity::Error,
+        stage: Stage::View,
+        title: "Misplaced Primary Property",
+        explanation: "A node type has at most one primary property, written in parentheses after \
+            the type: `Text(\"Hello\")`, `Button(\"Save\") { on click { .. } }`. Binding it by \
+            name in the node's body is rejected, so each property has one spelling; the fix moves \
+            the value into the parentheses. A user component names its primary input with \
+            `@primary`: only an `input` takes it, only one input per component, and never a \
+            two-way (`@bindable`) one.",
+        example: Example::Source(
+            r#"component A {
+    view {
+        Text { text: "Hello" }
+    }
+}
+"#,
+        ),
+        fix: "Write the primary property as `Type(value)`, and mark one one-way `input` of a \
+            component `@primary`.",
+        fixed: Some(
+            r#"Text("Hello")
 "#,
         ),
         commands: &[],
@@ -1987,7 +2012,7 @@ Scroll {
     state n: I64 = 0;
 
     view {
-        Button { text: "Add"; on click => n += 1; }
+        Button("Add") { on click => n += 1 }
     }
 }
 "#,
@@ -1995,7 +2020,7 @@ Scroll {
         fix: "Wrap the statement in a block; the diagnostic carries a machine-applicable fix \
             that does this.",
         fixed: Some(
-            r#"Button { text: "Add"; on click { n += 1; } }
+            r#"Button("Add") { on click { n += 1; } }
 "#,
         ),
         commands: &[],
@@ -2018,7 +2043,7 @@ Scroll {
     state n: I64 = 0;
 
     view {
-        Button { text: "Add"; on clik { n += 1; } }
+        Button("Add") { on clik { n += 1; } }
     }
 }
 "#,
@@ -2026,7 +2051,7 @@ Scroll {
         fix: "Use an event the node declares (often the suggested spelling), and give an `emit` \
             exactly the parameters its event declares.",
         fixed: Some(
-            r#"Button { text: "Add"; on click { n += 1; } }
+            r#"Button("Add") { on click { n += 1; } }
 "#,
         ),
         commands: &["viso schema <Component>"],
@@ -2049,8 +2074,8 @@ Scroll {
 
     view {
         Column {
-            if open preserve "panel" { Text { text: "a"; } }
-            if !open preserve "panel" { Text { text: "b"; } }
+            if open preserve "panel" { Text("a") }
+            if !open preserve "panel" { Text("b") }
         }
     }
 }
@@ -2059,8 +2084,8 @@ Scroll {
         fix: "Give each preserved branch its own string literal. For a dynamic collection, use a \
             keyed `for` instead of `preserve`.",
         fixed: Some(
-            r#"if open preserve "open-panel" { Text { text: "a"; } }
-if !open preserve "closed-panel" { Text { text: "b"; } }
+            r#"if open preserve "open-panel" { Text("a") }
+if !open preserve "closed-panel" { Text("b") }
 "#,
         ),
         commands: &[],
@@ -2083,7 +2108,7 @@ if !open preserve "closed-panel" { Text { text: "b"; } }
     view {
         Column {
             for name in names {
-                Text { text: name; }
+                Text(name)
             }
         }
     }
@@ -2094,7 +2119,7 @@ if !open preserve "closed-panel" { Text { text: "b"; } }
             position.",
         fixed: Some(
             r#"for name in names key name {
-    Text { text: name; }
+    Text(name)
 }
 "#,
         ),
@@ -2120,7 +2145,7 @@ if !open preserve "closed-panel" { Text { text: "b"; } }
     view {
         Column {
             for name in names {
-                Button { text: name; on click { picked = name; } }
+                Button(name) { on click { picked = name; } }
             }
         }
     }
@@ -2130,7 +2155,7 @@ if !open preserve "closed-panel" { Text { text: "b"; } }
         fix: "Key the `for` by a stable value of the item, such as its id, not its position.",
         fixed: Some(
             r#"for name in names key name {
-    Button { text: name; on click { picked = name; } }
+    Button(name) { on click { picked = name; } }
 }
 "#,
         ),
@@ -2159,7 +2184,7 @@ if !open preserve "closed-panel" { Text { text: "b"; } }
 export component App {
     view {
         Card {
-            fill foter { Text { text: "Done"; } }
+            fill foter { Text("Done") }
         }
     }
 }
@@ -2169,7 +2194,7 @@ export component App {
             them.",
         fixed: Some(
             r#"Card {
-    fill footer { Text { text: "Done"; } }
+    fill footer { Text("Done") }
 }
 "#,
         ),
@@ -2192,8 +2217,8 @@ export component App {
             r#"component A {
     view {
         Scroll {
-            Text { text: "a"; }
-            Text { text: "b"; }
+            Text("a")
+            Text("b")
         }
     }
 }
@@ -2205,8 +2230,8 @@ export component App {
         fixed: Some(
             r#"Scroll {
     Column {
-        Text { text: "a"; }
-        Text { text: "b"; }
+        Text("a")
+        Text("b")
     }
 }
 "#,
@@ -2229,7 +2254,7 @@ export component App {
             r#"template Badge() {
     state count: I64 = 0;
 
-    view { Text { text: "badge"; } }
+    view { Text("badge") }
 }
 
 export component App {
@@ -2243,7 +2268,7 @@ export component App {
             parameters; if the piece needs its own state, make it a `component`.",
         fixed: Some(
             r#"template Badge(label: String) {
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 "#,
         ),
@@ -2267,7 +2292,7 @@ export component App {
 
     event changed(value: I64);
 
-    view { Text { text: "step"; } }
+    view { Text("step") }
 }
 "#,
         ),
@@ -2298,7 +2323,7 @@ event changed(value: I64);
             r#"component A {
     view {
         Row {
-            Text { text: "a"; grid.row: 1; }
+            Text("a") { grid.row: 1 }
         }
     }
 }
@@ -2308,7 +2333,7 @@ event changed(value: I64);
             property.",
         fixed: Some(
             r#"Grid {
-    Text { text: "a"; grid.row: 1; }
+    Text("a") { grid.row: 1 }
 }
 "#,
         ),
@@ -2327,8 +2352,7 @@ event changed(value: I64);
         example: Example::Source(
             r#"component A {
     view {
-        Text {
-            text: "a";
+        Text("a") {
             transition.opacity: 200ms;
         }
     }
@@ -2337,8 +2361,7 @@ event changed(value: I64);
         ),
         fix: "Give an animatable property a `Transition` value.",
         fixed: Some(
-            r#"Text {
-    text: "a";
+            r#"Text("a") {
     transition.opacity: Transition { duration: 200ms };
 }
 "#,
@@ -2403,7 +2426,7 @@ event changed(value: I64);
     state name: String = "Ada"
 
     view {
-        Text { text: "Hello {name}" }
+        Text("Hello {name}")
     }
 }
 "#,
@@ -2411,7 +2434,7 @@ event changed(value: I64);
         fix: "Move the sentence into the message catalog and pass the variable parts as named \
             arguments of `tr`.",
         fixed: Some(
-            r#"Text { text: tr("greeting", name: name) }
+            r#"Text(tr("greeting", name: name))
 "#,
         ),
         commands: &["viso check --i18n strict"],
@@ -2435,7 +2458,7 @@ event changed(value: I64);
 
 component A {
     view {
-        Text { text: tr("inbox.title"); }
+        Text(tr("inbox.title"))
     }
 }
 "#,
@@ -2464,7 +2487,7 @@ title = "Inbox"
             rejected.",
         example: Example::Text(
             r#"VirtualList {
-    Text { text: "Header"; }            // not allowed: a child beside the template
+    Text("Header")            // not allowed: a child beside the template
     for message in messages key message.id {
         MessageRow { message: message; }
     }
@@ -2475,7 +2498,7 @@ title = "Inbox"
             other nodes outside it.",
         fixed: Some(
             r#"Column {
-    Text { text: "Header"; }
+    Text("Header")
     VirtualList {
         for message in messages key message.id {
             MessageRow { message: message; }
@@ -2504,7 +2527,7 @@ title = "Inbox"
     view {
         Row {
             semantics.role: Role::button;
-            Text { text: "Add"; }
+            Text("Add")
             on click { n += 1; }
         }
     }
@@ -2517,7 +2540,7 @@ title = "Inbox"
             r#"Row {
     focusable: true;
     semantics.role: Role::button;
-    Text { text: "Add"; }
+    Text("Add")
     on click { n += 1; }
 }
 "#,
@@ -2536,8 +2559,7 @@ title = "Inbox"
             nothing. The debug runtime reports it and the release build rejects the value.",
         example: Example::Text(
             r#"// Suppose the schema marks `Text.max_lines` as pending in the runtime.
-Text {
-    text: "A long paragraph";
+Text("A long paragraph") {
     max_lines: 2;          // non-default value: E3709
 }
 "#,
@@ -2565,7 +2587,7 @@ Text {
     @selector
     input count: I64 = 0;
 
-    view { Text { text: "chip"; } }
+    view { Text("chip") }
 }
 "#,
         ),
@@ -2597,7 +2619,7 @@ input selected: Bool = false;
             r#"component A {
     view {
         Column {
-            Text { text: "a"; padding: 8dp; }
+            Text("a") { padding: 8dp }
         }
     }
 }
@@ -2609,7 +2631,7 @@ input selected: Bool = false;
         fixed: Some(
             r#"Column {
     padding: 8dp;
-    Text { text: "a"; }
+    Text("a")
 }
 "#,
         ),
@@ -2632,7 +2654,7 @@ input selected: Bool = false;
 fn widen(old: I64) { }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#,
         ),
@@ -2663,7 +2685,7 @@ fn widen(old: I64) -> F64 { old as F64 }
     state logo: String = "images/logo.png";
 
     view {
-        Image { source: asset(logo); width: 48dp; }
+        Image(asset(logo)) { width: 48dp }
     }
 }
 "#,
@@ -2672,8 +2694,7 @@ fn widen(old: I64) -> F64 { old as F64 }
             literal assets when the choice is dynamic; for a missing file, use the path the \
             diagnostic suggests.",
         fixed: Some(
-            r#"Image {
-    source: if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") };
+            r#"Image(if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }) {
     width: 48dp;
 }
 "#,
@@ -2706,7 +2727,7 @@ export component Timer {
         done = true;
     }
 
-    view { Text { text: "timer"; on click { go(); } } }
+    view { Text("timer") { on click { go(); } } }
 }
 "#,
         ),
@@ -2745,8 +2766,7 @@ export component Poller {
     }
 
     view {
-        Text {
-            text: "poll";
+        Text("poll") {
             on click { start look() { success(v) { seen = v; } }; }
         }
     }
@@ -2784,7 +2804,7 @@ export component Poller {
         let at = page;
     }
 
-    view { Text { text: query; } }
+    view { Text(query) }
 }
 "#,
         ),
@@ -2819,7 +2839,7 @@ depends on `count` and writes `count`, so every run schedules another.
 
     export component Loop {
         state count = 0;
-        view { Text { text: "tap"; on click { count += 1; } } }
+        view { Text("tap") { on click { count += 1; } } }
         effect bump when (count) run EffectRun::change {
             transaction { count += 1; }
         }
@@ -2852,7 +2872,7 @@ depends on `count` and writes `count`, so every run schedules another.
     effect save run EffectRun::change {
     }
 
-    view { Text { text: name; } }
+    view { Text(name) }
 }
 "#,
         ),
@@ -2917,7 +2937,7 @@ export component Profile {
         load = fetch(user);
     }
 
-    view { Text { text: "profile"; } }
+    view { Text("profile") }
 }
 "#,
         ),
@@ -2962,7 +2982,7 @@ export component Uploader {
         };
     }
 
-    view { Text { text: "upload"; on click { go(); } } }
+    view { Text("upload") { on click { go(); } } }
 }
 "#,
         ),
@@ -2998,7 +3018,7 @@ export component Uploader {
         start reset();
     }
 
-    view { Text { text: "reset"; on click { go(); } } }
+    view { Text("reset") { on click { go(); } } }
 }
 "#,
         ),
@@ -3030,7 +3050,7 @@ action go() {
 }
 
 export component Panel {
-    view { Text { text: "panel"; } }
+    view { Text("panel") }
 }
 "#,
         ),
@@ -3039,7 +3059,7 @@ export component Panel {
         fixed: Some(
             r#"export component Panel {
     action go() { start wait(); }
-    view { Text { text: "panel"; on click { go(); } } }
+    view { Text("panel") { on click { go(); } } }
 }
 "#,
         ),
@@ -3144,7 +3164,7 @@ with the presentation change as a related span.
     @stable("count")
     state taps = 0;
 
-    view { Text { text: "count"; } }
+    view { Text("count") }
 }
 "#,
         ),
@@ -3174,7 +3194,7 @@ state taps = 0;
     @sensitive
     input token: String;
 
-    view { Text { text: token; } }
+    view { Text(token) }
 }
 "#,
         ),
@@ -3203,7 +3223,7 @@ state token = "";
 native fn measure(p: Point) -> I64;
 
 export component Ruler {
-    view { Text { text: "ruler"; } }
+    view { Text("ruler") }
 }
 "#,
         ),
@@ -3269,7 +3289,7 @@ action fixed_update(frame: FixedFrame) {
 
     export component Notes {
         state note = "hi";
-        view { Text { text: note; on click { clipboard::write_text(note); } } }
+        view { Text(note) { on click { clipboard::write_text(note); } } }
     }
 
 Clicking the text faults with E6103 and the click's writes are rolled back.
@@ -3305,7 +3325,7 @@ and a view calls it:
 
     import haptics;
     export component Bell {
-        view { Text { text: "ring"; on click { haptics::vibrate(30); } } }
+        view { Text("ring") { on click { haptics::vibrate(30); } } }
     }
 
 `viso check web-gpu` reports E6104 at the call: `haptics::vibrate` does not exist on web.
@@ -3989,7 +4009,7 @@ export system Synth implements AudioProcess {
             r#"export component Hud {
     @probe state lives = 3;
 
-    view { Text { text: "hud"; } }
+    view { Text("hud") }
 }
 "#,
         ),

@@ -1,3 +1,3 @@
 export component App {
-    view { Text { text: "hi" } }
+    view { Text("hi") }
 }

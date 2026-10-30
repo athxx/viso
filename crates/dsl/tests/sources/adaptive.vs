@@ -11,13 +11,11 @@ component Panel {
     view {
         Column {
             width: 300dp
-            Text { text: label + "=" + class_name(env.size_class) }
-            Text {
-                text: match env.constraints.max_width {
+            Text(label + "=" + class_name(env.size_class))
+            Text(match env.constraints.max_width {
                     Option::Some(w) => label + " max=" + "{w}"
                     Option::None => label + " max=none"
-                }
-            }
+                })
         }
     }
 }
@@ -26,13 +24,11 @@ export component Shell {
     state open = true
     view {
         Column {
-            Text { text: "window=" + class_name(env.size_class) }
-            Text {
-                text: if env.orientation == Orientation::Landscape { "landscape" } else {
+            Text("window=" + class_name(env.size_class))
+            Text(if env.orientation == Orientation::Landscape { "landscape" } else {
                     "portrait"
-                }
-            }
-            Text { text: "scale={env.text_scale}" }
+                })
+            Text("scale={env.text_scale}")
             AdaptiveScope {
                 basis: 700dp
                 Panel { label: "based" }

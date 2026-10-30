@@ -6,11 +6,10 @@ export component Counter {
             gap: 8dp
             Row {
                 gap: 4dp
-                Text { text: "Count" }
-                Text { text: "{count}" }
+                Text("Count")
+                Text("{count}")
             }
-            Button {
-                text: "Add"
+            Button("Add") {
                 on click { count += 1 }
             }
         }

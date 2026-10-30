@@ -266,9 +266,9 @@ export component Counter {
             width: BASE;
             height: 20dp;
             Text { width: 20dp; height: 20dp; on click { count += step; emit counted(count); } }
-            Text { width: 20dp; height: 20dp; styles: [Dim]; text: "{count}"; }
+            Text("{count}") { width: 20dp; height: 20dp; styles: [Dim] }
             if count > 2 {
-                Text { width: 20dp; height: 20dp; text: "many"; }
+                Text("many") { width: 20dp; height: 20dp }
             }
         }
     }

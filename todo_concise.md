@@ -63,14 +63,20 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C3 — Primary property (§50.1)
 
-- [ ] Widget schema `primary` flag: `Text.text`, `Button.text`, `Link.text`,
-      `Image.source`, `Svg.source`, `Video.source`, `Icon.name`.
-- [ ] `@primary input` on user components (at most one, `E3109`).
-- [ ] Grammar: `Type(expr)` with an optional body; a node with neither omits `{}`.
-- [ ] HIR: the argument lowers to the primary binding; no primary → `E3101`; primary
-      written in the body → `E3109` with a machine-applicable fix.
-- [ ] Macros, AOT, hot reload, LSP completion/schema output.
-- [ ] Migrate sources and examples.
+- [x] Widget schema `primary` flag: `Text.text`, `Button.text`, `LinkLabel.text`,
+      `Toggle.label`, `CheckBox.label`, `Image.source`, `Svg.source`, `Video.source`
+      (native schema JSON carries it; there is no `Icon` widget).
+- [x] `@primary input` on user components (one per component, an `input`, not
+      `@bindable`; otherwise `E3109`).
+- [x] Grammar: `Type(expr)` with an optional body; a node with neither omits `{}`;
+      the argument and the body start on the type's line. Appendix A `PrimaryArgument`.
+- [x] HIR: the argument lowers to the primary binding; no primary → `E3101`; primary
+      written in the body → `E3109` with a machine-applicable fix (override bodies
+      exempt until C5 removes them).
+- [x] Macros, AOT, hot reload, LSP completion (`Type($0)` snippet, primary not offered
+      in the body), structured edits (`SetPropertyBinding` writes the argument; a
+      bodyless node gets a body), schema output (`primary`).
+- [x] Migrate sources and examples; registry `E3109`, Appendix C, `docs/diagnostics.md`.
 
 ## C4 — Enum shorthand (U1.3)
 
@@ -113,3 +119,5 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 - [ ] Appendix C / `docs/diagnostics.md` / CLI goldens current; spec, UI and
       Implementation docs read through once for stale syntax.
+- [ ] `viso-vscode` tree-sitter grammar and highlight tests: newline items, string
+      holes, primary arguments, slots.

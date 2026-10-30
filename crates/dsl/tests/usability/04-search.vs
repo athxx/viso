@@ -24,14 +24,14 @@ export component Search {
             match results.state {
                 ResourceState::ready(items) => {
                     for item in items key item {
-                        Text { text: item }
+                        Text(item)
                     }
                 }
                 ResourceState::error(message) => {
-                    Text { text: message }
+                    Text(message)
                 }
                 _ => {
-                    Text { text: "Searching" }
+                    Text("Searching")
                 }
             }
         }

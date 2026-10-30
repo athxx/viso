@@ -386,9 +386,7 @@ Compiler 对不可回滚调用发出诊断，要求移动到 Effect/Task。
 ## 121. View Node Lowering
 
 ```viso
-node add_button: Button {
-    text: label
-}
+node add_button: Button(label)
 ```
 
 Lower：
@@ -980,7 +978,7 @@ Parser 接受的所有合法程序经 Formatter 后必须再次 Parse 为等价 
 
 当前实现（`crates/lsp/src/format`）只改空白，输出只取决于 Token、所在节点与作者的换行，因而幂等：
 
-- 作者写在一行的 `{ }`，整行不超过 100 列时保持一行（`Text { text: label }`、`Row { Text {}; Text {} }`），否则展开：`{` 后换行、Body 缩进一级、`}` 独占一行；空 Block 为 `{}`；Import 的 `{A, B}` 紧贴内容；
+- 作者写在一行的 `{ }`，整行不超过 100 列时保持一行（`Text(label)`、`Row { Text {}; Text {} }`），否则展开：`{` 后换行、Body 缩进一级、`}` 独占一行；空 Block 为 `{}`；Import 的 `{A, B}` 紧贴内容；
 - 展开 Block 中条目之间换行，Block 自身层级（不在 `(` `[` `<` 内）的 `,` 也结束一行；
 - `}` 后的 `,` `;` `)` `]` `.` `?` 与 `else` 留在同一行；
 - 语句内作者的换行保留（多个折为一个），续行按未闭合的 `(` `[` `<` 层数再缩进；Attribute 后的换行开始新的一项；

@@ -13,6 +13,6 @@ export system Player implements FixedUpdate {
 
 export component App {
     view {
-        Text { width: 320dp; height: 40dp; text: tr("app.hint") }
+        Text(tr("app.hint")) { width: 320dp; height: 40dp }
     }
 }

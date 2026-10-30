@@ -99,8 +99,7 @@ export component Shown {
                 focusable: gone;
                 semantics.label: Option::Some("panel");
             }
-            Text {
-                text: "a";
+            Text("a") {
                 color: #ff0000;
                 font_size: 20sp;
                 soft_wrap: true;
@@ -179,7 +178,7 @@ fn a_binding_no_path_applies_is_reported() {
         "a style's selector reads `invalid`"
     );
     for view in [
-        "Text { text: \"a\"; enabled: n > 0; autofocus: n == 0; }",
+        "Text(\"a\") { enabled: n > 0; autofocus: n == 0 }",
         "Column { width: if n > 0 { 10dp } else { 20dp }; }",
         "Column { justify: if n > 0 { Justify::start } else { Justify::end }; }",
     ] {

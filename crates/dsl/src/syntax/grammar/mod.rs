@@ -471,6 +471,16 @@ impl<'t, 's> Parser<'t, 's> {
             || self.at_line_break()
     }
 
+    /// Whether the token `n` ahead is where an item ends, as
+    /// [`at_item_end`](Self::at_item_end) at the cursor.
+    fn nth_at_item_end(&self, n: usize) -> bool {
+        matches!(
+            self.nth(n),
+            SyntaxKind::Semi | SyntaxKind::RBrace | SyntaxKind::Eof
+        ) || (self.lines.last().copied().unwrap_or(true)
+            && self.line_start.get(self.pos + n).copied().unwrap_or(false))
+    }
+
     /// Makes line breaks whitespace up to the `}` just consumed's match: a
     /// record body or an import list, which are comma-separated.
     fn quiet_lines(&mut self) {

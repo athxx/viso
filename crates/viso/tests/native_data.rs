@@ -92,7 +92,7 @@ component Card {
         }
     }
 
-    view { Text { text: name; } }
+    view { Text(name) }
 }
 "#;
 
@@ -193,7 +193,7 @@ component Nav {
         route = Route::message(7, "late");
     }
 
-    view { Text { text: title(route); } }
+    view { Text(title(route)) }
 }
 "#;
 

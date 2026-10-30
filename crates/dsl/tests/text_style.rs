@@ -21,8 +21,7 @@ export component Styled {
     view {
         Column {
             Text { width: 20dp; height: 20dp; on click { bold = !bold; } }
-            Text {
-                text: "Title";
+            Text("Title") {
                 font_weight: if bold { FontWeight::bold } else { FontWeight::regular };
                 font_family: Option::Some(FontFamily::named("Inter"));
                 line_height: Option::Some(150%);
@@ -30,8 +29,7 @@ export component Styled {
                 overflow: TextOverflow::ellipsis;
                 align: TextAlign::center;
             }
-            Button {
-                text: "Go";
+            Button("Go") {
                 font_family: Option::Some(FontFamily::monospace);
                 line_height: if bold { Option::Some(2em) } else { Option::None };
             }
@@ -146,9 +144,9 @@ fn every_text_style_property_compiles_for_text_button_and_input() {
         format!("export component A {{ state n = 0; view {{ Column {{ {node} }} }} }}")
     };
     for node in [
-        "Text { text: \"a\"; font_weight: FontWeight::bold; align: TextAlign::center; }",
-        "Text { text: \"a\"; max_lines: if n > 0 { Option::Some(1) } else { Option::None }; overflow: TextOverflow::ellipsis; }",
-        "Button { text: \"a\"; font_weight: FontWeight::medium; max_lines: Option::Some(1); }",
+        "Text(\"a\") { font_weight: FontWeight::bold; align: TextAlign::center }",
+        "Text(\"a\") { max_lines: if n > 0 { Option::Some(1) } else { Option::None }; overflow: TextOverflow::ellipsis; }",
+        "Button(\"a\") { font_weight: FontWeight::medium; max_lines: Option::Some(1) }",
         "TextInput { font_family: Option::Some(FontFamily::serif); line_height: Option::Some(20dp); }",
     ] {
         let errors: Vec<_> = compile_file(&view(node), &origin())
@@ -165,12 +163,11 @@ export component Sized {
     view {
         Column {
             Text { width: 20dp; height: 20dp; on click { big = !big; } }
-            Text {
-                text: "Body";
+            Text("Body") {
                 font_size: if big { 2em } else { 1em };
                 line_height: Option::Some(1.5em);
             }
-            Text { text: "Fixed"; font_size: 10dp; }
+            Text("Fixed") { font_size: 10dp }
         }
     }
 }

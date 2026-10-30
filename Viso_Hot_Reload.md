@@ -676,8 +676,8 @@ PropertyPatch
 
 ```viso
 Column {
-    Text { text: "Title" }
-    Button { text: "Save" }
+    Text("Title")
+    Button("Save")
 }
 ```
 

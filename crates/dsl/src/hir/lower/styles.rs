@@ -80,6 +80,22 @@ pub(super) fn check_members(
             ));
         }
     }
+    let mut primary = None;
+    for (attr, member) in marked(decl, "primary") {
+        let at = attr.text_range();
+        let message = if member.kind() != SyntaxKind::InputDecl {
+            "`@primary` marks an `input`".to_string()
+        } else if marked(decl, "bindable").iter().any(|(_, m)| *m == member) {
+            "a primary input is one-way: `@primary` and `@bindable` do not mark the same input"
+                .to_string()
+        } else if let Some(first) = &primary {
+            format!("a component has one primary input, and `{first}` is it")
+        } else {
+            primary = member_name(&member);
+            continue;
+        };
+        diagnostics.push(Diagnostic::error("E3109", at, message));
+    }
     for (attr, member) in marked(decl, "selector") {
         let at = attr.text_range();
         let kinds = [

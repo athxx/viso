@@ -37,12 +37,12 @@ component Delivered {
                 Text { width: 20dp; height: 20dp; on click { count += 1; } }
                 Text { width: 20dp; height: 20dp; on click { items = [2, 3]; } }
             }
-            Text { width: 100dp; height: 20dp; text: "{count} items"; }
+            Text("{count} items") { width: 100dp; height: 20dp }
             Row {
                 width: 400dp;
                 height: 20dp;
                 for item in items key item {
-                    Text { width: 20dp; height: 20dp; text: "{item}:{count}"; }
+                    Text("{item}:{count}") { width: 20dp; height: 20dp }
                 }
             }
         }
@@ -58,7 +58,7 @@ component Flat {
             width: 400dp;
             height: 300dp;
             Text { width: 20dp; height: 20dp; on click { count += 1; } }
-            Text { width: 100dp; height: 20dp; text: "{count} items"; }
+            Text("{count} items") { width: 100dp; height: 20dp }
         }
     }
 }
@@ -72,10 +72,9 @@ component Batch {
         Column {
             width: 400dp;
             height: 300dp;
-            Text {
+            Text("{count} items") {
                 width: 100dp;
                 height: 20dp;
-                text: "{count} items";
                 on click { count += 1; items = [1, 2]; count += 1; items = [3]; }
             }
         }

@@ -28,9 +28,9 @@ export component Card {
         Column {
             width: 200dp;
             height: 100dp;
-            Text { text: title; color: accent; }
-            if dense { Text { text: "dense"; } }
-            Text { text: value; }
+            Text(title) { color: accent }
+            if dense { Text("dense") }
+            Text(value)
             Slider { value: level; }
         }
     }
@@ -38,7 +38,7 @@ export component Card {
 
 component Badge {
     input label: String;
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 
 export component Frame {
@@ -191,7 +191,7 @@ fn a_suffix_two_symbols_share_lists_both_and_lists_name_groups() {
     s.write("card.vs", CARD);
     s.write(
         "text.vs",
-        "export component Button { view { Text { text: \"b\"; } } }\n",
+        "export component Button { view { Text(\"b\") } }\n",
     );
     let catalog = catalog(s.components());
     let error = query("Button", &catalog).expect_err("two");

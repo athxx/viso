@@ -22,13 +22,13 @@ component Card {
     view {
         Column {
             gap: 8dp;
-            Text { text: "{count} taps"; }
-            Button { text: "Tap"; on click { count += 1; } }
+            Text("{count} taps")
+            Button("Tap") { on click { count += 1; } }
             if open {
-                Text { text: "open"; }
+                Text("open")
             }
             for i in [1, 2, 3] key i {
-                Text { text: "row {i}"; }
+                Text("row {i}")
             }
         }
     }

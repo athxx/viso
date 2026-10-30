@@ -483,7 +483,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.node(
                     node.ty(),
                     local_name,
-                    node.body(),
+                    (node.primary(), node.body()),
                     node.syntax().text_range(),
                     out,
                 );
@@ -493,7 +493,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.node(
                     node.ty(),
                     None,
-                    node.body(),
+                    (node.primary(), node.body()),
                     node.syntax().text_range(),
                     out,
                 );
@@ -550,10 +550,12 @@ impl<'a, 'l> Lowering<'a, 'l> {
         &mut self,
         ty: Option<TypePath>,
         local_name: Option<String>,
-        body: Option<NodeBody>,
+        (primary, body): (Option<PropertyBinding>, Option<NodeBody>),
         origin: TextRange,
         out: &mut Vec<UiItem>,
     ) {
+        // The node's `( value )` leads its members.
+        let primary = primary.map(ViewItem::Property);
         let overriding = self.overriding.take();
         let Some(ty) = ty else { return };
         let type_name = type_name_of(&ty);
@@ -568,7 +570,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 ));
             }
             if self.library.get(id).is_some() {
-                let members = body.iter().flat_map(|b| b.members()).collect();
+                let members = primary
+                    .into_iter()
+                    .chain(body.iter().flat_map(|b| b.members()))
+                    .collect();
                 self.component(id, type_name, local_name, members, Vec::new(), origin, out);
             }
             return;
@@ -576,7 +581,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let Some(widget) = self.natives.widget(&type_name) else {
             self.unknown.push((type_name, ty.syntax().text_range()));
             if self.rust_scope {
-                self.rust_component(&ty, local_name, body.as_ref(), origin, out);
+                let first = primary.or_else(|| body.and_then(|b| b.members().next()));
+                self.rust_component(&ty, local_name, first.as_ref(), origin, out);
             }
             return;
         };
@@ -651,7 +657,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
         let mut bound = Vec::new();
         // The layout properties the node sets from values as they change.
         let mut laid: Vec<String> = Vec::new();
-        let own: Vec<ViewItem> = body.iter().flat_map(|b| b.members()).collect();
+        let primary_name = widget.primary().map(|p| p.name);
+        let own: Vec<ViewItem> = primary
+            .into_iter()
+            .chain(body.iter().flat_map(|b| b.members()))
+            .collect();
         let styles = self.style_names(&type_name, &own);
         let styled = self.styled(
             &type_name,
@@ -664,7 +674,8 @@ impl<'a, 'l> Lowering<'a, 'l> {
         // property and its own handlers of the same event.
         let members: Vec<(ViewItem, u32)> = match overriding {
             Some((overrides, caller)) => {
-                let rebinds = |m: &ViewItem| overrides.iter().any(|o| same_binding(o, m));
+                let rebinds =
+                    |m: &ViewItem| overrides.iter().any(|o| same_binding(o, m, primary_name));
                 own.into_iter()
                     .filter(|m| !rebinds(m))
                     .map(|m| (m, instance))
@@ -677,7 +688,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
             match member {
                 ViewItem::Property(prop) if dotted(prop.path()).as_deref() == Some("styles") => {}
                 ViewItem::Property(prop) => {
-                    let (Some(name), Some(value)) = (dotted(prop.path()), prop.value()) else {
+                    let (Some(name), Some(value)) =
+                        (style::bound_name(&prop, primary_name), prop.value())
+                    else {
                         continue;
                     };
                     let at = value.syntax().text_range();
@@ -723,7 +736,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         ));
                     }
                     match fold_property(
-                        &prop,
+                        (&name, &value),
                         (kind, &self.library.consts),
                         instance,
                         &mut style,
@@ -953,7 +966,9 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if list.is_empty() {
             return None;
         }
-        let plan = style::plan(books, &list, &style::own_bindings(members), type_name);
+        let primary = self.natives.widget(type_name).and_then(|w| w.primary());
+        let own = style::own_bindings(members, primary.map(|p| p.name));
+        let plan = style::plan(books, &list, &own, type_name);
         let styles_at = value.syntax().text_range();
         // A span of a style of another unit is reported at the node's
         // `styles`, as this unit places it.
@@ -966,8 +981,12 @@ impl<'a, 'l> Lowering<'a, 'l> {
         };
         let mut fold = |this: &mut Self, styled: &style::Styled| -> Fold {
             let pendings = pending.len();
+            let (Some(name), Some(value)) = (dotted(styled.binding.path()), styled.binding.value())
+            else {
+                return Fold::Folded;
+            };
             let fold = fold_property(
-                &styled.binding,
+                (&name, &value),
                 (kind, &this.library.consts),
                 instance,
                 style,
@@ -1136,11 +1155,11 @@ impl<'a, 'l> Lowering<'a, 'l> {
         &mut self,
         ty: &TypePath,
         local_name: Option<String>,
-        body: Option<&NodeBody>,
+        first: Option<&ViewItem>,
         origin: TextRange,
         out: &mut Vec<UiItem>,
     ) {
-        if let Some(member) = body.and_then(|b| b.members().next()) {
+        if let Some(member) = first {
             self.unmount((
                 member.syntax().text_range(),
                 "a Rust component mounts its own view; it takes no properties, handlers or children here".to_string(),
@@ -1254,7 +1273,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 self.overriding = overrides.map(|o| (o, self.frames[caller].instance));
             }
         }
-        self.node(part.ty(), name, part.body(), origin, out);
+        self.node(part.ty(), name, (part.primary(), part.body()), origin, out);
         self.overriding = None;
     }
 
@@ -1338,8 +1357,13 @@ impl<'a, 'l> Lowering<'a, 'l> {
             .find(|s| s.default)
             .map(|s| s.name.clone());
         let input_slot = |name: &str| schema.inputs.iter().position(|i| i.name == name);
+        let primary = schema
+            .inputs
+            .iter()
+            .find(|i| i.primary)
+            .map(|i| i.name.as_str());
         let styles = styles_value(&members);
-        let own = style::own_bindings(&members);
+        let own = style::own_bindings(&members, primary);
         for member in members {
             match member {
                 ViewItem::Override(o) => {
@@ -1357,10 +1381,10 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     ));
                 }
                 ViewItem::Property(prop) => {
-                    let segments: Vec<String> = prop
-                        .path()
-                        .map(|p| p.segments().map(|t| t.text()).collect())
-                        .unwrap_or_default();
+                    let segments: Vec<String> = match prop.path() {
+                        Some(path) => path.segments().map(|t| t.text()).collect(),
+                        None => primary.map(str::to_owned).into_iter().collect(),
+                    };
                     if segments == ["styles"] {
                         continue;
                     }
@@ -1494,7 +1518,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         }
                         let fold =
                             fold_property(
-                            prop,
+                            (&name, &value),
                             (root.kind, &library.consts),
                             parent,
                             &mut root.style,
@@ -1643,10 +1667,11 @@ fn laid_slots(laid: &[String]) -> Laid {
 }
 
 /// Whether the override `o` rebinds what the node's own member `own` binds:
-/// the same property (by `:` or `bind`) or a handler of the same event.
-fn same_binding(o: &ViewItem, own: &ViewItem) -> bool {
+/// the same property (by `:`, `( value )` binding `primary`, or `bind`) or a
+/// handler of the same event.
+fn same_binding(o: &ViewItem, own: &ViewItem, primary: Option<&str>) -> bool {
     let bound = |m: &ViewItem| match m {
-        ViewItem::Property(p) => dotted(p.path()).map(|n| (0, n)),
+        ViewItem::Property(p) => style::bound_name(p, primary).map(|n| (0, n)),
         ViewItem::TwoWayBinding(b) => dotted(b.target()).map(|n| (0, n)),
         ViewItem::Handler(h) => h
             .event()
@@ -1679,32 +1704,23 @@ fn single_segment(path: Option<PropertyPath>) -> Option<String> {
 /// Folds one property binding: a compile-time-constant value updates [`StyleIr`];
 /// anything else becomes a [`PendingProperty`] for the Binding IR pass.
 fn fold_property(
-    prop: &PropertyBinding,
+    (dotted, value): (&str, &Expr),
     (kind, consts): (NodeKind, &Consts),
     instance: u32,
     style: &mut StyleIr,
     pending: &mut Vec<PendingProperty>,
 ) -> Fold {
-    let Some(path) = prop.path() else {
-        return Fold::Folded;
-    };
     // The bound property is the path's leading segment (`width`, `axis`, `text`).
-    let Some(name) = path.segments().next().map(|t| t.text()) else {
+    let mut segments = dotted.split('.');
+    let Some(name) = segments.next().map(str::to_owned) else {
         return Fold::Folded;
     };
-    let Some(value) = prop.value() else {
-        return Fold::Folded;
-    };
-    let mut segments = path.segments().skip(1);
+    let value = value.clone();
     let fold = match (segments.next(), segments.next()) {
         (None, _) => fold_static(&name, kind, &value, consts, style),
-        (Some(member), None) if name == "grid" => fold_cell(&member.text(), &value, consts, style),
-        (Some(member), None) if name == "stack" => {
-            fold_stacked(&member.text(), &value, consts, style)
-        }
-        (Some(member), None) if name == "absolute" => {
-            fold_inset(&member.text(), &value, consts, style)
-        }
+        (Some(member), None) if name == "grid" => fold_cell(member, &value, consts, style),
+        (Some(member), None) if name == "stack" => fold_stacked(member, &value, consts, style),
+        (Some(member), None) if name == "absolute" => fold_inset(member, &value, consts, style),
         _ => Fold::Pending,
     };
     if let Fold::Pending = fold {

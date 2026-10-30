@@ -23,11 +23,11 @@ export component Values {
     state name = "Ada";
     view {
         Column {
-            Text { text: "{count} items"; }
-            Button { text: "Go"; }
+            Text("{count} items")
+            Button("Go")
             TextInput { bind value <=> name; }
             Text { }
-            Text { text: "{count / 10}"; }
+            Text("{count / 10}")
         }
     }
 }
@@ -256,8 +256,8 @@ export component Named {
         Column {
             semantics.role: Role::region;
             semantics.label: Option::Some("Totals");
-            Text { text: "{count}"; }
-            Button { text: "Add"; semantics.label: Option::Some("Add to {count}"); }
+            Text("{count}")
+            Button("Add") { semantics.label: Option::Some("Add to {count}"); }
             Image { opacity: 1.0; }
         }
     }
@@ -340,15 +340,14 @@ export component Said {
             semantics.heading_level: 2;
             semantics.label: "Settings";
             semantics.merge: true;
-            Text {
-                text: "x";
+            Text("x") {
                 semantics.hint: "Opens the details";
                 semantics.value: "Step {step}";
                 semantics.live: LiveRegion::polite;
             }
-            Text { text: "y"; semantics.hidden: busy; }
-            Tabs { selected: 0; Text { text: "A"; } Text { text: "B"; } }
-            RadioGroup { selected: 0; if busy { Text { text: "r1"; } } else { Text { text: "r2"; } } }
+            Text("y") { semantics.hidden: busy }
+            Tabs { selected: 0; Text("A"); Text("B") }
+            RadioGroup { selected: 0; if busy { Text("r1") } else { Text("r2") } }
         }
     }
 }
@@ -442,7 +441,7 @@ fn merging_is_a_constant_flag() {
         ("1 > 0", "`semantics.merge` is a constant `true` or `false`"),
     ] {
         let source = format!(
-            "export component C {{\n    view {{ Row {{ semantics.merge: {merge}; Text {{ text: \"x\"; }} }} }}\n}}\n"
+            "export component C {{\n    view {{ Row {{ semantics.merge: {merge}; Text(\"x\") }} }}\n}}\n"
         );
         match plan_view(&source, &origin()) {
             Ok(_) => assert!(says.is_empty(), "{merge} is rejected"),
@@ -462,7 +461,7 @@ fn a_role_is_a_constant_variant_of_role() {
         ("Justify::start", "a constant `Role::…`"),
     ] {
         let source = format!(
-            "export component C {{\n    view {{ Column {{ semantics.role: {role}; Text {{ text: \"x\"; }} }} }}\n}}\n"
+            "export component C {{\n    view {{ Column {{ semantics.role: {role}; Text(\"x\") }} }}\n}}\n"
         );
         let planned = plan_view(&source, &origin());
         match planned {

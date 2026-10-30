@@ -63,7 +63,7 @@ component Counter {
         emit changed(count);
     }
 
-    view { Text { text: "{doubled}"; } }
+    view { Text("{doubled}") }
 }
 "#;
 
@@ -107,7 +107,7 @@ component C {
         count += items[5];
     }
 
-    view { Text { text: log; } }
+    view { Text(log) }
 }
 "#,
         "C",
@@ -310,7 +310,7 @@ component C {
         }
     }
 
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 "#,
         "C",
@@ -349,7 +349,7 @@ component C {
         point = Point { x: point.y, ..point };
     }
 
-    view { Text { text: "{point.x}"; } }
+    view { Text("{point.x}") }
 }
 "#,
         "C",
@@ -476,7 +476,7 @@ component Tools {
         clipboard::write_text(label);
     }
 
-    view { Text { text: shout; } }
+    view { Text(shout) }
 }
 "#;
 
@@ -515,7 +515,7 @@ component Mover {
         same = at == Vec3F32::new(1.2f32, 2.0f32, 2.0f32);
         flat = Vec2F32::new(3.0f32, 4.0f32).length() + at.x;
     }
-    view { Text { text: "x"; } }
+    view { Text("x") }
 }
 "#;
     let module = module(source);
@@ -589,7 +589,7 @@ component Loop {
     action run(n: I64) {
         for i in 0..n { total = math::abs(total) + 1.0; }
     }
-    view { Text { text: "x"; } }
+    view { Text("x") }
 }
 "#;
     let module = module(source);
@@ -629,10 +629,10 @@ fn a_native_capability_joins_the_callable_capability_set() {
 #[test]
 fn native_misuse_is_diagnosed() {
     let standard = Natives::standard;
-    let unknown = "import viso::text;\ncomponent A { computed x: String = text::shout(\"a\"); view { Text { text: x; } } }";
+    let unknown = "import viso::text;\ncomponent A { computed x: String = text::shout(\"a\"); view { Text(x) } }";
     assert_eq!(native_errors(unknown, standard()), ["E2001"]);
 
-    let action = "import viso::time::Stopwatch;\ncomponent A { computed x: F64 = Stopwatch::start().elapsed_ms(); view { Text { text: \"a\"; } } }";
+    let action = "import viso::time::Stopwatch;\ncomponent A { computed x: F64 = Stopwatch::start().elapsed_ms(); view { Text(\"a\") } }";
     assert!(native_errors(action, standard()).contains(&"E2502".to_owned()));
 }
 
@@ -687,7 +687,7 @@ component A {
         return Result::Ok(value + n);
     }
 
-    view { Text { text: why; } }
+    view { Text(why) }
 }
 "#;
     let compiled = compile_file_in(source, &origin(), custom());
@@ -721,22 +721,23 @@ component A {
 
 #[test]
 fn a_worker_native_outside_a_task_is_diagnosed() {
-    let source = "import app::device;\ncomponent A { state n = 0; action go() { n = device::scan(); } view { Text { text: \"a\"; } } }";
+    let source = "import app::device;\ncomponent A { state n = 0; action go() { n = device::scan(); } view { Text(\"a\") } }";
     assert_eq!(native_errors(source, custom()), ["E6102"]);
 }
 
 #[test]
 fn a_borrowed_native_handle_cannot_be_stored() {
-    let stored = "import app::device;\ncomponent A { state held = device::lease(); view { Text { text: \"a\"; } } }";
+    let stored =
+        "import app::device;\ncomponent A { state held = device::lease(); view { Text(\"a\") } }";
     assert_eq!(native_errors(stored, custom()), ["E6102"]);
 
-    let local = "import app::device;\ncomponent A { action go() { let l = device::lease(); } view { Text { text: \"a\"; } } }";
+    let local = "import app::device;\ncomponent A { action go() { let l = device::lease(); } view { Text(\"a\") } }";
     assert_eq!(native_errors(local, custom()), Vec::<String>::new());
 }
 
 #[test]
 fn no_place_that_outlives_a_call_holds_a_borrowed_handle() {
-    let view = "view { Text { text: \"a\"; } }";
+    let view = "view { Text(\"a\") }";
     let lease = "device::Lease";
     for (decls, members) in [
         (
@@ -789,7 +790,7 @@ component M {
         a += items[5] + x;
     }
 
-    view { Text { text: "{total}"; } }
+    view { Text("{total}") }
 }
 "#;
 
@@ -858,7 +859,7 @@ component C {
     state a = 1;
     computed x: I64 = a + again();
     fn again() -> I64 { x }
-    view { Text { text: "{x}"; } }
+    view { Text("{x}") }
 }
 "#,
         "C",
@@ -875,7 +876,7 @@ fn float_arithmetic_rounds_every_operation() {
     let source = "component F {\n\
                       fn madd(a: F64, b: F64, c: F64) -> F64 { a * b - c }\n\
                       fn sum(a: F64, b: F64, c: F64) -> F64 { a + b + c }\n\
-                      view { Text { text: \"a\"; } }\n\
+                      view { Text(\"a\") }\n\
                   }";
     let (mut vm, mut f) = instance(source, "F");
     let a = 1.0 + 2f64.powi(-30);
@@ -921,7 +922,7 @@ component Lengths {
     action shrink() { x = -(x / 2.0); }
     action wide() { x = widen(3dp); }
     action frame_all() { frame = EdgeInsets::all(1dp + 50%); }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 "#;
     let (mut vm, mut lengths) = instance(source, "Lengths");
@@ -975,7 +976,7 @@ component C {
         n = a ?? b ?? 1 / zero;
     }
 
-    view { Text { text: out ?? ""; } }
+    view { Text(out ?? "") }
 }
 "#;
     let compiled = compile_file(source, &origin());

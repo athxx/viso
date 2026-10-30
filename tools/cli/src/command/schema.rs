@@ -236,7 +236,8 @@ fn schema_text(schema: &Schema) -> String {
                     None => i.ty.clone(),
                 };
                 let bind = if i.two_way { "  bind" } else { "" };
-                let dirty = format!("invalidates: {}{bind}", i.invalidates.join("|"));
+                let primary = if i.primary { "  primary" } else { "" };
+                let dirty = format!("invalidates: {}{bind}{primary}", i.invalidates.join("|"));
                 [i.name.clone(), ty, dirty]
             })
             .collect();

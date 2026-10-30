@@ -35,7 +35,7 @@ export component Counter {
     view {
         Column {
             width: 10dp;
-            Text { text: \"a\"; }
+            Text(\"a\")
         }
     }
 }
@@ -66,7 +66,7 @@ fn node(doc: &Document, needle: &str) -> SyntaxId {
 #[test]
 fn a_syntax_id_round_trips_through_its_text_and_survives_edits_elsewhere() {
     let d = doc(COUNTER);
-    let text_node = node(&d, "Text {");
+    let text_node = node(&d, "Text(");
     let text = text_node.to_string();
     assert!(
         text.ends_with("/ViewDecl.0/AnonymousNode.0/AnonymousNode.0"),
@@ -75,7 +75,7 @@ fn a_syntax_id_round_trips_through_its_text_and_survives_edits_elsewhere() {
     assert_eq!(text.parse::<SyntaxId>(), Ok(text_node.clone()));
     assert_eq!(
         d.range_of(&text_node).map(|r| &d.source()[r.as_usize()]),
-        Some("Text { text: \"a\"; }")
+        Some("Text(\"a\")")
     );
 
     // An edit above the node, in the same component, leaves its address valid.
@@ -94,7 +94,7 @@ fn a_syntax_id_round_trips_through_its_text_and_survives_edits_elsewhere() {
         edited
             .range_of(&text_node)
             .map(|r| &edited.source()[r.as_usize()]),
-        Some("Text { text: \"a\"; }")
+        Some("Text(\"a\")")
     );
 }
 
@@ -189,7 +189,7 @@ fn a_checked_edit_is_refused_with_the_errors_it_introduces() {
         }),
         Err(EditError::UnknownSymbol(_))
     ));
-    let mut gone = node(&d, "Text {");
+    let mut gone = node(&d, "Text(");
     gone.path.last_mut().unwrap().ordinal = 7;
     assert!(matches!(
         d.apply(&StructuredEdit::SetPropertyBinding {
@@ -220,12 +220,12 @@ fn view_edits_insert_bind_handle_and_wrap_nodes() {
         StructuredEdit::InsertNode {
             parent: column.clone(),
             index: 0,
-            node: "Text {\n    text: \"first\";\n}".into(),
+            node: "Text(\"first\")".into(),
         },
     );
     assert!(
         source.contains(
-            "            width: 10dp;\n            Text {\n                text: \"first\";\n            }\n            Text { text: \"a\"; }"
+            "            width: 10dp;\n            Text(\"first\")\n            Text(\"a\")"
         ),
         "{source}"
     );
@@ -242,7 +242,11 @@ fn view_edits_insert_bind_handle_and_wrap_nodes() {
         })
         .expect("rebind");
     assert_eq!(applied.edits.len(), 1, "the value alone is replaced");
-    assert!(applied.source.contains("text: \"changed\";"));
+    assert!(
+        applied.source.contains("Text(\"changed\")"),
+        "{}",
+        applied.source
+    );
 
     let (source, _) = apply(
         &d,
@@ -274,7 +278,7 @@ fn view_edits_insert_bind_handle_and_wrap_nodes() {
     );
     assert!(matches!(created, Some(Created::Syntax(_))));
 
-    let text = node(&d, "Text {");
+    let text = node(&d, "Text(");
     let (source, _) = apply(
         &d,
         StructuredEdit::WrapInKeyedFor {
@@ -286,7 +290,7 @@ fn view_edits_insert_bind_handle_and_wrap_nodes() {
     );
     assert!(
         source.contains(
-            "            for n in [1, 2, 3] key n {\n                Text { text: \"a\"; }\n            }"
+            "            for n in [1, 2, 3] key n {\n                Text(\"a\")\n            }"
         ),
         "{source}"
     );
@@ -423,4 +427,29 @@ export component C {
         }),
         Err(EditError::Rejected(_))
     ));
+}
+
+#[test]
+fn a_primary_property_edit_writes_the_argument_and_others_open_a_body() {
+    let d = doc(COUNTER);
+    let text = node(&d, "Text(");
+    let (source, _) = apply(
+        &d,
+        StructuredEdit::SetPropertyBinding {
+            node: text.clone(),
+            property: "text".into(),
+            value: "\"b\"".into(),
+        },
+    );
+    assert!(source.contains("            Text(\"b\")\n"), "{source}");
+    let (source, _) = apply(
+        &d,
+        StructuredEdit::SetPropertyBinding {
+            node: text,
+            property: "opacity".into(),
+            value: "0.5".into(),
+        },
+    );
+    assert!(source.contains("Text(\"a\") { opacity: 0.5 }"), "{source}");
+    doc(&source);
 }

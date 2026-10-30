@@ -739,7 +739,7 @@ template Dial(level: F32, label: String = "dial") {
                 step: 1.0;
                 value: level;
             }
-            part caption: Text { width: 100dp; height: 20dp; text: label; }
+            part caption: Text(label) { width: 100dp; height: 20dp }
         }
     }
 }
@@ -795,7 +795,7 @@ export component Panel {
                 Row {
                     width: 400dp;
                     height: 20dp;
-                    Text { text: "More"; width: 100dp; height: 20dp; }
+                    Text("More") { width: 100dp; height: 20dp }
                 }
                 Column { width: 400dp; height: 100dp; }
             }
@@ -839,9 +839,9 @@ export component Sizes {
         Column {
             RadioGroup {
                 bind selected <=> size;
-                Text { text: "Small"; width: 100dp; height: 20dp; }
-                Text { text: "Large"; width: 100dp; height: 20dp; }
-                Row { Text { text: "Composed"; } }
+                Text("Small") { width: 100dp; height: 20dp }
+                Text("Large") { width: 100dp; height: 20dp }
+                Row { Text("Composed") }
             }
         }
     }
@@ -883,13 +883,13 @@ export component Panel {
             height: 300dp;
             Disclosure {
                 bind expanded <=> open;
-                Text { text: "More"; width: 100dp; height: 20dp; }
+                Text("More") { width: 100dp; height: 20dp }
                 Row {
-                    Text { text: "Body"; }
+                    Text("Body")
                 }
             }
             Disclosure {
-                Row { Text { text: "Composed"; } }
+                Row { Text("Composed") }
             }
         }
     }
@@ -926,10 +926,9 @@ export component Rings {
     state plain = true;
     view {
         Column {
-            Button { text: "Ringed"; }
-            Button { text: "Own"; focus_ring: false; }
-            Button {
-                text: "Bound";
+            Button("Ringed")
+            Button("Own") { focus_ring: false }
+            Button("Bound") {
                 width: 100dp;
                 height: 20dp;
                 focus_ring: plain;
@@ -1106,10 +1105,10 @@ export component Page {
         Column {
             width: 400dp;
             height: 300dp;
-            Button { text: "Tap"; width: 100dp; height: 20dp; on click { taps += 1; } }
+            Button("Tap") { width: 100dp; height: 20dp; on click { taps += 1; } }
             Toast {
                 open: shown;
-                Text { text: "Saved"; width: 100dp; height: 20dp; }
+                Text("Saved") { width: 100dp; height: 20dp }
             }
         }
     }
@@ -1254,7 +1253,7 @@ export component Clicks {
     state clicks = 0;
     view {
         Column {
-            Button { text: "Go"; width: 100dp; height: 20dp; on click { clicks += 1; } }
+            Button("Go") { width: 100dp; height: 20dp; on click { clicks += 1; } }
         }
     }
 }
@@ -1499,8 +1498,8 @@ export component Keys {
     state wrap = false;
     view {
         Column {
-            Button { text: "Save"; access_key: "s"; on click { clicks += 1; } }
-            CheckBox { label: "Word wrap"; access_key: "W"; bind checked <=> wrap; }
+            Button("Save") { access_key: "s"; on click { clicks += 1; } }
+            CheckBox("Word wrap") { access_key: "W"; bind checked <=> wrap }
             TextInput { width: 100dp; height: 20dp; access_key: "n"; }
         }
     }
@@ -1595,8 +1594,8 @@ export component Inbox {
                 Column { width: 100%; height: 100%; }
                 SwipeActions {
                     edge: SwipeEdge::trailing;
-                    Button { width: 70dp; height: 40dp; text: "Flag"; on click { flagged += 1; } }
-                    Button { width: 70dp; height: 40dp; text: "Delete"; on click { deleted += 10; } }
+                    Button("Flag") { width: 70dp; height: 40dp; on click { flagged += 1; } }
+                    Button("Delete") { width: 70dp; height: 40dp; on click { deleted += 10; } }
                 }
             }
         }

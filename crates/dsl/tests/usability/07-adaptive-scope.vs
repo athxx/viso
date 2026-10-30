@@ -2,9 +2,9 @@ component Panel {
     view {
         Column {
             if env.size_class == SizeClass::Compact {
-                Text { text: "Narrow" }
+                Text("Narrow")
             } else {
-                Text { text: "Wide" }
+                Text("Wide")
             }
         }
     }

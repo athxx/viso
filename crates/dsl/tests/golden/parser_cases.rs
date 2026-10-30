@@ -255,13 +255,13 @@ pub const CASES: &[Case] = &[
     ),
     expr("ParenPattern", "match v { (a | b) => 0 }", OK),
     // --- View -----------------------------------------------------------
-    frag("AnonymousNode", "Text { text: \"hi\"; }", OK),
+    frag("AnonymousNode", "Text(\"hi\")", OK),
     frag(
         "AnonymousNode",
-        "Text { text: \"hi\" color: c }",
+        "Text(\"hi\") { opacity: 1.0 color: c }",
         &["E1404"],
     ),
-    frag("NamedNode", "node title: Text { text: label; }", OK),
+    frag("NamedNode", "node title: Text(label)", OK),
     frag("NamedNode", "node title: { }", &["E1404"]),
     frag(
         "PropertyBinding keyword path",
@@ -285,7 +285,7 @@ pub const CASES: &[Case] = &[
     frag("ViewIf", "if show { Text { } } else { Spacer { } }", OK),
     frag(
         "ViewFor",
-        "for item in items key item.id { Text { text: item.name; } }",
+        "for item in items key item.id { Text(item.name) }",
         OK,
     ),
     frag("ViewFor", "for item in items { Text { } }", &["E3401"]),

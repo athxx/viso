@@ -83,7 +83,7 @@ fn a_fragment_s_list_lays_its_rows_in_columns() {
             columns: 2;
             column_gap: 10dp;
             for i in 0..6 key i {
-                Text { height: 20dp; text: "cell"; }
+                Text("cell") { height: 20dp }
             }
         }
     };

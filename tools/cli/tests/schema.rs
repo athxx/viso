@@ -27,7 +27,7 @@ fn a_widget_schema_prints_its_properties_and_events() {
         .expect("text row");
     assert!(text_row.contains(" String "), "{text_row}");
     assert!(
-        text_row.ends_with("invalidates: MEASURE|LAYOUT|PAINT|SEMANTICS"),
+        text_row.ends_with("invalidates: MEASURE|LAYOUT|PAINT|SEMANTICS  primary"),
         "{text_row}"
     );
     assert!(text.contains("\nEvents\n"), "{text}");

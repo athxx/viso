@@ -4,7 +4,7 @@ component Scroller {
         Scroll {
             width: 100dp
             height: 50dp
-            Text { width: 100dp; height: 400dp; text: "{count}" }
+            Text("{count}") { width: 100dp; height: 400dp }
         }
     }
 }

@@ -14,8 +14,7 @@ export component Note {
     view {
         Column {
             Text { width: 20dp; height: 20dp; on click { loud = !loud; } }
-            Text {
-                text: "ignored";
+            Text("ignored") {
                 font_style: FontStyle::italic;
                 spans: [
                     Span { text: "Saved " },
@@ -164,7 +163,7 @@ export component Note {
     view {
         Column {
             Text { width: 20dp; height: 20dp; on click { pick = !pick; } }
-            Text { text: "Copy me"; selectable: pick; }
+            Text("Copy me") { selectable: pick }
         }
     }
 }

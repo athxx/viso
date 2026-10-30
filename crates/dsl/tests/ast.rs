@@ -135,7 +135,7 @@ fn component_members_read_through_typed_views() {
 #[test]
 fn view_items_and_property_binding_project() {
     let cu = CompilationUnit::cast(unit(
-        "component C { view { node label: Text { text: title; color: palette.fg; on click { } } } }",
+        "component C { view { node label: Text(title) { color: palette.fg; on click { } } } }",
     ))
     .expect("a CompilationUnit");
     let comp = cu
@@ -159,9 +159,9 @@ fn view_items_and_property_binding_project() {
     assert_eq!(name_of(named.name()), "label");
     assert!(named.ty().is_some(), "the node's `: Text` type view");
 
-    let body = named.body().expect("a node body");
-    let members: Vec<_> = body.members().collect();
-    // Two property bindings and one event handler inside the node body.
+    assert!(named.body().is_some(), "a node body");
+    let members: Vec<_> = named.members().collect();
+    // The primary binding, one property binding and one event handler.
     let bindings: Vec<&PropertyBinding> = members
         .iter()
         .filter_map(|m| match m {
@@ -170,14 +170,15 @@ fn view_items_and_property_binding_project() {
         })
         .collect();
     assert_eq!(bindings.len(), 2, "two property bindings");
-    // `text: title;` — the path is `text`, the value an Expr.
-    let text_binding = &bindings[0];
-    let path = text_binding.path().expect("a property path");
-    assert_eq!(path.segments().count(), 1, "single-segment path `text`");
-    assert!(
-        text_binding.value().is_some(),
-        "the `:` value is an Expr view"
-    );
+    // `(title)` binds the type's primary property: no path, an Expr value.
+    let primary = &bindings[0];
+    assert!(primary.is_primary() && primary.path().is_none());
+    assert!(primary.value().is_some(), "the argument is an Expr view");
+    // `color: palette.fg;` — the path is `color`, the value an Expr.
+    let color = &bindings[1];
+    let path = color.path().expect("a property path");
+    assert_eq!(path.segments().count(), 1, "single-segment path `color`");
+    assert!(color.value().is_some(), "the `:` value is an Expr view");
 
     assert!(
         members.iter().any(|m| matches!(m, ViewItem::Handler(_))),
@@ -218,10 +219,10 @@ fn all_three_entry_productions_cast() {
     assert_eq!(name_of(comp.name()), "C");
 
     // `ui!` bare view fragment, reaching its view items. The fragment's direct
-    // item is the anonymous `Button` node; its property binding and handler live in
-    // the node's body.
-    let vf = ViewFragment::cast(fragment("Button { text: \"Save\"; on click { } }"))
-        .expect("a ViewFragment");
+    // item is the anonymous `Button` node; its primary binding leads its members
+    // and its handler lives in the node's body.
+    let vf =
+        ViewFragment::cast(fragment("Button(\"Save\") { on click { } }")).expect("a ViewFragment");
     let button = vf
         .items()
         .find_map(|it| match it {
@@ -229,7 +230,7 @@ fn all_three_entry_productions_cast() {
             _ => None,
         })
         .expect("the anonymous Button node");
-    let body: Vec<_> = button.body().expect("a node body").members().collect();
+    let body: Vec<_> = button.members().collect();
     assert!(
         body.iter().any(|it| matches!(it, ViewItem::Property(_))),
         "the Button's property binding projects"

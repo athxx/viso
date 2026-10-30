@@ -617,7 +617,7 @@ mod tests {
     /// The `web-dom` page of a component showing `text`.
     fn dom_page(text: &str) -> WebPage {
         let source = format!(
-            "export component App {{ state n = 0; view {{ Column {{ Text {{ text: \"{text}\"; }} Button {{ text: \"+\"; on click {{ n += 1; }} }} }} }} }}"
+            "export component App {{ state n = 0; view {{ Column {{ Text(\"{text}\"); Button(\"+\") {{ on click {{ n += 1; }} }} }} }} }}"
         );
         let origin = viso_dsl::frontend::Origin {
             package: "app".into(),

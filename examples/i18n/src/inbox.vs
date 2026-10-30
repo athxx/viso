@@ -7,12 +7,11 @@ export component Inbox {
         Column {
             width: 400dp
             height: 120dp
-            Text { width: 400dp; height: 40dp; text: tr("inbox.title") }
-            Text { width: 400dp; height: 40dp; text: tr("inbox.unread", count: unread) }
-            Button {
+            Text(tr("inbox.title")) { width: 400dp; height: 40dp }
+            Text(tr("inbox.unread", count: unread)) { width: 400dp; height: 40dp }
+            Button(tr("inbox.mark")) {
                 width: 400dp
                 height: 40dp
-                text: tr("inbox.mark")
                 on click { if unread > 0 { unread -= 1 } }
             }
         }

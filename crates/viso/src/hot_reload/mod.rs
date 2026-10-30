@@ -2696,7 +2696,7 @@ mod tests {
         let labelled = |label: &str| {
             edited.replace(
                 "Text { visible: enabled; }",
-                &format!("Text {{ visible: enabled; text: \"{label}\"; }}"),
+                &format!("Text(\"{label}\") {{ visible: enabled; }}"),
             )
         };
         accept(&mut session, &mut host, &mut ws, &mut edits, &labelled("A"));
@@ -3334,7 +3334,7 @@ mod tests {
 
         let labelled = COUNTER.replace(
             "Text { visible: enabled; }",
-            "Text { visible: enabled; text: \"Saved\"; }",
+            "Text(\"Saved\") { visible: enabled }",
         );
         accept(&mut session, &mut host, &mut ws, &mut edits, &labelled);
         let kept = values(&ws, &session);
@@ -3382,7 +3382,7 @@ mod tests {
         // 1. Label edit, on the counter's mount: a literal text added to it.
         let labelled = COUNTER.replace(
             "Text { visible: enabled; }",
-            "Text { visible: enabled; text: \"Saved\"; }",
+            "Text(\"Saved\") { visible: enabled }",
         );
         accept_on(
             &mut session,
@@ -3497,8 +3497,7 @@ mod tests {
     }
 
     const COUNTER_STATES: &str = "state count = 0;\n    state enabled = true;";
-    const COUNTER_CHILDREN: &str =
-        "Text { text: \"{count}\"; }\n            Text { visible: enabled; }";
+    const COUNTER_CHILDREN: &str = "Text(\"{count}\")\n            Text { visible: enabled; }";
 
     #[test]
     fn insert_remove_reorder_and_a_scoped_reset_each_apply_without_disturbing_the_rest() {
@@ -3531,7 +3530,7 @@ mod tests {
         //    logger mount is not touched at all.
         let inserted = counter_source(
             COUNTER_STATES,
-            &format!("{COUNTER_CHILDREN}\n            Text {{ text: \"new\"; }}"),
+            &format!("{COUNTER_CHILDREN}\n            Text(\"new\")"),
         );
         accept_on(
             &mut session,
@@ -3586,7 +3585,7 @@ mod tests {
             &mut counter_edits,
             &counter_source(
                 COUNTER_STATES,
-                "node first: Text { text: \"{count}\"; }\n            node second: Text { visible: enabled; }",
+                "node first: Text(\"{count}\")\n            node second: Text { visible: enabled; }",
             ),
         );
         let [_, _, named_second] = subtree(&windows[0].store, root)[..] else {
@@ -3594,7 +3593,7 @@ mod tests {
         };
         let named = counter_source(
             COUNTER_STATES,
-            "node second: Text { visible: enabled; }\n            node first: Text { text: \"{count}\"; }",
+            "node second: Text { visible: enabled; }\n            node first: Text(\"{count}\")",
         );
         accept_on(
             &mut session,
@@ -3620,7 +3619,7 @@ mod tests {
         //    is untouched, and the ACK names exactly the state that reset.
         let retyped = counter_source(
             "state count = 0;\n    state enabled: I64 = 0;",
-            "node second: Text { }\n            node first: Text { text: \"{count}\"; }",
+            "node second: Text { }\n            node first: Text(\"{count}\")",
         );
         let ack = accept_on(
             &mut session,
@@ -3887,8 +3886,8 @@ mod tests {
         let named = COUNTER.replace(
             "Text { visible: enabled; }",
             "Text { visible: enabled; }\n            \
-             Svg { source: asset(\"icons/star.svg\"); width: 24dp; height: 24dp; }\n            \
-             Image { source: asset(\"photos/day.jpg\"); animate: false; }",
+             Svg(asset(\"icons/star.svg\")) { width: 24dp; height: 24dp }\n            \
+             Image(asset(\"photos/day.jpg\")) { animate: false }",
         );
         let patch = edits.patch(&host, 1, 2, &named);
         let red = star(10, 20, "#f00");
@@ -4488,7 +4487,7 @@ mod tests {
 
     #[test]
     fn an_app_that_mounts_no_view_carries_its_window_and_extensions() {
-        let rust = |cx: &mut BuildCx<'_>| viso_ui_macros::ui! { Text { text: "rust"; } }(cx).id();
+        let rust = |cx: &mut BuildCx<'_>| viso_ui_macros::ui! { Text("rust") }(cx).id();
         let mut old = mounted(rust);
         let (mut session, mut host, entries) = linked(Some(&mut old));
         assert!(entries.is_empty(), "the launch reports no mount");

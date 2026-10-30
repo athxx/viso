@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn a_bound_property_becomes_an_edge_by_identity_not_name() {
         // The single node is index 0; its `text` binds to the `label` state.
-        let candidate = view_plan("Text { text: \"{label}\"; }");
+        let candidate = view_plan("Text(\"{label}\")");
         let pkg = emit_package(&candidate);
         assert_eq!(pkg.edges.len(), 1, "one static binding edge");
         let edge = pkg.edges[0];
@@ -644,7 +644,7 @@ mod tests {
     fn node_indices_are_the_binding_keys() {
         // A nested tree: the deep leaf's edge must reference its own pre-order index,
         // proving the emitter's numbering matches the binding IR's `NodeKey` walk.
-        let candidate = view_plan("Column { Row { Text { text: \"{label}\"; } } }");
+        let candidate = view_plan("Column { Row { Text(\"{label}\") } }");
         let pkg = emit_package(&candidate);
         // pre-order: Column(0) Row(1) Text(2).
         assert_eq!(pkg.nodes.len(), 3);
@@ -663,7 +663,7 @@ mod tests {
         // The end of the emitter is bytes the loader decodes; the DSL side only has to
         // produce a well-formed blob (the full load closure is exercised in the
         // headless integration test, which imports only viso-ui).
-        let blob = build_package("Row { Text { text: \"a\"; } }").expect("compiles");
+        let blob = build_package("Row { Text(\"a\") }").expect("compiles");
         let pkg = viso_schema::aot::AotPackage::decode_from_slice(&blob).expect("decodes");
         assert_eq!(pkg.nodes.len(), 2, "Row + Text");
         assert!(pkg.edges.is_empty(), "a fragment binds no state");
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn a_malformed_source_yields_diagnostics_not_a_package() {
-        let err = build_package("Text { text: ;;; }").expect_err("malformed is fatal");
+        let err = build_package("Text()").expect_err("malformed is fatal");
         assert!(!err.is_empty(), "carries the fatal diagnostics");
     }
 }

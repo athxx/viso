@@ -11,7 +11,7 @@ export component Hud {
         Column {
             width: 200dp
             height: 40dp
-            Text { width: 100dp; height: 20dp; text: "Score: {game.score()}" }
+            Text("Score: {game.score()}") { width: 100dp; height: 20dp }
         }
     }
 }

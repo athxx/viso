@@ -67,20 +67,18 @@ export component Agenda {
         Column {
             width: 400dp;
             height: 300dp;
-            Text {
+            Text(tr("when.due", day: day)) {
                 width: 20dp;
                 height: 20dp;
-                text: tr("when.due", day: day);
                 on click { day = Date { year: 2027, month: 1, day: 5 }; }
             }
-            Text {
+            Text(tr("when.full", at: DateTime { date: day, time: Time { hour: 16, minute: 5 } })) {
                 width: 20dp;
                 height: 20dp;
-                text: tr("when.full", at: DateTime { date: day, time: Time { hour: 16, minute: 5 } });
             }
-            Text { width: 20dp; height: 20dp; text: tr("when.short", day: day); }
-            Text { width: 20dp; height: 20dp; text: tr("when.alarm", at: Time { hour: 7, minute: 30, second: 15 }); }
-            Text { width: 20dp; height: 20dp; text: tr("when.whole", n: 2.5, m: 3.5); }
+            Text(tr("when.short", day: day)) { width: 20dp; height: 20dp }
+            Text(tr("when.alarm", at: Time { hour: 7, minute: 30, second: 15 })) { width: 20dp; height: 20dp }
+            Text(tr("when.whole", n: 2.5, m: 3.5)) { width: 20dp; height: 20dp }
         }
     }
 }
@@ -228,13 +226,7 @@ fn the_catalog_compiles_its_messages_and_each_translation_fits_its_source() {
 #[test]
 fn a_key_and_its_arguments_match_the_catalog() {
     let ok = view_codes(
-        "Text { text: tr(\"inbox.unread\", count: unread); }\
-         Text { text: tr(\"inbox.title\"); }\
-         Text { text: tr(key); }\
-         Text { text: tr(\"inbox.mood\", mood: mood); }\
-         Text { text: tr(\"inbox.mood\", mood: \"happy\"); }\
-         Text { text: tr(\"inbox.size\", bytes: 12, ratio: 1.5dp); }\
-         Text { text: tr(\"inbox.greet\", name: \"Ann\"); }",
+        "Text(tr(\"inbox.unread\", count: unread)); Text(tr(\"inbox.title\")); Text(tr(key)); Text(tr(\"inbox.mood\", mood: mood)); Text(tr(\"inbox.mood\", mood: \"happy\")); Text(tr(\"inbox.size\", bytes: 12, ratio: 1.5dp)); Text(tr(\"inbox.greet\", name: \"Ann\"))",
     );
     assert!(ok.is_empty(), "{ok:?}");
 
@@ -248,42 +240,36 @@ fn a_key_and_its_arguments_match_the_catalog() {
         );
     };
     e3706(
-        "Text { text: tr(\"inbox.titel\"); }",
+        "Text(tr(\"inbox.titel\"))",
         "not a message of the `en` catalog",
     );
-    e3706("Text { text: tr(\"inbox.unread\"); }", "needs `count:`");
+    e3706("Text(tr(\"inbox.unread\"))", "needs `count:`");
+    e3706("Text(tr(\"inbox.title\", n: 1))", "takes no arguments");
     e3706(
-        "Text { text: tr(\"inbox.title\", n: 1); }",
-        "takes no arguments",
-    );
-    e3706(
-        "Text { text: tr(\"inbox.unread\", cuont: 1); }",
+        "Text(tr(\"inbox.unread\", cuont: 1))",
         "no placeholder `cuont`",
     );
     e3706(
-        "Text { text: tr(\"inbox.unread\", count: 1, count: 2); }",
+        "Text(tr(\"inbox.unread\", count: 1, count: 2))",
         "given twice",
     );
     e3706(
-        "Text { text: tr(\"inbox.unread\", count: \"x\"); }",
+        "Text(tr(\"inbox.unread\", count: \"x\"))",
         "as a number, found `String`",
     );
     e3706(
-        "Text { text: tr(\"inbox.mood\", mood: 1); }",
+        "Text(tr(\"inbox.mood\", mood: 1))",
         "as a `String` or an enum",
     );
+    e3706("Text(tr(\"inbox.greet\", name: Tag {}))", "found `Tag`");
+    e3706("Text(tr(key, count: 1))", "without arguments");
     e3706(
-        "Text { text: tr(\"inbox.greet\", name: Tag {}); }",
-        "found `Tag`",
-    );
-    e3706("Text { text: tr(key, count: 1); }", "without arguments");
-    e3706(
-        "Text { text: tr(\"inbox.unread\", 1); }",
+        "Text(tr(\"inbox.unread\", 1))",
         "named after the message's placeholder",
     );
 
     let unknown = compile_file_for(
-        &component("", "Text { text: tr(\"inbox.titel\"); }"),
+        &component("", "Text(tr(\"inbox.titel\"))"),
         &origin(),
         Natives::standard(),
         profile(),
@@ -317,7 +303,7 @@ fn a_key_and_its_arguments_match_the_catalog() {
     assert!(dynamic.iter().any(|(c, _)| c == "E2103"), "{dynamic:?}");
 
     let none = codes(
-        &component("", "Text { text: tr(\"inbox.title\"); }"),
+        &component("", "Text(tr(\"inbox.title\"))"),
         TargetProfile::default(),
     );
     assert!(
@@ -337,7 +323,7 @@ fn tr_reads_the_locale_only_where_a_component_instance_runs() {
              fn pick(n: I64) -> MessageKey { if n > 0 { return \"inbox.title\"; } return \"inbox.title\"; }\n\
              fn of(m: Mood) -> MessageKey { return match m { Mood::happy => \"inbox.title\", Mood::sad => \"inbox.other\" }; }\n\
              computed same = key == of(mood);",
-            "Text { text: heading; on click { show(); } }",
+            "Text(heading) { on click { show(); } }",
         ),
         profile(),
     );
@@ -371,28 +357,25 @@ component Inbox {
         Column {
             width: 400dp;
             height: 300dp;
-            Text {
+            Text(tr("inbox.unread", count: unread)) {
                 width: 20dp;
                 height: 20dp;
-                text: tr("inbox.unread", count: unread);
                 on click { unread += 1; }
             }
-            Text {
+            Text(tr(key)) {
                 width: 20dp;
                 height: 20dp;
-                text: tr(key);
                 on click { key = "inbox.other"; }
             }
-            Text {
+            Text(tr("inbox.mood", mood: mood)) {
                 width: 20dp;
                 height: 20dp;
-                text: tr("inbox.mood", mood: mood);
                 on click { mood = Mood::sad; }
             }
-            Text { width: 20dp; height: 20dp; text: tr("inbox.place", n: unread + 2); }
-            Text { width: 20dp; height: 20dp; text: tr("inbox.greet", name: "Ann"); }
-            Text { width: 20dp; height: 20dp; text: tr("inbox.size", bytes: 1234567, ratio: 0.5); }
-            Text { width: 20dp; height: 20dp; text: heading; }
+            Text(tr("inbox.place", n: unread + 2)) { width: 20dp; height: 20dp }
+            Text(tr("inbox.greet", name: "Ann")) { width: 20dp; height: 20dp }
+            Text(tr("inbox.size", bytes: 1234567, ratio: 0.5)) { width: 20dp; height: 20dp }
+            Text(heading) { width: 20dp; height: 20dp }
         }
     }
 }
@@ -640,14 +623,14 @@ fn dates_and_times_show_in_the_readers_locale_under_every_target() {
 #[test]
 fn a_date_argument_takes_a_date_and_a_time_one_a_time() {
     let codes = |view: &str| view_codes(view);
-    let wrong = codes("Text { text: tr(\"when.due\", day: Time { hour: 1 }); }");
+    let wrong = codes("Text(tr(\"when.due\", day: Time { hour: 1 }))");
     assert!(
         wrong
             .iter()
             .any(|(c, m)| c == "E3706" && m.contains("a `Date` or a `DateTime`")),
         "{wrong:?}"
     );
-    let wrong = codes("Text { text: tr(\"when.full\", at: Date { year: 1, month: 1, day: 1 }); }");
+    let wrong = codes("Text(tr(\"when.full\", at: Date { year: 1, month: 1, day: 1 }))");
     assert!(
         wrong
             .iter()
@@ -656,7 +639,7 @@ fn a_date_argument_takes_a_date_and_a_time_one_a_time() {
     );
     assert_eq!(
         codes(
-            "Text { text: tr(\"when.due\", day: DateTime { date: Date { year: 1, month: 1, day: 1 }, time: Time {} }); }"
+            "Text(tr(\"when.due\", day: DateTime { date: Date { year: 1, month: 1, day: 1 }, time: Time {} }))"
         ),
         [],
         "a `DateTime` serves a date"

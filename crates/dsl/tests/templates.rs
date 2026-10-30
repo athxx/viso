@@ -37,7 +37,7 @@ template TitledCard(title: String, size: F32 = 14.0) {
 
     view {
         Column {
-            part heading: Text { text: shout(title); }
+            part heading: Text(shout(title))
             SlotOutlet { slot: content; }
         }
     }
@@ -99,7 +99,7 @@ export component Profile {{
         Column {{
             use TitledCard(\"Profile\") {{
                 override part heading {{ text: name; }}
-                fill content {{ Text {{ text: \"body\"; }} }}
+                fill content {{ Text(\"body\") }}
             }};
             use TitledCard(size: 12.0, title: \"Second\") {{
                 replace part heading {{ Row {{}} }}

@@ -966,14 +966,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             edits[0].get("newText").and_then(Json::as_str),
-            Some("\n                text: \"hi\";\n            ")
+            Some("(\"hi\")")
         );
         assert!(
             applied
                 .get("created")
                 .and_then(|c| c.get("syntax"))
                 .and_then(Json::as_str)
-                .is_some_and(|s| s.ends_with("/PropertyBinding.0"))
+                .is_some_and(|s| s.ends_with("/PrimaryArgument.0"))
         );
 
         // An edit adding an error is refused with it.
@@ -1132,17 +1132,14 @@ mod tests {
     fn hover_on_a_diagnostic_explains_its_code() {
         let mut s = Server::new();
         let uri = "file:///h.vs";
-        s.handle(&open(
-            uri,
-            "component C {\n    view { Text { text: missing; } }\n}\n",
-        ));
+        s.handle(&open(uri, "component C {\n    view { Text(missing) }\n}\n"));
         let at = |line: u32, character: u32| {
             json::parse(&format!(
                 r#"{{"textDocument":{{"uri":"{uri}"}},"position":{{"line":{line},"character":{character}}}}}"#
             ))
             .unwrap()
         };
-        let (out, _) = s.handle(&req(5, "textDocument/hover", at(1, 25)));
+        let (out, _) = s.handle(&req(5, "textDocument/hover", at(1, 17)));
         let result = out.reply.unwrap().get("result").cloned().unwrap();
         let value = result
             .get("contents")

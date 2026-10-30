@@ -211,7 +211,7 @@ export component Search {{
             Text {{ width: 20dp; height: 20dp; on click {{ q = -q; }} }}
             Text {{ width: 20dp; height: 20dp; on click {{ show = !show; }} }}
             match r.state {{
-                ResourceState::ready(v) => {{ Text {{ text: "{{v}}"; }} }},
+                ResourceState::ready(v) => {{ Text("{{v}}") }},
                 _ => {{ }},
             }}
             if show {{ Item {{}} }}
@@ -408,9 +408,9 @@ component Card {{
     view {{
         Column {{
             match r.state {{
-                ResourceState::ready(v) => {{ Text {{ text: "{{v}}"; }} }},
-                ResourceState::reloading(v) => {{ Text {{ text: "~{{v}}"; }} }},
-                ResourceState::loading => {{ Text {{ text: "..."; }} }},
+                ResourceState::ready(v) => {{ Text("{{v}}") }},
+                ResourceState::reloading(v) => {{ Text("~{{v}}") }},
+                ResourceState::loading => {{ Text("...") }},
                 _ => {{ }},
             }}
         }}

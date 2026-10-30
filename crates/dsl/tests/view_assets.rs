@@ -23,13 +23,12 @@ component Gallery {
             width: 400dp;
             height: 300dp;
             Text { width: 20dp; height: 20dp; on click { dark = !dark; } }
-            Image {
-                source: if dark { asset("images/dark.png") } else { asset("images/light.png") };
+            Image(if dark { asset("images/dark.png") } else { asset("images/light.png") }) {
                 fit: ImageFit::cover;
                 width: 64dp;
                 height: 64dp;
             }
-            Svg { source: asset("icons/close.svg"); tint: #ff0000; width: 16dp; height: 16dp; }
+            Svg(asset("icons/close.svg")) { tint: #ff0000; width: 16dp; height: 16dp }
         }
     }
 }

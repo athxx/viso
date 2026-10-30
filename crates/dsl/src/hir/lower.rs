@@ -2623,6 +2623,7 @@ impl ModuleScope {
                     ty: self.annotation_of(param.syntax()),
                     two_way: false,
                     styleable: false,
+                    primary: false,
                     declared_at: name.text_range(),
                     symbol: decl_symbol(table, interner, Some(name), Namespace::Value),
                     has_default: param.default().is_some(),
@@ -2631,11 +2632,13 @@ impl ModuleScope {
             .collect();
         let mut bindable = false;
         let mut styleable = false;
+        let mut primary = false;
         for child in decl.syntax().children() {
             match child.kind() {
                 SyntaxKind::Attribute => {
                     bindable |= is_bindable(&child);
                     styleable |= attribute_is(&child, "styleable");
+                    primary |= attribute_is(&child, "primary");
                 }
                 SyntaxKind::InputDecl => {
                     if let Some(name) = InputDecl::cast(child.clone()).and_then(|d| d.name()) {
@@ -2644,6 +2647,7 @@ impl ModuleScope {
                             ty: self.annotation_of(&child),
                             two_way: bindable,
                             styleable,
+                            primary,
                             declared_at: name.text_range(),
                             symbol: decl_symbol(
                                 table,
@@ -2657,10 +2661,12 @@ impl ModuleScope {
                     }
                     bindable = false;
                     styleable = false;
+                    primary = false;
                 }
                 _ => {
                     bindable = false;
                     styleable = false;
+                    primary = false;
                 }
             }
         }
@@ -2897,6 +2903,23 @@ pub(crate) fn write_backs(decl: &ComponentDecl) -> Vec<(usize, String)> {
         }
     }
     out
+}
+
+/// The input of `decl` marked `@primary`, which `Component(value)` gives;
+/// the first, when more are (each further one is `E3109`).
+pub(crate) fn primary_input(decl: &ComponentDecl) -> Option<String> {
+    let mut marked = false;
+    for child in decl.syntax().children() {
+        match child.kind() {
+            SyntaxKind::Attribute => marked |= attribute_is(&child, "primary"),
+            SyntaxKind::InputDecl if marked => {
+                let name = InputDecl::cast(child)?.name()?;
+                return Some(name.text().trim_start_matches("r#").to_string());
+            }
+            _ => marked = false,
+        }
+    }
+    None
 }
 
 /// Whether a state of `decl` is marked `@persist`.
@@ -3397,7 +3420,7 @@ mod tests {
              view { Button { on click { a(); n += 1; emit e(); } } } }",
         );
         assert_eq!(
-            codes("component C { action a() {} view { Text { text: a(); } } }"),
+            codes("component C { action a() {} view { Text(a()) } }"),
             ["E2103", "E2502"]
         );
     }
@@ -3691,8 +3714,8 @@ mod tests {
 
     #[test]
     fn a_text_property_takes_only_a_string() {
-        assert_clean("component C {\n  state n = 0\n  view { Text { text: \"{n}\" } }\n}");
-        let src = "component C {\n  state n = 0\n  view { Text { text: n; } }\n}";
+        assert_clean("component C {\n  state n = 0\n  view { Text(\"{n}\") }\n}");
+        let src = "component C {\n  state n = 0\n  view { Text(n) }\n}";
         let pkg = lower_src(src);
         let codes: Vec<_> = pkg.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(codes, ["E2103"]);
@@ -3709,7 +3732,7 @@ mod tests {
 
         let decls = "record P { x: I64; }\n";
         let pkg = lower_src(&format!(
-            "{decls}component C {{\n  input p: P\n  view {{ Text {{ text: p; }} }}\n}}"
+            "{decls}component C {{\n  input p: P\n  view {{ Text(p) }}\n}}"
         ));
         assert!(
             pkg.diagnostics.iter().all(|d| d.fixes.is_empty()),
@@ -3726,7 +3749,7 @@ mod tests {
         assert_clean(
             "component C {\n\
              \x20 state on = true\n\
-             \x20 view { Column { width: 50%; Toggle { bind checked <=> on; } Text { text: \"a\"; opacity: 0.5; } } }\n\
+             \x20 view { Column { width: 50%; Toggle { bind checked <=> on; } Text(\"a\") { opacity: 0.5 } } }\n\
              }",
         );
         let pkg = lower_src("component C {\n  view { Text { opacty: 0.5; } }\n}");
@@ -3741,7 +3764,7 @@ mod tests {
             "the misspelling suggests `opacity`, got {d:?}"
         );
         assert_eq!(
-            codes("component C {\n  view { Text { text: \"a\"; text: \"b\"; } }\n}"),
+            codes("component C {\n  view { Text(\"a\") { color: #000000; color: #ffffff } }\n}"),
             ["E3102"]
         );
         assert_eq!(
@@ -3848,9 +3871,9 @@ mod tests {
              \x20   width: Sizing::fill {};\n\
              \x20   semantics.role: Role::list;\n\
              \x20   semantics.live: LiveRegion::polite;\n\
-             \x20   Text { text: \"a\"; font_weight: FontWeight::bold; align: TextAlign::center; width: 40dp; }\n\
-             \x20   Stack { content_align: Alignment2D::bottom_end; Text { text: \"b\"; } }\n\
-             \x20   Grid { columns: [Track::fr(1.0), Track::fixed(40dp)]; Text { text: \"c\"; } }\n\
+             \x20   Text(\"a\") { font_weight: FontWeight::bold; align: TextAlign::center; width: 40dp }\n\
+             \x20   Stack { content_align: Alignment2D::bottom_end; Text(\"b\") }\n\
+             \x20   Grid { columns: [Track::fr(1.0), Track::fixed(40dp)]; Text(\"c\") }\n\
              \x20 } }\n\
              }",
         );
@@ -3867,7 +3890,7 @@ mod tests {
             "a variant of another enum"
         );
         assert_eq!(
-            codes("component C {\n  view { Text { text: \"a\"; font_weight: 700; } }\n}"),
+            codes("component C {\n  view { Text(\"a\") { font_weight: 700 } }\n}"),
             ["E2103"]
         );
         assert_eq!(

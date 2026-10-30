@@ -236,8 +236,8 @@ const CARD: &str = r#"export component Card {
     slot footer: OptionalSlot<Node>;
     view {
         Column {
-            Text { text: title; }
-            if dense { Text { text: value; } }
+            Text(title)
+            if dense { Text(value) }
         }
     }
 }
@@ -321,10 +321,10 @@ export component Counter {
     view {
         Column {
             gap: 8dp;
-            node title: Text { text: label; }
-            Button { text: "Add"; on click { increment(); } }
-            for name in names key name { Text { text: name; } }
-            if count > 3 { Text { text: "many"; } } else { Text { text: "few"; } }
+            node title: Text(label)
+            Button("Add") { on click { increment(); } }
+            for name in names key name { Text(name) }
+            if count > 3 { Text("many") } else { Text("few") }
         }
     }
 }

@@ -395,8 +395,8 @@ mod tests {
         \x20   view {\n\
         \x20       Column {\n\
         \x20           gap: 8dp;\n\
-        \x20           Text { text: text::upper(\"hi\"); }\n\
-        \x20           Button { text: \"Add\"; on click { bump(); } }\n\
+        \x20           Text(text::upper(\"hi\"))\n\
+        \x20           Button(\"Add\") { on click { bump(); } }\n\
         \x20       }\n\
         \x20   }\n\
         }\n";
@@ -439,7 +439,7 @@ mod tests {
             find(&tokens, "upper", 0),
             (TokenType::Function, DEFAULT_LIBRARY)
         );
-        assert_eq!(find(&tokens, "text", 2).0, TokenType::Namespace);
+        assert_eq!(find(&tokens, "text", 1).0, TokenType::Namespace);
         assert_eq!(find(&tokens, "to", 0).0, TokenType::Parameter);
         assert_eq!(find(&tokens, "I32", 0), (TokenType::Type, DEFAULT_LIBRARY));
     }

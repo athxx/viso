@@ -4,7 +4,7 @@ export component Editor {
     view {
         Column {
             gap: 8dp
-            Text { text: "Notes" }
+            Text("Notes")
             TextInput { bind value <=> text }
         }
     }

@@ -8,11 +8,10 @@ export component Counter {
             width: 320dp
             height: 40dp
             gap: 16dp
-            Text { width: 152dp; height: 40dp; text: tr("counter.count", count: count) }
-            Button {
+            Text(tr("counter.count", count: count)) { width: 152dp; height: 40dp }
+            Button(tr("counter.add")) {
                 width: 152dp
                 height: 40dp
-                text: tr("counter.add")
                 on click { count += 1 }
             }
         }

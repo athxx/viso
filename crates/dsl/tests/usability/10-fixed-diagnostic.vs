@@ -5,6 +5,6 @@ export component Total {
     computed shown: F64 = count as F64 * scale
 
     view {
-        Text { text: "{shown}" }
+        Text("{shown}")
     }
 }

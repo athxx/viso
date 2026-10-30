@@ -295,7 +295,7 @@ fn explicit_axis_property_folds_over_the_type_default() {
 fn reactive_property_becomes_pending_not_dropped() {
     // A non-constant value (a path to state) is not folded; it is recorded as a
     // pending binding carrying the property's dirty class.
-    let node = only_node("Text { text: label; }");
+    let node = only_node("Text(label)");
     assert!(node.style.is_empty(), "no static style folded");
     assert_eq!(node.pending.len(), 1, "one pending binding");
     let p = &node.pending[0];
@@ -306,7 +306,7 @@ fn reactive_property_becomes_pending_not_dropped() {
         "text content invalidates measure/layout/paint/semantics"
     );
     // The recorded span points at the value expression `label`.
-    let span = &src_slice("Text { text: label; }", p.value);
+    let span = &src_slice("Text(label)", p.value);
     assert_eq!(span, "label");
 }
 
@@ -466,7 +466,7 @@ mod binding {
 
     #[test]
     fn text_bound_to_state_becomes_one_static_edge() {
-        let c = compiled("state label = \"\";", "Text { text: label; }");
+        let c = compiled("state label = \"\";", "Text(label)");
         let ir = &c.bindings;
         assert_eq!(ir.edges.len(), 1, "one binding edge");
         let edge = &ir.edges[0];
@@ -517,7 +517,7 @@ mod binding {
         // source produces only static edges — the strict-typed invariant.
         let c = compiled(
             "state label = \"\"; state count = \"\";",
-            "Column { Text { text: label; } Text { text: count; } }",
+            "Column { Text(label); Text(count) }",
         );
         let ir = &c.bindings;
         assert_eq!(ir.static_edges().count(), 2, "both texts bound statically");
@@ -530,7 +530,7 @@ mod binding {
 
     #[test]
     fn a_property_reading_no_reactive_source_is_left_unbound() {
-        let c = compiled("", "Text { text: \"a\"; }");
+        let c = compiled("", "Text(\"a\")");
         assert!(c.bindings.edges.is_empty(), "no reactive read, no edge");
         assert_eq!(
             c.bindings.dynamic_fallback_nodes, 0,

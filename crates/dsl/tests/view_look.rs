@@ -296,8 +296,7 @@ component Move {
         Column {
             width: 400dp;
             height: 300dp;
-            Text {
-                text: "a";
+            Text("a") {
                 width: if lit { 60dp } else { 20dp };
                 height: 20dp;
                 translate: Offset { x: if lit { 40dp } else { 0dp }, y: 0dp };
@@ -427,8 +426,7 @@ component Turn {
         Column {
             width: 400dp;
             height: 300dp;
-            Text {
-                text: "a";
+            Text("a") {
                 width: 40dp;
                 height: 20dp;
                 scale: if lit { 2.0f32 } else { 1.0f32 };

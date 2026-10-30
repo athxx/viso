@@ -55,10 +55,9 @@ viso::component! {
             Column {
                 width: 200dp;
                 height: 100dp;
-                Text {
+                Text("{count} taps") {
                     width: 100dp;
                     height: 50dp;
-                    text: "{count} taps";
                     on click { count += 1; }
                 }
             }
@@ -95,10 +94,9 @@ viso::component! {
             Column {
                 width: 200dp;
                 height: 100dp;
-                Text {
+                Text("Title") {
                     width: 100dp;
                     height: 50dp;
-                    text: "Title";
                     font_weight: if bold { FontWeight::bold } else { FontWeight::regular };
                     max_lines: Option::Some(1);
                     overflow: TextOverflow::ellipsis;

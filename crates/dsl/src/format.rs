@@ -761,7 +761,7 @@ mod tests {
             "component C {\n  state count = 0;\n  computed d = count;\n}\n",
             "component   Counter{state  count=0;computed doubled=count;}",
             "record P { x: Int; y: Int; }",
-            "component C {\n  view {\n    Text { text: label; color: c; }\n  }\n}\n",
+            "component C {\n  view {\n    Text(label) { color: c }\n  }\n}\n",
         ];
         for src in samples {
             let once = format(src);

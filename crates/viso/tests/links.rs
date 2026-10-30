@@ -240,8 +240,7 @@ viso::component! {
             Column {
                 width: 400dp;
                 height: 100dp;
-                LinkLabel {
-                    text: "docs";
+                LinkLabel("docs") {
                     url: "https://example.org/dsl";
                     font_size: 20dp;
                 }

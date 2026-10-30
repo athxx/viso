@@ -226,6 +226,7 @@ fn component_schema(
                 default,
                 invalidates: dirty_names(invalidates.get(i).copied().unwrap_or_default()),
                 two_way: two_way.iter().any(|&(slot, _)| slot == i),
+                primary: input.primary,
             }
         })
         .collect();

@@ -2811,7 +2811,7 @@ mod tests {
         );
         let named = VIEW.replace(
             "Text { width: 120dp; }",
-            "Svg { source: asset(\"icons/star.svg\"); }",
+            "Svg(asset(\"icons/star.svg\"))",
         );
         f.save(&named);
         let sent = f.settle();
@@ -3554,7 +3554,7 @@ mod tests {
 
     #[test]
     fn state_kept_as_the_session_stops_leaves_the_sensitive_out_and_restores_next_time() {
-        const SECRET: &str = "component Counter {\n    state count = 0;\n    @sensitive state token = \"\";\n    view {\n        Column {\n            Text { width: 120dp; text: token; }\n        }\n    }\n}\n";
+        const SECRET: &str = "component Counter {\n    state count = 0;\n    @sensitive state token = \"\";\n    view {\n        Column {\n            Text(token) { width: 120dp }\n        }\n    }\n}\n";
         let mut f = Fixture::app("keep", true, SECRET, SECRET, Domains::NONE);
         let _ = f.settle();
         let dev = f.dev.root().join("target/viso/dev");
@@ -3899,7 +3899,7 @@ mod tests {
         let i18n = f.path.parent().unwrap().join("i18n");
         std::fs::create_dir_all(&i18n).unwrap();
         let i18n = i18n.canonicalize().unwrap();
-        let view = "import viso::i18n::tr;\ncomponent Counter {\n    view { Text { text: tr(\"title\"); } }\n}\n";
+        let view = "import viso::i18n::tr;\ncomponent Counter {\n    view { Text(tr(\"title\")) }\n}\n";
         let catalog = Some(("en".to_owned(), i18n.display().to_string()));
         f.dev.change(
             Change {
@@ -3939,7 +3939,7 @@ mod tests {
         std::fs::create_dir_all(root.join("i18n")).unwrap();
         let root = root.canonicalize().unwrap();
         let (path, catalog) = (root.join("view.vs"), root.join("i18n/en.toml"));
-        let view = "import viso::i18n::tr;\ncomponent Counter {\n    view { Text { text: tr(\"title\"); } }\n}\n";
+        let view = "import viso::i18n::tr;\ncomponent Counter {\n    view { Text(tr(\"title\")) }\n}\n";
         std::fs::write(&path, view).unwrap();
         std::fs::write(&catalog, "title = \"Inbox\"\n").unwrap();
         let lock = LockGuard::acquire(

@@ -10,9 +10,8 @@ export component SignUp {
             gap: 8dp
             TextInput { bind value <=> name }
             CheckBox { bind checked <=> subscribed }
-            Text { text: name }
-            Button {
-                text: "Sign up"
+            Text(name)
+            Button("Sign up") {
                 on click {
                     if ready {
                         submitted += 1

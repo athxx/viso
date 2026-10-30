@@ -70,6 +70,7 @@ Generated from the compiler's diagnostics registry (`crates/dsl/src/diag/codes.r
 | [E3106](#e3106) | Non-Finite Length | warning | view |
 | [E3107](#e3107) | Bind Source Is Not A State Lens | error | view |
 | [E3108](#e3108) | Invalid Grid Area Or Cell | error | view |
+| [E3109](#e3109) | Misplaced Primary Property | error | view |
 | [E3201](#e3201) | Arrow Event Handler | error | view |
 | [E3202](#e3202) | Unknown Event Or Wrong Payload | error | view |
 | [E3301](#e3301) | Invalid Preserve Identity | error | view |
@@ -170,7 +171,7 @@ const café = 1;
 const café = 2;
 
 component Menu {
-    view { Text { text: "menu"; } }
+    view { Text("menu") }
 }
 ```
 
@@ -190,7 +191,7 @@ An identifier mixes Unicode scripts in a way that is easy to confuse visually, s
 ```vs
 component Checkout {
     state pаy = 0;
-    view { Text { text: "checkout"; } }
+    view { Text("checkout") }
 }
 ```
 
@@ -209,7 +210,7 @@ A string, raw string or character literal was opened but never closed. Ordinary 
 ```vs
 component Greeting {
     state message = "hello;
-    view { Text { text: message; } }
+    view { Text(message) }
 }
 ```
 
@@ -229,7 +230,7 @@ A block comment opened with `/*` reaches the end of the file without a matching 
 component Notes {
     /* draft notes
     state count = 0;
-    view { Text { text: "notes"; } }
+    view { Text("notes") }
 }
 ```
 
@@ -249,7 +250,7 @@ A numeric literal is malformed: a radix-prefixed integer (`0x`, `0o`, `0b`) has 
 ```vs
 component Spacer {
     state gap = 1e2dp;
-    view { Text { text: "spacer"; } }
+    view { Text("spacer") }
 }
 ```
 
@@ -268,7 +269,7 @@ A number is immediately followed by a suffix outside the closed set of units and
 ```vs
 component Title {
     view {
-        Text { text: "title"; font_size: 12pt; }
+        Text("title") { font_size: 12pt }
     }
 }
 ```
@@ -276,7 +277,7 @@ component Title {
 Fix: Use one of the supported unit suffixes (for font sizes usually `sp`), or construct a custom quantity with a function or newtype instead of a suffix.
 
 ```vs
-Text { text: "title"; font_size: 12sp; }
+Text("title") { font_size: 12sp }
 ```
 
 ## E1205
@@ -288,7 +289,7 @@ A string or character literal contains an escape the language does not define, o
 ```vs
 component Path {
     state label = "C:\qtemp";
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 ```
 
@@ -307,7 +308,7 @@ A digit separator `_` in a numeric literal is not between two digits. Separators
 ```vs
 component Budget {
     state limit = 1__000;
-    view { Text { text: "budget"; } }
+    view { Text("budget") }
 }
 ```
 
@@ -326,7 +327,7 @@ A color literal must be `#` followed by exactly 3, 4, 6 or 8 hexadecimal digits 
 ```vs
 component Badge {
     view {
-        Text { text: "new"; color: #12345; }
+        Text("new") { color: #12345 }
     }
 }
 ```
@@ -334,7 +335,7 @@ component Badge {
 Fix: Write the color with 3, 4, 6 or 8 hex digits.
 
 ```vs
-Text { text: "new"; color: #123456; }
+Text("new") { color: #123456 }
 ```
 
 ## E1208
@@ -346,7 +347,7 @@ A character literal must contain exactly one Unicode scalar value after escapes 
 ```vs
 component Initial {
     state initial = 'ab';
-    view { Text { text: "initial"; } }
+    view { Text("initial") }
 }
 ```
 
@@ -365,7 +366,7 @@ The source contains a character that cannot appear in Viso text: a NUL byte, a c
 ```vs
 component Shop {
     state price = 0;
-    view { Text { text: "shop"; } }
+    view { Text("shop") }
     ¡
 }
 ```
@@ -381,7 +382,7 @@ A raw string is delimited by `r`, zero to 255 `#` characters and a quote, and mu
 ```vs
 component Banner {
     state art = r################################################################################################################################################################################################################################################################"x"################################################################################################################################################################################################################################################################;
-    view { Text { text: "banner"; } }
+    view { Text("banner") }
 }
 ```
 
@@ -402,7 +403,7 @@ component Search {
     action run_query() {
         let match = 1;
     }
-    view { Text { text: "search"; } }
+    view { Text("search") }
 }
 ```
 
@@ -421,7 +422,7 @@ An opening `(`, `[` or `{` has no matching closing delimiter before the enclosin
 ```vs
 component Total {
     state total = 0;
-    view { Text { text: "total"; } }
+    view { Text("total") }
 ```
 
 Fix: Add the missing closing delimiter where the construct ends (here, the `}` that closes the component).
@@ -436,7 +437,7 @@ A closing `)`, `]` or `}` has no opening delimiter to match. It is usually left 
 
 ```vs
 component Panel {
-    view { Text { text: "panel"; } }
+    view { Text("panel") }
 }
 }
 ```
@@ -454,7 +455,7 @@ The parser found tokens that cannot begin any declaration, member or statement a
 ```vs
 component Card {
     %
-    view { Text { text: "card"; } }
+    view { Text("card") }
 }
 ```
 
@@ -472,7 +473,7 @@ The grammar requires a specific token here, such as `=`, `:` or a closing keywor
 type Id I64
 
 component Profile {
-    view { Text { text: "profile" } }
+    view { Text("profile") }
 }
 ```
 
@@ -493,7 +494,7 @@ The parser needs an expression here but found something else: an operator with n
 ```vs
 component Sum {
     state total = 1 +;
-    view { Text { text: "sum"; } }
+    view { Text("sum") }
 }
 ```
 
@@ -514,7 +515,7 @@ Expressions, types, patterns, blocks and view bodies may nest at most 256 levels
 // written with 257 nested parentheses:
 component Deep {
     state n = ((((((((/* ...257 levels in total... */ 1))))))));
-    view { Text { text: "deep"; } }
+    view { Text("deep") }
 }
 ```
 
@@ -546,7 +547,7 @@ component Counter {
     action increment() {
         count = cuont + 1;
     }
-    view { Text { text: "counter"; } }
+    view { Text("counter") }
 }
 ```
 
@@ -568,7 +569,7 @@ One name refers to more than one declaration, so the resolver cannot pick one. T
 component Counter {
     state count = 0;
     state count = 1;
-    view { Text { text: "counter"; } }
+    view { Text("counter") }
 }
 ```
 
@@ -590,7 +591,7 @@ theme Dark: Night {}
 theme Night: Dark {}
 
 component Screen {
-    view { Text { text: "screen"; } }
+    view { Text("screen") }
 }
 ```
 
@@ -607,7 +608,7 @@ component Loader {
     action load() {
         let items = decode<I64>("1");
     }
-    view { Text { text: "loader"; } }
+    view { Text("loader") }
 }
 ```
 
@@ -634,7 +635,7 @@ Fix: Declare the component to mount in this file, or import this file's declarat
 
 ```vs
 component App {
-    view { Text { text: "app"; } }
+    view { Text("app") }
 }
 ```
 
@@ -646,7 +647,7 @@ A source that declares more than one component must say which one is mounted. Wh
 
 ```vs
 component Header {
-    view { Text { text: "header"; } }
+    view { Text("header") }
 }
 
 component Page {
@@ -671,7 +672,7 @@ The language has no `Float` type; floating-point values are `F32` or `F64`. Writ
 ```vs
 component Gauge {
     state level: Float = 0.5;
-    view { Text { text: "gauge"; } }
+    view { Text("gauge") }
 }
 ```
 
@@ -691,7 +692,7 @@ Only lossless widening happens implicitly: `I8` to `I64` along the signed ladder
 component Counter {
     state n: I64 = 3;
     fn half() -> F64 { n }
-    view { Text { text: "counter"; } }
+    view { Text("counter") }
 }
 ```
 
@@ -710,7 +711,7 @@ An expression's type does not match the type its position expects, such as a dec
 ```vs
 component A {
     state n: I64 = "x";
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -732,7 +733,7 @@ A `state` initializer may read only the states declared before it in source orde
 component A {
     state total = count * 2;
     state count = 1;
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -753,7 +754,7 @@ The computed values of a component must form an acyclic dependency graph, becaus
 component A {
     computed a: I64 = b + 1;
     computed b: I64 = a;
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -774,7 +775,7 @@ Adding lengths of different units, such as `10dp + 5px` or `100% - 8dp`, produce
 ```vs
 component A {
     fn gap() -> Dp { 10dp + 5px }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -793,7 +794,7 @@ Some operations on lengths have no meaning before layout: a `MixedLength` cannot
 ```vs
 component A {
     fn narrow() -> Bool { (100% - 8dp) < 200dp }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -814,14 +815,14 @@ record Point { x: I64, y: I64 }
 
 component A {
     state at = Point { x: 1, y: 2 }
-    view { Text { text: "at {at} {}" } }
+    view { Text("at {at} {}") }
 }
 ```
 
 Fix: Show a displayable value in each hole, such as a field of the record, and put something in every hole.
 
 ```vs
-    view { Text { text: "at {at.x}, {at.y}" } }
+    view { Text("at {at.x}, {at.y}") }
 ```
 
 ## E2109
@@ -833,7 +834,7 @@ Dividing a length-family value (`Dp`, `Px`, `Sp`, `Em`, `Percent` or `MixedLengt
 ```vs
 component A {
     fn cell() -> Dp { 8dp / (1 - 1) }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -853,7 +854,7 @@ Only a `state`, a `let mut` local, a `mut` parameter, or a field or index path r
 component A {
     input limit: I64;
     action reset() { limit = 0; }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -873,7 +874,7 @@ action reset() { limit = 0; }
 ```vs
 component A {
     state scale = env.text_scale;
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -881,7 +882,7 @@ Fix: Read the context value inside the view, or pass it as an argument to the fu
 
 ```vs
 fn scaled(scale: F32) -> F32 { scale * 2.0 }
-view { Text { text: "{scaled(env.text_scale)}"; } }
+view { Text("{scaled(env.text_scale)}") }
 ```
 
 ## E2112
@@ -924,7 +925,7 @@ fn total<T: Shape>(x: T) -> I64 { return x.area(); }
 component A {
     state n = 0;
     action go() { n = total(1); }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -953,7 +954,7 @@ impl Shape for Square { fn area(self) -> I64 { return self.side * self.side; } }
 impl Shape for Square { fn area(self) -> I64 { return 0; } }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -976,7 +977,7 @@ fn grow<T>(x: T, n: I64) -> I64 {
 component A {
     state k = 0;
     action go() { k = grow(1, 3); }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -995,7 +996,7 @@ component A {
     state tab = Tab::Home;
     view {
         match tab {
-            Tab::Home => { Text { text: "home"; } },
+            Tab::Home => { Text("home") },
         }
     }
 }
@@ -1005,8 +1006,8 @@ Fix: Add arms for the missing cases, or a final `_` arm when they should share o
 
 ```vs
 match tab {
-    Tab::Home => { Text { text: "home"; } },
-    Tab::Settings => { Text { text: "settings"; } },
+    Tab::Home => { Text("home") },
+    Tab::Settings => { Text("settings") },
 }
 ```
 
@@ -1027,7 +1028,7 @@ fn size(s: Shape) -> I64 {
 }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1052,7 +1053,7 @@ component A {
         let Some(x) = o;
         x
     }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1078,7 +1079,7 @@ component A {
     fn make() {
         let same = |x| x;
     }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1099,7 +1100,7 @@ Each kind of body allows a fixed set of effects. Only actions and event handlers
 component A {
     state n: I64 = 0;
     fn bump() { n += 1; }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1119,7 +1120,7 @@ Views and computed values are re-evaluated whenever what they read changes, poss
 component A {
     state n: I64 = 0;
     computed doubled: I64 = { n = 2; n * 2 };
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1141,7 +1142,7 @@ native fn fetch(url: String) -> String requires { network };
 fn load() -> String requires { timer } { fetch("https://example.com") }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1162,7 +1163,7 @@ component A {
     state xs = [1.5, 2.5];
     view {
         Column {
-            for x in xs key x { Text { text: "row"; } }
+            for x in xs key x { Text("row") }
         }
     }
 }
@@ -1173,7 +1174,7 @@ Fix: Key by a stable value such as an integer id or a string; for rows, give eac
 ```vs
 record Row { id: I64; value: F64; }
 state xs = [Row { id: 1, value: 1.5 }];
-for x in xs key x.id { Text { text: "row"; } }
+for x in xs key x.id { Text("row") }
 ```
 
 ## E2702
@@ -1191,7 +1192,7 @@ A keyed list whose data contains two items with the same id:
         state rows = [Row { id: 1, name: "a" }, Row { id: 1, name: "b" }];
         view {
             Column {
-                for row in rows key row.id { Text { text: row.name; } }
+                for row in rows key row.id { Text(row.name) }
             }
         }
     }
@@ -1216,7 +1217,7 @@ fn check() -> Bool {
 }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1238,7 +1239,7 @@ Comparison, equality and range operators are non-associative: `a < b < c`, `a ==
 fn between(a: I64, b: I64, c: I64) -> Bool { a < b < c }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1257,7 +1258,7 @@ fn between(a: I64, b: I64, c: I64) -> Bool { a < b && b < c }
 ```vs
 component A {
     fn stop() { break; }
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -1277,7 +1278,7 @@ fn stop() { return; }
 component A {
     view {
         Column {
-            child Text { text: "a"; }
+            child Text("a")
         }
     }
 }
@@ -1287,7 +1288,7 @@ Fix: Delete `child`: write the child node directly in the parent's body, or give
 
 ```vs
 Column {
-    Text { text: "a"; }
+    Text("a")
 }
 ```
 
@@ -1300,8 +1301,8 @@ A view block that must produce exactly one root node produces zero or several. A
 ```text
 // Rust: a `ui!` fragment must generate exactly one root node.
 let fragment = ui! {
-    Text { text: "Title"; }
-    Text { text: "Subtitle"; }
+    Text("Title")
+    Text("Subtitle")
 };
 ```
 
@@ -1310,8 +1311,8 @@ Fix: Wrap the sibling nodes in one container (or a `Fragment` placed inside a co
 ```text
 let fragment = ui! {
     Column {
-        Text { text: "Title"; }
-        Text { text: "Subtitle"; }
+        Text("Title")
+        Text("Subtitle")
     }
 };
 ```
@@ -1326,9 +1327,8 @@ A node body contains bare child items, but the node's type has no default slot t
 component A {
     view {
         Column {
-            Text {
-                text: "Title";
-                Text { text: "Subtitle"; }
+            Text("Title") {
+                Text("Subtitle")
             }
         }
     }
@@ -1339,8 +1339,8 @@ Fix: Move the child out to a container that has a default slot, or fill one of t
 
 ```vs
 Column {
-    Text { text: "Title"; }
-    Text { text: "Subtitle"; }
+    Text("Title")
+    Text("Subtitle")
 }
 ```
 
@@ -1387,7 +1387,7 @@ A node binds a property that its type's schema does not declare. Widgets expose 
 ```vs
 component A {
     view {
-        Text { text: "a"; opacty: 0.5; }
+        Text("a") { opacty: 0.5 }
     }
 }
 ```
@@ -1395,7 +1395,7 @@ component A {
 Fix: Use a property the schema declares (often the suggested spelling); query the schema to see every property of the type.
 
 ```vs
-Text { text: "a"; opacity: 0.5; }
+Text("a") { opacity: 0.5 }
 ```
 
 See also: `viso schema <Component>`, `viso schema <Component> --json`
@@ -1409,7 +1409,7 @@ The same property is bound more than once in one node body (with `:` or `bind`),
 ```vs
 component A {
     view {
-        Text { text: "a"; text: "b"; }
+        Text("a") { opacity: 0.5; opacity: 1.0 }
     }
 }
 ```
@@ -1417,7 +1417,7 @@ component A {
 Fix: Keep a single binding for the property; to choose between values, put the choice in the expression.
 
 ```vs
-Text { text: if wide { "long label" } else { "a" }; }
+Text("a") { opacity: if dim { 0.5 } else { 1.0 } }
 ```
 
 ## E3103
@@ -1439,7 +1439,7 @@ component A {
 Fix: Bind the property one way with `:`; for a component input, mark it `@bindable(event)` if the component should write it back.
 
 ```vs
-Text { text: label; }
+Text(label)
 ```
 
 See also: `viso schema <Component>`
@@ -1453,8 +1453,7 @@ A `Percent` value, or a `MixedLength` with a percent component, reaches a length
 ```vs
 component A {
     view {
-        Text {
-            text: "a";
+        Text("a") {
             translate: Offset { x: 50%, y: 0dp };
         }
     }
@@ -1464,8 +1463,7 @@ component A {
 Fix: Use an absolute length (such as `dp`) for this property, or move the percentage to a property that has a percent basis, like `width`.
 
 ```vs
-Text {
-    text: "a";
+Text("a") {
     translate: Offset { x: 24dp, y: 0dp };
 }
 ```
@@ -1483,7 +1481,7 @@ A debug-runtime warning: during layout a length with a percent component had no 
 Scroll {
     Column {
         height: 50%;
-        Text { text: "a"; }
+        Text("a")
     }
 }
 // debug runtime: E3105 warning: the percent basis of `height` is indefinite
@@ -1505,7 +1503,7 @@ component A {
         Row {
             // `parts` is 0 at run time, so the width is infinite.
             width: 320dp / parts;
-            Text { text: "a"; }
+            Text("a")
         }
     }
 }
@@ -1552,7 +1550,7 @@ component A {
     view {
         Grid {
             areas: ["head head", "side main"];
-            Text { text: "a"; grid.area: "foot"; }
+            Text("a") { grid.area: "foot" }
         }
     }
 }
@@ -1561,7 +1559,27 @@ component A {
 Fix: Name an area of the grid's `areas`, or add the area to the template.
 
 ```vs
-Text { text: "a"; grid.area: "main"; }
+Text("a") { grid.area: "main" }
+```
+
+## E3109
+
+**Misplaced Primary Property** — error, view
+
+A node type has at most one primary property, written in parentheses after the type: `Text("Hello")`, `Button("Save") { on click { .. } }`. Binding it by name in the node's body is rejected, so each property has one spelling; the fix moves the value into the parentheses. A user component names its primary input with `@primary`: only an `input` takes it, only one input per component, and never a two-way (`@bindable`) one.
+
+```vs
+component A {
+    view {
+        Text { text: "Hello" }
+    }
+}
+```
+
+Fix: Write the primary property as `Type(value)`, and mark one one-way `input` of a component `@primary`.
+
+```vs
+Text("Hello")
 ```
 
 ## E3201
@@ -1575,7 +1593,7 @@ component A {
     state n: I64 = 0;
 
     view {
-        Button { text: "Add"; on click => n += 1; }
+        Button("Add") { on click => n += 1 }
     }
 }
 ```
@@ -1583,7 +1601,7 @@ component A {
 Fix: Wrap the statement in a block; the diagnostic carries a machine-applicable fix that does this.
 
 ```vs
-Button { text: "Add"; on click { n += 1; } }
+Button("Add") { on click { n += 1; } }
 ```
 
 ## E3202
@@ -1597,7 +1615,7 @@ component A {
     state n: I64 = 0;
 
     view {
-        Button { text: "Add"; on clik { n += 1; } }
+        Button("Add") { on clik { n += 1; } }
     }
 }
 ```
@@ -1605,7 +1623,7 @@ component A {
 Fix: Use an event the node declares (often the suggested spelling), and give an `emit` exactly the parameters its event declares.
 
 ```vs
-Button { text: "Add"; on click { n += 1; } }
+Button("Add") { on click { n += 1; } }
 ```
 
 See also: `viso schema <Component>`
@@ -1622,8 +1640,8 @@ component A {
 
     view {
         Column {
-            if open preserve "panel" { Text { text: "a"; } }
-            if !open preserve "panel" { Text { text: "b"; } }
+            if open preserve "panel" { Text("a") }
+            if !open preserve "panel" { Text("b") }
         }
     }
 }
@@ -1632,8 +1650,8 @@ component A {
 Fix: Give each preserved branch its own string literal. For a dynamic collection, use a keyed `for` instead of `preserve`.
 
 ```vs
-if open preserve "open-panel" { Text { text: "a"; } }
-if !open preserve "closed-panel" { Text { text: "b"; } }
+if open preserve "open-panel" { Text("a") }
+if !open preserve "closed-panel" { Text("b") }
 ```
 
 ## E3401
@@ -1649,7 +1667,7 @@ component A {
     view {
         Column {
             for name in names {
-                Text { text: name; }
+                Text(name)
             }
         }
     }
@@ -1660,7 +1678,7 @@ Fix: Add `key` followed by an expression that identifies the item independent of
 
 ```vs
 for name in names key name {
-    Text { text: name; }
+    Text(name)
 }
 ```
 
@@ -1678,7 +1696,7 @@ component A {
     view {
         Column {
             for name in names {
-                Button { text: name; on click { picked = name; } }
+                Button(name) { on click { picked = name; } }
             }
         }
     }
@@ -1689,7 +1707,7 @@ Fix: Key the `for` by a stable value of the item, such as its id, not its positi
 
 ```vs
 for name in names key name {
-    Button { text: name; on click { picked = name; } }
+    Button(name) { on click { picked = name; } }
 }
 ```
 
@@ -1711,7 +1729,7 @@ component Card {
 export component App {
     view {
         Card {
-            fill foter { Text { text: "Done"; } }
+            fill foter { Text("Done") }
         }
     }
 }
@@ -1721,7 +1739,7 @@ Fix: Name a slot or part the target declares; query the component's schema to li
 
 ```vs
 Card {
-    fill footer { Text { text: "Done"; } }
+    fill footer { Text("Done") }
 }
 ```
 
@@ -1737,8 +1755,8 @@ The nodes given to a slot do not fit its cardinality. A `Slot<Node>` takes exact
 component A {
     view {
         Scroll {
-            Text { text: "a"; }
-            Text { text: "b"; }
+            Text("a")
+            Text("b")
         }
     }
 }
@@ -1749,8 +1767,8 @@ Fix: Give the slot as many nodes as its type allows, for example by wrapping sev
 ```vs
 Scroll {
     Column {
-        Text { text: "a"; }
-        Text { text: "b"; }
+        Text("a")
+        Text("b")
     }
 }
 ```
@@ -1767,7 +1785,7 @@ A template is a stateless piece of view structure expanded where each `use` plac
 template Badge() {
     state count: I64 = 0;
 
-    view { Text { text: "badge"; } }
+    view { Text("badge") }
 }
 
 export component App {
@@ -1781,7 +1799,7 @@ Fix: Keep only `slot`, `const`, `fn` and `view` in a template and pass values as
 
 ```vs
 template Badge(label: String) {
-    view { Text { text: label; } }
+    view { Text(label) }
 }
 ```
 
@@ -1798,7 +1816,7 @@ component Stepper {
 
     event changed(value: I64);
 
-    view { Text { text: "step"; } }
+    view { Text("step") }
 }
 ```
 
@@ -1821,7 +1839,7 @@ A parent-provided property (`grid.*`, `stack.*`, `absolute.*`) is written on a n
 component A {
     view {
         Row {
-            Text { text: "a"; grid.row: 1; }
+            Text("a") { grid.row: 1 }
         }
     }
 }
@@ -1831,7 +1849,7 @@ Fix: Place the node directly in the container that provides the prefix, or drop 
 
 ```vs
 Grid {
-    Text { text: "a"; grid.row: 1; }
+    Text("a") { grid.row: 1 }
 }
 ```
 
@@ -1846,8 +1864,7 @@ See also: `viso schema <Component>`
 ```vs
 component A {
     view {
-        Text {
-            text: "a";
+        Text("a") {
             transition.opacity: 200ms;
         }
     }
@@ -1857,8 +1874,7 @@ component A {
 Fix: Give an animatable property a `Transition` value.
 
 ```vs
-Text {
-    text: "a";
+Text("a") {
     transition.opacity: Transition { duration: 200ms };
 }
 ```
@@ -1909,7 +1925,7 @@ component A {
     state name: String = "Ada"
 
     view {
-        Text { text: "Hello {name}" }
+        Text("Hello {name}")
     }
 }
 ```
@@ -1917,7 +1933,7 @@ component A {
 Fix: Move the sentence into the message catalog and pass the variable parts as named arguments of `tr`.
 
 ```vs
-Text { text: tr("greeting", name: name) }
+Text(tr("greeting", name: name))
 ```
 
 See also: `viso check --i18n strict`
@@ -1933,7 +1949,7 @@ import viso::i18n::tr;
 
 component A {
     view {
-        Text { text: tr("inbox.title"); }
+        Text(tr("inbox.title"))
     }
 }
 ```
@@ -1956,7 +1972,7 @@ A `VirtualList` mounts only the items inside its viewport and overscan, so its b
 
 ```text
 VirtualList {
-    Text { text: "Header"; }            // not allowed: a child beside the template
+    Text("Header")            // not allowed: a child beside the template
     for message in messages key message.id {
         MessageRow { message: message; }
     }
@@ -1967,7 +1983,7 @@ Fix: Keep a single keyed `for` as the body of the `VirtualList`, and put headers
 
 ```text
 Column {
-    Text { text: "Header"; }
+    Text("Header")
     VirtualList {
         for message in messages key message.id {
             MessageRow { message: message; }
@@ -1991,7 +2007,7 @@ component A {
     view {
         Row {
             semantics.role: Role::button;
-            Text { text: "Add"; }
+            Text("Add")
             on click { n += 1; }
         }
     }
@@ -2004,7 +2020,7 @@ Fix: Make the node focusable and handle `click`, or use a standard interactive w
 Row {
     focusable: true;
     semantics.role: Role::button;
-    Text { text: "Add"; }
+    Text("Add")
     on click { n += 1; }
 }
 ```
@@ -2019,8 +2035,7 @@ A property whose schema entry is marked as not yet implemented by the runtime is
 
 ```text
 // Suppose the schema marks `Text.max_lines` as pending in the runtime.
-Text {
-    text: "A long paragraph";
+Text("A long paragraph") {
     max_lines: 2;          // non-default value: E3709
 }
 ```
@@ -2040,7 +2055,7 @@ component Chip {
     @selector
     input count: I64 = 0;
 
-    view { Text { text: "chip"; } }
+    view { Text("chip") }
 }
 ```
 
@@ -2061,7 +2076,7 @@ Part of the view cannot be lowered to something the runtime mounts. Common cause
 component A {
     view {
         Column {
-            Text { text: "a"; padding: 8dp; }
+            Text("a") { padding: 8dp }
         }
     }
 }
@@ -2072,7 +2087,7 @@ Fix: Address the reason the message names. For `padding` on a node without a con
 ```vs
 Column {
     padding: 8dp;
-    Text { text: "a"; }
+    Text("a")
 }
 ```
 
@@ -2089,7 +2104,7 @@ See also: `viso check`, `viso schema <Component>`
 fn widen(old: I64) { }
 
 component A {
-    view { Text { text: "a"; } }
+    view { Text("a") }
 }
 ```
 
@@ -2112,7 +2127,7 @@ component A {
     state logo: String = "images/logo.png";
 
     view {
-        Image { source: asset(logo); width: 48dp; }
+        Image(asset(logo)) { width: 48dp }
     }
 }
 ```
@@ -2120,8 +2135,7 @@ component A {
 Fix: Pass a string literal naming an existing file under `assets/`, and branch between literal assets when the choice is dynamic; for a missing file, use the path the diagnostic suggests.
 
 ```vs
-Image {
-    source: if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") };
+Image(if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }) {
     width: 48dp;
 }
 ```
@@ -2148,7 +2162,7 @@ export component Timer {
         done = true;
     }
 
-    view { Text { text: "timer"; on click { go(); } } }
+    view { Text("timer") { on click { go(); } } }
 }
 ```
 
@@ -2181,8 +2195,7 @@ export component Poller {
     }
 
     view {
-        Text {
-            text: "poll";
+        Text("poll") {
             on click { start look() { success(v) { seen = v; } }; }
         }
     }
@@ -2215,7 +2228,7 @@ export component Search {
         let at = page;
     }
 
-    view { Text { text: query; } }
+    view { Text(query) }
 }
 ```
 
@@ -2241,7 +2254,7 @@ depends on `count` and writes `count`, so every run schedules another.
 
     export component Loop {
         state count = 0;
-        view { Text { text: "tap"; on click { count += 1; } } }
+        view { Text("tap") { on click { count += 1; } } }
         effect bump when (count) run EffectRun::change {
             transaction { count += 1; }
         }
@@ -2267,7 +2280,7 @@ export component Theme {
     effect save run EffectRun::change {
     }
 
-    view { Text { text: name; } }
+    view { Text(name) }
 }
 ```
 
@@ -2316,7 +2329,7 @@ export component Profile {
         load = fetch(user);
     }
 
-    view { Text { text: "profile"; } }
+    view { Text("profile") }
 }
 ```
 
@@ -2355,7 +2368,7 @@ export component Uploader {
         };
     }
 
-    view { Text { text: "upload"; on click { go(); } } }
+    view { Text("upload") { on click { go(); } } }
 }
 ```
 
@@ -2388,7 +2401,7 @@ export component Counter {
         start reset();
     }
 
-    view { Text { text: "reset"; on click { go(); } } }
+    view { Text("reset") { on click { go(); } } }
 }
 ```
 
@@ -2416,7 +2429,7 @@ action go() {
 }
 
 export component Panel {
-    view { Text { text: "panel"; } }
+    view { Text("panel") }
 }
 ```
 
@@ -2425,7 +2438,7 @@ Fix: Start the task from an action, event handler or effect of the component tha
 ```vs
 export component Panel {
     action go() { start wait(); }
-    view { Text { text: "panel"; on click { go(); } } }
+    view { Text("panel") { on click { go(); } } }
 }
 ```
 
@@ -2507,7 +2520,7 @@ export component Counter {
     @stable("count")
     state taps = 0;
 
-    view { Text { text: "count"; } }
+    view { Text("count") }
 }
 ```
 
@@ -2533,7 +2546,7 @@ export component Login {
     @sensitive
     input token: String;
 
-    view { Text { text: token; } }
+    view { Text(token) }
 }
 ```
 
@@ -2558,7 +2571,7 @@ record Point { x: I64 = 0; }
 native fn measure(p: Point) -> I64;
 
 export component Ruler {
-    view { Text { text: "ruler"; } }
+    view { Text("ruler") }
 }
 ```
 
@@ -2612,7 +2625,7 @@ A package whose `Viso.toml` does not grant `clipboard.write` runs:
 
     export component Notes {
         state note = "hi";
-        view { Text { text: note; on click { clipboard::write_text(note); } } }
+        view { Text(note) { on click { clipboard::write_text(note); } } }
     }
 
 Clicking the text faults with E6103 and the click's writes are rolled back.
@@ -2642,7 +2655,7 @@ and a view calls it:
 
     import haptics;
     export component Bell {
-        view { Text { text: "ring"; on click { haptics::vibrate(30); } } }
+        view { Text("ring") { on click { haptics::vibrate(30); } } }
     }
 
 `viso check web-gpu` reports E6104 at the call: `haptics::vibrate` does not exist on web.
@@ -3215,7 +3228,7 @@ See also: `viso check`
 export component Hud {
     @probe state lives = 3;
 
-    view { Text { text: "hud"; } }
+    view { Text("hud") }
 }
 ```
 

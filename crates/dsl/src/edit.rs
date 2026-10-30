@@ -20,6 +20,7 @@ use std::cell::OnceCell;
 use std::fmt;
 use std::str::FromStr;
 
+use crate::ast::{AstNode, ComponentDecl};
 use crate::diag::{Diagnostic, Severity, TextEdit};
 use crate::frontend::{Origin, compile_file};
 use crate::resolve::{
@@ -48,6 +49,7 @@ const ADDRESSABLE: &[SyntaxKind] = &[
     SyntaxKind::ViewMatch,
     SyntaxKind::ViewMatchArm,
     SyntaxKind::PropertyBinding,
+    SyntaxKind::PrimaryArgument,
     SyntaxKind::TwoWayBinding,
     SyntaxKind::EventHandler,
 ];
@@ -199,7 +201,7 @@ pub enum StructuredEdit {
         parent: SyntaxId,
         /// Its position among the parent's structure children.
         index: usize,
-        /// The node's source, e.g. `Text { text: "hi"; }`.
+        /// The node's source, e.g. `Text("hi")`.
         node: String,
     },
     /// `<property>: <value>;` on a node: the existing binding's value replaced,
@@ -580,11 +582,13 @@ impl Document {
                 body,
             } => {
                 let target = self.find_or(node)?;
-                let body_node = container_of(&target).ok_or(EditError::WrongTarget("a node"))?;
                 let pattern = pattern
                     .as_ref()
                     .map_or_else(String::new, |p| format!("({p})"));
                 let text = format!("on {event}{pattern} {}", block(body));
+                let Some(body_node) = container_of(&target) else {
+                    return self.open_body(&target, &text);
+                };
                 let after = children_of(&body_node, |k| {
                     matches!(
                         k,
@@ -726,8 +730,13 @@ impl Document {
         value: &str,
     ) -> Result<Plan, EditError> {
         let target = self.find_or(node)?;
-        let body = container_of(&target).ok_or(EditError::WrongTarget("a node"))?;
         let wanted: String = property.split_whitespace().collect();
+        if self.primary_of(&target).as_deref() == Some(wanted.as_str()) {
+            return self.set_primary(&target, value);
+        }
+        let Some(body) = container_of(&target) else {
+            return self.open_body(&target, &format!("{property}: {value}"));
+        };
         let bindings = children_of(&body, |k| {
             matches!(k, SyntaxKind::PropertyBinding | SyntaxKind::TwoWayBinding)
         });
@@ -760,6 +769,67 @@ impl Document {
         let text = format!("{property}: {value};");
         let at = bindings.last().cloned().map_or(At::Start, At::After);
         Ok(self.insert_in(&body, at, &text))
+    }
+
+    /// The primary property of the node `target`'s type, which it binds as
+    /// `Type(value)`: a standard widget's, or the `@primary` input of a
+    /// component this source declares.
+    fn primary_of(&self, target: &SyntaxNode) -> Option<String> {
+        let ty = target
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::TypePath)?;
+        let name: String = ty.text().split_whitespace().collect();
+        if let Some(widget) = viso_schema::widgets::STANDARD
+            .iter()
+            .find(|w| w.name == name)
+        {
+            return widget.primary().map(|p| p.name.to_owned());
+        }
+        self.root
+            .descendants()
+            .into_iter()
+            .filter_map(ComponentDecl::cast)
+            .find(|decl| decl.name().is_some_and(|n| n.text() == name))
+            .and_then(|decl| crate::hir::primary_input(&decl))
+    }
+
+    /// `Type(value)` on the node `target`: its argument replaced, or one
+    /// written after its type.
+    fn set_primary(&self, target: &SyntaxNode, value: &str) -> Result<Plan, EditError> {
+        let children = target.children();
+        if let Some(argument) = children
+            .iter()
+            .find(|c| c.kind() == SyntaxKind::PrimaryArgument)
+        {
+            let range = argument.text_range();
+            let inner = TextRange::new(
+                range.start() + TextSize::new(1),
+                range.end() - TextSize::new(1),
+            );
+            return Ok(Plan {
+                edits: vec![TextEdit::new(inner, value)],
+                focus: None,
+            });
+        }
+        let ty = children
+            .iter()
+            .find(|c| c.kind() == SyntaxKind::TypePath)
+            .ok_or(EditError::WrongTarget("a node"))?;
+        let at = TextRange::empty(ty.text_range().end());
+        Ok(Plan::one(TextEdit::new(at, format!("({value})")), 0))
+    }
+
+    /// A body holding `text` for the node `target`, which has none.
+    fn open_body(&self, target: &SyntaxNode, text: &str) -> Result<Plan, EditError> {
+        if !matches!(
+            target.kind(),
+            SyntaxKind::AnonymousNode | SyntaxKind::NamedNode | SyntaxKind::PartNode
+        ) {
+            return Err(EditError::WrongTarget("a node"));
+        }
+        let at = TextRange::empty(target.text_range().end());
+        Ok(Plan::one(TextEdit::new(at, format!(" {{ {text} }}")), 3))
     }
 
     fn task_to_resource(

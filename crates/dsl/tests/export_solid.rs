@@ -88,9 +88,8 @@ export component Counter {
 
     view {
         Column {
-            Text { text: "{count}"; }
-            Button {
-                text: "Add";
+            Text("{count}")
+            Button("Add") {
                 on click { count += 1; }
             }
         }
@@ -154,12 +153,11 @@ export component Badge {
 
     view {
         Row {
-            Text { width: 80dp; height: 20dp; text: title; }
-            Text { width: 80dp; height: 20dp; text: "{doubled + count}"; }
-            Button {
+            Text(title) { width: 80dp; height: 20dp }
+            Text("{doubled + count}") { width: 80dp; height: 20dp }
+            Button("Tap") {
                 width: 80dp;
                 height: 20dp;
-                text: "Tap";
                 on click { taps += 1; emit tapped(taps); }
             }
         }
@@ -207,17 +205,17 @@ export component Todo {
     view {
         Column {
             if open {
-                Text { width: 100dp; height: 20dp; text: "Open"; }
+                Text("Open") { width: 100dp; height: 20dp }
             } else {
-                Text { width: 100dp; height: 20dp; text: "Closed"; }
+                Text("Closed") { width: 100dp; height: 20dp }
             }
             match mode {
-                Mode::list => { Text { width: 100dp; height: 20dp; text: "listing"; } },
-                Mode::empty => { Text { width: 100dp; height: 20dp; text: "nothing"; } },
-                Mode::busy => { Text { width: 100dp; height: 20dp; text: "busy"; } },
+                Mode::list => { Text("listing") { width: 100dp; height: 20dp } },
+                Mode::empty => { Text("nothing") { width: 100dp; height: 20dp } },
+                Mode::busy => { Text("busy") { width: 100dp; height: 20dp } },
             }
             for item in items key item {
-                Text { width: 100dp; height: 20dp; text: item; }
+                Text(item) { width: 100dp; height: 20dp }
             }
         }
     }

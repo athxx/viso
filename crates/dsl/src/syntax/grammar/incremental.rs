@@ -491,14 +491,14 @@ mod tests {
     use super::*;
 
     const SOURCES: &[&str] = &[
-        "import a::b;\n@doc(\"x\")\ncomponent C {\n    input title: String = \"t\";\n    state count = 0;\n    computed d: I64 = count * 2;\n    action inc() { count += 1; }\n    view { Text { text: title; } }\n}\nfn f(x: I64) -> I64 { x + 1 }\n",
+        "import a::b;\n@doc(\"x\")\ncomponent C {\n    input title: String = \"t\";\n    state count = 0;\n    computed d: I64 = count * 2;\n    action inc() { count += 1; }\n    view { Text(title) }\n}\nfn f(x: I64) -> I64 { x + 1 }\n",
         "export record P { x: F32; y: F32 = 0.0; }\nenum S { idle; busy(I64); }\ntype Id = I64;\nconst N: I64 = 4;\n",
         "component C { state a = x < B; state b = 1; fn g() { let v = make::<T>(1); } }\n",
         "component C { state a = 1 state b = 2; event e(x: I64); }\nsystem Tick { fn run() { } }\n",
         "// lead\ncomponent C { /* c */ state s = \"a}b\"; @inline fn h() { } }\n",
         "native fn f(a: I64) -> I64;\nnative type T;\ncomponent C { native action g() requires { x::y }; }\n",
         "trait Shape: Eq { type Unit: Clone; const N: I64; fn area(self) -> F64; }\nimpl<T> Shape for Box<T> where T: Eq { type Unit = I64; const N: I64 = 1; fn area(self) -> F64 { 1.0 } }\nimpl P { fn new(mut self, x: I64) -> Self { self } }\n",
-        "template Card(t: String = \"a\") { slot s: Slot<Node>; const K: I64 = 1; view { Column { part h: Text { text: t; } } } }\ncomponent C { view { Column { use Card(\"x\") { override part h { color: c; } replace part h { Row {} } }; } } }\n",
+        "template Card(t: String = \"a\") { slot s: Slot<Node>; const K: I64 = 1; view { Column { part h: Text(t) } } }\ncomponent C { view { Column { use Card(\"x\") { override part h { color: c; } replace part h { Row {} } }; } } }\n",
     ];
 
     const INSERTS: &[&str] = &["x", " ", "{", "}", ";", "\"", "1", "(", "//", "<", "\n"];

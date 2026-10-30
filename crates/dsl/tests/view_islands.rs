@@ -16,8 +16,8 @@ component Chart {
     state hovered = 0;
     view {
         Column {
-            Text { text: title; }
-            Button { text: "pick"; on click { hovered += 1; emit picked(hovered); } }
+            Text(title)
+            Button("pick") { on click { hovered += 1; emit picked(hovered); } }
         }
     }
 }
@@ -40,7 +40,7 @@ export component App {
     state last = 0;
     view {
         Column {
-            Text { text: "shell"; }
+            Text("shell")
             Island {
                 width: 200dp;
                 height: 100dp;
@@ -71,7 +71,7 @@ fn an_island_holds_one_component_and_is_in_no_other() {
         r#"
 export component App {
     view {
-        Island { Text { text: "not a component"; } }
+        Island { Text("not a component") }
     }
 }
 "#,

@@ -7,8 +7,8 @@ component TaskRow {
             height: 28dp
             gap: 8dp
             CheckBox { width: 20dp; height: 20dp; bind checked <=> done }
-            Text { width: 200dp; height: 20dp; text: "Task {id}" }
-            Button { width: 64dp; height: 24dp; text: "Edit" }
+            Text("Task {id}") { width: 200dp; height: 20dp }
+            Button("Edit") { width: 64dp; height: 24dp }
         }
     }
 }
@@ -28,19 +28,18 @@ export component Workspace {
             Row {
                 height: 32dp
                 gap: 8dp
-                Text { width: 160dp; height: 24dp; text: "Tasks" }
+                Text("Tasks") { width: 160dp; height: 24dp }
                 TextInput {
                     width: 200dp
                     height: 24dp
                     placeholder: "Search"
                     bind value <=> query
                 }
-                Toggle { label: "Compact"; bind checked <=> compact }
+                Toggle("Compact") { bind checked <=> compact }
                 Slider { width: 160dp; bind value <=> level }
-                Button {
+                Button("Add") {
                     width: 80dp
                     height: 24dp
-                    text: "Add"
                     on click { items = [41, 1, 2, 3] }
                 }
             }
@@ -54,7 +53,7 @@ export component Workspace {
                     }
                 }
             }
-            Text { width: 400dp; height: 20dp; text: "Level {level}" }
+            Text("Level {level}") { width: 400dp; height: 20dp }
         }
     }
 }

@@ -7,14 +7,14 @@ A node binds a property that its type's schema does not declare. Widgets expose 
 Example:
     component A {
         view {
-            Text { text: "a"; opacty: 0.5; }
+            Text("a") { opacty: 0.5 }
         }
     }
 
 Fix:
   Use a property the schema declares (often the suggested spelling); query the schema to see every property of the type.
 
-    Text { text: "a"; opacity: 0.5; }
+    Text("a") { opacity: 0.5 }
 
 Suggested actions:
   viso schema <Component>
@@ -37,7 +37,7 @@ Example:
     }
 
     component A {
-        view { Text { text: "a"; } }
+        view { Text("a") }
     }
 
 Fix:
@@ -161,6 +161,7 @@ E3105                         Indefinite Percent Basis
 E3106                         Non-Finite Length
 E3107                         Bind Source Is Not A State Lens
 E3108                         Invalid Grid Area Or Cell
+E3109                         Misplaced Primary Property
 E3201                         Arrow Event Handler
 E3202                         Unknown Event Or Wrong Payload
 E3301                         Invalid Preserve Identity

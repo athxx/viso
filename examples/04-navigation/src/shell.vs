@@ -22,28 +22,25 @@ component Shell {
                 height: 48dp
                 padding: 8dp
                 gap: 8dp
-                Button {
+                Button("Back") {
                     width: 80dp
                     height: 32dp
-                    text: "Back"
                     visible: nav.can_pop()
                     on click { let _ = nav.pop() }
                 }
-                Text { width: 160dp; height: 24dp; text: title }
-                Button {
+                Text(title) { width: 160dp; height: 24dp }
+                Button("Message 5") {
                     width: 120dp
                     height: 32dp
-                    text: "Message 5"
                     on click { nav.push(Route::message { id: 5 }) }
                 }
-                Button {
+                Button("Settings") {
                     width: 120dp
                     height: 32dp
-                    text: "Settings"
                     on click { nav.replace(Route::settings) }
                 }
-                Toggle { label: "Editing"; bind checked <=> editing }
-                Text { width: 120dp; height: 24dp; text: "{kept} kept" }
+                Toggle("Editing") { bind checked <=> editing }
+                Text("{kept} kept") { width: 120dp; height: 24dp }
             }
             RouterView {
                 navigator: nav

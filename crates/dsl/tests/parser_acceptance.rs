@@ -135,7 +135,7 @@ fn nesting_past_the_depth_budget_is_one_diagnostic_not_a_stack_overflow() {
 fn nesting_inside_the_budget_compiles_end_to_end() {
     let depth = MAX_DEPTH as usize - 16;
     let src = format!(
-        "component C {{\n    computed v: I64 = {}1{};\n    computed w: I64 = 1{};\n    view {{ Text {{ text: \"{{v + w}}\"; }} }}\n}}\n",
+        "component C {{\n    computed v: I64 = {}1{};\n    computed w: I64 = 1{};\n    view {{ Text(\"{{v + w}}\") }}\n}}\n",
         "(".repeat(depth),
         ")".repeat(depth),
         " + 1".repeat(depth)
@@ -197,7 +197,7 @@ fn a_leading_if_or_match_is_a_statement_never_the_head_of_a_tail() {
     let errors = compile_errors(
         "fn pick(c: Bool) -> I64 {\n    if c { 1 } else { 2 }\n}\n\
          fn name(n: I64) -> String {\n    match n {\n        0 => \"zero\",\n        _ => \"other\",\n    }\n}\n\
-         component C {\n    view { Text { text: \"{pick(true)}{name(0)}\"; } }\n}\n",
+         component C {\n    view { Text(\"{pick(true)}{name(0)}\") }\n}\n",
     );
     assert!(errors.is_empty(), "{errors:?}");
 }
@@ -530,9 +530,9 @@ export component Todo {
         Column {
             gap: 8dp;
             for item in items key item.id {
-                Text { text: item.title; }
+                Text(item.title)
             }
-            Button { text: \"Add\"; on click { add(); } }
+            Button(\"Add\") { on click { add(); } }
         }
     }
 }

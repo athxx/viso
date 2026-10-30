@@ -19,7 +19,7 @@ fn project(dir: &Path) {
     .unwrap();
     std::fs::write(
         dir.join("src/app.vs"),
-        "component App {\n    view {\n        Text { text: missing; }\n    }\n}\n",
+        "component App {\n    view {\n        Text(missing)\n    }\n}\n",
     )
     .unwrap();
 }

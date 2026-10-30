@@ -4,18 +4,18 @@ export component Shell {
             match env.size_class {
                 SizeClass::Compact => {
                     Column {
-                        Text { text: "Phone" }
+                        Text("Phone")
                     }
                 }
                 SizeClass::Medium => {
                     Row {
-                        Text { text: "Tablet" }
+                        Text("Tablet")
                     }
                 }
                 SizeClass::Expanded => {
                     Row {
-                        Text { text: "Sidebar" }
-                        Text { text: "Desktop" }
+                        Text("Sidebar")
+                        Text("Desktop")
                     }
                 }
             }

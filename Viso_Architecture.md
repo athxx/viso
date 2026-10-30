@@ -47,7 +47,7 @@ Viso 的 Rust 集成提供**按语义命名的三个宏入口**（`viso-ui-macro
 // 1. 内联 View Fragment：无状态的小组件、测试、示例、局部静态 UI
 let content = ui! {
     Column {
-        Text { text: "Hello"; }
+        Text("Hello")
     }
 };
 
@@ -60,7 +60,7 @@ viso::component! {
         state count = 0;
         view {
             Column {
-                Text { text: "{count}"; }
+                Text("{count}")
             }
         }
     }
@@ -470,7 +470,7 @@ impl Application for App {
     }
 
     fn build(&mut self, cx: &mut BuildCx<'_>) {
-        ui! { Text { text: "Hello Viso"; } }(cx);
+        ui! { Text("Hello Viso") }(cx);
     }
 }
 
@@ -565,9 +565,8 @@ viso::component! {
         state count = 0;
         view {
             Column {
-                Text { text: "{count}"; }
-                Button {
-                    text: "Add";
+                Text("{count}")
+                Button("Add") {
                     on click { count += 1; }
                 }
             }
@@ -575,7 +574,7 @@ viso::component! {
     }
 }
 
-let page = ui! { Column { Text { text: "Counter"; } Counter {} } };
+let page = ui! { Column { Text("Counter"); Counter {} } };
 ```
 
 `ui!` 把 schema 中没有的节点类型当作 Rust Component 路径，以 `<Path as viso::ui::Mount>::mount(cx)` 挂载，返回其根。`Mount` 是二者的同一形状：`component!` 生成的 struct 实现它（`build` 分配自己的 State），手写控件实现 `viso::ui::Component`（`fn build(&self, cx: &mut BuildCx)`）并 `Default` 即得到它；`BuildCx::component(&c)` 构建任一 `Component` 并返回其根。
@@ -1536,9 +1535,7 @@ keep / patch / replace Runtime NodeId + state slots
 Named node：
 
 ```viso
-node save_button: Button {
-    text: "Save"
-}
+node save_button: Button("Save")
 ```
 
 拥有稳定 source symbol（`SymbolKind::Node`）。若 Hot Reload 插入一个无关兄弟节点，`save_button` 的 symbol 应保持稳定，从而焦点、局部状态、动画等可按 Widget/Node migration contract 保留。
@@ -3617,9 +3614,8 @@ export component Counter {
 
     view {
         Column {
-            Text { text: "{count}" }
-            node add_button: Button {
-                text: "Add"
+            Text("{count}")
+            node add_button: Button("Add") {
                 on click { count += 1 }
             }
         }
@@ -4388,13 +4384,13 @@ domain/
 其中 `.vs` 是唯一 canonical **外部 DSL 文件格式**。Rust 侧使用按语义命名的入口：
 
 ```rust
-let small = ui! { Button { text: "Save"; } };
+let small = ui! { Button("Save") };
 let page = view!("features/home/view.vs"); // 路径相对调用文件
 
 component! {
     TinyBadge {
         input text: String;
-        view { Text { text: text; } }
+        view { Text(text) }
     }
 }
 ```

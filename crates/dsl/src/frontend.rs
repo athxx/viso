@@ -1362,7 +1362,7 @@ mod tests {
     /// A lexical error the parse recovers from is still an error of the file.
     #[test]
     fn a_lexical_error_is_reported_even_when_the_file_parses() {
-        let source = "component App {\n    view {\n        Text { text: \"a\\q\"; }\n    }\n}\n";
+        let source = "component App {\n    view {\n        Text(\"a\\q\")\n    }\n}\n";
         let compiled = compile_file(source, &origin(&["app"]));
         let escape = crate::syntax::LexError::InvalidEscape.code();
         assert_eq!(codes(&compiled), [escape]);
@@ -1390,7 +1390,7 @@ mod tests {
         let src = "export component Page { view { Badge {} } }
 component Badge {
   input label: String = \"new\";
-  view { Text { text: label; } }
+  view { Text(label) }
 }
 ";
         let declared = declared_components(src);
@@ -1400,9 +1400,8 @@ component Badge {
             .collect();
         assert_eq!(names, [("Page", true), ("Badge", false)]);
         assert!(declared.iter().all(|c| c.required.is_empty()));
-        let needy = declared_components(
-            "component Tag { input text: String; view { Text { text: text; } } }",
-        );
+        let needy =
+            declared_components("component Tag { input text: String; view { Text(text) } }");
         assert_eq!(needy[0].required, ["text"]);
         assert_eq!(
             compile_file(src, &origin(&["page"]))
@@ -1435,7 +1434,7 @@ component Badge {
     fn a_headerless_file_compiles_its_only_component() {
         let src = "component Counter {
   state count = 3;
-  view { Text { text: \"{count}\"; } }\n}\n";
+  view { Text(\"{count}\") }\n}\n";
         let compiled = compile_file(src, &origin(&["counter"]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
         let component = compiled.component.as_ref().unwrap();
@@ -1458,7 +1457,7 @@ component Badge {
   computed sum: I64 = a + total();
   computed twice: I64 = sum * 2;
   fn total() -> I64 { b }
-  view { Text { text: \"{twice}\"; } Text { text: \"{c}\"; } }\n}\n";
+  view { Text(\"{twice}\"); Text(\"{c}\") }\n}\n";
         let compiled = compile_file(src, &origin(&[]));
         assert!(!compiled.has_errors(), "{:?}", compiled.diagnostics);
         let names = |node: u32| {

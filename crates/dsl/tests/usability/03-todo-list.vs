@@ -23,13 +23,12 @@ export component TodoList {
             Row {
                 gap: 8dp
                 TextInput { bind value <=> draft }
-                Button {
-                    text: "Add"
+                Button("Add") {
                     on click { add() }
                 }
             }
             for todo in todos key todo.id {
-                Text { text: todo.title }
+                Text(todo.title)
             }
         }
     }

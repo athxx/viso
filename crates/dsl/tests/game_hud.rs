@@ -26,19 +26,18 @@ export component Hud {
         Column {
             width: 200dp;
             height: 100dp;
-            Text {
+            Text("toggle") {
                 width: 100dp;
                 height: 20dp;
-                text: "toggle";
                 on click {
                     if game.is_paused() { game.resume(); } else { game.pause(); }
                 }
             }
-            Text { width: 100dp; height: 20dp; text: "Score: {game.score()}"; }
+            Text("Score: {game.score()}") { width: 100dp; height: 20dp }
             Column {
                 width: 100dp;
                 height: 20dp;
-                if game.is_paused() { Text { width: 10dp; height: 10dp; text: "Paused"; } }
+                if game.is_paused() { Text("Paused") { width: 10dp; height: 10dp } }
             }
         }
     }
@@ -125,7 +124,7 @@ fn a_misused_query_or_game_is_reported() {
     let with = |system: &str, view: &str| {
         format!(
             "import viso::game::{{FixedUpdate, FixedFrame}};\n{system}\n\
-             export component Hud {{ view {{ Text {{ text: {view}; }} }} }}"
+             export component Hud {{ view {{ Text({view}) }} }}"
         )
     };
     let base = "system S implements FixedUpdate { state n = 0; \
@@ -150,7 +149,7 @@ fn a_misused_query_or_game_is_reported() {
     let on_state = "system S implements FixedUpdate { @query state n = 0; \
                     action fixed_update(frame: FixedFrame) {} }";
     assert!(codes(&with(on_state, r#""x""#)).contains(&"E9112".to_string()));
-    let no_game = r#"export component Hud { view { Text { text: "{game.tick()}"; } } }"#;
+    let no_game = r#"export component Hud { view { Text("{game.tick()}") } }"#;
     assert!(codes(no_game).contains(&"E2001".to_string()), "no system");
     let in_binding = with(base, r#""{ { game.pause(); 1 } }""#);
     assert!(!codes(&in_binding).is_empty(), "an action in a binding");

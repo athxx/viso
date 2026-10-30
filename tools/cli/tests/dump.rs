@@ -30,7 +30,8 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).expect("utf-8")
 }
 
-const APP: &str = "export component App {\n    state count = 0;\n    view {\n        Text { text: label; }\n    }\n}\n";
+const APP: &str =
+    "export component App {\n    state count = 0;\n    view {\n        Text(label)\n    }\n}\n";
 
 #[test]
 fn an_invalid_file_reports_its_diagnostics_then_dumps_what_lowered() {

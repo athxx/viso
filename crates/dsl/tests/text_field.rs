@@ -16,7 +16,7 @@ export component Login {
             Text { width: 20dp; height: 20dp; on click { hidden = !hidden; } }
             TextInput { placeholder: "Password"; secure: hidden; }
             TextInput { value: "ada"; placeholder: "Name"; }
-            CheckBox { label: if hidden { "Show" } else { "Hide" }; }
+            CheckBox(if hidden { "Show" } else { "Hide" })
         }
     }
 }

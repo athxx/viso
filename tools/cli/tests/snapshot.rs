@@ -36,7 +36,7 @@ impl Scratch {
         )
         .write(
             "src/main.vs",
-            "export component App { view { Text { text: \"Hi\"; } } }\n",
+            "export component App { view { Text(\"Hi\") } }\n",
         );
         s
     }
@@ -148,7 +148,7 @@ fn a_component_shown_alone_needs_defaults_for_its_inputs() {
     let s = Scratch::new("needy");
     s.write(
         "src/tag.vs",
-        "export component Tag {\n    input text: String;\n    view { Text { text: text; } }\n}\n",
+        "export component Tag {\n    input text: String;\n    view { Text(text) }\n}\n",
     );
     let out = viso(&s.0, &["snapshot", "capture", "Tag"]);
     assert_eq!(code(&out), 1);
@@ -195,7 +195,7 @@ fn snapshots_are_captured_compared_and_updated() {
                 "src/app.vs",
                 b"export component App {\n    state on = false;\n    view {\n        Column {\n            \
                   Stack { width: 120dp; height: 40dp; background: if on { #ff3300 } else { #0055ff }; }\n            \
-                  Button { width: 120dp; height: 40dp; text: \"Flip\"; on click { on = !on; } }\n        }\n    }\n}\n",
+                  Button(\"Flip\") { width: 120dp; height: 40dp; on click { on = !on; } }\n        }\n    }\n}\n",
             ),
             (
                 "src/badge.vs",

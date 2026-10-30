@@ -155,7 +155,7 @@ fn the_simulation_does_not_touch_local_state() {
 fn local_marks_a_system_state() {
     assert_eq!(codes("system S { @local action go() {} }"), ["E9103"]);
     assert_eq!(
-        codes("component C { @local state n = 0; view { Text { text: \"\"; } } }"),
+        codes("component C { @local state n = 0; view { Text(\"\") } }"),
         ["E9103"]
     );
 }
