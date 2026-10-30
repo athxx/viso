@@ -40,6 +40,7 @@ LANGUAGE
 TEST / DEBUG
   test        Run the project's tests: unit, UI, game
   snapshot    Take the snapshots UI scenarios take, and hold them to their goldens
+  preview     Show generated `.vs` code alone in a sandboxed headless run: only the preview grant, a native outside it faulting `E6103`
   inspect     Inspect the running app: its nodes and their source, what it holds for them, what it drew
   profile     Sample the frames the running app draws: their time, phase by phase, and the work they count
   game        Read a state of, or record input from, the game `viso run` is playing
