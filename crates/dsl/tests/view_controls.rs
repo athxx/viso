@@ -1421,6 +1421,8 @@ export component Pinches {
     for mut rt in [Rt::reloaded(SRC), Rt::packaged(SRC)] {
         rt.touch(1, 50.0, 100.0, PointerPhase::Down);
         rt.touch(2, 100.0, 100.0, PointerPhase::Down);
+        // A first move that leaps would re-measure the pinch from there.
+        rt.touch(2, 101.0, 100.0, PointerPhase::Move);
         rt.touch(2, 150.0, 100.0, PointerPhase::Move);
         rt.touch(2, 50.0, 200.0, PointerPhase::Move);
         assert_eq!(rt.int("starts"), 1);
