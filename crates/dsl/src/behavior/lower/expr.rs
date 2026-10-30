@@ -304,6 +304,15 @@ impl Lowerer<'_, '_> {
                 .unwrap_or_default();
             return self.symbol_value(symbol, &name);
         }
+        if let Some((owner, index)) = self.cx.shorthand_at(head.text_range()) {
+            return match self.env.enum_variants(owner).and_then(|vs| vs.get(index)) {
+                Some(VariantInfo {
+                    payload: VariantPayload::Unit,
+                    ..
+                }) => Ok(self.constant(Const::Tag(index as u32))),
+                _ => self.bail("a variant constructor used as a value"),
+            };
+        }
         match self.cx.resolution_at(head.text_range()) {
             Some(Resolution::Local(slot)) if segments.len() == 1 => self.local(slot),
             Some(Resolution::Symbol(id))
@@ -554,11 +563,18 @@ impl Lowerer<'_, '_> {
                 self.env.record_fields(id).unwrap_or_default().to_vec(),
             ),
             None => {
-                let owner = heads
-                    .len()
-                    .checked_sub(2)
-                    .and_then(|i| self.cx.symbol_at(heads[i].text_range()));
-                let variant = owner.and_then(|id| self.variant(id, &last.text()));
+                let variant = match self.cx.shorthand_at(last.text_range()) {
+                    Some((id, index)) => self
+                        .env
+                        .enum_variants(id)
+                        .and_then(|vs| vs.get(index))
+                        .map(|v| (index as u32, v.clone())),
+                    None => heads
+                        .len()
+                        .checked_sub(2)
+                        .and_then(|i| self.cx.symbol_at(heads[i].text_range()))
+                        .and_then(|id| self.variant(id, &last.text())),
+                };
                 match variant {
                     Some((
                         tag,

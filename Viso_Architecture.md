@@ -4487,7 +4487,7 @@ Inspector 由 runtime 侧的采集（`viso-view` 与 `viso-ui` 的 `inspect` fea
 | 帧计数、draw batch、GPU resource、cache 与 `budget` 组 | `viso inspect frame` |
 | 输入事件经过的节点（focus/input path）、焦点移动、每次 dirty 及原因（§56） | `viso inspect events` |
 
-不做独立的 Studio：GUI 形式的 Inspector 是编辑器扩展（独立仓库 `viso-vscode`，VSCode 与 Zed），只读这些命令的 JSON 输出（`Viso_CLI.md` §26）。
+不做独立的 Studio：GUI 形式的 Inspector 是编辑器扩展（独立仓库 `viso-ide`，VSCode 与 Zed），只读这些命令的 JSON 输出（`Viso_CLI.md` §26）。
 
 ### 55.1 Frame profile
 
@@ -4889,7 +4889,7 @@ Viso 在这条路径上的差异：GLES3（GBM/EGL）与 CpuRaster（dumb buffer
 
 # Part XXV — Viso 1.0 实施路线图
 
-> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-vscode`），`web-dom` 与 `web-hybrid` 可构建与运行；Phase 10（§73A）除板卡实测外已完成（KMS overlay plane 见 ADR 0061）。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
+> **Informative。** 本 Part 是路线图，不是规范性合同；与 Part 0–XXIV 或已接受 ADR 冲突时以后者为准。进度以 `docs/adr/` 与仓库根目录的 `todo_*.md` 为准；每个 Phase 下的「状态」写明已落地的 ADR 与剩余缺口。Phase 0 由 ADR 0001 关闭；Phase 1–6 已完成；Phase 7–8 除各自列出的缺口外已完成；Phase 9 的 CLI 覆盖 `Viso_CLI.md` 主路径，Studio 已移除（编辑器扩展在 `viso-ide`），`web-dom` 与 `web-hybrid` 可构建与运行；Phase 10（§73A）除板卡实测外已完成（KMS overlay plane 见 ADR 0061）。游戏（ADR 0045/0047/0052）、媒体（0049/0050）、输出色彩编码（0048）、Native Package（0051）与 mesh extrusion / retained drawing / worker 池（0053）不属于任何 Phase，见对应 ADR。
 
 ## 64. Phase 0 — 固定 Architecture Contract
 

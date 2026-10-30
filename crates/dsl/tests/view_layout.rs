@@ -24,21 +24,21 @@ export component Placed {
                 width: WIDE;
                 height: 40dp;
                 justify: MIDDLE;
-                align: Align::end;
+                align: end;
                 Text { width: 20dp; height: 10dp; on click { taps += 1; } }
             }
             Flex {
-                axis: Axis::column;
+                axis: column;
                 width: Sizing::fixed(100dp);
-                height: Sizing::fit;
+                height: fit;
                 Text { width: 10dp; height: 10dp; }
                 Text { width: 10dp; height: 10dp; }
             }
             Row {
                 width: 400dp;
                 height: 20dp;
-                Column { width: Sizing::fill { weight: 3.0 }; height: 10dp; }
-                Column { width: Sizing::fill; height: 10dp; }
+                Column { width: fill { weight: 3.0 }; height: 10dp; }
+                Column { width: fill; height: 10dp; }
             }
         }
     }
@@ -159,7 +159,7 @@ fn a_binding_no_path_applies_is_reported() {
             "`max_lines` does not reach a `TextInput` yet",
         ),
         (
-            "TextInput { overflow: TextOverflow::ellipsis; }",
+            "TextInput { overflow: ellipsis; }",
             "`overflow` does not reach a `TextInput` yet",
         ),
         (

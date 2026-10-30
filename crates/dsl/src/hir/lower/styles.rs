@@ -25,7 +25,7 @@ use crate::hir::style::{
 };
 use crate::hir::ty::Ty;
 use crate::hir::view::InputProp;
-use crate::hir::widget::{self, PropLookup, value_ty};
+use crate::hir::widget::{self, PropLookup};
 use crate::resolve::{Resolution, ResolvedRef, SymbolId};
 use crate::syntax::{SyntaxKind, SyntaxNode, TextRange};
 
@@ -344,7 +344,7 @@ fn binding_check(
     let segments: Vec<&str> = name.split('.').collect();
     let want: Result<Option<Ty>, String> = match target {
         Target::Widget(schema) => match schema.lookup(&segments) {
-            PropLookup::Known(spec) if spec.styleable => Ok(value_ty(spec.ty)),
+            PropLookup::Known(spec) if spec.styleable => Ok(widget::schema_ty(env, spec.ty)),
             PropLookup::Known(_) => Err(format!(
                 "a style does not bind `{name}`: `{}` does not mark it styleable",
                 schema.native().name

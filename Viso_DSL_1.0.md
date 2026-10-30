@@ -5547,7 +5547,7 @@ RecordPatternField
 | E1406  | 嵌套超过 Parser 深度预算（256 层）                      |
 | E1407  | 源文本超过 Parser Token 预算（2^20 个有效 Token）       |
 | E2001  | 未解析符号                                              |
-| E2002  | Import 歧义                                             |
+| E2002  | 名字歧义（重名、Import 歧义、Enum 简写与值同名）        |
 | E2003  | 值初始化循环（含 Theme 的 Base/Item 依赖环，§60）       |
 | E2004  | 表达式泛型缺少 Turbofish 或 Const Argument 缺少 `const` |
 | E2005  | 源文件未声明可挂载的组件                                |

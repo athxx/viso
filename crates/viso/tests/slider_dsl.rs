@@ -19,7 +19,7 @@ viso::component! {
                 Slider {
                     height: 120dp;
                     bind value <=> level;
-                    axis: Axis::column;
+                    axis: column;
                     marks: true;
                     step: Option::Some(0.25);
                     origin: Option::Some(0.5);

@@ -691,8 +691,10 @@ const TABLE: List<I64> = [0, 1, 2, 3, /* ...over a million more... */];
         explanation: "One name refers to more than one declaration, so the resolver cannot pick one. \
             This covers a name declared twice in the same namespace and scope (including a \
             member that repeats the name of a `fn`, `action`, `task` or `const`), and two \
-            source files that derive the same module path. Names must be unique within a \
-            namespace so that every use resolves to exactly one symbol.",
+            source files that derive the same module path, and a bare name written where an \
+            enum is expected (`align: center`) that is both a variant of that enum and a value \
+            in scope. Names must be unique within a namespace so that every use resolves to \
+            exactly one symbol.",
         example: Example::Source(
             r#"component Counter {
     state count = 0;
@@ -702,7 +704,8 @@ const TABLE: List<I64> = [0, 1, 2, 3, /* ...over a million more... */];
 "#,
         ),
         fix: "Rename or remove one of the declarations so each name is declared once; for \
-            colliding module paths, rename or move one of the files.",
+            colliding module paths, rename or move one of the files; for a bare variant, write \
+            `Enum::variant` for the variant or `(name)` for the value.",
         fixed: Some(
             r#"state count = 0;
 state total = 1;
@@ -2399,7 +2402,7 @@ event changed(value: I64);
         fixed: Some(
             r#"Row {
     focusable: true;
-    semantics.role: Role::button;
+    semantics.role: button;
     semantics.label: "Add";
     on click { n += 1; }
 }
@@ -2526,7 +2529,7 @@ title = "Inbox"
 
     view {
         Row {
-            semantics.role: Role::button;
+            semantics.role: button;
             Text("Add")
             on click { n += 1; }
         }
@@ -2539,7 +2542,7 @@ title = "Inbox"
         fixed: Some(
             r#"Row {
     focusable: true;
-    semantics.role: Role::button;
+    semantics.role: button;
     Text("Add")
     on click { n += 1; }
 }

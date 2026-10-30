@@ -130,7 +130,8 @@ fn check_members(
             _ => None,
         })
     };
-    let role = own("semantics.role").is_some_and(|value| !is_path(&value, &["Role", "group"]));
+    let role = own("semantics.role")
+        .is_some_and(|value| !is_path(&value, &["Role", "group"]) && !is_path(&value, &["group"]));
     if !role {
         out.push(report(
             strict,

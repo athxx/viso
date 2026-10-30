@@ -12,8 +12,8 @@ use crate::ast::{AstNode, Expr, FieldExpr};
 use crate::diag::{Applicability, Diagnostic, Fix, TextEdit};
 use crate::hir::generic::{Subst, apply};
 use crate::hir::ty::Ty;
-use crate::resolve::SymbolId;
 use crate::resolve::suggest::{Candidate, attach, nearest};
+use crate::resolve::{Resolution, SymbolId};
 use crate::syntax::{SyntaxKind, SyntaxNode, SyntaxToken, TextRange};
 
 /// What a record literal's head names.
@@ -114,7 +114,7 @@ impl InferCx<'_> {
             .take_while(|t| t.kind() != SyntaxKind::LBrace)
             .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
             .collect();
-        let head = self.record_head(&heads);
+        let head = self.record_head(node, &heads, expected);
         if let Some(RecordHead::Record(id)) = head
             && (id == crate::resolve::prelude::image_record()
                 || id == crate::resolve::prelude::svg_record()
@@ -281,12 +281,24 @@ impl InferCx<'_> {
 
     /// What a record literal's head tokens name: the record at the last token, or
     /// the enum at the next-to-last token with its variant at the last.
-    fn record_head(&mut self, heads: &[SyntaxToken]) -> Option<RecordHead> {
+    /// A bare head nothing declares (`fill { .. }`) is a variant of the
+    /// expected enum.
+    fn record_head(
+        &mut self,
+        node: &SyntaxNode,
+        heads: &[SyntaxToken],
+        expected: Option<&Ty>,
+    ) -> Option<RecordHead> {
         let last = heads.last()?;
-        if let Some(id) = self.symbol_at(last.text_range())
+        let resolved = self.refs.get(&last.text_range()).copied();
+        if let Some(Resolution::Symbol(id)) = resolved
             && self.env.record_fields(id).is_some()
         {
             return Some(RecordHead::Record(id));
+        }
+        if resolved.is_none() && heads.len() == 1 && crate::ast::is_shorthand_site(node) {
+            let (id, index) = self.record_shorthand(last, expected)?;
+            return Some(RecordHead::Variant(id, index));
         }
         let owner = heads.len().checked_sub(2).map(|i| &heads[i])?;
         let id = self.symbol_at(owner.text_range())?;

@@ -26,14 +26,14 @@ export component Styled {
                 font_family: Option::Some(FontFamily::named("Inter"));
                 line_height: Option::Some(150%);
                 max_lines: Option::Some(2);
-                overflow: TextOverflow::ellipsis;
-                align: TextAlign::center;
+                overflow: ellipsis;
+                align: center;
             }
             Button("Go") {
                 font_family: Option::Some(FontFamily::monospace);
                 line_height: if bold { Option::Some(2em) } else { Option::None };
             }
-            TextInput { value: "x"; align: TextAlign::end; font_weight: FontWeight::semibold; }
+            TextInput { value: "x"; align: end; font_weight: semibold; }
         }
     }
 }
@@ -128,7 +128,7 @@ fn a_reload_restyles_the_text_in_place() {
     let mut rt = Rt::mount(STYLED);
     let root = rt.root;
     declared(&mut rt);
-    rt.reload(&STYLED.replace("TextAlign::center", "TextAlign::start"));
+    rt.reload(&STYLED.replace("align: center", "align: start"));
     assert_eq!(rt.root, root);
     let restyled = declared(&mut rt);
     let title = restyled
@@ -144,9 +144,9 @@ fn every_text_style_property_compiles_for_text_button_and_input() {
         format!("export component A {{ state n = 0; view {{ Column {{ {node} }} }} }}")
     };
     for node in [
-        "Text(\"a\") { font_weight: FontWeight::bold; align: TextAlign::center }",
-        "Text(\"a\") { max_lines: if n > 0 { Option::Some(1) } else { Option::None }; overflow: TextOverflow::ellipsis; }",
-        "Button(\"a\") { font_weight: FontWeight::medium; max_lines: Option::Some(1) }",
+        "Text(\"a\") { font_weight: bold; align: center }",
+        "Text(\"a\") { max_lines: if n > 0 { Option::Some(1) } else { Option::None }; overflow: ellipsis; }",
+        "Button(\"a\") { font_weight: medium; max_lines: Option::Some(1) }",
         "TextInput { font_family: Option::Some(FontFamily::serif); line_height: Option::Some(20dp); }",
     ] {
         let errors: Vec<_> = compile_file(&view(node), &origin())

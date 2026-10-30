@@ -103,6 +103,7 @@ impl OpenDoc {
             refs: Vec::new(),
             decls: Vec::new(),
             errors: Vec::new(),
+            deferred: Vec::new(),
         });
         let index = ReferenceIndex::build(&resolved);
         let module: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();

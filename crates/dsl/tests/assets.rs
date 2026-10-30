@@ -62,7 +62,7 @@ fn an_asset_is_typed_by_its_format_and_shown_by_its_node() {
     view {
         Column {
             Image(if dark { asset(\"images//logo.png\") } else { photo }) {
-                fit: ImageFit::cover;
+                fit: cover;
                 width: 64dp;
             }
             Svg(asset(\"icons/close.svg\")) { tint: #ff0000 }
@@ -132,7 +132,7 @@ fn a_video_plays_its_asset_or_url_under_its_controls_and_writes_back_its_playing
                 muted: true;
                 volume: 0.5;
                 rate: 1.5;
-                fit: ImageFit::cover;
+                fit: cover;
                 on progress(p) { at = p.position; }
                 on ended { done = true; }
                 on loaded(size) { done = false; }
@@ -173,7 +173,7 @@ fn a_camera_view_names_its_camera_by_facing_or_device() {
     view {
         Column {
             CameraView { facing: CameraFacing::front; mirror: false; bind playing <=> on; }
-            CameraView { device: \"cam-2\"; fit: ImageFit::contain; on loaded(size) { on = true; } }
+            CameraView { device: \"cam-2\"; fit: contain; on loaded(size) { on = true; } }
             CameraView {}
         }
     }

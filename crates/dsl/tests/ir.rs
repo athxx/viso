@@ -95,9 +95,7 @@ fn row_and_containers_resolve_their_kind_and_axis() {
 
 #[test]
 fn a_wrap_lowers_to_a_flow_with_its_gaps_and_placements() {
-    let wrap = only_node(
-        "Wrap { gap: 8dp; row_gap: 4dp; justify: Justify::center; align: Align::end; Text { } }",
-    );
+    let wrap = only_node("Wrap { gap: 8dp; row_gap: 4dp; justify: center; align: end; Text { } }");
     assert_eq!(wrap.kind, NodeKind::Flow);
     assert_eq!(
         (wrap.style.gap, wrap.style.line_gap),

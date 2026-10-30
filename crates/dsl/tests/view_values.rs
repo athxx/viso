@@ -254,7 +254,7 @@ export component Named {
     state count = 1;
     view {
         Column {
-            semantics.role: Role::region;
+            semantics.role: region;
             semantics.label: Option::Some("Totals");
             Text("{count}")
             Button("Add") { semantics.label: Option::Some("Add to {count}"); }
@@ -336,14 +336,14 @@ export component Said {
     state busy = false;
     view {
         Column {
-            semantics.role: Role::heading;
+            semantics.role: heading;
             semantics.heading_level: 2;
             semantics.label: "Settings";
             semantics.merge: true;
             Text("x") {
                 semantics.hint: "Opens the details";
                 semantics.value: "Step {step}";
-                semantics.live: LiveRegion::polite;
+                semantics.live: polite;
             }
             Text("y") { semantics.hidden: busy }
             Tabs { selected: 0; Text("A"); Text("B") }

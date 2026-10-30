@@ -99,8 +99,8 @@ viso::component! {
                     height: 50dp;
                     font_weight: if bold { FontWeight::bold } else { FontWeight::regular };
                     max_lines: Option::Some(1);
-                    overflow: TextOverflow::ellipsis;
-                    align: TextAlign::center;
+                    overflow: ellipsis;
+                    align: center;
                     on click { bold = !bold; }
                 }
             }

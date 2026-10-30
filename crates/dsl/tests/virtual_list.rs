@@ -427,7 +427,7 @@ fn a_row_can_hold_a_list_of_its_own() {
                             VirtualList {
                                 width: 200dp;
                                 height: 40dp;
-                                axis: Axis::row;
+                                axis: row;
                                 estimated_extent: 50dp;
                                 for b in 0..1000 key b {
                                     Text(\"{s}/{b}\") { width: 50dp; height: 40dp }
@@ -661,7 +661,7 @@ const PAGES: &str = "component Tour {
             height: 300dp;
             Text(\"{page}\") { width: 200dp; height: 20dp }
             VirtualList {
-                axis: Axis::row;
+                axis: row;
                 width: 200dp;
                 height: 100dp;
                 pages: true;
@@ -672,10 +672,10 @@ const PAGES: &str = "component Tour {
                 }
             }
             Scroll {
-                axis: Axis::row;
+                axis: row;
                 width: 200dp;
                 height: 50dp;
-                snap: Snap::start;
+                snap: start;
                 snap_inset: 16dp;
                 Row {
                     padding: 16dp;

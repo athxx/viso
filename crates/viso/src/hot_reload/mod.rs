@@ -3708,7 +3708,7 @@ mod tests {
                 &format!(
                     "Text {{ visible: enabled; }}\n            \
                      Video {{ url: \"https://example.com/a.m3u8\"; playing: {playing}; \
-                     muted: true; volume: 0.5; fit: ImageFit::cover; {more} }}"
+                     muted: true; volume: 0.5; fit: cover; {more} }}"
                 ),
             )
         };
@@ -3833,7 +3833,7 @@ mod tests {
             &host,
             2,
             3,
-            &camera("device: \"cam-2\"; playing: false; mirror: true; fit: ImageFit::contain;"),
+            &camera("device: \"cam-2\"; playing: false; mirror: true; fit: contain;"),
         );
         assert!(matches!(
             apply_on(

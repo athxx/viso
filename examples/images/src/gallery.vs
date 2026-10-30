@@ -7,7 +7,7 @@ export component Gallery {
             height: 240dp
             gap: 8dp
             Image(if night { asset("photos/night.jpg") } else { asset("photos/day.png") }) {
-                fit: ImageFit::cover
+                fit: cover
                 width: 320dp
                 height: 160dp
                 semantics.label: "Today's photo"

@@ -2267,12 +2267,14 @@ fn fold_grid(name: &str, value: &Expr, consts: &Consts, style: &mut StyleIr) -> 
     }
 }
 
-/// The variant a constant `Owner::variant` path names, for enum `owner`.
+/// The variant a constant `Owner::variant` path, or the bare `variant`,
+/// names, for enum `owner`.
 fn enum_constant(value: &Expr, owner: &str) -> Option<String> {
     let path = PathExpr::cast(value.syntax().clone())?;
     let segments: Vec<String> = path.segments().map(|t| t.text()).collect();
     match segments.as_slice() {
         [head, variant] if head == owner => Some(variant.clone()),
+        [variant] => Some(variant.clone()),
         _ => None,
     }
 }
@@ -2308,8 +2310,13 @@ fn authored_live(value: &Expr) -> Result<viso_schema::LiveRegion, String> {
     let segments: Vec<String> = PathExpr::cast(value.syntax().clone())
         .map(|path| path.segments().map(|t| t.text()).collect())
         .unwrap_or_default();
-    match segments.as_slice() {
-        [owner, variant] if owner == "LiveRegion" => viso_schema::view::source_live(variant)
+    let variant = match segments.as_slice() {
+        [owner, variant] if owner == "LiveRegion" => Some(variant),
+        [variant] => Some(variant),
+        _ => None,
+    };
+    match variant {
+        Some(variant) => viso_schema::view::source_live(variant)
             .ok_or_else(|| format!("`LiveRegion` has no variant `{variant}`")),
         _ => Err("`semantics.live` is a constant `LiveRegion::…`".to_string()),
     }
@@ -2320,12 +2327,11 @@ fn authored_role(value: &Expr) -> Result<viso_schema::Role, String> {
     let segments: Vec<String> = PathExpr::cast(value.syntax().clone())
         .map(|path| path.segments().map(|t| t.text()).collect())
         .unwrap_or_default();
-    let [owner, variant] = segments.as_slice() else {
-        return Err("`semantics.role` is a constant `Role::…`".to_string());
+    let variant = match segments.as_slice() {
+        [owner, variant] if owner == "Role" => variant,
+        [variant] => variant,
+        _ => return Err("`semantics.role` is a constant `Role::…`".to_string()),
     };
-    if owner != "Role" {
-        return Err("`semantics.role` is a constant `Role::…`".to_string());
-    }
     viso_schema::view::source_role(variant).ok_or_else(|| {
         format!(
             "`Role` has no variant `{variant}`; it is one of {}",

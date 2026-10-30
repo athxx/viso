@@ -201,7 +201,7 @@ viso::component! {
                 width: 800dp;
                 height: 600dp;
                 opacity: if lit { 1.0f32 } else { 0.2f32 };
-                transition.opacity: Transition { duration: 80ms, easing: Easing::linear };
+                transition.opacity: Transition { duration: 80ms, easing: linear };
                 on click { lit = true; }
             }
         }

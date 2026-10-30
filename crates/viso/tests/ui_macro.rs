@@ -58,9 +58,9 @@ fn constant_control_values_reach_the_text_request() {
         Column {
             Text("Title") {
                 color: #ff0000;
-                align: TextAlign::center;
+                align: center;
                 max_lines: Option::Some(2);
-                overflow: TextOverflow::ellipsis;
+                overflow: ellipsis;
             }
         }
     };
@@ -319,7 +319,7 @@ fn a_grid_places_its_children_by_tracks_areas_and_cells() {
             rows: tracks(2, Track::fixed(40dp));
             column_gap: 10dp;
             row_gap: 14sp;
-            align_items: GridAlign::center;
+            align_items: center;
             areas: ["head head head", "side main main", "side main main"];
             Text { width: 10dp; height: 10dp; grid.area: "main"; }
             Text { width: 10dp; height: 10dp; grid.column: 0; grid.row: 2; }
@@ -375,10 +375,10 @@ fn a_stack_and_an_absolute_place_their_children() {
     let build = viso::ui! {
         Column {
             Stack {
-                content_align: Alignment2D::center;
+                content_align: center;
                 padding: 10dp;
                 Text { width: 100dp; height: 60dp; stack.layer: 1; }
-                Text { width: 40dp; height: 20dp; stack.align: Alignment2D::bottom_end; }
+                Text { width: 40dp; height: 20dp; stack.align: bottom_end; }
             }
             Absolute {
                 width: 200dp;
@@ -479,7 +479,7 @@ fn a_sheet_mounts_against_its_edge_resting_at_its_detents() {
             width: 400dp;
             height: 300dp;
             Sheet {
-                edge: SheetEdge::top;
+                edge: top;
                 detents: [50%, 200dp];
                 dismissible: false;
                 Column { width: 400dp; height: 240dp; }

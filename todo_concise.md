@@ -80,10 +80,10 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C4 — Enum shorthand (U1.3)
 
-- [ ] Bare variant name where a property or record field expects an enum (through
+- [x] Bare variant name where a property or record field expects an enum (through
       `Option` and `if`/`match` tails); `fill` without `{}`.
-- [ ] Ambiguity with a value in scope → `E2002` with both fixes.
-- [ ] LSP completion offers variants there; migrate sources.
+- [x] Ambiguity with a value in scope → `E2002` with both fixes.
+- [x] LSP completion offers variants there; migrate sources.
 
 ## C5 — Slots and reuse (§45, §53)
 
@@ -119,5 +119,5 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 - [ ] Appendix C / `docs/diagnostics.md` / CLI goldens current; spec, UI and
       Implementation docs read through once for stale syntax.
-- [ ] `viso-vscode` tree-sitter grammar and highlight tests: newline items, string
+- [ ] `viso-ide` tree-sitter grammar and highlight tests: newline items, string
       holes, primary arguments, slots.

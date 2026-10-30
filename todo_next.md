@@ -1286,7 +1286,7 @@ Rules (as for `todo_features.md`):
 ## N10 — Editor extensions (last)
 
 There is no Studio: the CLI's hot reload, `viso inspect` and `viso profile` are the tools, and the
-editor extensions are their interface. They live in their own repository, `viso-vscode`. One
+editor extensions are their interface. They live in their own repository, `viso-ide`. One
 repository builds two thin shells, VSCode and Zed, over the shared `viso-lsp`. They start after
 everything above is done.
 

@@ -15,7 +15,7 @@ export component Note {
         Column {
             Text { width: 20dp; height: 20dp; on click { loud = !loud; } }
             Text("ignored") {
-                font_style: FontStyle::italic;
+                font_style: italic;
                 spans: [
                     Span { text: "Saved " },
                     Span {

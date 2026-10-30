@@ -26,6 +26,7 @@ pub use module::{
     GraphModule, ModuleGraph, ModuleIndex, ModulePath, NativeBinding, ResolveErrorKind, SourceUnit,
 };
 pub use name::{NameId, NameInterner};
+pub use prelude::enum_variants as prelude_enum_variants;
 pub use resolver::{Resolution, ResolvedModule, ResolvedRef, SymbolDecl, resolve};
 pub(crate) use resolver::{
     compilation_unit_of, generic_param_names, ident_tokens, resolve_in, unit_index,

@@ -216,7 +216,7 @@ const SHAKE: &str = "component Shake {
             Button(\"shake\") {
                 width: 100dp; height: 20dp; 
                 on click {
-                    let spec = Transition { duration: 100ms, easing: Easing::linear };
+                    let spec = Transition { duration: 100ms, easing: linear };
                     shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec));
                     running = match shaking { Option::Some(a) => a.is_running(), Option::None => false };
                 }
@@ -290,7 +290,7 @@ const PULSE: &str = "component Pulse {
                 on click {
                     let track = Keyframes {
                         stops: [
-                            Keyframe { at: 0.5f32, value: Animate::scale(2.0f32), easing: Easing::linear },
+                            Keyframe { at: 0.5f32, value: Animate::scale(2.0f32), easing: linear },
                             Keyframe { at: 1.0f32, value: Animate::scale(1.0f32) },
                         ],
                         duration: 100ms,

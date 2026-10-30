@@ -50,10 +50,11 @@ pub(super) fn call(node: &SyntaxNode) -> Option<(Vec<String>, Vec<Expr>)> {
     Some((callee, args))
 }
 
-/// The variant a constant `Owner::variant` path names.
+/// The variant a constant `Owner::variant` path, or the bare `variant`, names.
 pub(super) fn variant(value: &Expr, owner: &str) -> Option<String> {
     match path(value.syntax())?.as_slice() {
         [head, variant] if head == owner => Some(variant.clone()),
+        [variant] => Some(variant.clone()),
         _ => None,
     }
 }

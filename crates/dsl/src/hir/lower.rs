@@ -169,6 +169,7 @@ pub(crate) fn lower_with(
         &prelude.unit,
         &prelude.module.table,
         &prelude.module.refs,
+        &prelude.module.deferred,
         None,
         &prelude.module.decls,
         interner,
@@ -196,6 +197,7 @@ pub(crate) fn lower_with(
                 &cu,
                 &resolved_module.table,
                 &resolved_module.refs,
+                &resolved_module.deferred,
                 Some(i),
                 &resolved_module.decls,
                 interner,
@@ -1726,6 +1728,8 @@ struct ModuleScope {
     self_types: HashMap<SymbolId, Ty>,
     /// Every symbol a name in the module resolves to.
     referenced: HashSet<SymbolId>,
+    /// The resolver's `E2001` for each bare name typing settles, by its span.
+    deferred: HashMap<TextRange, Diagnostic>,
 }
 
 /// The concrete [`MemberEnv`]/[`TypeEnv`]/[`ViewEnv`]/[`ReadEnv`]/[`EffectEnv`] for one
@@ -1766,6 +1770,10 @@ struct ModuleEnv<'p> {
 }
 
 impl TypeEnv for ModuleEnv<'_> {
+    fn deferred_unresolved(&self, at: TextRange) -> Option<Diagnostic> {
+        self.scope.deferred.get(&at).cloned()
+    }
+
     fn standard_type(&self, name: &str) -> Option<SymbolId> {
         self.decls.standard.get(name).copied()
     }
@@ -2147,6 +2155,7 @@ impl ModuleScope {
         cu: &CompilationUnit,
         table: &SymbolTable,
         refs: &[ResolvedRef],
+        deferred: &[Diagnostic],
         home: Option<usize>,
         symbols: &[crate::resolve::SymbolDecl],
         interner: &mut NameInterner,
@@ -2154,6 +2163,7 @@ impl ModuleScope {
     ) -> ModuleScope {
         let mut scope = ModuleScope {
             home,
+            deferred: deferred.iter().map(|d| (d.primary, d.clone())).collect(),
             nominal: refs
                 .iter()
                 .filter_map(|r| Some((r.range, r.to.nominal()?)))
@@ -3867,12 +3877,12 @@ mod tests {
              \x20 state wide = false\n\
              \x20 view { Column {\n\
              \x20   justify: if wide { Justify::end } else { Justify::start };\n\
-             \x20   align: Align::stretch;\n\
-             \x20   width: Sizing::fill {};\n\
-             \x20   semantics.role: Role::list;\n\
-             \x20   semantics.live: LiveRegion::polite;\n\
-             \x20   Text(\"a\") { font_weight: FontWeight::bold; align: TextAlign::center; width: 40dp }\n\
-             \x20   Stack { content_align: Alignment2D::bottom_end; Text(\"b\") }\n\
+             \x20   align: stretch;\n\
+             \x20   width: fill;\n\
+             \x20   semantics.role: list;\n\
+             \x20   semantics.live: polite;\n\
+             \x20   Text(\"a\") { font_weight: bold; align: center; width: 40dp }\n\
+             \x20   Stack { content_align: bottom_end; Text(\"b\") }\n\
              \x20   Grid { columns: [Track::fr(1.0), Track::fixed(40dp)]; Text(\"c\") }\n\
              \x20 } }\n\
              }",
@@ -4181,7 +4191,7 @@ mod tests {
         );
         assert_clean(&app(
             "state b = PointerButton::primary\n  state k: Option<Key> = Option::None",
-            "Column { semantics.role: Role::button; semantics.label: Option::Some(\"Keys\"); \
+            "Column { semantics.role: button; semantics.label: Option::Some(\"Keys\"); \
              focusable: true; on click {} on pointer_up(e) { b = e.button; } \
              on key_down(e) { k = Option::Some(e.key); } }",
         ));

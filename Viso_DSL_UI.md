@@ -632,7 +632,7 @@ export record Backdrop {
 
 当前实现：`gap`、`row_gap`、`justify`、`align` 与 Flex 容器同样折叠或随值送达；Web 导出为 `display: flex; flex-wrap: wrap`，`fill` 子节点为 `width: 100%`。Rust 侧为 `BuildCx::flow(FlowStyle, ..)`（`LayoutInput::Flow`，亦支持沿块方向换列）。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius`、`border` 与 `shadow` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容；`shadow` 改变只重绘节点。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`shadow`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。`border` 与 `shadow` 导出为同一个 `box-shadow` 列表（`border` 为 `inset` 描边），各自为一个自定义属性，Style 的 `when` 只改写其中一个。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: Align::stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius`、`border` 与 `shadow` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容；`shadow` 改变只重绘节点。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`shadow`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。`border` 与 `shadow` 导出为同一个 `box-shadow` 列表（`border` 为 `inset` 描边），各自为一个自定义属性，Style 的 `when` 只改写其中一个。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 
@@ -906,7 +906,7 @@ Row {
     background: if selected { theme.colors.accent } else { theme.colors.surface }
     translate: Offset { x: 0dp, y: lift }
     transition.background: Transition { duration: theme.motion.short }
-    transition.translate: Transition { duration: theme.motion.medium, easing: Easing::ease_in_out }
+    transition.translate: Transition { duration: theme.motion.medium, easing: ease_in_out }
 }
 ```
 
@@ -957,7 +957,7 @@ component Shake {
     state shaking: Option<Animation> = Option::None
 
     action shake() {
-        let spec = Transition { duration: 80ms, easing: Easing::ease_in_out }
+        let spec = Transition { duration: 80ms, easing: ease_in_out }
         shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec))
     }
 
@@ -1416,13 +1416,13 @@ export component SettingsSection {
 
     view {
         Column {
-            width: Sizing::fill {}
+            width: fill
             gap: theme.spacing.small
             padding: EdgeInsets::axes(inline: theme.spacing.large, block: theme.spacing.medium)
             Text(title) {
                 font_size: theme.typography.title_size
-                font_weight: FontWeight::semibold
-                semantics.role: Role::heading
+                font_weight: semibold
+                semantics.role: heading
                 semantics.heading_level: 2
             }
             SlotOutlet { slot: content }
@@ -1436,7 +1436,7 @@ export component SettingsPage {
     view {
         Scroll {
             Column {
-                width: Sizing::fill {}
+                width: fill
                 max_width: 640dp
                 SettingsSection {
                     title: tr("settings.general")
@@ -1448,12 +1448,12 @@ export component SettingsPage {
                 SettingsSection {
                     title: tr("settings.sound")
                     Row {
-                        width: Sizing::fill {}
+                        width: fill
                         gap: theme.spacing.medium
-                        align: Align::center
+                        align: center
                         Text(tr("settings.volume"))
                         Slider {
-                            width: Sizing::fill {}
+                            width: fill
                             enabled: settings.notifications
                             semantics.label: tr("settings.volume")
                             bind value <=> settings.volume
@@ -1484,7 +1484,7 @@ component MessageBubble {
 
     view {
         Row {
-            width: Sizing::fill {}
+            width: fill
             justify: if message.mine { Justify::end } else { Justify::start }
             padding: EdgeInsets::axes(inline: theme.spacing.medium, block: theme.spacing.xsmall)
             Column {
@@ -1517,7 +1517,7 @@ export component ChatMessageList {
 
     view {
         node list: VirtualList {
-            height: Sizing::fill {}
+            height: fill
             estimated_extent: 3.5em
             overscan: 6
             semantics.label: tr("chat.messages")
@@ -1578,7 +1578,7 @@ component FieldError {
             Option::Some(found) => {
                 Text(tr(issue_key(found))) {
                     color: theme.colors.error
-                    semantics.live: LiveRegion::polite
+                    semantics.live: polite
                 }
             }
             Option::None => {}
@@ -1643,7 +1643,7 @@ export component SignupPage {
                 SubmitPhase::failed(message) => {
                     Text(message) {
                         color: theme.colors.error
-                        semantics.live: LiveRegion::assertive
+                        semantics.live: assertive
                     }
                 }
                 _ => {}

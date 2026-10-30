@@ -9,6 +9,7 @@
 //! rename all navigate, so the AST costs only a kind-tag comparison to project.
 
 mod nodes;
+mod shorthand;
 mod support;
 
 pub use nodes::{
@@ -29,3 +30,4 @@ pub use nodes::{
     ViewBlock, ViewDecl, ViewFor, ViewFragment, ViewIf, ViewItem, ViewMatch, ViewMatchArm,
     decl_attributes, string_part_body,
 };
+pub use shorthand::is_shorthand_site;

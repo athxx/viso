@@ -24,7 +24,7 @@ component Gallery {
             height: 300dp;
             Text { width: 20dp; height: 20dp; on click { dark = !dark; } }
             Image(if dark { asset("images/dark.png") } else { asset("images/light.png") }) {
-                fit: ImageFit::cover;
+                fit: cover;
                 width: 64dp;
                 height: 64dp;
             }

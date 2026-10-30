@@ -41,6 +41,35 @@ pub(crate) const PRELUDE_RECORDS: &[&str] = &[
     "Offset",
 ];
 
+/// The type a binding of a property whose schema type is `name` is checked
+/// against: a type the checker models, a prelude enum (`Justify`, `Role`,
+/// `Sizing`) or one of [`PRELUDE_RECORDS`], each also in an `Option` or a
+/// `List`; `None` for a schema type the checker does not model yet
+/// (`Offset`, `Transition`).
+pub(crate) fn schema_ty(env: &dyn super::infer::TypeEnv, name: &str) -> Option<Ty> {
+    if let Some(ty) = value_ty(name) {
+        return Some(ty);
+    }
+    let generic = |outer: &str| {
+        name.strip_prefix(outer)
+            .and_then(|rest| rest.strip_prefix('<'))
+            .and_then(|rest| rest.strip_suffix('>'))
+    };
+    if let Some(inner) = generic("Option") {
+        return Some(Ty::Option(Box::new(schema_ty(env, inner)?)));
+    }
+    if let Some(inner) = generic("List") {
+        return Some(Ty::List(Box::new(schema_ty(env, inner)?)));
+    }
+    // A native value type, by its path.
+    if name.contains("::") {
+        return Some(Ty::native(viso_behavior::native::NativeId::of(name)));
+    }
+    let id = env.standard_type(name)?;
+    let is_enum = env.enum_variants(id).is_some();
+    (is_enum || PRELUDE_RECORDS.contains(&name)).then(|| Ty::named(id))
+}
+
 /// The type a binding of a property typed `name` is checked against, or `None`
 /// for a schema type the checker does not model.
 pub(crate) fn value_ty(name: &str) -> Option<Ty> {

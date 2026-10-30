@@ -31,7 +31,7 @@ export component Board {{
                 rows: tracks(2, Track::fixed(40dp));
                 column_gap: 10dp;
                 row_gap: 1em;
-                align_items: GridAlign::center;
+                align_items: center;
                 areas: ["head head head", "side main main", "side main main"];
                 Text {{ width: 10dp; height: 10dp; grid.area: "{area}"; on click {{ taps += 1; }} }}
                 Text {{ width: 10dp; height: 10dp; grid.column: 0; grid.row: Option::Some(2); }}

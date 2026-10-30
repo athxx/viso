@@ -44,7 +44,7 @@ const CLEAN: [&str; 0] = [];
 fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
     assert_eq!(
         lenient(
-            "Row { semantics.role: Role::button; focusable: true; \
+            "Row { semantics.role: button; focusable: true; \
              Text(\"Go\"); on click { n += 1; } }"
         ),
         CLEAN
@@ -58,24 +58,24 @@ fn an_interactive_node_needs_a_role_a_name_and_a_keyboard_path() {
     );
     assert_eq!(
         lenient(
-            "Row { semantics.role: Role::group; focusable: true; Text(\"Go\"); on click { n += 1; } }"
+            "Row { semantics.role: group; focusable: true; Text(\"Go\"); on click { n += 1; } }"
         ),
         ["E3704"],
         "`group` is no role"
     );
     assert_eq!(
-        lenient("Row { semantics.role: Role::button; focusable: true; on click { n += 1; } }"),
+        lenient("Row { semantics.role: button; focusable: true; on click { n += 1; } }"),
         ["E3704"],
         "no name"
     );
     assert_eq!(
-        lenient("Row { semantics.role: Role::button; Text(\"Go\"); on click { n += 1; } }"),
+        lenient("Row { semantics.role: button; Text(\"Go\"); on click { n += 1; } }"),
         ["E3708"],
         "not focusable"
     );
     assert_eq!(
         lenient(
-            "Row { semantics.role: Role::button; focusable: true; Text(\"Go\"); on tap { n += 1; } }"
+            "Row { semantics.role: button; focusable: true; Text(\"Go\"); on tap { n += 1; } }"
         ),
         ["E3708"],
         "a tap has no keyboard path"
@@ -163,14 +163,14 @@ fn handlers_a_caller_forwards_onto_a_component_check_its_root() {
     assert_eq!(
         forwarded(
             card,
-            "Card { semantics.role: Role::button; focusable: true; on click { n += 1; } }"
+            "Card { semantics.role: button; focusable: true; on click { n += 1; } }"
         ),
         CLEAN,
         "the caller gives the root what it needs, the name inside it"
     );
     assert_eq!(
         forwarded(
-            "Row { semantics.role: Role::button; focusable: true; }",
+            "Row { semantics.role: button; focusable: true; }",
             "Card { on click { n += 1; } }"
         ),
         ["E3704"],

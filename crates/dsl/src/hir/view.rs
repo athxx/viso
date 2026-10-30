@@ -46,7 +46,7 @@ use super::nodes::HirSlot;
 use super::percent::{Carry, PercentFacts, PercentSources};
 use super::style::{self, Own, PartValue, StyleBooks, StyleUse};
 use super::ty::Ty;
-use super::widget::{self, ChildProps, PropLookup, WidgetSchema, value_ty};
+use super::widget::{self, ChildProps, PropLookup, WidgetSchema};
 use crate::ast::{
     AssignablePath, AstNode, ElseBranch, EventHandler, Expr, FillClause, NodeBody, PartOverride,
     PartReplace, PathExpr, PropertyBinding, PropertyPath, TemplateUse, TwoWayBinding, TypePath,
@@ -576,27 +576,7 @@ impl<'a> ViewWalk<'a> {
     /// each also in an `Option` or a `List`; `None` for a schema type the
     /// checker does not model yet (`Offset`, `Transition`).
     fn schema_value_ty(&self, name: &str) -> Option<Ty> {
-        if let Some(ty) = value_ty(name) {
-            return Some(ty);
-        }
-        let generic = |outer: &str| {
-            name.strip_prefix(outer)
-                .and_then(|rest| rest.strip_prefix('<'))
-                .and_then(|rest| rest.strip_suffix('>'))
-        };
-        if let Some(inner) = generic("Option") {
-            return Some(Ty::Option(Box::new(self.schema_value_ty(inner)?)));
-        }
-        if let Some(inner) = generic("List") {
-            return Some(Ty::List(Box::new(self.schema_value_ty(inner)?)));
-        }
-        // A native value type, by its path.
-        if name.contains("::") {
-            return Some(Ty::native(viso_behavior::native::NativeId::of(name)));
-        }
-        let id = self.env.standard_type(name)?;
-        let is_enum = self.cx.env().enum_variants(id).is_some();
-        (is_enum || widget::PRELUDE_RECORDS.contains(&name)).then(|| Ty::named(id))
+        widget::schema_ty(self.cx.env(), name)
     }
 
     /// Walks the items of one block or node body.

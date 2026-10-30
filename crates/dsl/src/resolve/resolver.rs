@@ -119,6 +119,10 @@ pub struct ResolvedModule {
     pub decls: Vec<SymbolDecl>,
     /// Diagnostics from this module's resolution.
     pub errors: Vec<Diagnostic>,
+    /// The `E2001` of each bare name nothing declares where an expected enum
+    /// may supply it as a variant (`align: center`); typing raises the ones
+    /// that name no variant there.
+    pub deferred: Vec<Diagnostic>,
 }
 
 /// A module's import environment.
@@ -238,6 +242,7 @@ pub(crate) fn resolve_in(
             interner,
             refs: Vec::new(),
             errors,
+            deferred: Vec::new(),
             scopes: ScopeStack::new(),
             // The component frontend has declarations/imports; a genuinely missing
             // user type is a real error here.
@@ -252,20 +257,28 @@ pub(crate) fn resolve_in(
         if let Some(cu) = &cu {
             pass.resolve_unit(cu);
         }
-        let ModulePass { refs, errors, .. } = pass;
-        passes.push((refs, errors));
+        let ModulePass {
+            refs,
+            errors,
+            deferred,
+            ..
+        } = pass;
+        passes.push((refs, errors, deferred));
     }
     drop(members);
     let resolved = tables
         .into_iter()
         .zip(all_decls)
         .zip(passes)
-        .map(|((table, decls), (refs, errors))| ResolvedModule {
-            table,
-            refs,
-            decls,
-            errors,
-        })
+        .map(
+            |((table, decls), (refs, errors, deferred))| ResolvedModule {
+                table,
+                refs,
+                decls,
+                errors,
+                deferred,
+            },
+        )
         .collect();
     (resolved, prelude)
 }
@@ -298,6 +311,7 @@ pub(super) fn resolve_standalone(
         interner,
         refs: Vec::new(),
         errors,
+        deferred: Vec::new(),
         scopes: ScopeStack::new(),
         defer_unresolved_types: false,
         in_view: false,
@@ -308,13 +322,19 @@ pub(super) fn resolve_standalone(
     };
     pass.decl_at = decls.iter().map(|d| (d.name_range, d.id)).collect();
     pass.resolve_unit(cu);
-    let ModulePass { refs, errors, .. } = pass;
+    let ModulePass {
+        refs,
+        errors,
+        deferred,
+        ..
+    } = pass;
     drop(members);
     ResolvedModule {
         table,
         refs,
         decls,
         errors,
+        deferred,
     }
 }
 
@@ -1241,6 +1261,8 @@ struct ModulePass<'a> {
     interner: &'a mut NameInterner,
     refs: Vec<ResolvedRef>,
     errors: Vec<Diagnostic>,
+    /// The `E2001`s left to typing, see [`ResolvedModule::deferred`].
+    deferred: Vec<Diagnostic>,
     scopes: ScopeStack,
     /// When set, an unresolved node/type name is treated as native/schema-provided
     /// and left undiagnosed instead of raising [`E2001`]. A bare `ui!` fragment has
@@ -2381,13 +2403,18 @@ impl<'a> ModulePass<'a> {
         let text = head.text();
         let builtin = BUILTIN_VALUES.contains(&text.as_str()) || self.owner_slots.contains(&text);
         if !builtin && !self.defer_unresolved_types && !self.imports.unresolved.contains(&name) {
-            self.unresolved_value(&head);
+            let diagnostic = self.unresolved_value(&head);
+            if crate::ast::is_shorthand_site(path.syntax()) {
+                self.deferred.push(diagnostic);
+            } else {
+                self.errors.push(diagnostic);
+            }
         }
     }
 
-    /// Reports a value name nothing declares (`E2001`), with the nearest names
-    /// of the enclosing component and the module as fixes.
-    fn unresolved_value(&mut self, head: &crate::syntax::SyntaxToken) {
+    /// The `E2001` of a value name nothing declares, with the nearest names of
+    /// the enclosing component and the module as fixes.
+    fn unresolved_value(&self, head: &crate::syntax::SyntaxToken) -> Diagnostic {
         let text = head.text();
         let at = head.text_range();
         let mut diagnostic =
@@ -2414,7 +2441,7 @@ impl<'a> ModulePass<'a> {
             .collect();
         let suggestions = suggest::nearest(&text, candidates);
         suggest::attach(&mut diagnostic, at, &suggestions);
-        self.errors.push(diagnostic);
+        diagnostic
     }
 
     /// Resolves the path `head::rest..` whose head imports the native `base`:

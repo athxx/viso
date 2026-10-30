@@ -10,10 +10,10 @@ use viso::ui::{
 fn a_fragment_s_viewport_snaps_and_shows_its_dots() {
     let build = viso::ui! {
         Scroll {
-            axis: Axis::row;
+            axis: row;
             width: 200dp;
             height: 50dp;
-            snap: Snap::center;
+            snap: center;
             snap_inset: 8dp;
             page_dots: true;
             Row {

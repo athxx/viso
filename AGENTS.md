@@ -273,7 +273,7 @@ Rules:
 - Third-party forks belong in `vendor/`.
 - Optional large functionality belongs in `extras/` (or a `viso-ext` plugin when it is not UI), not default widgets.
 - Apps/examples must not be imported by framework crates.
-- Editor extensions (VSCode, Zed) live in the separate `viso-vscode` repository and reach Viso only through `viso-lsp` and the CLI's JSON; there is no Studio.
+- Editor extensions (VSCode, Zed) live in the separate `viso-ide` repository and reach Viso only through `viso-lsp` and the CLI's JSON; there is no Studio.
 
 ---
 

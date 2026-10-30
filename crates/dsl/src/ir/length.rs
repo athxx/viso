@@ -206,7 +206,7 @@ pub(super) fn fold_size(value: &Expr, consts: &Consts) -> Option<Lowered> {
 /// Folds a `Sizing` property (`width`, `height`): a length, which stands for
 /// `Sizing::fixed` of it, `Sizing::fixed(len)`, `Sizing::fill` (weight `1`),
 /// `Sizing::fill { weight: w }`, `Sizing::fit`, `Sizing::min_content` or
-/// `Sizing::max_content`. `Some(Err)` is a constant
+/// `Sizing::max_content`, each variant also bare (`fill`). `Some(Err)` is a constant
 /// layout does not size by, and why; `None` is not a constant.
 pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowered, String>> {
     if let Some(length) = fold_size(value, consts) {
@@ -218,12 +218,11 @@ pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowere
         SyntaxKind::PathExpr => {
             let path = PathExpr::cast(node.clone())?;
             let segments: Vec<String> = path.segments().map(|t| t.text()).collect();
-            let [ty, variant] = segments.as_slice() else {
-                return None;
+            let variant = match segments.as_slice() {
+                [ty, variant] if ty == "Sizing" => variant,
+                [variant] => variant,
+                _ => return None,
             };
-            if ty != "Sizing" {
-                return None;
-            }
             Some(match variant.as_str() {
                 "fill" => Ok(Lowered::Layout(LengthIr::Fill { weight: 1.0 })),
                 "fit" => Ok(Lowered::Layout(LengthIr::Fit)),
@@ -245,7 +244,9 @@ pub(super) fn fold_sizing(value: &Expr, consts: &Consts) -> Option<Result<Lowere
             }
         }
         SyntaxKind::RecordExpr => {
-            if record_head(node) != ["Sizing", "fill"] {
+            if !matches!(&record_head(node)[..], [ty, fill] if ty == "Sizing" && fill == "fill")
+                && record_head(node) != ["fill"]
+            {
                 return None;
             }
             let mut weight = 1.0;

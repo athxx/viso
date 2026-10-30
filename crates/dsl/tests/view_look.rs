@@ -33,7 +33,7 @@ component Fade {
                 height: 20dp;
                 background: if lit { #ff0000 } else { #ff000000 };
                 opacity: if lit { 1.0f32 } else { 0.0f32 };
-                transition.opacity: Transition { duration: 100ms, easing: Easing::linear };
+                transition.opacity: Transition { duration: 100ms, easing: linear };
                 transition.background: Transition {
                     duration: 100ms,
                     delay: 50ms,
@@ -302,10 +302,10 @@ component Move {
                 translate: Offset { x: if lit { 40dp } else { 0dp }, y: 0dp };
                 corner_radius: if lit { 10dp } else { 0dp };
                 color: if lit { #ff0000 } else { #ff000000 };
-                transition.width: Transition { duration: 100ms, easing: Easing::linear };
-                transition.translate: Transition { duration: 100ms, easing: Easing::linear };
-                transition.corner_radius: Transition { duration: 100ms, easing: Easing::linear };
-                transition.color: Transition { duration: 100ms, easing: Easing::linear };
+                transition.width: Transition { duration: 100ms, easing: linear };
+                transition.translate: Transition { duration: 100ms, easing: linear };
+                transition.corner_radius: Transition { duration: 100ms, easing: linear };
+                transition.color: Transition { duration: 100ms, easing: linear };
                 on click { lit = !lit; }
             }
         }
@@ -358,7 +358,7 @@ fn a_translate_radius_size_and_text_color_move_in_over_their_transitions() {
 fn a_spring_transition_rings_past_its_target_and_rests_on_it() {
     let ms = Duration::from_millis;
     let source = MOVE.replace(
-        "transition.translate: Transition { duration: 100ms, easing: Easing::linear };",
+        "transition.translate: Transition { duration: 100ms, easing: linear };",
         "transition.translate: Transition { easing: Easing::spring(300.0f32, 10.0f32, 1.0f32) };",
     );
     for mut rt in [Rt::reload(&source), Rt::package(&source)] {
@@ -431,8 +431,8 @@ component Turn {
                 height: 20dp;
                 scale: if lit { 2.0f32 } else { 1.0f32 };
                 rotation: if lit { 0.5turn } else { 0deg };
-                transform_origin: Alignment2D::top_start;
-                transition.scale: Transition { duration: 100ms, easing: Easing::linear };
+                transform_origin: top_start;
+                transition.scale: Transition { duration: 100ms, easing: linear };
                 on click { lit = !lit; }
             }
         }
@@ -498,7 +498,7 @@ fn carried(lead: &str, target: &str) -> String {
                 width: 20dp;
                 height: 20dp;
                 opacity: if lit {{ {target} }} else {{ 0.0f32 }};
-                transition.opacity: Transition {{ duration: 100ms, easing: Easing::linear }};
+                transition.opacity: Transition {{ duration: 100ms, easing: linear }};
                 on click {{ lit = !lit; }}
             }}
             Column {{
@@ -509,7 +509,7 @@ fn carried(lead: &str, target: &str) -> String {
                         width: 10dp;
                         height: 10dp;
                         opacity: if lit {{ 1.0f32 }} else {{ 0.0f32 }};
-                        transition.opacity: Transition {{ duration: 100ms, easing: Easing::linear }};
+                        transition.opacity: Transition {{ duration: 100ms, easing: linear }};
                     }}
                 }}
             }}

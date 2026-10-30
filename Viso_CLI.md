@@ -2211,7 +2211,7 @@ Ende trace（`viso_view::profile::Trace`）：protocol tag + `trace` + u16 版�
 
 ## 26. 编辑器扩展（不设 `viso studio`）
 
-Viso 不做独立的 Studio，也没有 `viso studio` 子命令。热重载由 `viso run` 提供，观察由 `viso inspect` / `viso profile` 提供；它们的图形界面是编辑器扩展，在独立仓库 `viso-vscode` 中，一个仓库分别构建 VSCode 与 Zed 两个外壳：
+Viso 不做独立的 Studio，也没有 `viso studio` 子命令。热重载由 `viso run` 提供，观察由 `viso inspect` / `viso profile` 提供；它们的图形界面是编辑器扩展，在独立仓库 `viso-ide` 中，一个仓库分别构建 VSCode 与 Zed 两个外壳：
 
 - 智能功能全部在 `viso-lsp`（诊断、hover、跳转、引用、重命名、格式化、codeAction、semantic tokens 与补全），两个编辑器共用；
 - 高亮各用编辑器自己的机制：VSCode 用 TextMate 语法，Zed 用 Tree-sitter 语法与 query；

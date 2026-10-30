@@ -40,6 +40,7 @@ pub(crate) mod pattern;
 pub(crate) mod promote;
 mod record;
 mod schema;
+mod shorthand;
 pub(crate) mod translate;
 
 pub use native::NativeCall;
@@ -255,6 +256,13 @@ pub trait TypeEnv {
         None
     }
 
+    /// The `E2001` the resolver left to typing for the bare name at `at`
+    /// (see [`crate::resolve::ResolvedModule::deferred`]).
+    fn deferred_unresolved(&self, at: TextRange) -> Option<Diagnostic> {
+        let _ = at;
+        None
+    }
+
     /// Notes that the call (or trait-object conversion) at `call` reaches the
     /// user callable `symbol`, for the effect and capability checks.
     fn record_call(&self, call: TextRange, symbol: SymbolId) {
@@ -342,6 +350,9 @@ pub struct InferCx<'a> {
     /// The argument of each generic parameter of the instantiation being
     /// typed; empty for a body typed once.
     subst: crate::hir::generic::Subst,
+    /// The enum and variant each bare variant name (`center`, `fill { .. }`)
+    /// stands for, keyed by the name's span.
+    shorthands: HashMap<TextRange, (SymbolId, usize)>,
 }
 
 impl<'a> InferCx<'a> {
@@ -370,6 +381,7 @@ impl<'a> InferCx<'a> {
             coercions: HashMap::new(),
             promotions: HashMap::new(),
             subst: Vec::new(),
+            shorthands: HashMap::new(),
         }
     }
 
@@ -610,7 +622,11 @@ impl<'a> InferCx<'a> {
         let Some(head) = segments.first() else {
             return Ty::Unknown;
         };
-        match self.refs.get(&head.text_range()).copied() {
+        let resolved = self.refs.get(&head.text_range()).copied();
+        if segments.len() == 1 && resolved.is_some() {
+            self.check_shorthand_ambiguity(node, head, expected);
+        }
+        match resolved {
             Some(Resolution::Symbol(id)) if segments.len() >= 2 => {
                 let variants = self.env.enum_variants(id);
                 let is_variant =
@@ -637,6 +653,9 @@ impl<'a> InferCx<'a> {
                     Some(Ty::Option(_)) => expected.cloned().unwrap_or(Ty::Unknown),
                     _ => Ty::Option(Box::new(Ty::Unknown)),
                 },
+                _ if segments.len() == 1 && crate::ast::is_shorthand_site(node) => {
+                    self.infer_shorthand(node, head, expected)
+                }
                 _ => Ty::Unknown,
             },
         }

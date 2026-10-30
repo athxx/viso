@@ -563,7 +563,7 @@ See also: `viso check`
 
 **Ambiguous Name** — error, resolve
 
-One name refers to more than one declaration, so the resolver cannot pick one. This covers a name declared twice in the same namespace and scope (including a member that repeats the name of a `fn`, `action`, `task` or `const`), and two source files that derive the same module path. Names must be unique within a namespace so that every use resolves to exactly one symbol.
+One name refers to more than one declaration, so the resolver cannot pick one. This covers a name declared twice in the same namespace and scope (including a member that repeats the name of a `fn`, `action`, `task` or `const`), and two source files that derive the same module path, and a bare name written where an enum is expected (`align: center`) that is both a variant of that enum and a value in scope. Names must be unique within a namespace so that every use resolves to exactly one symbol.
 
 ```vs
 component Counter {
@@ -573,7 +573,7 @@ component Counter {
 }
 ```
 
-Fix: Rename or remove one of the declarations so each name is declared once; for colliding module paths, rename or move one of the files.
+Fix: Rename or remove one of the declarations so each name is declared once; for colliding module paths, rename or move one of the files; for a bare variant, write `Enum::variant` for the variant or `(name)` for the value.
 
 ```vs
 state count = 0;
@@ -1906,7 +1906,7 @@ Fix: Give the node a role and a name, or use a standard interactive widget such 
 ```vs
 Row {
     focusable: true;
-    semantics.role: Role::button;
+    semantics.role: button;
     semantics.label: "Add";
     on click { n += 1; }
 }
@@ -2006,7 +2006,7 @@ component A {
 
     view {
         Row {
-            semantics.role: Role::button;
+            semantics.role: button;
             Text("Add")
             on click { n += 1; }
         }
@@ -2019,7 +2019,7 @@ Fix: Make the node focusable and handle `click`, or use a standard interactive w
 ```vs
 Row {
     focusable: true;
-    semantics.role: Role::button;
+    semantics.role: button;
     Text("Add")
     on click { n += 1; }
 }

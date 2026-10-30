@@ -30,7 +30,7 @@ use proc_macro::TokenStream;
 /// a `component!`.
 ///
 /// ```ignore
-/// let build = ui! { Column { Text("Save") { align: TextAlign::center } Counter {} } };
+/// let build = ui! { Column { Text("Save") { align: center } Counter {} } };
 /// ```
 #[proc_macro]
 pub fn ui(input: TokenStream) -> TokenStream {

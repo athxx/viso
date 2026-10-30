@@ -433,7 +433,7 @@ export component Directed {
                 Text { width: 20dp; height: 20dp; on click { turned = !turned; } }
             }
             AdaptiveScope {
-                layout_direction: LayoutDirection::rtl;
+                layout_direction: rtl;
                 Row { width: 400dp; height: 20dp; Text { width: 10dp; height: 10dp; } }
                 Mark {}
             }

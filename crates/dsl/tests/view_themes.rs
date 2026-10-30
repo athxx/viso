@@ -274,7 +274,7 @@ fn the_release_package_runs_the_same() {
 fn a_theme_sets_the_root_font_size_and_the_family_text_falls_back_to() {
     let mut rt = Rt::mount(&probe(&themes(
         "theme Big: Light {\n    \
-         typography = TypographyScale { base_size: 20sp, family: FontFamily::monospace };\n}",
+         typography = TypographyScale { base_size: 20sp, family: monospace };\n}",
     )));
     assert_eq!(rt.store.length_env().base_font_size, 14.0);
     assert_eq!(*rt.store.text_family(), FontFamily::SystemUi);

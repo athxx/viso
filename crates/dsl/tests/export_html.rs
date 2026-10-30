@@ -57,13 +57,13 @@ export component Card {
             width: 320dp;
             gap: 8dp;
             padding: 16dp;
-            semantics.role: Role::region;
+            semantics.role: region;
             semantics.label: "Welcome";
             Text("Hello <world>") { width: 200dp; height: 20dp; color: theme.colors.primary }
             Row {
-                justify: Justify::center;
-                align: Align::center;
-                Button("Go") { width: Sizing::fill { weight: 2.0 }; height: 32dp; }
+                justify: center;
+                align: center;
+                Button("Go") { width: fill { weight: 2.0 }; height: 32dp; }
                 Toggle { width: 40dp; height: 24dp; checked: true; }
             }
         }
@@ -254,7 +254,7 @@ export component Turned {
                 height: 20dp;
                 scale: 1.5f32;
                 rotation: 90deg;
-                transform_origin: Alignment2D::top_start;
+                transform_origin: top_start;
                 transition.rotation: Transition { duration: 100ms };
             }
             Text {
@@ -335,7 +335,7 @@ export component Pulsed {
                 on click {
                     let track = Keyframes {
                         stops: [
-                            Keyframe { at: 0.5f32, value: Animate::scale(2.0f32), easing: Easing::ease_out },
+                            Keyframe { at: 0.5f32, value: Animate::scale(2.0f32), easing: ease_out },
                             Keyframe { at: 1.0f32, value: Animate::scale(1.0f32) },
                         ],
                         duration: 100ms,
@@ -619,7 +619,7 @@ export component Axed {
     state n = 0;
     view {
         Column {
-            Row { width: 40dp; height: 20dp; drag_axis: Axis::row; on drag_start(e) { n += 1; } }
+            Row { width: 40dp; height: 20dp; drag_axis: row; on drag_start(e) { n += 1; } }
         }
     }
 }
@@ -887,7 +887,7 @@ export component Pointed {
     state busy = false;
     view {
         Column {
-            Column { width: 40dp; height: 20dp; cursor: Cursor::pointer; }
+            Column { width: 40dp; height: 20dp; cursor: pointer; }
             Column { width: 40dp; height: 20dp; cursor: if busy { Cursor::wait } else { Cursor::resize_col }; }
         }
     }
@@ -912,8 +912,8 @@ export component Noted {
     view {
         Column {
             Text {
-                font_style: FontStyle::italic;
-                font_weight: FontWeight::bold;
+                font_style: italic;
+                font_weight: bold;
                 spans: [
                     Span { text: "a<b " },
                     Span { text: "x", color: Option::Some(#ff0000), underline: true },
@@ -1078,8 +1078,8 @@ export component Amounts {
     state kind = InputKind::digits;
     view {
         Column {
-            TextInput { width: 100dp; height: 20dp; input: InputKind::decimal; max_length: 8; }
-            TextInput { width: 100dp; height: 20dp; input: InputKind::email; }
+            TextInput { width: 100dp; height: 20dp; input: decimal; max_length: 8; }
+            TextInput { width: 100dp; height: 20dp; input: email; }
             TextInput { width: 100dp; height: 20dp; input: kind; }
         }
     }
@@ -2265,7 +2265,7 @@ export component Mixer {
         Column {
             Slider {
                 bind value <=> level;
-                axis: Axis::column;
+                axis: column;
                 marks: true;
                 step: Option::Some(0.25);
                 tint: Option::Some(#3366ee);
@@ -2367,8 +2367,8 @@ fn a_tiled_image_exports_as_a_repeating_background_or_mask() {
 export component Patterns {
     view {
         Column {
-            Image { url: "https://example.org/a.png"; fit: ImageFit::tile; width: 64dp; height: 64dp; }
-            Image { url: "https://example.org/b.png"; fit: ImageFit::tile; tint: #ff0000; width: 64dp; height: 64dp; }
+            Image { url: "https://example.org/a.png"; fit: tile; width: 64dp; height: 64dp; }
+            Image { url: "https://example.org/b.png"; fit: tile; tint: #ff0000; width: 64dp; height: 64dp; }
         }
     }
 }
@@ -2397,7 +2397,7 @@ export component Preview {
     view {
         Column {
             CameraView { facing: CameraFacing::back; mirror: false; on playing_changed(p) { on = p; } }
-            CameraView { device: "cam-2"; bind playing <=> on; fit: ImageFit::fill; }
+            CameraView { device: "cam-2"; bind playing <=> on; fit: fill; }
             CameraView { facing: if front { CameraFacing::front } else { CameraFacing::back }; }
         }
     }
@@ -2454,7 +2454,7 @@ export component Clip {
                 width: 64dp; height: 48dp;
                 controls: true;
                 bind fullscreen <=> full;
-                fit: ImageFit::cover;
+                fit: cover;
                 looping: true; muted: true; volume: 0.5;
                 bind playing <=> playing;
                 on progress(p) { at = p.position; }
@@ -2531,7 +2531,7 @@ export component Tags {
             gap: 8dp;
             row_gap: 4dp;
             Text("a") { width: 40dp; height: 20dp }
-            Text("b") { width: Sizing::fill; height: 20dp }
+            Text("b") { width: fill; height: 20dp }
         }
     }
 }

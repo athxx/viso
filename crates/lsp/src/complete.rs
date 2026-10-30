@@ -141,6 +141,15 @@ pub fn complete(doc: &OpenDoc, offset: TextSize) -> Vec<Completion> {
             }
         }
         SyntaxKind::Colon if is_typed(parent.kind()) => types(&root, &mut out),
+        SyntaxKind::Colon
+            if matches!(
+                parent.kind(),
+                SyntaxKind::PropertyBinding | SyntaxKind::RecordExprField
+            ) =>
+        {
+            expected_variants(doc, &root, &parent, &mut out);
+            values(doc, &root, &parent, start, &mut out);
+        }
         SyntaxKind::Arrow | SyntaxKind::Lt => types(&root, &mut out),
         SyntaxKind::Comma if parent.kind() == SyntaxKind::GenericArgs => types(&root, &mut out),
         SyntaxKind::LBrace | SyntaxKind::Semi | SyntaxKind::RBrace => {
@@ -420,6 +429,100 @@ fn is_primary(decl: &SyntaxNode) -> bool {
         at = attr.prev_sibling();
     }
     false
+}
+
+/// The variants of the enum the value after `site`'s `:` expects (a
+/// property's or a record field's type, or its `Option`), each of which a
+/// bare name there stands for.
+fn expected_variants(
+    doc: &OpenDoc,
+    root: &SyntaxNode,
+    site: &SyntaxNode,
+    out: &mut Vec<Completion>,
+) {
+    let Some(ty) = expected_type(doc, root, site) else {
+        return;
+    };
+    let ty = ty
+        .strip_prefix("Option<")
+        .and_then(|t| t.strip_suffix('>'))
+        .unwrap_or(&ty);
+    let own =
+        top_level(root, SyntaxKind::EnumDecl).find(|e| name_of(e).is_some_and(|n| n.text() == ty));
+    let variants: Vec<String> = match own {
+        Some(decl) => declared(&decl, SyntaxKind::EnumVariant)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+        None => viso_dsl::resolve::prelude_enum_variants(ty)
+            .or_else(|| {
+                let native = doc.natives.ty(ty)?;
+                Some(native.ty.variants.iter().map(|v| v.to_string()).collect())
+            })
+            .unwrap_or_default(),
+    };
+    for variant in variants {
+        out.push(Completion::new(variant, CompletionKind::EnumMember).detail(ty));
+    }
+}
+
+/// The type the value of the property binding or record field `site`
+/// expects, as source spells it.
+fn expected_type(doc: &OpenDoc, root: &SyntaxNode, site: &SyntaxNode) -> Option<String> {
+    let typed = |decl: &SyntaxNode, kind: SyntaxKind, name: &str| {
+        declared(decl, kind)
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, d)| type_text(&d))
+    };
+    if site.kind() == SyntaxKind::RecordExprField {
+        let field = name_of(site)?.text();
+        let record = site.parent()?;
+        let head = record
+            .children_with_tokens()
+            .into_iter()
+            .filter_map(|e| e.as_token().cloned())
+            .take_while(|t| t.kind() != SyntaxKind::LBrace)
+            .filter(|t| matches!(t.kind(), SyntaxKind::Ident | SyntaxKind::RawIdent))
+            .last()?
+            .text();
+        let decl = top_level(root, SyntaxKind::RecordDecl)
+            .find(|r| name_of(r).is_some_and(|n| n.text() == head))?;
+        return typed(&decl, SyntaxKind::RecordField, &field);
+    }
+    let property: String = site
+        .children()
+        .into_iter()
+        .find(|c| c.kind() == SyntaxKind::PropertyPath)?
+        .text()
+        .split_whitespace()
+        .collect();
+    let owner = site.parent()?;
+    let node = match owner.kind() {
+        SyntaxKind::NodeBody => node_type(&owner)?,
+        SyntaxKind::StyleDecl | SyntaxKind::StyleWhen => {
+            let style = std::iter::once(owner.clone())
+                .chain(owner.ancestors())
+                .find(|n| n.kind() == SyntaxKind::StyleDecl)?;
+            let target = style
+                .children()
+                .into_iter()
+                .find(|c| c.kind() == SyntaxKind::TypePath)?;
+            name_of(&target.children().into_iter().last()?)?.text()
+        }
+        _ => return None,
+    };
+    if let Some(own) = component(root, &node) {
+        return typed(&own, SyntaxKind::InputDecl, &property);
+    }
+    doc.natives.widget(&node)?;
+    let catalog = Catalog::framework(doc.natives.clone());
+    schema::query(&node, &catalog)
+        .ok()?
+        .inputs
+        .into_iter()
+        .find(|i| i.name == property)
+        .map(|i| i.ty)
 }
 
 /// The names an expression at `at` under `node` can read.
@@ -855,6 +958,32 @@ mod tests {
         let top = labels("component A { view { Text {} } }\n|");
         assert!(has(&top, "component", CompletionKind::Keyword), "{top:?}");
         assert!(!has(&top, "action", CompletionKind::Keyword));
+    }
+
+    #[test]
+    fn a_property_or_field_expecting_an_enum_offers_its_variants() {
+        let items = labels(&counter("    view { Row { align: | } }"));
+        assert!(
+            has(&items, "center", CompletionKind::EnumMember),
+            "{items:?}"
+        );
+        assert!(has(&items, "count", CompletionKind::Property));
+        let sizing = labels(&counter("    view { Text(\"a\") { width: f| } }"));
+        assert!(
+            has(&sizing, "fill", CompletionKind::EnumMember),
+            "{sizing:?}"
+        );
+        let style = labels("style S for Row {\n    justify: |\n}\n");
+        assert!(has(&style, "end", CompletionKind::EnumMember), "{style:?}");
+        let field = labels(
+            "enum Tone { calm; loud }\nrecord Look { tone: Tone = Tone::calm }\nconst L: Look = Look { tone: | };\n",
+        );
+        assert!(has(&field, "loud", CompletionKind::EnumMember), "{field:?}");
+        let input = labels(&format!(
+            "enum Tone {{ calm; loud }}\ncomponent B {{ input tone: Tone = Tone::calm; view {{ Column {{}} }} }}\n{}",
+            counter("    view { B { tone: | } }")
+        ));
+        assert!(has(&input, "calm", CompletionKind::EnumMember), "{input:?}");
     }
 
     #[test]

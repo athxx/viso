@@ -120,6 +120,23 @@ thread_local! {
     };
 }
 
+/// The variant names of the prelude enum `name`, in declaration order;
+/// `None` when the prelude declares no enum of that name.
+pub fn enum_variants(name: &str) -> Option<Vec<String>> {
+    let root = PARSED.with(Rc::clone);
+    let unit = CompilationUnit::cast(SyntaxNode::new_root(root))?;
+    unit.syntax()
+        .descendants()
+        .into_iter()
+        .filter_map(crate::ast::EnumDecl::cast)
+        .find(|e| e.name().is_some_and(|n| n.text() == name))
+        .map(|e| {
+            e.variants()
+                .filter_map(|v| Some(v.name()?.text().to_string()))
+                .collect()
+        })
+}
+
 impl Prelude {
     /// Resolves the prelude, interning its names into `interner`.
     pub(crate) fn load(interner: &mut NameInterner) -> Prelude {

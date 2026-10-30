@@ -95,7 +95,7 @@ export component Controls {
             TextInput {
                 width: 200dp;
                 height: 20dp;
-                input: InputKind::integer;
+                input: integer;
                 max_length: 4;
                 bind value <=> amount;
             }
@@ -1215,7 +1215,7 @@ export component Page {
             Stack {
                 width: 400dp;
                 height: 300dp;
-                content_align: Alignment2D::center;
+                content_align: center;
                 Column { width: 80dp; height: 80dp; hero: "card"; }
             }
         }
@@ -1464,7 +1464,7 @@ export component Rows {
                     width: 200dp; height: 400dp;
                     Row {
                         width: 200dp; height: 50dp;
-                        drag_axis: Axis::row;
+                        drag_axis: row;
                         on drag_start(event) { drags += 1; }
                     }
                 }

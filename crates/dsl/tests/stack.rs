@@ -25,11 +25,11 @@ export component Layers {{
     view {{
         Column {{
             Stack {{
-                content_align: Alignment2D::center;
+                content_align: center;
                 padding: 10dp;
                 Text {{ width: 100dp; height: 60dp; background: #00ff00; stack.layer: 1; on click {{ taps += 1; }} }}
                 Text {{ width: 40dp; height: 20dp; stack.align: Option::Some(Alignment2D::{align}); }}
-                Badge {{ stack.align: Alignment2D::top_end; stack.layer: -1; }}
+                Badge {{ stack.align: top_end; stack.layer: -1; }}
             }}
             Absolute {{
                 width: 200dp;
