@@ -40,31 +40,31 @@ Viso DSL 1.0 的语言表达能力足以承载从快速原型到结构化游戏 
 
 ```viso
 export trait Startup {
-    action startup(cx: GameStart);
+    action startup(cx: GameStart)
 }
 
 export trait FixedUpdate {
-    action fixed_update(frame: FixedFrame);
+    action fixed_update(frame: FixedFrame)
 }
 
 export trait FrameUpdate {
-    action frame_update(frame: RenderFrame);
+    action frame_update(frame: RenderFrame)
 }
 
 export trait CollisionListener {
-    action collision(event: CollisionEvent);
+    action collision(event: CollisionEvent)
 }
 
 export trait AudioProcess {
-    action audio_process(block: AudioBlock);
+    action audio_process(block: AudioBlock)
 }
 
 export trait AudioCommands {
-    action audio_command(command: AudioCommand);
+    action audio_command(command: AudioCommand)
 }
 
 export trait AudioListener {
-    action audio_event(event: AudioEvent);
+    action audio_event(event: AudioEvent)
 }
 ```
 
@@ -120,8 +120,8 @@ Quick Game 的规范目标：
 
 ```viso
 export trait QuickGame {
-    action start(cx: QuickStart);
-    action fixed(frame: QuickFrame);
+    action start(cx: QuickStart)
+    action fixed(frame: QuickFrame)
 }
 
 // QuickStart / QuickFrame 是 viso::game::quick Native Schema 提供的 typed context。
@@ -132,29 +132,29 @@ export trait QuickGame {
 最小游戏：
 
 ```viso
-import viso::game::quick::{QuickGame, QuickStart, QuickFrame};
-import viso::game::{EntityId, SpawnDesc, InputAction, InputAxis};
+import viso::game::quick::{QuickGame, QuickStart, QuickFrame}
+import viso::game::{EntityId, SpawnDesc, InputAction, InputAxis}
 
 export system TinyGame implements QuickGame {
-    state player: Option<EntityId> = Option::None;
-    state score: I64 = 0;
+    state player: Option<EntityId> = Option::None
+    state score: I64 = 0
 
     action start(cx: QuickStart) {
-        player = Option::Some(cx.spawn(SpawnDesc::player()));
+        player = Option::Some(cx.spawn(SpawnDesc::player()))
     }
 
     action fixed(frame: QuickFrame) {
         match player {
             Option::Some(id) => {
-                let move = frame.input.axis(InputAxis::move_x);
-                frame.world.walk(id, move * 6.0f32, 0.0f32);
+                let move = frame.input.axis(InputAxis::move_x)
+                frame.world.walk(id, move * 6.0f32, 0.0f32)
 
                 if frame.input.pressed(InputAction::jump)
                     && frame.world.on_floor(id) {
-                    frame.world.jump(id, 10.0f32);
+                    frame.world.jump(id, 10.0f32)
                 }
-            },
-            Option::None => {},
+            }
+            Option::None => {}
         }
     }
 }
@@ -285,8 +285,8 @@ paused:     Bool      暂停时不累加；FrameUpdate 照常运行
 
 ```viso
 export enum TickOverrun {
-    DropTime;
-    SlowMotion;
+    DropTime
+    SlowMotion
 }
 ```
 
@@ -311,12 +311,12 @@ export enum TickOverrun {
 未声明映射时使用 `viso::game` 的默认动作集 `InputAction` / `InputAxis`。游戏用普通 Enum 声明自己的动作，用常量声明映射：
 
 ```viso
-import viso::game::{InputMap, Key, KeySet, PadButton, PadStick};
+import viso::game::{InputMap, Key, KeySet, PadButton, PadStick}
 
 @derive(Eq, Hash, InputAction)
 export enum Act {
-    Jump;
-    Fire;
+    Jump
+    Fire
 }
 
 export const CONTROLS: InputMap<Act> = InputMap::new()
@@ -324,7 +324,7 @@ export const CONTROLS: InputMap<Act> = InputMap::new()
     .pad(PadButton::South, Act::Jump)
     .key(Key::J, Act::Fire)
     .pad(PadButton::West, Act::Fire)
-    .move_axes(KeySet::wasd(), PadStick::Left);
+    .move_axes(KeySet::wasd(), PadStick::Left)
 ```
 
 使用：`frame.input.pressed(Act::Jump)`、`frame.input.move_axes()`（Property `x` 向右、`y` 向前）；相机相对移动写 `frame.input.move_axes().relative_to(camera_yaw)`。
@@ -388,19 +388,19 @@ cross_platform   所有 Tier-1 目标上 Snapshot Hash 逐字节一致；联机�
 ### 106.6 Tick 计时器与冷却
 
 ```viso
-import viso::game::{Cooldown, TickTimer};
+import viso::game::{Cooldown, TickTimer}
 
 export system Gun implements FixedUpdate {
-    state cooldown: Cooldown = Cooldown::new(250ms);
-    state wave: TickTimer = TickTimer::every(10s);
+    state cooldown: Cooldown = Cooldown::new(250ms)
+    state wave: TickTimer = TickTimer::every(10s)
 
     action fixed_update(frame: FixedFrame) {
         if frame.input.held(Act::Fire) && cooldown.ready(frame.tick()) {
-            cooldown = cooldown.fire(frame.tick());
+            cooldown = cooldown.fire(frame.tick())
         }
 
         if wave.due(frame.tick()) {
-            wave = wave.rearm(frame.tick());
+            wave = wave.rearm(frame.tick())
         }
     }
 }
@@ -441,7 +441,7 @@ GameSnapshot {
 ```viso
 export system Progress implements FixedUpdate {
     @persist("best_score")
-    state best: I64 = 0;
+    state best: I64 = 0
 
     action fixed_update(frame: FixedFrame) {}
 }
@@ -490,42 +490,42 @@ import viso::game::{
     SpawnDesc,
     InputAction,
     GameTag,
-};
-import viso::math::Vec3F32;
+}
+import viso::math::Vec3F32
 
 export system PlayerController implements Startup + FixedUpdate + CollisionListener {
-    state player: Option<EntityId> = Option::None;
-    state move_speed: F32 = 6.0f32;
-    state jump_speed: F32 = 10.0f32;
-    state score: I64 = 0;
-    state respawn_point: Vec3F32 = Vec3F32::new(0.0f32, 4.0f32, 0.0f32);
+    state player: Option<EntityId> = Option::None
+    state move_speed: F32 = 6.0f32
+    state jump_speed: F32 = 10.0f32
+    state score: I64 = 0
+    state respawn_point: Vec3F32 = Vec3F32::new(0.0f32, 4.0f32, 0.0f32)
 
     action startup(cx: GameStart) {
-        player = Option::Some(cx.spawn(SpawnDesc::player().at(respawn_point).tag(GameTag::player)));
-        cx.spawn(SpawnDesc::block(Vec3F32::new(20.0f32, 1.0f32, 20.0f32)));
+        player = Option::Some(cx.spawn(SpawnDesc::player().at(respawn_point).tag(GameTag::player)))
+        cx.spawn(SpawnDesc::block(Vec3F32::new(20.0f32, 1.0f32, 20.0f32)))
         cx.spawn(
             SpawnDesc::sensor(Vec3F32::new(1.0f32, 1.0f32, 1.0f32))
-                .at(Vec3F32::new(3.0f32, 1.4f32, 0.0f32))
-                .tag(GameTag::coin),
-        );
+            .at(Vec3F32::new(3.0f32, 1.4f32, 0.0f32))
+            .tag(GameTag::coin),
+        )
     }
 
     action fixed_update(frame: FixedFrame) {
         match player {
             Option::Some(id) => {
-                let world = frame.world;
-                let movement = frame.input.move_axes();
-                world.walk(id, movement.x * move_speed, movement.y * move_speed);
+                let world = frame.world
+                let movement = frame.input.move_axes()
+                world.walk(id, movement.x * move_speed, movement.y * move_speed)
 
                 if frame.input.pressed(InputAction::jump) && world.on_floor(id) {
-                    world.jump(id, jump_speed);
+                    world.jump(id, jump_speed)
                 }
 
                 if world.position(id).y < -20.0f32 {
-                    world.teleport(id, respawn_point);
+                    world.teleport(id, respawn_point)
                 }
-            },
-            Option::None => {},
+            }
+            Option::None => {}
         }
     }
 
@@ -535,14 +535,14 @@ export system PlayerController implements Startup + FixedUpdate + CollisionListe
                 match event.other_of(id) {
                     Option::Some(other) => {
                         if event.world.has_tag(other, GameTag::coin) {
-                            event.world.remove(other);
-                            score += 1;
+                            event.world.remove(other)
+                            score += 1
                         }
-                    },
-                    Option::None => {},
+                    }
+                    Option::None => {}
                 }
-            },
-            Option::None => {},
+            }
+            Option::None => {}
         }
     }
 }
@@ -635,7 +635,7 @@ Typed Message：包内唯一的 `@derive(AudioCommand)` Enum 是发往音频线�
 
 ```viso
 system Score implements FixedUpdate {
-    state points = 0;
+    state points = 0
 
     @query fn score() -> I64 { points }
 
@@ -649,13 +649,13 @@ export component GameScreen {
 
             Column {
                 Text {
-                    text: format("Score: {}", game.score());
+                    text: format("Score: {}", game.score())
                 }
 
                 if game.is_paused() preserve "pause-menu" {
                     PauseMenu {
                         on resume {
-                            game.resume();
+                            game.resume()
                         }
                     }
                 }

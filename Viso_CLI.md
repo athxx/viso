@@ -2541,14 +2541,14 @@ Viso：
 
 ```viso
 component Counter {
-    state count = 0;
+    state count = 0
 
     view {
         Column {
-            Text { text: format("{}", count); }
+            Text { text: format("{}", count) }
             Button {
-                text: "Add";
-                on click { count += 1; }
+                text: "Add"
+                on click { count += 1 }
             }
         }
     }

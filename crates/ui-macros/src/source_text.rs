@@ -1,9 +1,10 @@
 //! An inline macro body as DSL source text, with the Rust span of each token.
 //!
 //! The body's tokens are laid back out as text: two tokens that touch in the
-//! invoking file touch in the text, any others are one space apart, so the DSL
-//! lexer sees what the author wrote (`#fff`, `12px`, `a::b`) and not the token
-//! stream's own spacing. Every token remembers its byte range in that text, so a
+//! invoking file touch in the text, two on different lines are a line break
+//! apart and any others one space, so the DSL lexer and parser see what the
+//! author wrote (`#fff`, `12px`, `a::b`, an item ending at its line) and not the
+//! token stream's own spacing. Every token remembers its byte range in that text, so a
 //! diagnostic's offset maps back to the Rust token it points at.
 
 use proc_macro::{Delimiter, Span, TokenStream, TokenTree};
@@ -60,7 +61,8 @@ impl SourceText {
         if let Some(previous) = *last
             && !touches(previous, span)
         {
-            self.text.push(' ');
+            let broken = previous.end().line() != span.start().line();
+            self.text.push(if broken { '\n' } else { ' ' });
         }
         let start = self.text.len() as u32;
         self.text.push_str(token);

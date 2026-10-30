@@ -87,24 +87,23 @@ impl InferCx<'_> {
     }
 
     /// The value of a block's last statement when it is the block's tail: an
-    /// expression without `;`, or (where a value is expected) an `if` or `match`
-    /// statement.
+    /// expression, or (where a value is expected) an `if` or `match` statement.
+    /// Where `Unit` is expected the expression's value is discarded.
     fn tail_value(&mut self, stmt: &SyntaxNode, expected: Option<&Ty>) -> Option<Ty> {
-        let has_semi = stmt
-            .children_with_tokens()
-            .into_iter()
-            .filter_map(|e| e.as_token().cloned())
-            .any(|t| t.kind() == SyntaxKind::Semi);
         match stmt.kind() {
-            SyntaxKind::ExprStmt if !has_semi => {
+            SyntaxKind::ExprStmt => {
                 let value = first_child_expr(stmt)?;
+                if expected == Some(&Ty::Unit) {
+                    let ty = self.infer_expr(&value, None);
+                    return Some(if ty == Ty::Never { Ty::Never } else { Ty::Unit });
+                }
                 Some(self.infer_expr(&value, expected))
             }
             SyntaxKind::IfStmt if expected.is_some() => {
                 let tys = self.if_branches(stmt, expected);
                 Some(self.unify_branches(&tys, expected, stmt))
             }
-            SyntaxKind::MatchStmt if expected.is_some() && !has_semi => {
+            SyntaxKind::MatchStmt if expected.is_some() => {
                 let tys = self.check_match(stmt, expected);
                 Some(self.unify_branches(&tys, expected, stmt))
             }

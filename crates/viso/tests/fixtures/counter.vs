@@ -1,11 +1,11 @@
 component Counter {
-    state count = 0;
-    state enabled = true;
+    state count = 0
+    state enabled = true
     view {
         Column {
-            width: 120dp;
-            Text { text: format("{}", count); }
-            Text { visible: enabled; }
+            width: 120dp
+            Text { text: format("{}", count) }
+            Text { visible: enabled }
         }
     }
 }

@@ -430,8 +430,8 @@ impl<'s, 'e, 'p> Body<'s, 'e, 'p> {
         }
     }
 
-    /// A block's last statement as its value, when it is one: an expression
-    /// without `;`, or an `if`/`match` statement. `None` when it is a plain
+    /// A block's last statement as its value, when it is one: an expression,
+    /// or an `if`/`match` statement. `None` when it is a plain
     /// statement; `Some(None)` when its value did not check.
     fn tail(
         &mut self,
@@ -440,7 +440,7 @@ impl<'s, 'e, 'p> Body<'s, 'e, 'p> {
         out: &mut Vec<Stmt>,
     ) -> Option<Option<End>> {
         match node.kind() {
-            SyntaxKind::ExprStmt if !has_token(node, SyntaxKind::Semi) => {
+            SyntaxKind::ExprStmt => {
                 let value = exprs(node).into_iter().next()?;
                 Some(self.value(&value, hint, out))
             }

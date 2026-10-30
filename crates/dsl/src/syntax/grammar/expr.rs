@@ -196,7 +196,12 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
 
     loop {
         let cast = p.at(SyntaxKind::AsKw) && bp::CAST >= min_bp;
-        let binary = binary_op(p.current()).filter(|&(level, _)| level >= min_bp);
+        // A `+` or `-` that starts a line is a prefix operator of a new item.
+        let binary = binary_op(p.current()).filter(|&(level, _)| {
+            level >= min_bp
+                && !(matches!(p.current(), SyntaxKind::Plus | SyntaxKind::Minus)
+                    && p.at_line_break())
+        });
         if !cast && binary.is_none() {
             break;
         }
@@ -315,6 +320,11 @@ fn postfix_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
     let mut lhs = primary_expr(p, r)?;
     let mut folds = 0;
     loop {
+        // A `(` or `[` that starts a line opens a new item, not a call or index.
+        let opens = matches!(p.current(), SyntaxKind::LParen | SyntaxKind::LBracket);
+        if opens && p.at_line_break() {
+            break;
+        }
         let suffix = matches!(
             p.current(),
             SyntaxKind::LParen
@@ -558,7 +568,7 @@ fn primary_expr(p: &mut Parser, r: Restrictions) -> Option<CompletedMarker> {
 fn path_or_record_expr(p: &mut Parser, r: Restrictions) -> CompletedMarker {
     let m = p.start();
     path(p);
-    if p.at(SyntaxKind::LBrace) {
+    if p.at(SyntaxKind::LBrace) && !p.at_line_break() {
         if r.no_record {
             if r.block_follows || !looks_like_record_body(p) {
                 // The `{` opens the surrounding block.
@@ -619,10 +629,11 @@ pub(super) fn block_expr(p: &mut Parser) -> CompletedMarker {
 /// The `{ field: expr, .. }` body of a record expression.
 fn record_body(p: &mut Parser) {
     p.bump_any(); // `{`
+    p.quiet_lines();
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let m = p.start();
         if p.eat(SyntaxKind::DotDot) {
-            // A functional-update spread `.. base`.
+            // A functional-update spread `..base`.
             expr(p);
         } else if super::at_label(p) && p.nth(1) == SyntaxKind::Colon {
             super::label(p);
@@ -766,7 +777,7 @@ pub(super) fn match_arms(p: &mut Parser) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         match_arm(p);
-        if !p.eat(SyntaxKind::Comma) && !p.at(SyntaxKind::RBrace) {
+        if !p.eat(SyntaxKind::Comma) && !p.at(SyntaxKind::RBrace) && !p.at_line_break() {
             p.error(ParseErrorKind::MissingToken);
         }
         p.ensure_progress(before);

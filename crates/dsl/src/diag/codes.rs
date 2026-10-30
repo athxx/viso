@@ -566,14 +566,15 @@ state count = 0;
         severity: Severity::Error,
         stage: Stage::Parse,
         title: "Missing Token",
-        explanation: "The grammar requires a specific token here, such as `=`, `:`, `;` or a closing \
-            keyword, and it is absent. The parser inserts a placeholder for the missing token \
-            and continues, so the rest of the declaration is still checked.",
+        explanation: "The grammar requires a specific token here, such as `=`, `:` or a closing \
+            keyword, and it is absent; two items written on one line need a `;` between them. \
+            The parser inserts a placeholder for the missing token and continues, so the rest \
+            of the declaration is still checked.",
         example: Example::Source(
-            r#"type Id I64;
+            r#"type Id I64
 
 component Profile {
-    view { Text { text: "profile"; } }
+    view { Text { text: "profile" } }
 }
 "#,
         ),

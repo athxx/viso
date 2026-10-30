@@ -124,6 +124,9 @@ pub fn complete(doc: &OpenDoc, offset: TextSize) -> Vec<Completion> {
     };
     let mut out = Vec::new();
     let parent = prev.parent();
+    // A word that starts a line after a complete item starts the next item.
+    let after_item =
+        source[prev.text_range().end().to_usize()..start].contains('\n') && ends_item(prev.kind());
     match prev.kind() {
         SyntaxKind::ColonColon => {
             let path = path_before(&tokens[..before - 1]);
@@ -151,9 +154,40 @@ pub fn complete(doc: &OpenDoc, offset: TextSize) -> Vec<Completion> {
                 None => out.extend(keywords(TOP_LEVEL)),
             }
         }
+        _ if after_item => match container(&parent) {
+            Some(c) => members_of(doc, &root, &c, start, &mut out),
+            None => out.extend(keywords(TOP_LEVEL)),
+        },
         _ => values(doc, &root, &parent, start, &mut out),
     }
     out
+}
+
+/// Whether a token of `kind` can end an item, so a line break after it ends
+/// the item.
+fn ends_item(kind: SyntaxKind) -> bool {
+    use SyntaxKind as K;
+    matches!(
+        kind,
+        K::Ident
+            | K::RawIdent
+            | K::IntLiteral
+            | K::FloatLiteral
+            | K::UnitLiteral
+            | K::StringLiteral
+            | K::RawStringLiteral
+            | K::CharLiteral
+            | K::ColorLiteral
+            | K::TrueKw
+            | K::FalseKw
+            | K::NoneKw
+            | K::SelfValueKw
+            | K::SelfTypeKw
+            | K::RParen
+            | K::RBracket
+            | K::Question
+            | K::Gt
+    )
 }
 
 /// Whether a `:` under `kind` is followed by a type.

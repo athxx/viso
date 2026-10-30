@@ -57,39 +57,39 @@ env.locale            : Locale            // §U10.3
 
 ```viso
 record WindowMetrics {
-    logical_size: SizeDp;
-    scale_factor: F32;
+    logical_size: SizeDp
+    scale_factor: F32
 }
 
 record LocalConstraints {
-    min_width: Dp;
-    max_width: Option<Dp>;
-    min_height: Dp;
-    max_height: Option<Dp>;
+    min_width: Dp
+    max_width: Option<Dp>
+    min_height: Dp
+    max_height: Option<Dp>
 }
 
 enum SizeClass {
-    Compact;
-    Medium;
-    Expanded;
+    Compact
+    Medium
+    Expanded
 }
 
 enum Orientation {
-    Portrait;
-    Landscape;
+    Portrait
+    Landscape
 }
 
 enum DisplayFeature {
-    Hinge { bounds: Rect; };
-    Fold { bounds: Rect; };
-    Cutout { bounds: Rect; };
+    Hinge { bounds: Rect }
+    Fold { bounds: Rect }
+    Cutout { bounds: Rect }
 }
 
-record Rect { x: Dp; y: Dp; width: Dp; height: Dp; }
-record Insets { top: Dp; right: Dp; bottom: Dp; left: Dp; }
-record KeyboardInset { height: Dp; }
-enum LayoutDirection { ltr; rtl; }
-record Locale { tag: String; }   // BCP 47
+record Rect { x: Dp; y: Dp; width: Dp; height: Dp }
+record Insets { top: Dp; right: Dp; bottom: Dp; left: Dp }
+record KeyboardInset { height: Dp }
+enum LayoutDirection { ltr; rtl }
+record Locale { tag: String } // BCP 47
 ```
 
 `InputCapabilities` 见 §96.7。
@@ -115,13 +115,13 @@ view {
     match env.size_class {
         SizeClass::Compact => {
             CompactShell {}
-        },
+        }
         SizeClass::Medium => {
             MediumShell {}
-        },
+        }
         SizeClass::Expanded => {
             ExpandedShell {}
-        },
+        }
     }
 }
 ```
@@ -133,10 +133,10 @@ view {
     match env.constraints.max_width {
         Option::Some(width) if width < 520dp => {
             CompactToolbar {}
-        },
+        }
         _ => {
             FullToolbar {}
-        },
+        }
     }
 }
 ```
@@ -300,11 +300,11 @@ if env.input.hover_available {
 view {
     if env.size_class == SizeClass::Compact preserve "compact-shell" {
         CompactShell {
-            MainContent { model: model; }
+            MainContent { model: model }
         }
     } else {
         ExpandedShell {
-            MainContent { model: model; }
+            MainContent { model: model }
         }
     }
 }
@@ -427,16 +427,16 @@ Component View 中的 `slot` 是默认 Slot，调用方的裸子节点放在这�
 ```viso
 export component Stepper {
     @bindable(changed)
-    input value: I64;
-    input step: I64 = 1;
+    input value: I64
+    input step: I64 = 1
 
-    event changed(value: I64);
+    event changed(value: I64)
 
     view {
         Row {
-            Button { text: "-"; on click { emit changed(value - step); } }
-            Text { text: format("{}", value); }
-            Button { text: "+"; on click { emit changed(value + step); } }
+            Button { text: "-"; on click { emit changed(value - step) } }
+            Text { text: format("{}", value) }
+            Button { text: "+"; on click { emit changed(value + step) } }
         }
     }
 }
@@ -445,7 +445,7 @@ export component Stepper {
 调用方：
 
 ```viso
-Stepper { bind value <=> settings.retry_count; }
+Stepper { bind value <=> settings.retry_count }
 ```
 
 - `@bindable(e)` 使该 Input 在 Schema 中成为 `two_way`，可作 §51 `bind` 左侧；
@@ -459,22 +459,22 @@ Stepper { bind value <=> settings.retry_count; }
 ```viso
 export component Chip {
     @styleable
-    input tint: Option<Color> = Option::None;
-    input label: String;
+    input tint: Option<Color> = Option::None
+    input label: String
 
     @selector
-    input selected: Bool = false;
+    input selected: Bool = false
 
     view {
         Row {
-            background: tint.unwrap_or(theme.colors.surface);
-            Text { text: label; }
+            background: tint.unwrap_or(theme.colors.surface)
+            Text { text: label }
         }
     }
 }
 
 export style SelectedChip for Chip {
-    when selected { tint: Option::Some(theme.colors.accent); }
+    when selected { tint: Option::Some(theme.colors.accent) }
 }
 ```
 
@@ -527,7 +527,7 @@ View 的根节点（窗口内容）未写 `width`/`height` 的轴为 `fill`，�
 ### U3.2 Sizing
 
 ```viso
-export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_content; max_content; }
+export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0 }; fit; min_content; max_content }
 ```
 
 按 U1.3，`width: 100% - 32dp;` 提升为 `Sizing::fixed(...)`。
@@ -567,21 +567,26 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0; }; fit; min_c
 | `styles`        | `List<StyleRef<T>>`   | `[]`                 | `STYLE`           | —                             |
 
 ```viso
-export record EdgeInsets { top: MixedLength = 0dp; end: MixedLength = 0dp; bottom: MixedLength = 0dp; start: MixedLength = 0dp; }
-export record Border { width: Dp = 1dp; color: Color; }
+export record EdgeInsets {
+    top: MixedLength = 0dp
+    end: MixedLength = 0dp
+    bottom: MixedLength = 0dp
+    start: MixedLength = 0dp
+}
+export record Border { width: Dp = 1dp; color: Color }
 export record Shadow {
-    x: Dp = 0dp;
-    y: Dp = 2dp;
-    blur: Dp = 8dp;
-    spread: Dp = 0dp;
-    color: Color;
-    inset: Bool = false;
+    x: Dp = 0dp
+    y: Dp = 2dp
+    blur: Dp = 8dp
+    spread: Dp = 0dp
+    color: Color
+    inset: Bool = false
 }
 export record Backdrop {
-    blur: Dp = 30dp;
-    saturation: F32 = 1.8;
-    tint: Color = #ffffff40;
-    noise: F32 = 0.0;
+    blur: Dp = 30dp
+    saturation: F32 = 1.8
+    tint: Color = #ffffff40
+    noise: F32 = 0.0
 }
 ```
 
@@ -634,12 +639,22 @@ export record Backdrop {
 `fr` 不是长度单位（§19），而是 Track 构造器：
 
 ```viso
-export enum Track { fixed(MixedLength); fr(F32); auto; minmax(MixedLength, TrackMax); fit_content(MixedLength); }
+export enum Track {
+    fixed(MixedLength)
+    fr(F32)
+    auto
+    minmax(MixedLength, TrackMax)
+    fit_content(MixedLength)
+}
 
-export enum TrackMax { length(MixedLength); fr(F32); }
-export enum AutoRepeat { fill; fit; }
+export enum TrackMax { length(MixedLength); fr(F32) }
+export enum AutoRepeat { fill; fit }
 
-export record AdaptiveColumns { mode: AutoRepeat = AutoRepeat::fill; min: MixedLength; max: TrackMax = TrackMax::fr(1.0); }
+export record AdaptiveColumns {
+    mode: AutoRepeat = AutoRepeat::fill
+    min: MixedLength
+    max: TrackMax = TrackMax::fr(1.0)
+}
 ```
 
 标准函数 `tracks(count: U16, track: Track) -> List<Track>` 对应 CSS `repeat(n, t)`，在编译期或节点创建时展开。
@@ -773,7 +788,7 @@ Text {
         Span { text: "Saved " },
         Span { text: "3 files", font_weight: Option::Some(FontWeight::bold) },
         Span { text: "2", font_size: Option::Some(75%), raise: Option::Some(0.5em) },
-    ];
+    ]
 }
 ```
 
@@ -801,12 +816,20 @@ Text {
 | `GameViewport` | `camera: Option<CameraRig> = Option::None`（视口自己的相机，缺省用 Stage 的相机；`PAINT`）；无固有尺寸，未写宽高的轴为 Fill；可获得焦点（§106.2） |
 
 ```viso
-state dark = false;
+state dark = false
 
 view {
     Row {
-        Image { source: if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }; width: 48dp; }
-        Svg { source: asset("icons/close.svg"); tint: theme.colors.foreground; width: 16dp; height: 16dp; }
+        Image {
+            source: if dark { asset("images/logo_dark.png") } else { asset("images/logo.png") }
+            width: 48dp
+        }
+        Svg {
+            source: asset("icons/close.svg")
+            tint: theme.colors.foreground
+            width: 16dp
+            height: 16dp
+        }
     }
 }
 ```
@@ -833,34 +856,59 @@ view {
 
 ```viso
 export record Transition {
-    duration: Duration = 200ms; delay: Duration = 0ms;
-    easing: Easing = Easing::ease_out; reduced: ReducedMotion = ReducedMotion::instant;
+    duration: Duration = 200ms
+    delay: Duration = 0ms
+    easing: Easing = Easing::ease_out
+    reduced: ReducedMotion = ReducedMotion::instant
 }
 
 export enum Easing {
-    linear; ease_in; ease_out; ease_in_out;
-    in_quad; out_quad; in_out_quad;
-    in_cubic; out_cubic; in_out_cubic;
-    in_quart; out_quart; in_out_quart;
-    in_quint; out_quint; in_out_quint;
-    in_sine; out_sine; in_out_sine;
-    in_expo; out_expo; in_out_expo;
-    in_circ; out_circ; in_out_circ;
-    in_back; out_back; in_out_back;
-    in_elastic; out_elastic; in_out_elastic;
-    in_bounce; out_bounce; in_out_bounce;
-    cubic_bezier(F32, F32, F32, F32);
-    spring(F32, F32, F32);
+    linear
+    ease_in
+    ease_out
+    ease_in_out
+    in_quad
+    out_quad
+    in_out_quad
+    in_cubic
+    out_cubic
+    in_out_cubic
+    in_quart
+    out_quart
+    in_out_quart
+    in_quint
+    out_quint
+    in_out_quint
+    in_sine
+    out_sine
+    in_out_sine
+    in_expo
+    out_expo
+    in_out_expo
+    in_circ
+    out_circ
+    in_out_circ
+    in_back
+    out_back
+    in_out_back
+    in_elastic
+    out_elastic
+    in_out_elastic
+    in_bounce
+    out_bounce
+    in_out_bounce
+    cubic_bezier(F32, F32, F32, F32)
+    spring(F32, F32, F32)
 }
-export enum ReducedMotion { instant; keep; }
+export enum ReducedMotion { instant; keep }
 ```
 
 ```viso
 Row {
-    background: if selected { theme.colors.accent } else { theme.colors.surface };
-    translate: Offset { x: 0dp, y: lift };
-    transition.background: Transition { duration: theme.motion.short };
-    transition.translate: Transition { duration: theme.motion.medium, easing: Easing::ease_in_out };
+    background: if selected { theme.colors.accent } else { theme.colors.surface }
+    translate: Offset { x: 0dp, y: lift }
+    transition.background: Transition { duration: theme.motion.short }
+    transition.translate: Transition { duration: theme.motion.medium, easing: Easing::ease_in_out }
 }
 ```
 
@@ -890,14 +938,17 @@ Row {
 命令式动画经 Named Node 的 NodeRef 发起（U7.6），返回 UI Handle：
 
 ```viso
-export enum Animate { translate(Offset); scale(F32); rotation(Angle); opacity(F32); }
-export record Keyframe { at: F32; value: Animate; easing: Easing = Easing::linear; }
-export enum Repeat { times(U32); forever; }
-export enum PlayDirection { normal; reverse; alternate; alternate_reverse; }
+export enum Animate { translate(Offset); scale(F32); rotation(Angle); opacity(F32) }
+export record Keyframe { at: F32; value: Animate; easing: Easing = Easing::linear }
+export enum Repeat { times(U32); forever }
+export enum PlayDirection { normal; reverse; alternate; alternate_reverse }
 export record Keyframes {
-    stops: List<Keyframe>; duration: Duration = 200ms; delay: Duration = 0ms;
-    repeat: Repeat = Repeat::times(1); direction: PlayDirection = PlayDirection::normal;
-    reduced: ReducedMotion = ReducedMotion::instant;
+    stops: List<Keyframe>
+    duration: Duration = 200ms
+    delay: Duration = 0ms
+    repeat: Repeat = Repeat::times(1)
+    direction: PlayDirection = PlayDirection::normal
+    reduced: ReducedMotion = ReducedMotion::instant
 }
 
 // NodeRef<T>：fn animate(self, target: Animate, spec: Transition) -> Animation;
@@ -905,16 +956,16 @@ export record Keyframes {
 // Animation：fn cancel(self); fn finish(self); fn is_running(self) -> Bool;
 
 component Shake {
-    state shaking: Option<Animation> = Option::None;
+    state shaking: Option<Animation> = Option::None
 
     action shake() {
-        let spec = Transition { duration: 80ms, easing: Easing::ease_in_out };
-        shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec));
+        let spec = Transition { duration: 80ms, easing: Easing::ease_in_out }
+        shaking = Option::Some(card.animate(Animate::translate(Offset { x: 8dp, y: 0dp }), spec))
     }
 
     view {
         node card: Column {
-            on animation_end(e) { if e.finished { shaking = Option::None; } }
+            on animation_end(e) { if e.finished { shaking = Option::None } }
         }
     }
 }
@@ -1014,8 +1065,8 @@ Payload 基线字段：
 
 ```viso
 KeyShortcut {
-    chord: KeyChord { key: Key::char('s'), primary: true };
-    on triggered { save(); }
+    chord: KeyChord { key: Key::char('s'), primary: true }
+    on triggered { save() }
 }
 ```
 
@@ -1222,7 +1273,7 @@ Named Node `n` 在同一 Component 的 Action 与 Handler 中以 `n: NodeRef<T>`
 ```viso
 // fn tr(key: MessageKey, name: value, ..) -> String;
 
-Text { text: tr("inbox.unread", count: unread); }
+Text { text: tr("inbox.unread", count: unread) }
 ```
 
 - 消息参数以 Named Argument 按消息占位符的名字传入，每个恰好一次；
@@ -1249,19 +1300,19 @@ Text { text: tr("inbox.unread", count: unread); }
 - `Navigator<R>`（`viso::nav`，无需 import）的方法：响应式读取 `current() -> R`、`can_pop() -> Bool`、`depth() -> I64`；命令 `push(route)`、`replace(route)`、`pop() -> Bool`、`reset(route)`。
 
 ```viso
-import mail::Route;
+import mail::Route
 
 export component Shell {
-    input nav: Navigator<Route>;
-    state has_unsaved_changes = false;
+    input nav: Navigator<Route>
+    state has_unsaved_changes = false
 
     view {
         Column {
-            Button { text: tr("nav.settings"); on click { nav.push(Route::settings); } }
+            Button { text: tr("nav.settings"); on click { nav.push(Route::settings) } }
             RouterView {
-                navigator: nav;
-                height: 100%;
-                on back_requested(e) { if has_unsaved_changes { e.prevent_default(); } }
+                navigator: nav
+                height: 100%
+                on back_requested(e) { if has_unsaved_changes { e.prevent_default() } }
             }
         }
     }
@@ -1321,12 +1372,12 @@ Widget Schema 从下表中声明它支持的选择器；Style 使用 Widget 不�
 
 ```viso
 export record Theme {
-    colors: ColorPalette;
-    typography: TypographyScale = TypographyScale {};
-    spacing: SpacingScale = SpacingScale {};
-    radius: RadiusScale = RadiusScale {};
-    elevation: ElevationScale;
-    motion: MotionScale = MotionScale {};
+    colors: ColorPalette
+    typography: TypographyScale = TypographyScale {}
+    spacing: SpacingScale = SpacingScale {}
+    radius: RadiusScale = RadiusScale {}
+    elevation: ElevationScale
+    motion: MotionScale = MotionScale {}
 }
 ```
 
@@ -1354,59 +1405,62 @@ export record Theme {
 ### U13.1 设置页：分组与双向绑定开关
 
 ```viso
-import viso::widgets::{Scroll, Column, Row, Text, Toggle, Slider};
-import viso::i18n::tr;
+import viso::widgets::{Scroll, Column, Row, Text, Toggle, Slider}
+import viso::i18n::tr
 
-export record AppSettings { notifications: Bool = true; dark_mode: Bool = false; volume: F32 = 0.5; }
+export record AppSettings { notifications: Bool = true; dark_mode: Bool = false; volume: F32 = 0.5 }
 
 export component SettingsSection {
-    input title: String;
+    input title: String
 
     @default
-    slot content: SlotList<Node> = empty;
+    slot content: SlotList<Node> = empty
 
     view {
         Column {
-            width: Sizing::fill {};
-            gap: theme.spacing.small;
-            padding: EdgeInsets::axes(inline: theme.spacing.large, block: theme.spacing.medium);
+            width: Sizing::fill {}
+            gap: theme.spacing.small
+            padding: EdgeInsets::axes(inline: theme.spacing.large, block: theme.spacing.medium)
             Text {
-                text: title;
-                font_size: theme.typography.title_size;
-                font_weight: FontWeight::semibold;
-                semantics.role: Role::heading;
-                semantics.heading_level: 2;
+                text: title
+                font_size: theme.typography.title_size
+                font_weight: FontWeight::semibold
+                semantics.role: Role::heading
+                semantics.heading_level: 2
             }
-            SlotOutlet { slot: content; }
+            SlotOutlet { slot: content }
         }
     }
 }
 
 export component SettingsPage {
-    state settings: AppSettings = AppSettings {};
+    state settings: AppSettings = AppSettings {}
 
     view {
         Scroll {
             Column {
-                width: Sizing::fill {};
-                max_width: 640dp;
+                width: Sizing::fill {}
+                max_width: 640dp
                 SettingsSection {
-                    title: tr("settings.general");
-                    Toggle { label: tr("settings.notifications"); bind checked <=> settings.notifications; }
-                    Toggle { label: tr("settings.dark_mode"); bind checked <=> settings.dark_mode; }
+                    title: tr("settings.general")
+                    Toggle {
+                        label: tr("settings.notifications")
+                        bind checked <=> settings.notifications
+                    }
+                    Toggle { label: tr("settings.dark_mode"); bind checked <=> settings.dark_mode }
                 }
                 SettingsSection {
-                    title: tr("settings.sound");
+                    title: tr("settings.sound")
                     Row {
-                        width: Sizing::fill {};
-                        gap: theme.spacing.medium;
-                        align: Align::center;
-                        Text { text: tr("settings.volume"); }
+                        width: Sizing::fill {}
+                        gap: theme.spacing.medium
+                        align: Align::center
+                        Text { text: tr("settings.volume") }
                         Slider {
-                            width: Sizing::fill {};
-                            enabled: settings.notifications;
-                            semantics.label: tr("settings.volume");
-                            bind value <=> settings.volume;
+                            width: Sizing::fill {}
+                            enabled: settings.notifications
+                            semantics.label: tr("settings.volume")
+                            bind value <=> settings.volume
                         }
                     }
                 }
@@ -1421,35 +1475,41 @@ export component SettingsPage {
 ### U13.2 聊天消息列表：虚拟化、Keyed、自适应
 
 ```viso
-import viso::widgets::{VirtualList, Column, Row, Text};
-import viso::i18n::tr;
+import viso::widgets::{VirtualList, Column, Row, Text}
+import viso::i18n::tr
 
-export record ChatMessage { id: MessageId; author: String; body: String; mine: Bool; }
+export record ChatMessage { id: MessageId; author: String; body: String; mine: Bool }
 
 component MessageBubble {
-    input message: ChatMessage;
-    input compact: Bool = false;
+    input message: ChatMessage
+    input compact: Bool = false
 
-    computed bubble_max: Percent = if compact { 85% } else { 60% };
+    computed bubble_max: Percent = if compact { 85% } else { 60% }
 
     view {
         Row {
-            width: Sizing::fill {};
-            justify: if message.mine { Justify::end } else { Justify::start };
-            padding: EdgeInsets::axes(inline: theme.spacing.medium, block: theme.spacing.xsmall);
+            width: Sizing::fill {}
+            justify: if message.mine { Justify::end } else { Justify::start }
+            padding: EdgeInsets::axes(inline: theme.spacing.medium, block: theme.spacing.xsmall)
             Column {
-                max_width: bubble_max;
-                padding: 0.6em;
-                corner_radius: theme.radius.large;
-                background: if message.mine { theme.colors.primary } else { theme.colors.surface };
+                max_width: bubble_max
+                padding: 0.6em
+                corner_radius: theme.radius.large
+                background: if message.mine { theme.colors.primary } else { theme.colors.surface }
                 if !message.mine {
-                    Text { text: message.author; font_size: theme.typography.caption_size; color: theme.colors.muted; }
+                    Text {
+                        text: message.author
+                        font_size: theme.typography.caption_size
+                        color: theme.colors.muted
+                    }
                 }
                 Text {
-                    text: message.body;
-                    soft_wrap: true;
-                    selectable: true;
-                    color: if message.mine { theme.colors.on_primary } else { theme.colors.on_surface };
+                    text: message.body
+                    soft_wrap: true
+                    selectable: true
+                    color: if message.mine { theme.colors.on_primary } else {
+                        theme.colors.on_surface
+                    }
                 }
             }
         }
@@ -1457,20 +1517,20 @@ component MessageBubble {
 }
 
 export component ChatMessageList {
-    input messages: List<ChatMessage>;
+    input messages: List<ChatMessage>
 
-    action jump_to(id: MessageId) { list.scroll_to_key(id); }
+    action jump_to(id: MessageId) { list.scroll_to_key(id) }
 
     view {
         node list: VirtualList {
-            height: Sizing::fill {};
-            estimated_extent: 3.5em;
-            overscan: 6;
-            semantics.label: tr("chat.messages");
+            height: Sizing::fill {}
+            estimated_extent: 3.5em
+            overscan: 6
+            semantics.label: tr("chat.messages")
             for message in messages key message.id {
                 MessageBubble {
-                    message: message;
-                    compact: env.size_class == SizeClass::Compact;
+                    message: message
+                    compact: env.size_class == SizeClass::Compact
                 }
             }
         }
@@ -1483,119 +1543,119 @@ export component ChatMessageList {
 ### U13.3 表单：计算校验、禁用提交、错误文本与 Task 提交
 
 ```viso
-import viso::widgets::{Column, Text, TextInput, Button, Spinner};
-import viso::i18n::{tr, MessageKey};
+import viso::widgets::{Column, Text, TextInput, Button, Spinner}
+import viso::i18n::{tr, MessageKey}
 
-export record SignupForm { email: String = ""; password: String = ""; }
-
-@derive(Eq)
-export enum FieldIssue { malformed; too_short; }
+export record SignupForm { email: String = ""; password: String = "" }
 
 @derive(Eq)
-export enum SubmitPhase { idle; submitting; failed(String); done; }
+export enum FieldIssue { malformed; too_short }
+
+@derive(Eq)
+export enum SubmitPhase { idle; submitting; failed(String); done }
 
 fn check_email(value: String) -> Option<FieldIssue> {
-    if !value.is_empty() && !value.contains("@") { return Option::Some(FieldIssue::malformed); }
-    return Option::None;
+    if !value.is_empty() && !value.contains("@") { return Option::Some(FieldIssue::malformed) }
+    return Option::None
 }
 
 fn check_password(value: String) -> Option<FieldIssue> {
-    if !value.is_empty() && value.length() < 8 { return Option::Some(FieldIssue::too_short); }
-    return Option::None;
+    if !value.is_empty() && value.length() < 8 { return Option::Some(FieldIssue::too_short) }
+    return Option::None
 }
 
 fn issue_key(issue: FieldIssue) -> MessageKey {
     return match issue {
-        FieldIssue::malformed => "form.email.malformed",
-        FieldIssue::too_short => "form.password.too_short",
-    };
+        FieldIssue::malformed => "form.email.malformed"
+        FieldIssue::too_short => "form.password.too_short"
+    }
 }
 
 task create_account(form: SignupForm) -> Result<AccountId, SignupError>
     requires { network::http } {
-    return await Accounts::create(form);
+    return await Accounts::create(form)
 }
 
 component FieldError {
-    input issue: Option<FieldIssue>;
+    input issue: Option<FieldIssue>
 
     view {
         match issue {
             Option::Some(found) => {
                 Text {
-                    text: tr(issue_key(found));
-                    color: theme.colors.error;
-                    semantics.live: LiveRegion::polite;
+                    text: tr(issue_key(found))
+                    color: theme.colors.error
+                    semantics.live: LiveRegion::polite
                 }
-            },
-            Option::None => {},
+            }
+            Option::None => {}
         }
     }
 }
 
 export component SignupPage {
-    event signed_up(id: AccountId);
+    event signed_up(id: AccountId)
 
-    state form: SignupForm = SignupForm {};
-    state phase: SubmitPhase = SubmitPhase::idle;
+    state form: SignupForm = SignupForm {}
+    state phase: SubmitPhase = SubmitPhase::idle
 
-    computed email_issue: Option<FieldIssue> = check_email(form.email);
-    computed password_issue: Option<FieldIssue> = check_password(form.password);
-    computed complete: Bool = !form.email.is_empty() && !form.password.is_empty();
-    computed valid: Bool = complete && email_issue == Option::None && password_issue == Option::None;
-    computed submitting: Bool = phase == SubmitPhase::submitting;
+    computed email_issue: Option<FieldIssue> = check_email(form.email)
+    computed password_issue: Option<FieldIssue> = check_password(form.password)
+    computed complete: Bool = !form.email.is_empty() && !form.password.is_empty()
+    computed valid: Bool = complete && email_issue == Option::None && password_issue == Option::None
+    computed submitting: Bool = phase == SubmitPhase::submitting
 
     action submit() {
-        if !valid || submitting { return; }
-        phase = SubmitPhase::submitting;
+        if !valid || submitting { return }
+        phase = SubmitPhase::submitting
 
         start create_account(form) as submit_job {
-            policy = [TaskPolicy::keep_latest];
-            success(id) { phase = SubmitPhase::done; emit signed_up(id); }
-            error(reason) { phase = SubmitPhase::failed(reason.message()); }
-            cancelled { phase = SubmitPhase::idle; }
-        };
+            policy = [TaskPolicy::keep_latest]
+            success (id) { phase = SubmitPhase::done; emit signed_up(id) }
+            error (reason) { phase = SubmitPhase::failed(reason.message()) }
+            cancelled { phase = SubmitPhase::idle }
+        }
     }
 
     view {
         Column {
-            gap: theme.spacing.medium;
-            padding: EdgeInsets::all(theme.spacing.large);
+            gap: theme.spacing.medium
+            padding: EdgeInsets::all(theme.spacing.large)
             node email_field: TextInput {
-                placeholder: tr("form.email");
-                invalid: email_issue != Option::None;
-                enabled: !submitting;
-                autofocus: true;
-                bind value <=> form.email;
-                on submitted { password_field.focus(); }
+                placeholder: tr("form.email")
+                invalid: email_issue != Option::None
+                enabled: !submitting
+                autofocus: true
+                bind value <=> form.email
+                on submitted { password_field.focus() }
             }
-            FieldError { issue: email_issue; }
+            FieldError { issue: email_issue }
             node password_field: TextInput {
-                placeholder: tr("form.password");
-                secure: true;
-                invalid: password_issue != Option::None;
-                enabled: !submitting;
-                bind value <=> form.password;
-                on submitted { submit(); }
+                placeholder: tr("form.password")
+                secure: true
+                invalid: password_issue != Option::None
+                enabled: !submitting
+                bind value <=> form.password
+                on submitted { submit() }
             }
-            FieldError { issue: password_issue; }
+            FieldError { issue: password_issue }
             Button {
-                text: tr("form.create_account");
-                enabled: valid && !submitting;
-                on click { submit(); }
+                text: tr("form.create_account")
+                enabled: valid && !submitting
+                on click { submit() }
             }
             match phase {
                 SubmitPhase::submitting => {
-                    Spinner { semantics.label: tr("form.submitting"); }
-                },
+                    Spinner { semantics.label: tr("form.submitting") }
+                }
                 SubmitPhase::failed(message) => {
                     Text {
-                        text: message;
-                        color: theme.colors.error;
-                        semantics.live: LiveRegion::assertive;
+                        text: message
+                        color: theme.colors.error
+                        semantics.live: LiveRegion::assertive
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
     }

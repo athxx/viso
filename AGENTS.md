@@ -982,8 +982,8 @@ In View/Style authoring, property binding uses `:` and a terminating semicolon:
 
 ```viso
 Text {
-    text: label;
-    color: theme.colors.foreground;
+    text: label
+    color: theme.colors.foreground
 }
 ```
 

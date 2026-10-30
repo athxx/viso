@@ -218,6 +218,15 @@ struct Parser<'t, 's> {
     /// Indices into `tokens` of the significant (non-trivia, non-Eof) tokens, in
     /// order. The parser's cursor `pos` indexes *this* list.
     significant: Vec<usize>,
+    /// Per entry of `significant`: whether a line break separates the token
+    /// from the significant token before it.
+    line_start: Vec<bool>,
+    /// Whether a line break ends an item, per open delimiter: not inside
+    /// `( )`, `[ ]` or a record body, where it is whitespace.
+    lines: Vec<bool>,
+    /// The error count when the last item ended: an item that reported an
+    /// error is not also told it needs a `;`.
+    item_errors: usize,
     /// Cursor into `significant`.
     pos: usize,
     /// Bytes of the token at the cursor already consumed by a `>` split. While
@@ -276,10 +285,26 @@ impl<'t, 's> Parser<'t, 's> {
         } else {
             Vec::new()
         };
+        let mut line_start = Vec::with_capacity(significant.len());
+        let mut previous = None;
+        for &i in &significant {
+            let broken = previous.is_some_and(|before: usize| {
+                tokens[before + 1..i].iter().any(|t| {
+                    source
+                        .get(t.range.start().to_usize()..t.range.end().to_usize())
+                        .is_some_and(|text| text.contains('\n'))
+                })
+            });
+            line_start.push(broken);
+            previous = Some(i);
+        }
         Parser {
             tokens,
             source,
             significant,
+            line_start,
+            lines: vec![true],
+            item_errors: 0,
             pos: 0,
             split: 0,
             events: Vec::new(),
@@ -410,9 +435,87 @@ impl<'t, 's> Parser<'t, 's> {
         if self.at_end() {
             return;
         }
+        if self.split == 0 {
+            match self.tokens[self.significant[self.pos]].kind {
+                SyntaxKind::LParen | SyntaxKind::LBracket => self.lines.push(false),
+                SyntaxKind::LBrace => self.lines.push(true),
+                SyntaxKind::RParen | SyntaxKind::RBracket | SyntaxKind::RBrace
+                    if self.lines.len() > 1 =>
+                {
+                    self.lines.pop();
+                }
+                _ => {}
+            }
+        }
         self.events.push(Event::Token { kind, len: None });
         self.pos += 1;
         self.split = 0;
+    }
+
+    /// Whether a line break before the token at the cursor ends an item: one
+    /// separates it from the token before, outside `( )`, `[ ]` and record
+    /// bodies.
+    fn at_line_break(&self) -> bool {
+        self.saw(0);
+        self.split == 0
+            && self.lines.last().copied().unwrap_or(true)
+            && self.line_start.get(self.pos).copied().unwrap_or(false)
+    }
+
+    /// Whether the cursor is where an item ends: a `;`, a line break, a `}` or
+    /// the end of input.
+    fn at_item_end(&self) -> bool {
+        self.at(SyntaxKind::Semi)
+            || self.at(SyntaxKind::RBrace)
+            || self.at_end()
+            || self.at_line_break()
+    }
+
+    /// Makes line breaks whitespace up to the `}` just consumed's match: a
+    /// record body or an import list, which are comma-separated.
+    fn quiet_lines(&mut self) {
+        if let Some(top) = self.lines.last_mut() {
+            *top = false;
+        }
+    }
+
+    /// Ends an item of a `{ }` list or a file. The item's own `;` or closing
+    /// `}`, or `;`s after it, separate it from the next; so do a line break,
+    /// the list's `}` and the end of input. Any other token starts a second
+    /// item on the same line, which needs a `;` before it.
+    fn item_end(&mut self) {
+        let took = self.split == 0
+            && self.pos > 0
+            && matches!(
+                self.tokens[self.significant[self.pos - 1]].kind,
+                SyntaxKind::Semi | SyntaxKind::RBrace
+            );
+        let mut ate = false;
+        while self.eat(SyntaxKind::Semi) {
+            ate = true;
+        }
+        let failed = self.errors.len() > self.item_errors;
+        self.item_errors = self.errors.len();
+        if took
+            || ate
+            || failed
+            || self.at(SyntaxKind::RBrace)
+            || self.at_end()
+            || self.at_line_break()
+        {
+            return;
+        }
+        // The `;` goes right after the item it ends.
+        let at = self.tokens[self.significant[self.pos - 1]].range.end();
+        self.error(ParseErrorKind::MissingSeparator);
+        self.item_errors = self.errors.len();
+        if let Some(diagnostic) = self.errors.last_mut() {
+            diagnostic.fixes.push(Fix {
+                title: "separate the items with `;`".to_string(),
+                applicability: Applicability::MachineApplicable,
+                edits: vec![TextEdit::new(TextRange::empty(at), ";")],
+            });
+        }
     }
 
     /// Whether the cursor starts with a `>`: a `>` itself, or a `>>`, `>=` or
@@ -725,6 +828,7 @@ impl<'t, 's> Parser<'t, 's> {
         while !self.at_end() {
             let before = self.cursor();
             item(self);
+            self.item_end();
             self.ensure_progress(before);
         }
     }

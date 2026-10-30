@@ -52,18 +52,13 @@ impl Lowerer<'_, '_> {
     /// A block's last statement as its value, when it is one; otherwise it lowers
     /// as a statement.
     fn tail(&mut self, stmt: &SyntaxNode) -> Lower<Option<Reg>> {
-        let has_semi = stmt
-            .children_with_tokens()
-            .into_iter()
-            .filter_map(|e| e.as_token().cloned())
-            .any(|t| t.kind() == SyntaxKind::Semi);
         match stmt.kind() {
-            SyntaxKind::ExprStmt if !has_semi => match first_child_expr(stmt) {
+            SyntaxKind::ExprStmt => match first_child_expr(stmt) {
                 Some(value) => self.expr(&value).map(Some),
                 None => Ok(None),
             },
             SyntaxKind::IfStmt => self.if_chain(stmt, true),
-            SyntaxKind::MatchStmt if !has_semi => self.match_value(stmt, true),
+            SyntaxKind::MatchStmt => self.match_value(stmt, true),
             _ => self.stmt(stmt).map(|()| None),
         }
     }

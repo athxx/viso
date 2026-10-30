@@ -1,11 +1,11 @@
 export component Editor {
-    state text = "";
+    state text = ""
 
     view {
         Column {
-            gap: 8dp;
-            Text { text: "Notes"; }
-            TextInput { bind value <=> text; }
+            gap: 8dp
+            Text { text: "Notes" }
+            TextInput { bind value <=> text }
         }
     }
 }

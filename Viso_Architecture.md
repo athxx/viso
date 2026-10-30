@@ -1467,7 +1467,7 @@ Release 在不需要 Inspector/source diagnostics 时可以 strip 大部分 reve
 ```viso
 for item in items key item.id {
     TodoRow {
-        item: item;
+        item: item
     }
 }
 ```
@@ -1537,7 +1537,7 @@ Named node：
 
 ```viso
 node save_button: Button {
-    text: "Save";
+    text: "Save"
 }
 ```
 
@@ -2855,7 +2855,7 @@ DSL 侧每次 Action / Event Handler 调用自动开启一个 behavior transacti
 必须可缓存、无副作用（DSL §43）：
 
 ```viso
-computed full_name = format("{} {}", first, last);
+computed full_name = format("{} {}", first, last)
 ```
 
 DSL computed 由 behavior VM 记忆（`viso_behavior::memo`）：编译期为每个零参数 computed 求出它（含其调用的函数）读取的 state / input slot 并建立反向索引；实例缓存已求值的 computed，写入某个 slot 只清空读它的条目，依赖未变就不重算；调用闭包值的 computed 读集无法静态确定，不缓存。Rust 侧 `ComputedStore` 的派生只读（`ComputeCx`），每次求值经 `DepCursor` 重新记录依赖，被依赖写入唤醒后重算，值不变则不标脏下游节点（memo boundary）。
@@ -2866,7 +2866,7 @@ DSL computed 由 behavior VM 记忆（`viso_behavior::memo`）：编译期为每
 
 ```viso
 effect load when (user_id) {
-    start load_user(user_id);
+    start load_user(user_id)
 }
 ```
 
@@ -3093,8 +3093,8 @@ IME 是文本子系统的一部分，不是 TextInput 的平台 patch：
 开发阶段可以写：
 
 ```viso
-background: theme.colors.surface;
-corner_radius: theme.radius.medium;
+background: theme.colors.surface
+corner_radius: theme.radius.medium
 ```
 
 编译后两者都不再以字符串存在：Property 名在编译期解析为目标 Widget 的输入槽、布局槽或外观入口；`theme.colors.surface` 是对 `theme` 环境单元中 `Theme` Record 值的类型化字段读取。
@@ -3610,17 +3610,17 @@ Embedded profile 下默认：
 Property Binding 使用 `property: expr;`，imperative 代码使用 `=` / `+=`；命名节点写作 `node name: Type { ... }`；事件处理只有 `on event { ... }` block 形式。Viso 不使用隐式 apply/merge 运算符；merge、style、override、replace、record update 必须是独立、可类型检查的构造。分号是 property/behavior statement 的稳定终止符。
 
 ```viso
-import viso::widgets::{Column, Text, Button};
+import viso::widgets::{Column, Text, Button}
 
 export component Counter {
-    state count = 0;
+    state count = 0
 
     view {
         Column {
-            Text { text: format("{}", count); }
+            Text { text: format("{}", count) }
             node add_button: Button {
-                text: "Add";
-                on click { count += 1; }
+                text: "Add"
+                on click { count += 1 }
             }
         }
     }

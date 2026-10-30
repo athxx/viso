@@ -646,7 +646,7 @@ SymbolId -> runtime typed ID
 
 ```viso
 Text {
-    color: #ff0000;
+    color: #ff0000
 }
 ```
 
@@ -676,8 +676,8 @@ PropertyPatch
 
 ```viso
 Column {
-    Text { text: "Title"; }
-    Button { text: "Save"; }
+    Text { text: "Title" }
+    Button { text: "Save" }
 }
 ```
 

@@ -305,7 +305,7 @@ Input Default 被 Lower 为无实例依赖的 Const/Pure Thunk。State Initializ
 ## 118. State Lowering
 
 ```viso
-state count: I64 = 0;
+state count: I64 = 0
 ```
 
 Lower：
@@ -324,7 +324,7 @@ StateSlot {
 Assignment：
 
 ```viso
-count += 1;
+count += 1
 ```
 
 Lower：
@@ -342,7 +342,7 @@ State Write 不立即触发 Render；只记录 Write Set，提交阶段统一失
 ## 119. Computed Lowering
 
 ```viso
-computed label: String = format("Count: {}", count);
+computed label: String = format("Count: {}", count)
 ```
 
 Lower：
@@ -387,7 +387,7 @@ Compiler 对不可回滚调用发出诊断，要求移动到 Effect/Task。
 
 ```viso
 node add_button: Button {
-    text: label;
+    text: label
 }
 ```
 
@@ -416,7 +416,7 @@ UiNodeTemplate {
 ## 122. Property Binding Lowering
 
 ```viso
-width: panel_width;
+width: panel_width
 ```
 
 Lower 为：
@@ -451,7 +451,7 @@ ReactiveBinding {
 ## 123. Two-way Binding Lowering
 
 ```viso
-bind value <=> draft using TextConverter;
+bind value <=> draft using TextConverter
 ```
 
 Lower 为两条带 Origin Token 的单向边：
@@ -484,7 +484,7 @@ Converter Error 必须有 Schema 策略：拒绝更新、显示 Validation State
 
 ```viso
 on pointer_down(event) {
-    begin_drag(event.position);
+    begin_drag(event.position)
 }
 ```
 
@@ -564,10 +564,10 @@ EnvironmentRead {
 match env.size_class {
     SizeClass::Compact => {
         CompactShell {}
-    },
+    }
     _ => {
         WideShell {}
-    },
+    }
 }
 ```
 
@@ -590,7 +590,7 @@ STRUCTURE
 
 ```viso
 for item in items key item.id {
-    TodoRow { item: item; }
+    TodoRow { item: item }
 }
 ```
 
@@ -963,7 +963,7 @@ AI 在使用未知 Component/Property/Event 前必须查询 Schema 或依赖已�
 Formatter 必须规范：
 
 - 4 空格缩进；
-- 条目以换行结束，删除行尾与 `}` 前多余的 `;`，作者写在同一行、以 `;` 分隔的条目保持一行（§14）；
+- 条目以换行结束：展开的 Block 与顶层每个条目独占一行，分隔条目的 `;` 与 `match` 分支的 `,` 删除；保持一行的 `{ }` 内条目之间保留 `;`，`}` 前多余的 `;` 删除；源码有语法错误时分隔符原样保留（§14）；
 - 删除 `match` Arm 行尾的 `,`；
 - Trailing Comma 用于多行列表、参数和 Record；
 - 一个空格围绕二元 Operator；
@@ -980,8 +980,8 @@ Parser 接受的所有合法程序经 Formatter 后必须再次 Parse 为等价 
 
 当前实现（`crates/lsp/src/format`）只改空白，输出只取决于 Token、所在节点与作者的换行，因而幂等：
 
-- 作者写在一行的 `{ }`，整行不超过 100 列时保持一行（`Text { text: label; }`），否则展开：`{` 后换行、Body 缩进一级、`}` 独占一行；空 Block 为 `{}`；Import 的 `{A, B}` 紧贴内容；
-- 展开 Block 中 `;` 结束一行，Block 自身层级（不在 `(` `[` `<` 内）的 `,` 也结束一行；
+- 作者写在一行的 `{ }`，整行不超过 100 列时保持一行（`Text { text: label }`、`Row { Text {}; Text {} }`），否则展开：`{` 后换行、Body 缩进一级、`}` 独占一行；空 Block 为 `{}`；Import 的 `{A, B}` 紧贴内容；
+- 展开 Block 中条目之间换行，Block 自身层级（不在 `(` `[` `<` 内）的 `,` 也结束一行；
 - `}` 后的 `,` `;` `)` `]` `.` `?` 与 `else` 留在同一行；
 - 语句内作者的换行保留（多个折为一个），续行按未闭合的 `(` `[` `<` 层数再缩进；Attribute 后的换行开始新的一项；
 - 声明与语句之间的空行保留，连续空行折为一行，`{` 之后与 `}` 之前不留空行；

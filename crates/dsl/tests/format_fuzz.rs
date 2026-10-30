@@ -38,16 +38,23 @@ fn examples() -> Vec<String> {
 }
 
 /// The tree's shape with layout erased: each node's kind with its children
-/// nested, each significant token's kind and text.
+/// nested, each significant token's kind and text, item separators (a `;`,
+/// a `,` between `match` arms) left out since a line break stands for them.
 fn shape(src: &str) -> String {
     fn walk(node: &SyntaxNode, out: &mut String) {
         out.push_str(&format!("{:?}(", node.kind()));
+        let arms = matches!(
+            node.kind(),
+            SyntaxKind::MatchExpr | SyntaxKind::MatchStmt | SyntaxKind::ViewMatch
+        );
         for el in node.children_with_tokens() {
             if let Some(n) = el.as_node() {
                 walk(n, out);
             } else if let Some(t) = el.as_token()
                 && !t.kind().is_trivia()
                 && t.kind() != SyntaxKind::Eof
+                && !(t.kind() == SyntaxKind::Semi && node.kind() != SyntaxKind::ArrayType)
+                && !(arms && t.kind() == SyntaxKind::Comma)
             {
                 out.push_str(&format!("{:?}{:?} ", t.kind(), t.text()));
             }
@@ -219,13 +226,26 @@ fn random_and_mutated_sources_never_make_the_formatter_panic() {
     }
 }
 
-/// The significant tokens of the parse of `src`, kind and text.
+/// The significant tokens of the parse of `src`, kind and text, item
+/// separators left out.
 fn significant(src: &str) -> Vec<(SyntaxKind, String)> {
     let parse = parse_entry(&tokenize(src), src, Entry::CompilationUnit);
     SyntaxNode::new_root(parse.root)
         .descendants_with_tokens()
         .into_iter()
-        .filter_map(|el| el.as_token().map(|t| (t.kind(), t.text())))
-        .filter(|(kind, _)| !kind.is_trivia() && *kind != SyntaxKind::Eof)
+        .filter_map(|el| el.as_token().cloned())
+        .filter(|t| {
+            let parent = t.parent().kind();
+            let separator = match t.kind() {
+                SyntaxKind::Semi => parent != SyntaxKind::ArrayType,
+                SyntaxKind::Comma => matches!(
+                    parent,
+                    SyntaxKind::MatchExpr | SyntaxKind::MatchStmt | SyntaxKind::ViewMatch
+                ),
+                _ => false,
+            };
+            !t.kind().is_trivia() && t.kind() != SyntaxKind::Eof && !separator
+        })
+        .map(|t| (t.kind(), t.text()))
         .collect()
 }

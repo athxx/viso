@@ -1574,19 +1574,22 @@ scene.update_opacity(handle, opacity);
 
 ```viso
 Shape {
-    geometry: ShapeGeometry::RoundedRect { radius: 16dp };
+    geometry: ShapeGeometry::RoundedRect { radius: 16dp }
     fill: Brush::LinearGradient {
         from: vec2(0.0, 0.0),
         to: vec2(1.0, 1.0),
-        stops: [GradientStop { offset: 0.0, color: #ff8a00 }, GradientStop { offset: 1.0, color: #e52e71 }],
-    };
-    stroke: Option::Some(StrokeStyle { width: 1dp, alignment: StrokeAlignment::Inside });
+        stops: [
+            GradientStop { offset: 0.0, color: #ff8a00 },
+            GradientStop { offset: 1.0, color: #e52e71 },
+        ],
+    }
+    stroke: Option::Some(StrokeStyle { width: 1dp, alignment: StrokeAlignment::Inside })
 }
 
 EffectSurface {
     effects: [
         Effect::Shadow(Shadow { offset: vec2(0dp, 8dp), blur: 24dp, spread: 0dp, color: #00000040 }),
-    ];
+    ]
     CardContent {}
 }
 ```

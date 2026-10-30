@@ -32,23 +32,23 @@ on event { ... }
 最小 Counter：
 
 ```viso
-import viso::widgets::{Window, Column, Text, Button};
+import viso::widgets::{Window, Column, Text, Button}
 
 export component Counter {
-    state count = 0;
-    computed label = format("Count: {}", count);
+    state count = 0
+    computed label = format("Count: {}", count)
 
     view {
         Window {
             Column {
                 Text {
-                    text: label;
+                    text: label
                 }
 
                 node add_button: Button {
-                    text: "Add";
+                    text: "Add"
                     on click {
-                        count += 1;
+                        count += 1
                     }
                 }
             }
@@ -119,15 +119,15 @@ Viso DSL 1.0 的扩展原则是：
 大多数领域扩展并不真正需要新语法。例如，游戏能力可以由以下 API 提供：
 
 ```viso
-import viso::game::{GameWorld, EntityId, FixedUpdate, FixedFrame};
+import viso::game::{GameWorld, EntityId, FixedUpdate, FixedFrame}
 
 export system PlayerController implements FixedUpdate {
-    input world: Handle<GameWorld>;
-    input player: EntityId;
+    input world: Handle<GameWorld>
+    input player: EntityId
 
     action fixed_update(frame: FixedFrame) {
-        let input = frame.input;
-        world.walk(player, input.move_x * 6.0f32, input.move_z * 6.0f32);
+        let input = frame.input
+        world.walk(player, input.move_x * 6.0f32, input.move_z * 6.0f32)
     }
 }
 ```

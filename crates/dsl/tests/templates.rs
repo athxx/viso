@@ -76,15 +76,6 @@ fn a_template_and_its_use_parse_to_typed_nodes() {
         .filter(|i| matches!(i, ViewItem::Use(_)))
         .count();
     assert_eq!(uses, 1);
-
-    let unterminated =
-        format!("{CARD}\ncomponent C {{ view {{ Column {{ use TitledCard(\"a\") }} }} }}");
-    let parse = parse_entry(
-        &tokenize(&unterminated),
-        &unterminated,
-        Entry::CompilationUnit,
-    );
-    assert!(!parse.errors.is_empty(), "a `use` ends with `;`");
 }
 
 /// The nodes of `items`, flattening nothing.

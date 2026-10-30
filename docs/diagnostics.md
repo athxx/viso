@@ -466,13 +466,13 @@ See also: `viso fmt`
 
 **Missing Token** — error, parse
 
-The grammar requires a specific token here, such as `=`, `:`, `;` or a closing keyword, and it is absent. The parser inserts a placeholder for the missing token and continues, so the rest of the declaration is still checked.
+The grammar requires a specific token here, such as `=`, `:` or a closing keyword, and it is absent; two items written on one line need a `;` between them. The parser inserts a placeholder for the missing token and continues, so the rest of the declaration is still checked.
 
 ```vs
-type Id I64;
+type Id I64
 
 component Profile {
-    view { Text { text: "profile"; } }
+    view { Text { text: "profile" } }
 }
 ```
 

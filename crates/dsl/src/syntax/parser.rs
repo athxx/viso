@@ -40,6 +40,9 @@ pub enum ParseErrorKind {
     /// A token the grammar required was absent; a zero-width `MissingToken`
     /// stands in its place so the tree keeps the shape the production expects.
     MissingToken,
+    /// A second item started on the line of the one before without a `;`
+    /// between them.
+    MissingSeparator,
     /// An expression was expected (e.g. after a binary operator) but the next
     /// token could not start one.
     ExpectedExpr,
@@ -88,7 +91,7 @@ impl ParseErrorKind {
             ParseErrorKind::UnclosedDelimiter => "E1401",
             ParseErrorKind::UnmatchedCloser => "E1402",
             ParseErrorKind::UnexpectedTokens => "E1403",
-            ParseErrorKind::MissingToken => "E1404",
+            ParseErrorKind::MissingToken | ParseErrorKind::MissingSeparator => "E1404",
             ParseErrorKind::ExpectedExpr => "E1405",
             ParseErrorKind::NonAssocChain | ParseErrorKind::NonAssocRange => "E2802",
             ParseErrorKind::RecordExprInHead => "E2801",
@@ -112,6 +115,7 @@ impl ParseErrorKind {
             ParseErrorKind::UnmatchedCloser => "unmatched closing delimiter",
             ParseErrorKind::UnexpectedTokens => "unexpected tokens",
             ParseErrorKind::MissingToken => "missing required token",
+            ParseErrorKind::MissingSeparator => "items on one line need a `;` between them",
             ParseErrorKind::ExpectedExpr => "expected an expression",
             ParseErrorKind::NonAssocChain => {
                 "comparison operators cannot be chained; add parentheses"

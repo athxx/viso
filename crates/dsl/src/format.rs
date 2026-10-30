@@ -6,12 +6,17 @@
 //! each token sits in, and where the author broke lines:
 //!
 //! - A `{ }` the author wrote on one line stays on one line when it fits in
-//!   [`MAX_WIDTH`] columns (`Text { text: label; }`); any other block opens a
-//!   line after `{`, indents its body one level, and closes on its own line.
-//!   An empty block is `{}`. An import's item braces hug their items
-//!   (`import a::{B, C};`).
-//! - A `;` ends its line in an expanded block; so does a `,` at an expanded
-//!   block's own level (match arms, record fields written one per line).
+//!   [`MAX_WIDTH`] columns (`Text { color: c; width: fill }`), its items still
+//!   `;`-separated; any other block opens a line after `{`, indents its body
+//!   one level, and closes on its own line. An empty block is `{}`. An
+//!   import's item braces hug their items (`import a::{B, C}`).
+//! - Outside a one-line block every item takes its own line and the `;` that
+//!   separated items is dropped, as is a `,` ending a `match` arm; a `;` or
+//!   arm `,` just before a one-line block's `}` is dropped too. A `,` at an
+//!   expanded block's own level ends its line (record fields written one per
+//!   line).
+//! - A line break before an item starts it at its block's indentation; a line
+//!   break elsewhere continues the item.
 //! - A `}` keeps a following `,` `;` `)` `]` `.` `?` or `else` on its line.
 //! - A line break the author put inside a statement is kept (folded to one),
 //!   the continuation indented one level deeper per open `(`/`[`.
@@ -28,15 +33,15 @@
 //!
 //! The output depends only on the tokens, their nodes and the line breaks, all
 //! of which the output reproduces, so `format(format(x)) == format(x)`, and
-//! re-parsing the formatted text yields the same significant tokens: the
-//! formatter only ever changes whitespace.
+//! re-parsing the formatted text yields the same tree: the formatter changes
+//! whitespace and drops only the separators a line break replaces.
 //!
 //! Cold-path tooling: one format pass per editor request or file, over a
 //! small document — `String` building throughout is the right
 //! choice.
 
 use crate::syntax::SyntaxNode;
-use crate::syntax::grammar::parse;
+use crate::syntax::grammar::{Entry, parse, parse_entry};
 use crate::{Diagnostic, LexError, Parse, Severity, SyntaxKind, Token, tokenize};
 
 /// One indentation level: four spaces.
@@ -58,6 +63,12 @@ struct Tok {
     angle: bool,
     /// It is a closure's opening `|`.
     open_pipe: bool,
+    /// It separates items: a `;`, or a `,` between `match` arms.
+    separator: bool,
+    /// It is the first token of an item of a block, a body or the file.
+    starts_item: bool,
+    /// It is in a `where` clause, whose line breaks keep to the item's indent.
+    in_where: bool,
     /// It ends an attribute (`@after(Movement)`), whose line break starts a
     /// new item rather than continuing one.
     ends_attribute: bool,
@@ -99,6 +110,11 @@ impl Tok {
             )
     }
 
+    /// A record update's `..`, which hugs the record after it.
+    fn is_spread(&self) -> bool {
+        self.kind == SyntaxKind::DotDot && self.parent == SyntaxKind::RecordExprField
+    }
+
     /// An import's item braces, which hug their items.
     fn hugs_inside(&self) -> bool {
         self.parent == SyntaxKind::ImportDecl
@@ -135,6 +151,23 @@ pub fn try_format(source: &str) -> Result<String, Vec<Diagnostic>> {
     }
 }
 
+/// Formats `source` as the `entry` production, when it parses: a fragment of
+/// members, node members or statements as well as a whole file.
+pub fn try_format_entry(source: &str, entry: Entry) -> Result<String, Vec<Diagnostic>> {
+    let lexed = tokenize(source);
+    let parsed = parse_entry(&lexed, source, entry);
+    let errors: Vec<Diagnostic> = parsed
+        .diagnostics()
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    if errors.is_empty() {
+        Ok(layout(source, &lexed, &parsed))
+    } else {
+        Err(errors)
+    }
+}
+
 /// The layout pass over a parse of `source`.
 fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
     // A token left open as the last one runs to the end of the source (a raw
@@ -157,7 +190,26 @@ fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
         .map(|t| t.range.start().to_u32())
         .collect();
 
+    // Separators go only where the parse is clean: in a broken one a `;`
+    // may be all that keeps two pieces apart.
+    let clean = parsed.errors.is_empty() && lexed.iter().all(|t| t.error.is_none());
     let root = SyntaxNode::new_root(parsed.root.clone());
+    let mut item_starts: Vec<u32> = root
+        .descendants()
+        .into_iter()
+        .filter(|node| {
+            node.parent()
+                .is_some_and(|parent| ITEM_LISTS.contains(&parent.kind()))
+        })
+        .filter_map(|node| {
+            node.descendants_with_tokens()
+                .into_iter()
+                .filter_map(|e| e.as_token().cloned())
+                .find(|t| !t.kind().is_trivia())
+                .map(|t| t.text_range().start().to_u32())
+        })
+        .collect();
+    item_starts.sort_unstable();
     let mut tokens: Vec<Tok> = Vec::new();
     let mut breaks = 0;
     let mut in_params = false;
@@ -190,6 +242,22 @@ fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
             breaks: std::mem::take(&mut breaks),
             angle: is_generic_angle(kind, parent),
             open_pipe,
+            separator: clean
+                && match kind {
+                    SyntaxKind::Semi => parent != SyntaxKind::ArrayType,
+                    SyntaxKind::Comma => matches!(
+                        parent,
+                        SyntaxKind::MatchExpr | SyntaxKind::MatchStmt | SyntaxKind::ViewMatch
+                    ),
+                    _ => false,
+                },
+            starts_item: item_starts
+                .binary_search(&t.text_range().start().to_u32())
+                .is_ok(),
+            in_where: t
+                .parent()
+                .ancestors()
+                .any(|node| node.kind() == SyntaxKind::WhereClause),
             ends_attribute: t.parent().ancestors().any(|node| {
                 node.kind() == SyntaxKind::Attribute
                     && node.text_range().end() == t.text_range().end()
@@ -205,6 +273,38 @@ fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
     printer.run();
     printer.finish(open_end)
 }
+
+/// The nodes whose children are items, one per line or `;`-separated.
+const ITEM_LISTS: &[SyntaxKind] = &[
+    SyntaxKind::CompilationUnit,
+    SyntaxKind::ViewFragment,
+    SyntaxKind::ComponentEntry,
+    SyntaxKind::MemberFragment,
+    SyntaxKind::NodeMemberFragment,
+    SyntaxKind::BlockFragment,
+    SyntaxKind::ComponentDecl,
+    SyntaxKind::SystemDecl,
+    SyntaxKind::TemplateDecl,
+    SyntaxKind::ShaderDecl,
+    SyntaxKind::TraitDecl,
+    SyntaxKind::ImplDecl,
+    SyntaxKind::RecordDecl,
+    SyntaxKind::EnumDecl,
+    SyntaxKind::VariantPayload,
+    SyntaxKind::StyleDecl,
+    SyntaxKind::StyleWhen,
+    SyntaxKind::ThemeDecl,
+    SyntaxKind::ResourceDecl,
+    SyntaxKind::EffectBody,
+    SyntaxKind::Block,
+    SyntaxKind::StartHandlers,
+    SyntaxKind::ViewBlock,
+    SyntaxKind::NodeBody,
+    SyntaxKind::PartOverride,
+    SyntaxKind::MatchExpr,
+    SyntaxKind::MatchStmt,
+    SyntaxKind::ViewMatch,
+];
 
 /// The index of the `}` closing each `{`, by the `{`'s index.
 fn matching_braces(tokens: &[Tok]) -> Vec<Option<usize>> {
@@ -313,7 +413,8 @@ fn spaced(prev: &Tok, next: &Tok) -> bool {
         }
         _ => {}
     }
-    if next.is_range() || prev.is_range() || prev.is_prefix() || prev.open_pipe {
+    if next.is_range() || prev.is_range() || prev.is_spread() || prev.is_prefix() || prev.open_pipe
+    {
         return false;
     }
     !matches!(
@@ -376,6 +477,12 @@ impl<'t> Printer<'t> {
     fn token(&mut self, i: usize) -> usize {
         let tokens = self.tokens;
         let t = &tokens[i];
+        // A separator outside a one-line block becomes the line break after
+        // its item. A `,` inside brackets in an arm is not one.
+        if t.separator && (t.is(SyntaxKind::Semi) || self.open_groups() == 0) {
+            self.pending_newline = true;
+            return i + 1;
+        }
         let prev = self.last.map(|j| &tokens[j]);
         self.place(i, t, prev);
 
@@ -407,7 +514,7 @@ impl<'t> Printer<'t> {
             SyntaxKind::RParen | SyntaxKind::RBracket => {
                 self.groups = self.groups.saturating_sub(1);
             }
-            SyntaxKind::Semi => self.pending_newline = true,
+            SyntaxKind::Semi if t.parent != SyntaxKind::ArrayType => self.pending_newline = true,
             SyntaxKind::Comma
                 if self
                     .frames
@@ -445,10 +552,16 @@ impl<'t> Printer<'t> {
             self.pending_newline = false;
             return;
         }
-        // A token that keeps to the line of the `}` before it.
+        let comment = matches!(
+            t.kind,
+            SyntaxKind::LineComment | SyntaxKind::DocComment | SyntaxKind::BlockComment
+        );
+        // A token that keeps to the line of the `}` before it: one that only
+        // continues what the `}` closed, or, written on its line, any that
+        // does not start an item.
         if prev.is(SyntaxKind::RBrace)
             && !self.ends_line_after(prev)
-            && matches!(
+            && (matches!(
                 t.kind,
                 SyntaxKind::Comma
                     | SyntaxKind::Semi
@@ -458,7 +571,7 @@ impl<'t> Printer<'t> {
                     | SyntaxKind::Question
                     | SyntaxKind::QuestionDot
                     | SyntaxKind::ElseKw
-            )
+            ) || (t.breaks == 0 && !t.starts_item && !comment && !t.is(SyntaxKind::RBrace)))
         {
             self.pending_newline = false;
             if spaced(prev, t) {
@@ -484,7 +597,12 @@ impl<'t> Printer<'t> {
             t.kind,
             SyntaxKind::Comma | SyntaxKind::Semi | SyntaxKind::Colon
         );
-        if t.breaks > 0 && prev.ends_attribute {
+        // A `where` and the body after its clause keep to the item's indent.
+        let item_level = t.starts_item
+            || comment
+            || t.is(SyntaxKind::WhereKw)
+            || (t.is(SyntaxKind::LBrace) && prev.in_where);
+        if t.breaks > 0 && (prev.ends_attribute || (item_level && self.open_groups() == 0)) {
             self.line(t, prev, 0);
             return;
         }
@@ -545,11 +663,24 @@ impl<'t> Printer<'t> {
             return None;
         }
         let mut out = String::new();
+        let mut prev: Option<&Tok> = None;
         for (k, t) in span.iter().enumerate() {
-            if k > 0 && spaced(&span[k - 1], t) {
+            // A separator with no item after it in the block goes.
+            let dangling = t.separator
+                && span[k + 1..]
+                    .iter()
+                    .find(|next| !next.separator)
+                    .is_none_or(|next| next.is(SyntaxKind::RBrace));
+            if dangling {
+                continue;
+            }
+            if let Some(prev) = prev
+                && spaced(prev, t)
+            {
                 out.push(' ');
             }
             out.push_str(&t.text);
+            prev = Some(t);
         }
         Some(out)
     }
@@ -602,7 +733,7 @@ mod tests {
 
     #[test]
     fn format_preserves_semantic_tokens() {
-        let src = "component   Counter{state  count=0;computed doubled=count;}";
+        let src = "component   Counter{state  count=0;computed doubled=count}";
         let formatted = format(src);
         assert_eq!(
             semantic_kinds(src),
@@ -612,24 +743,44 @@ mod tests {
     }
 
     #[test]
+    fn separators_a_line_break_replaces_are_dropped() {
+        assert_eq!(
+            format("fn f() {\nlet a = 1; let b = 2;\nlet c = 3;\n}"),
+            "fn f() {\n    let a = 1\n    let b = 2\n    let c = 3\n}\n"
+        );
+        assert_eq!(
+            format("record P { x: I64; y: I64; }"),
+            "record P { x: I64; y: I64 }\n"
+        );
+        assert_eq!(
+            format("fn f() { match x {\n1 => a,\n_ => b,\n} }"),
+            "fn f() {\n    match x {\n        1 => a\n        _ => b\n    }\n}\n"
+        );
+        // An array type's `;` is no separator.
+        assert_eq!(format("type A = [I32; 4];"), "type A = [I32; 4]\n");
+        // A broken source keeps every token.
+        assert_eq!(format("fn f() { a; ) }"), "fn f() { a;) }\n");
+    }
+
+    #[test]
     fn format_indents_blocks_and_terminates_bindings() {
         assert_eq!(
             format("component C{\nstate count=0;}"),
-            "component C {\n    state count = 0;\n}\n"
+            "component C {\n    state count = 0\n}\n"
         );
         // A block written on one line stays on one line.
         assert_eq!(
             format("component C{state count=0;}"),
-            "component C { state count = 0; }\n"
+            "component C { state count = 0 }\n"
         );
     }
 
     #[test]
     fn a_long_one_line_block_expands() {
-        let long = format!("Text {{ text: \"{}\"; }}", "x".repeat(MAX_WIDTH));
+        let long = format!("fn f() {{ let x = \"{}\"; }}", "x".repeat(MAX_WIDTH));
         assert_eq!(
             format(&long),
-            format!("Text {{\n    text: \"{}\";\n}}\n", "x".repeat(MAX_WIDTH))
+            format!("fn f() {{\n    let x = \"{}\"\n}}\n", "x".repeat(MAX_WIDTH))
         );
     }
 
@@ -639,7 +790,7 @@ mod tests {
         let formatted = format(src);
         assert_eq!(
             formatted,
-            "component C {\n    // a leading note\n    state count = 0; // a trailing note\n}\n"
+            "component C {\n    // a leading note\n    state count = 0 // a trailing note\n}\n"
         );
         assert_eq!(format(&formatted), formatted);
     }
@@ -650,7 +801,7 @@ mod tests {
             "component A {}\n\n\n\ncomponent B {\n\n    state a = 1;\n\n\n    state b = 2;\n\n}\n";
         assert_eq!(
             format(src),
-            "component A {}\n\ncomponent B {\n    state a = 1;\n\n    state b = 2;\n}\n"
+            "component A {}\n\ncomponent B {\n    state a = 1\n\n    state b = 2\n}\n"
         );
     }
 
@@ -659,18 +810,18 @@ mod tests {
         let src = "record P{x : Int ; y : Int ;}";
         let formatted = format(src);
         assert!(formatted.contains("x: Int;"), "got:\n{formatted}");
-        assert!(formatted.contains("y: Int;"), "got:\n{formatted}");
+        assert!(formatted.contains("y: Int }"), "got:\n{formatted}");
     }
 
     #[test]
     fn format_hugs_generic_angles_but_spaces_comparisons() {
         assert_eq!(
             format("type M = List < List < I64 > >;"),
-            "type M = List<List<I64>>;\n"
+            "type M = List<List<I64>>\n"
         );
         assert_eq!(
             format("fn f < T > (x: Map<String,T>) -> Bool {\n return a<b; }"),
-            "fn f<T>(x: Map<String, T>) -> Bool {\n    return a < b;\n}\n"
+            "fn f<T>(x: Map<String, T>) -> Bool {\n    return a < b\n}\n"
         );
     }
 
@@ -678,11 +829,11 @@ mod tests {
     fn closing_braces_keep_what_follows_them() {
         assert_eq!(
             format("fn f() {\nif a {\nx;\n}\nelse {\ny;\n}\n}"),
-            "fn f() {\n    if a {\n        x;\n    } else {\n        y;\n    }\n}\n"
+            "fn f() {\n    if a {\n        x\n    } else {\n        y\n    }\n}\n"
         );
         assert_eq!(
             format("fn f() {\nmatch x {\n1 => {\na;\n}\n, _ => {\nb;\n}\n,\n}\n}"),
-            "fn f() {\n    match x {\n        1 => {\n            a;\n        },\n        _ => {\n            b;\n        },\n    }\n}\n"
+            "fn f() {\n    match x {\n        1 => {\n            a\n        }\n        _ => {\n            b\n        }\n    }\n}\n"
         );
     }
 
@@ -690,23 +841,23 @@ mod tests {
     fn operators_brackets_and_imports_space_as_written_in_the_spec() {
         assert_eq!(
             format("import viso::game::{ A,B };"),
-            "import viso::game::{A, B};\n"
+            "import viso::game::{A, B}\n"
         );
         assert_eq!(
             format("fn f() { let xs = [1]; let y = -x + !b; let r = 0..n; let g = |a, b| a; }"),
-            "fn f() { let xs = [1]; let y = -x + !b; let r = 0..n; let g = |a, b| a; }\n"
+            "fn f() { let xs = [1]; let y = -x + !b; let r = 0..n; let g = |a, b| a }\n"
         );
         assert_eq!(
             format("fn f() { g (x)[0]; h(( a )); }"),
-            "fn f() { g(x)[0]; h((a)); }\n"
+            "fn f() { g(x)[0]; h((a)) }\n"
         );
     }
 
     #[test]
     fn a_line_break_inside_a_statement_is_kept() {
         assert_eq!(
-            format("fn f() {\nlet x = call(a,\nb);\nlet y = a\n+ b;\n}"),
-            "fn f() {\n    let x = call(a,\n        b);\n    let y = a\n        + b;\n}\n"
+            format("fn f() {\nlet x = call(a,\nb);\nlet y = a\n* b;\n}"),
+            "fn f() {\n    let x = call(a,\n        b)\n    let y = a\n        * b\n}\n"
         );
     }
 

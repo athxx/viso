@@ -313,14 +313,14 @@ emit changed(count)
 规则：
 
 - 一个条目在语法上已经完整时，其后的换行结束它；不完整时（如 `let x =`、`if ready` 之后），换行是空白；
-- 同一行写多个条目时，相邻条目之间必须写 `;`；缺少时报 `E1404`；
+- 同一行写多个条目时，相邻条目之间必须写 `;`，以 `}` 结束的条目之后除外（`Row { Button {} Button {} }`）；缺少时报 `E1404`；
 - `( )` 与 `[ ]` 之内的换行一律是空白；Record 表达式的 `{ }`（§65）同样如此；
 - 下一行的首个 Token 是以下之一时，它延续上一行而不结束条目：`.` `?.` `?` `::` `,` `:` `=` 与全部复合赋值、`->` `=>` `as` `else`，以及不能作为前缀的二元操作符 `* / % << >> & | ^ == != < <= > >= && || ?? .. ..=`；
 - 行首的 `+` `-`（前缀 Unary）、`(`、`[` 与 `{` 开始新的条目；因此 Call、Index、Record 表达式与 Node Body 的开括号必须与其前面的部分写在同一行；以 `|`/`||` 开头的 Closure 若要独占一行作为表达式，须加括号；
 - `return`、`break` 后紧跟换行时没有值；
 - `match` 的 Arm 以换行或 `,` 分隔；
 - `;` 只是分隔符，不改变含义：行尾或 `}` 前的 `;` 是多余的，Formatter 删除它们；
-- 以 Block 结束的构造（`action a() {}`、`if c {}`、`Text {}`、`on click {}`）与其他条目相同，换行结束它们。
+- 以 Block 结束的构造（`action a() {}`、`if c {}`、`Text {}`、`on click {}`）在其 `}` 处结束。
 
 Block 的最后一个条目若是 Expression，它是 Block 的值（Tail Expression，§61），仅在函数、Action、Task、闭包和普通表达式 Block 中出现；期望类型为 `Unit` 时（未写返回类型的 `fn`、Action、Event Handler、期望 `Unit` 返回的 Closure）其值被丢弃。`view` 和 Node Body 不存在 Tail Expression。
 
@@ -385,9 +385,9 @@ decimal_digits  = decimal_digit,
 示例：
 
 ```viso
-let host_default = 1.25;       // F64
-let shader_value: F32 = 1.25; // 字面量直接定型为 F32
-let explicit = 1.25f32;
+let host_default = 1.25 // F64
+let shader_value: F32 = 1.25 // 字面量直接定型为 F32
+let explicit = 1.25f32
 ```
 
 ---
@@ -468,8 +468,8 @@ r##"arbitrary # count"##
 示例：
 
 ```viso
-const BRAND: Color = #2ecc71;
-const OVERLAY: Color = #00000080;
+const BRAND: Color = #2ecc71
+const OVERLAY: Color = #00000080
 ```
 
 ---
@@ -559,27 +559,27 @@ unit_suffix       = "dp" | "px" | "sp" | "em"
 允许：
 
 ```viso
-let total: Duration = 1s + 250ms;
-let half_turn: Angle = 180deg;
-let inset: Dp = 16dp * 2;
-let content_width = 100% - 2 * inset;   // MixedLength
-let icon_size = 1.25em;                 // Em
+let total: Duration = 1s + 250ms
+let half_turn: Angle = 180deg
+let inset: Dp = 16dp * 2
+let content_width = 100% - 2 * inset // MixedLength
+let icon_size = 1.25em // Em
 ```
 
 禁止：
 
 ```viso
-let x: Dp = 10dp + 5px;        // E2106：MixedLength 不能在布局前定型为 Dp
-let y = 1s + 2dp;              // E2103：跨量纲
-let z = (100% - 8dp) < 200dp;  // E2107：MixedLength 在布局前不可比较
-let w = 10dp < 5px;            // E2103：不同单位比较
+let x: Dp = 10dp + 5px // E2106：MixedLength 不能在布局前定型为 Dp
+let y = 1s + 2dp // E2103：跨量纲
+let z = (100% - 8dp) < 200dp // E2107：MixedLength 在布局前不可比较
+let w = 10dp < 5px // E2103：不同单位比较
 ```
 
 `MixedLength` 的求值被推迟到 Layout 阶段；它不是运行时隐式单位转换。需要具体单位值时，必须在具有 Layout Context 的受控 API 中显式解析：
 
 ```viso
-let px: Px = layout.dp_to_px(10dp);
-let resolved: Dp = layout.resolve_length(node_ref, 100% - 16dp);
+let px: Px = layout.dp_to_px(10dp)
+let resolved: Dp = layout.resolve_length(node_ref, 100% - 16dp)
 ```
 
 View、Computed、Style 和 Theme 中不存在 Layout Context，因此禁止调用上述 API。
@@ -664,19 +664,19 @@ MixedLength = dp·1dp + px·1px + sp·1sp + em·1em + pct·1%
 
 ```viso
 Column {
-    padding: 1em;
+    padding: 1em
 
     Text {
-        text: title;
-        font_size: 1.25em;
+        text: title
+        font_size: 1.25em
     }
 
     Row {
-        width: 100% - 32dp;
-        gap: 0.5em;
+        width: 100% - 32dp
+        gap: 0.5em
 
         Icon {
-            size: 1.2em;
+            size: 1.2em
         }
     }
 }
@@ -835,8 +835,8 @@ import_item      = identifier, [ "as", identifier ] ;
 示例：
 
 ```viso
-import viso::widgets::{Window, Column, Text, Button};
-import app::model::User as AppUser;
+import viso::widgets::{Window, Column, Text, Button}
+import app::model::User as AppUser
 ```
 
 规则：
@@ -1082,13 +1082,13 @@ record_field       = { attribute }, label, ":", type,
 ```viso
 @derive(Eq, Hash, StableKey)
 export record TodoId {
-    value: U64;
+    value: U64
 }
 
 export record User {
-    id: TodoId;
-    name: String;
-    avatar: Option<Url> = None;
+    id: TodoId
+    name: String
+    avatar: Option<Url> = None
 }
 ```
 
@@ -1116,18 +1116,18 @@ record_variant     = "{", { record_field }, "}" ;
 
 ```viso
 export enum LoadState<T, E> {
-    idle;
-    loading;
-    ready(T);
-    failed(E);
+    idle
+    loading
+    ready(T)
+    failed(E)
 }
 ```
 
 Enum Variant 使用 Path：
 
 ```viso
-let pending = LoadState::loading;
-let done = LoadState::ready(user);
+let pending = LoadState::loading
+let done = LoadState::ready(user)
 ```
 
 `@derive(..)` 的每个实参是一个裸 Trait 名：编译器提供的 `Eq`、`Hash`、`StableKey`、`Snapshot`，或某个 Native Library 在 Schema 中声明的 Derive（如 `viso::game` 的 `InputAction`，无需 Import）；其他名字或非裸名实参报 `E2001`（附最近候选）。Schema Derive 只用于所有 Variant 都不带 Payload 的 Enum，否则报 `E2201`。
@@ -1160,11 +1160,11 @@ associated_const_decl = "const", identifier, ":", type, item_end ;
 
 ```viso
 export trait FixedUpdate {
-    action fixed_update(frame: FixedFrame);
+    action fixed_update(frame: FixedFrame)
 }
 
 export trait StableKey: Eq + Hash + Clone {
-    fn stable_hash(self) -> U64;
+    fn stable_hash(self) -> U64
 }
 ```
 
@@ -1256,7 +1256,7 @@ capability_path     = module_path ;
 ```viso
 task fetch_user(id: UserId) -> Result<User, NetError>
     requires { network::http } {
-    return await Api::user(id);
+    return await Api::user(id)
 }
 ```
 
@@ -1298,7 +1298,7 @@ function_signature  = "fn", identifier,
 ```viso
 @const
 fn clamp01(value: F32) -> F32 {
-    return value.clamp(0.0f32, 1.0f32);
+    return value.clamp(0.0f32, 1.0f32)
 }
 ```
 
@@ -1342,8 +1342,8 @@ Action 是同步、有界、可修改状态的行为单元。
 
 ```viso
 action increment(by: I64 = 1) {
-    count += by;
-    emit changed(count);
+    count += by
+    emit changed(count)
 }
 ```
 
@@ -1388,8 +1388,8 @@ Task 是可挂起的结构化异步计算。
 ```viso
 task load_profile(id: UserId) -> Result<UserProfile, LoadError>
     requires { network::http } {
-    let response = await Api::profile(id);
-    return response.decode();
+    let response = await Api::profile(id)
+    return response.decode()
 }
 ```
 
@@ -1435,10 +1435,10 @@ EffectRun::mount_and_change
 
 ```viso
 effect persist_theme when (theme_name) run EffectRun::change {
-    Settings::set_string("theme", theme_name);
+    Settings::set_string("theme", theme_name)
 
     cleanup {
-        Settings::flush();
+        Settings::flush()
     }
 }
 ```
@@ -1485,14 +1485,14 @@ policy_list          = "[",
 
 ```viso
 resource search_result: Resource<List<SearchItem>, SearchError> {
-    load = SearchApi::query(query);
-    key = query;
+    load = SearchApi::query(query)
+    key = query
     policy = [
         ResourcePolicy::debounce(250ms),
         ResourcePolicy::keep_latest,
         ResourcePolicy::cache_for(5min),
-    ];
-    scope = ResourceScope::component;
+    ]
+    scope = ResourceScope::component
 }
 ```
 
@@ -1515,11 +1515,11 @@ resource search_result: Resource<List<SearchItem>, SearchError> {
 
 ```viso
 match search_result.state {
-    ResourceState::idle => { EmptyView {} },
-    ResourceState::loading => { Spinner {} },
-    ResourceState::ready(items) => { Results { items: items; } },
-    ResourceState::error(error) => { ErrorView { error: error; } },
-    ResourceState::reloading(items) => { Results { items: items; dimmed: true; } },
+    ResourceState::idle => { EmptyView {} }
+    ResourceState::loading => { Spinner {} }
+    ResourceState::ready(items) => { Results { items: items } }
+    ResourceState::error(error) => { ErrorView { error: error } }
+    ResourceState::reloading(items) => { Results { items: items; dimmed: true } }
 }
 ```
 
@@ -1546,20 +1546,20 @@ start_handler        = "policy", "=", policy_list, item_end
 
 ```viso
 start save_profile(profile) as save_job {
-    policy = [TaskPolicy::keep_latest];
+    policy = [TaskPolicy::keep_latest]
 
-    success(saved) {
-        current = saved;
+    success (saved) {
+        current = saved
     }
 
-    error(reason) {
-        last_error = Option::Some(reason);
+    error (reason) {
+        last_error = Option::Some(reason)
     }
 
     cancelled {
-        log::debug("save cancelled");
+        log::debug("save cancelled")
     }
-};
+}
 ```
 
 注意：
@@ -1686,16 +1686,16 @@ State Initializer 禁止读取：
 示例：
 
 ```viso
-state min_count: I64 = 0;
-state count: I64 = min_count; // 合法：只读前置 State
-state doubled: I64 = count * 2; // 合法，但通常更适合 computed
+state min_count: I64 = 0
+state count: I64 = min_count // 合法：只读前置 State
+state doubled: I64 = count * 2 // 合法，但通常更适合 computed
 ```
 
 非法：
 
 ```viso
-state count: I64 = minimum; // E2104：读取后置 State
-state minimum: I64 = 0;
+state count: I64 = minimum // E2104：读取后置 State
+state minimum: I64 = 0
 ```
 
 **不存在“只要依赖顺序明确就允许前向引用”的例外。** 如需无关源码顺序的派生依赖，必须使用 `computed`。
@@ -1733,10 +1733,10 @@ computed_decl        = "computed", identifier,
 
 ```viso
 computed subtotal: Money = items.fold(Money::zero(), |sum, item| {
-    return sum + item.price;
-});
+    return sum + item.price
+})
 
-computed label = format("{} items", items.length());
+computed label = format("{} items", items.length())
 ```
 
 ---
@@ -1764,8 +1764,8 @@ event_parameter      = identifier, ":", type ;
 - Event Handler 不能通过返回 Bool 隐式取消事件，必须调用 Event Context 的显式 API。
 
 ```viso
-event changed(value: I64);
-event submitted(text: String, source: SubmitSource);
+event changed(value: I64)
+event submitted(text: String, source: SubmitSource)
 ```
 
 ---
@@ -1941,13 +1941,13 @@ viso = "1"
 网络不是 DSL Library：框架与扩展都不向 `.vs` 提供通用 HTTP。`.vs` 调用应用的领域 Native，URL、鉴权、重试、解码与错误分类在其 Rust 实现中（用 `viso-ext/viso-net`），函数声明 `network.http`，由 `Viso.toml` 授予：
 
 ```viso
-import api::{profile, Profile};
+import api::{profile, Profile}
 
 task load_profile(id: I64) -> String {
     return match await profile(id) {
-        Result::Ok(found) => found.name,
-        Result::Err(why) => why,
-    };
+        Result::Ok(found) => found.name
+        Result::Err(why) => why
+    }
 }
 ```
 
@@ -2060,9 +2060,9 @@ property_path        = label, { ".", label } ;
 
 ```viso
 Text {
-    text: label;
-    layout.width: 120dp;
-    color: theme.colors.foreground;
+    text: label
+    layout.width: 120dp
+    color: theme.colors.foreground
 }
 ```
 
@@ -2109,7 +2109,7 @@ index_selector       = "[", expression, "]" ;
 
 ```viso
 TextInput {
-    bind value <=> draft;
+    bind value <=> draft
 }
 ```
 
@@ -2117,7 +2117,7 @@ TextInput {
 
 ```viso
 Slider {
-    bind value <=> settings.volume using PercentUnitConverter;
+    bind value <=> settings.volume using PercentUnitConverter
 }
 ```
 
@@ -2131,8 +2131,8 @@ Slider {
 
 ```viso
 trait TwoWayConverter<Model, View> {
-    fn to_view(model: Model) -> View;
-    fn to_model(view: View) -> Option<Model>;
+    fn to_view(model: Model) -> View
+    fn to_model(view: View) -> Option<Model>
 }
 ```
 
@@ -2160,14 +2160,14 @@ event_name          = identifier ;
 ```viso
 Button {
     on click {
-        increment();
+        increment()
     }
 }
 
 Canvas {
     on pointer_down(event) {
         if event.button == PointerButton::primary {
-            begin_drag(event.position);
+            begin_drag(event.position)
         }
     }
 }
@@ -2236,7 +2236,7 @@ view_if             = "if", head_expression,
 
 ```viso
 if logged_in preserve "user-panel" {
-    UserPanel { user: user; }
+    UserPanel { user: user }
 } else {
     LoginPanel {}
 }
@@ -2269,7 +2269,7 @@ view_for            = "for", pattern, "in", head_expression,
 ```viso
 for item in items key item.id {
     TodoRow {
-        item: item;
+        item: item
     }
 }
 ```
@@ -2294,7 +2294,7 @@ for item in items key item.id {
 ```ebnf
 view_match          = "match", head_expression, "{",
                       view_match_arm,
-                      { ",", view_match_arm }, [ "," ],
+                      { ( "," | NEWLINE ), view_match_arm }, [ "," ],
                       "}" ;
 
 view_match_arm      = pattern, [ "if", expression ],
@@ -2305,13 +2305,13 @@ view_match_arm      = pattern, [ "if", expression ],
 match user.state {
     UserState::loading => {
         Spinner {}
-    },
+    }
     UserState::ready(user) => {
-        ProfileCard { user: user; }
-    },
+        ProfileCard { user: user }
+    }
     UserState::error(error) => {
-        ErrorView { message: error.message; }
-    },
+        ErrorView { message: error.message }
+    }
 }
 ```
 
@@ -2367,15 +2367,15 @@ selector_unary      = [ "!" ],
 
 ```viso
 export style PrimaryButton for Button {
-    background: theme.colors.primary;
-    foreground: theme.colors.on_primary;
+    background: theme.colors.primary
+    foreground: theme.colors.on_primary
 
     when hover {
-        background: theme.colors.primary_hover;
+        background: theme.colors.primary_hover
     }
 
     when disabled {
-        opacity: 0.5f32;
+        opacity: 0.5f32
     }
 }
 ```
@@ -2395,7 +2395,7 @@ Style 的应用不引入新的特殊语法。目标 Component Schema 可以声�
 
 ```viso
 Button {
-    styles: [PrimaryButton, DenseControl];
+    styles: [PrimaryButton, DenseControl]
 }
 ```
 
@@ -2421,13 +2421,13 @@ export theme AppTheme {
         primary: #4f7cff,
         foreground: #f4f6fb,
         surface: #151923,
-    };
+    }
 
     spacing = SpacingScale {
         small: 4dp,
         medium: 8dp,
         large: 16dp,
-    };
+    }
 }
 ```
 
@@ -2472,9 +2472,9 @@ item_end             = ";" | NEWLINE ;
 ```viso
 fn classify(value: I64) -> String {
     return match value {
-        0 => "zero",
-        _ => "other",
-    };
+        0 => "zero"
+        _ => "other"
+    }
 }
 
 fn square(x: I64) -> I64 {
@@ -2486,7 +2486,7 @@ fn square(x: I64) -> I64 {
 
 ```viso
 fn square(x: I64) -> I64 {
-    return x * x;
+    return x * x
 }
 ```
 
@@ -2649,8 +2649,8 @@ a < b == c;
 必须写成：
 
 ```viso
-0 < x && x < 10;
-a == b && b == c;
+0 < x && x < 10
+a == b && b == c
 ```
 
 ### 63.2 Range
@@ -2711,8 +2711,8 @@ head_expression = expression ;
 因此：
 
 ```viso
-if ready {}                              // 合法
-if (Point { x: 1.0, y: 2.0 }) {}         // 可解析，随后通常因条件不是 Bool 报类型错
+if ready {} // 合法
+if (Point { x: 1.0, y: 2.0 }) {} // 可解析，随后通常因条件不是 Bool 报类型错
 for item in (Query { limit: 10 }.run()) key item.id {}
 ```
 
@@ -2774,7 +2774,7 @@ block_expression    = block ;
 泛型 Record Constructor 必须使用 Turbofish，例如：
 
 ```viso
-Pair::<String, I64> { first: "age", second: 42 }
+Pair::< String, I64 > { first: "age", second: 42 }
 ```
 
 禁止在表达式域写 `Pair<String, I64> { ... }`；尖括号形式只属于 Type Position。
@@ -2845,7 +2845,7 @@ let label = if count == 1 {
     "1 item"
 } else {
     format("{} items", count)
-};
+}
 ```
 
 所有可达分支的 Tail Expression 必须统一为一个类型。
@@ -2859,7 +2859,7 @@ Statement 位置可以使用 §62 的无 `else` If Statement。
 ```ebnf
 match_expression     = "match", head_expression, "{",
                        match_arm,
-                       { ",", match_arm }, [ "," ],
+                       { ( "," | NEWLINE ), match_arm }, [ "," ],
                        "}" ;
 
 match_arm            = pattern,
@@ -2900,15 +2900,15 @@ closure_parameter    = [ "mut" ], pattern,
 示例：
 
 ```viso
-let doubled = items.map(|item| item.value * 2);
+let doubled = items.map(|item| item.value * 2)
 
 let formatter = |value: I64| -> String {
     format("Value: {}", value)
-};
+}
 
 start scheduler.after(250ms, move || {
-    log::info("timer completed");
-});
+    log::info("timer completed")
+})
 ```
 
 ### 69.1 Closure 推断
@@ -3063,9 +3063,9 @@ Or Pattern 的每个分支必须绑定相同名称集合和兼容类型：
 ```viso
 match state {
     LoadState::failed(error) | LoadState::cancelled(error) => {
-        log_error(error);
-    },
-    _ => {},
+        log_error(error)
+    }
+    _ => {}
 }
 ```
 
@@ -3084,9 +3084,9 @@ match state {
 - 借用或 Lens 的生存范围由 HIR 计算，不以字符串名称追踪。
 
 ```viso
-let mut total: I64 = 0;
+let mut total: I64 = 0
 for item in items {
-    total += item.value;
+    total += item.value
 }
 ```
 
@@ -3183,10 +3183,10 @@ Compiler 禁止把无法推断的值回退成 `dynamic`。Viso 1.0 核心没有�
 例：
 
 ```viso
-let a: I32 = 1;       // 字面量直接定型为 I32
-let b: F32 = 1.0;     // 字面量直接定型为 F32
-let c = 1;            // Host 默认 I64
-let d = 1.0;          // Host 默认 F64
+let a: I32 = 1 // 字面量直接定型为 I32
+let b: F32 = 1.0 // 字面量直接定型为 F32
+let c = 1 // Host 默认 I64
+let d = 1.0 // Host 默认 F64
 ```
 
 Literal 定型必须检查范围和精度策略。它不等同于一个已存在的 I64/F64 运行时值被隐式缩窄。
@@ -3223,8 +3223,8 @@ String <-> number
 必须显式：
 
 ```viso
-let x: F32 = value as F32;
-let count: U32 = checked_cast(value)?;
+let x: F32 = value as F32
+let count: U32 = checked_cast(value)?
 ```
 
 `as` 的允许集合由 `Cast` Trait 和 Compiler Builtin 定义。可能丢失范围或精度的 Cast 在 Strict Mode 必须要求 `checked_cast`、`saturating_cast` 或 `truncating_cast`，不能只写 `as`。
@@ -3315,7 +3315,7 @@ T: Clone + Eq + StableKey
 
 ```viso
 export trait StableKey: Eq + Hash + Clone {
-    fn stable_hash(self) -> U64;
+    fn stable_hash(self) -> U64
 }
 ```
 
@@ -3351,7 +3351,7 @@ Map<K,V>
 ```viso
 @derive(Eq, Hash, StableKey)
 record TodoId {
-    value: U64;
+    value: U64
 }
 ```
 
@@ -3869,8 +3869,8 @@ fn positive(old: I64) -> Bool { old > 0 }
 
 ```viso
 component Login {
-    @sensitive state token = "";
-    state user = "";
+    @sensitive state token = ""
+    state user = ""
 }
 ```
 
@@ -4090,28 +4090,28 @@ Backend 不支持动态 Loop 时，Compiler 可以在限制内展开或拒绝，
 
 ```viso
 export shader RoundedRect {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
-    instance radius: F32;
-    instance color: ColorLinear;
+    uniform viewport_size: Vec2F32
+    instance rect_pos: Vec2F32
+    instance rect_size: Vec2F32
+    instance radius: F32
+    instance color: ColorLinear
 
-    varying local_pos: Vec2F32;
+    varying local_pos: Vec2F32
 
-    vertex(vertex_id: U32) -> VertexOutput {
-        let unit = quad_vertex(vertex_id);
-        let position = rect_pos + unit * rect_size;
-        local_pos = unit * rect_size;
+    vertex (vertex_id: U32) -> VertexOutput {
+        let unit = quad_vertex(vertex_id)
+        let position = rect_pos + unit * rect_size
+        local_pos = unit * rect_size
 
         return VertexOutput {
             clip_position: to_clip(position, viewport_size),
-        };
+        }
     }
 
-    fragment() -> Vec4F32 {
-        let distance = rounded_rect_sdf(local_pos, rect_size, radius);
-        let alpha = smoothstep(1.0f32, 0.0f32, distance);
-        return color.to_vec4() * alpha;
+    fragment () -> Vec4F32 {
+        let distance = rounded_rect_sdf(local_pos, rect_size, radius)
+        let alpha = smoothstep(1.0f32, 0.0f32, distance)
+        return color.to_vec4() * alpha
     }
 }
 ```
@@ -4146,25 +4146,25 @@ vertex(vertex_id: U32) -> VertexOutput {
 Host 侧，Shader 名同时是其参数的 Record 类型：字段是声明的 Instance 成员，按声明顺序，`F32 I32 U32` 取同名 Host 标量，`Vec2F32`/`Vec3F32` 取 `viso::math` 的同名值类型，`ColorLinear` 取 `Color`（编码时由 sRGB 转为线性）；字段没有默认值，Record 表达式须给出全部参数（`E2103`），未知字段与 Builtin 报 `E2001`。叶子 Widget `ShaderView` 以 `shader` 属性取这样一个值，用该 Shader 绘制自己的盒子；`shader` 的值不是 Shader 参数报 `E2103`。`shader` 只脏 `PAINT`：参数变化原地改写 Instance，不重新测量或布局；`ShaderView` 没有固有尺寸，盒子由布局属性给出。
 
 ```viso
-import viso::math::Vec2F32;
+import viso::math::Vec2F32
 
 shader Ripple {
-    uniform viewport_size: Vec2F32;
-    instance rect_pos: Vec2F32;
-    instance rect_size: Vec2F32;
-    instance tint: ColorLinear;
-    instance rings: F32;
-    instance center: Vec2F32;
+    uniform viewport_size: Vec2F32
+    instance rect_pos: Vec2F32
+    instance rect_size: Vec2F32
+    instance tint: ColorLinear
+    instance rings: F32
+    instance center: Vec2F32
     // vertex / fragment 同上例
 }
 
 export component Card {
-    state rings: F32 = 8.0;
+    state rings: F32 = 8.0
     view {
         ShaderView {
-            shader: Ripple { tint: #3366ff, rings: rings, center: Vec2F32::new(0.5, 0.5) };
-            width: 120dp;
-            height: 80dp;
+            shader: Ripple { tint: #3366ff, rings: rings, center: Vec2F32::new(0.5, 0.5) }
+            width: 120dp
+            height: 80dp
         }
     }
 }
@@ -4309,6 +4309,13 @@ Label
     ::= IDENT | STRICT_KEYWORD
 ```
 
+条目（声明、成员、语句、`match` 分支）以 `ItemEnd` 结束。`NEWLINE` 不是 Token：它指条目最后一个 Token 与下一个 Token 之间的 Trivia 含换行，且二者不在 `( )`、`[ ]`、Record 字面量或 Import 列表的 `{ }` 内；下一行以续行 Token 开头时不结束条目（§14）。以 `}` 结尾的条目、紧随其后的 `}` 与 `END_OF_FILE` 同样结束条目。
+
+```ebnf
+ItemEnd
+    ::= ";" | NEWLINE
+```
+
 Trivia 不进入普通 Production，但保留在 Lossless CST。
 
 ---
@@ -4329,7 +4336,7 @@ ModulePath
     ::= IDENT ( "::" Label )*
 
 ImportDecl
-    ::= "import" ModulePath ImportSuffix? ";"
+    ::= "import" ModulePath ImportSuffix? ItemEnd
 
 ImportSuffix
     ::= "as" IDENT
@@ -4468,14 +4475,14 @@ RecordDecl
         "{" RecordField* "}"
 
 RecordField
-    ::= Attribute* Label ":" Type ( "=" ConstExpression )? ";"
+    ::= Attribute* Label ":" Type ( "=" ConstExpression )? ItemEnd
 
 EnumDecl
     ::= "enum" IDENT GenericParams? ImplementsClause? WhereClause?
         "{" EnumVariant* "}"
 
 EnumVariant
-    ::= Attribute* Label VariantPayload? ";"
+    ::= Attribute* Label VariantPayload? ItemEnd
 
 VariantPayload
     ::= "(" TypeList? ")"
@@ -4487,17 +4494,17 @@ TraitDecl
 
 TraitMember
     ::= Attribute*
-        ( FunctionSignature ( ";" | Block )
-        | ActionSignature ( ";" | Block )
-        | TaskSignature ( ";" | Block )
+        ( FunctionSignature ( ItemEnd | Block )
+        | ActionSignature ( ItemEnd | Block )
+        | TaskSignature ( ItemEnd | Block )
         | AssociatedTypeDecl
         | AssociatedConstDecl )
 
 AssociatedTypeDecl
-    ::= "type" IDENT ( ":" TraitBounds )? ";"
+    ::= "type" IDENT ( ":" TraitBounds )? ItemEnd
 
 AssociatedConstDecl
-    ::= "const" IDENT ":" Type ";"
+    ::= "const" IDENT ":" Type ItemEnd
 
 ImplDecl
     ::= "impl" GenericParams? ImplTarget WhereClause?
@@ -4516,16 +4523,16 @@ ImplMember
         | AssociatedConstImpl )
 
 AssociatedTypeImpl
-    ::= "type" IDENT "=" Type ";"
+    ::= "type" IDENT "=" Type ItemEnd
 
 AssociatedConstImpl
-    ::= "const" IDENT ":" Type "=" ConstExpression ";"
+    ::= "const" IDENT ":" Type "=" ConstExpression ItemEnd
 
 TypeAliasDecl
-    ::= "type" IDENT GenericParams? "=" Type ";"
+    ::= "type" IDENT GenericParams? "=" Type ItemEnd
 
 ConstDecl
-    ::= "const" IDENT ":" Type "=" ConstExpression ";"
+    ::= "const" IDENT ":" Type "=" ConstExpression ItemEnd
 ```
 
 ---
@@ -4631,16 +4638,16 @@ SystemMember
         | NativeMemberDecl )
 
 InputDecl
-    ::= "input" IDENT ":" Type ( "=" DefaultExpression )? ";"
+    ::= "input" IDENT ":" Type ( "=" DefaultExpression )? ItemEnd
 
 StateDecl
-    ::= "state" IDENT ( ":" Type )? "=" InitExpression ";"
+    ::= "state" IDENT ( ":" Type )? "=" InitExpression ItemEnd
 
 ComputedDecl
-    ::= "computed" IDENT ( ":" Type )? "=" Expression ";"
+    ::= "computed" IDENT ( ":" Type )? "=" Expression ItemEnd
 
 EventDecl
-    ::= "event" IDENT "(" EventParameterList ")" ";"
+    ::= "event" IDENT "(" EventParameterList ")" ItemEnd
 
 EventParameterList
     ::= ( EventParameter ( "," EventParameter )* ","? )?
@@ -4649,7 +4656,7 @@ EventParameter
     ::= IDENT ":" Type
 
 SlotDecl
-    ::= "slot" IDENT ":" Type ( "=" SlotDefault )? ";"
+    ::= "slot" IDENT ":" Type ( "=" SlotDefault )? ItemEnd
 
 SlotDefault
     ::= "None" | "empty"
@@ -4681,23 +4688,23 @@ ResourceDecl
         "{" ResourceItem* "}"
 
 ResourceItem
-    ::= "load" "=" Expression ";"
-     |  "key" "=" Expression ";"
-     |  "policy" "=" PolicyList ";"
-     |  "scope" "=" Expression ";"
+    ::= "load" "=" Expression ItemEnd
+     |  "key" "=" Expression ItemEnd
+     |  "policy" "=" PolicyList ItemEnd
+     |  "scope" "=" Expression ItemEnd
 
 PolicyList
     ::= "[" ( Expression ( "," Expression )* ","? )? "]"
 
 StartStatement
     ::= "start" Expression ( "as" IDENT )?
-        StartHandlerBlock? ";"
+        StartHandlerBlock? ItemEnd
 
 StartHandlerBlock
     ::= "{" StartHandler* "}"
 
 StartHandler
-    ::= "policy" "=" PolicyList ";"
+    ::= "policy" "=" PolicyList ItemEnd
      |  "success" "(" Pattern ")" Block
      |  "error" "(" Pattern ")" Block
      |  "cancelled" Block
@@ -4758,14 +4765,14 @@ NodeMember
         | PartReplace )
 
 PropertyBinding
-    ::= PropertyPath ":" Expression ";"
+    ::= PropertyPath ":" Expression ItemEnd
 
 PropertyPath
     ::= Label ( "." Label )*
 
 TwoWayBinding
     ::= "bind" PropertyPath "<=>" AssignablePath
-        ( "using" TypePath )? ";"
+        ( "using" TypePath )? ItemEnd
 
 EventHandler
     ::= "on" EventPhase? IDENT ( "(" Pattern ")" )? Block
@@ -4785,7 +4792,7 @@ ViewFor
 
 ViewMatch
     ::= "match" HeadExpression "{" ViewMatchArm
-        ( "," ViewMatchArm )* ","? "}"
+        ( ( "," | NEWLINE ) ViewMatchArm )* ","? "}"
 
 ViewMatchArm
     ::= Pattern ( "if" Expression )? "=>" ViewBlock
@@ -4818,7 +4825,7 @@ TemplateMember
 
 TemplateUse
     ::= "use" TypePath "(" ArgumentList ")"
-        TemplateUseBody? ";"
+        TemplateUseBody? ItemEnd
 
 TemplateUseBody
     ::= "{" ( FillClause | PartOverride | PartReplace )* "}"
@@ -4853,7 +4860,7 @@ ThemeDecl
         "{" ThemeItem* "}"
 
 ThemeItem
-    ::= IDENT "=" Expression ";"
+    ::= IDENT "=" Expression ItemEnd
 ```
 
 ---
@@ -4876,21 +4883,21 @@ NativeItem
 NativeFunction
     ::= "fn" IDENT GenericParams?
         "(" ParameterList ")" ReturnType
-        WhereClause? CapabilityClause? ";"
+        WhereClause? CapabilityClause? ItemEnd
 
 NativeAction
     ::= "action" IDENT GenericParams?
         "(" ParameterList ")" ReturnType
-        WhereClause? CapabilityClause? ";"
+        WhereClause? CapabilityClause? ItemEnd
 
 NativeTask
     ::= "task" IDENT GenericParams?
         "(" ParameterList ")" ReturnType
-        WhereClause? CapabilityClause? ";"
+        WhereClause? CapabilityClause? ItemEnd
 
 NativeTypeDecl
     ::= "type" IDENT GenericParams?
-        ( ":" TraitBounds )? WhereClause? ";"
+        ( ":" TraitBounds )? WhereClause? ItemEnd
 
 ShaderDecl
     ::= "shader" IDENT GenericParams?
@@ -4908,19 +4915,19 @@ ShaderMember
      |  ComputeEntry
 
 ShaderUniform
-    ::= "uniform" IDENT ":" ShaderType ";"
+    ::= "uniform" IDENT ":" ShaderType ItemEnd
 
 ShaderInstance
-    ::= "instance" IDENT ":" ShaderType ";"
+    ::= "instance" IDENT ":" ShaderType ItemEnd
 
 ShaderVarying
-    ::= "varying" IDENT ":" ShaderType ";"
+    ::= "varying" IDENT ":" ShaderType ItemEnd
 
 ShaderTexture
-    ::= "texture" IDENT ":" TypePath ";"
+    ::= "texture" IDENT ":" TypePath ItemEnd
 
 ShaderSampler
-    ::= "sampler" IDENT ":" TypePath ";"
+    ::= "sampler" IDENT ":" TypePath ItemEnd
 
 ShaderFunction
     ::= "fn" IDENT "(" ShaderParameterList ")"
@@ -4982,10 +4989,10 @@ StatementCore
 
 LetStatement
     ::= "let" "mut"? Pattern ( ":" Type )?
-        "=" Expression ";"
+        "=" Expression ItemEnd
 
 AssignmentStatement
-    ::= AssignablePath AssignmentOperator Expression ";"
+    ::= AssignablePath AssignmentOperator Expression ItemEnd
 
 AssignmentOperator
     ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
@@ -4998,19 +5005,19 @@ AssignableSuffix
     ::= "." Label | "[" Expression "]"
 
 ExpressionStatement
-    ::= Expression ";"
+    ::= Expression ItemEnd
 
 ReturnStatement
-    ::= "return" Expression? ";"
+    ::= "return" Expression? ItemEnd
 
 BreakStatement
-    ::= "break" Expression? ";"
+    ::= "break" Expression? ItemEnd
 
 ContinueStatement
-    ::= "continue" ";"
+    ::= "continue" ItemEnd
 
 EmitStatement
-    ::= "emit" IDENT "(" ArgumentList ")" ";"
+    ::= "emit" IDENT "(" ArgumentList ")" ItemEnd
 
 TransactionStatement
     ::= "transaction" Block
@@ -5020,7 +5027,7 @@ IfStatement
         ( "else" ( IfStatement | Block ) )?
 
 MatchStatement
-    ::= MatchExpression ";"?
+    ::= MatchExpression
 
 WhileStatement
     ::= "while" HeadExpression Block
@@ -5031,6 +5038,8 @@ ForStatement
 LoopStatement
     ::= "loop" Block
 ```
+
+Block 的最后一项若是 `ExpressionStatement`，无论其后是否写 `;`，都作为 `TailExpression`（§61）。
 
 Block Parser 必须优先把 Block Item 起始处未加括号的 `if`/`match` 解析为 `IfStatement`/`MatchStatement`；Tail Expression 若要以二者开头必须使用 Grouped Expression 或显式 `return`。这条优先规则消除 `Statement* TailExpression?` 的 CST 歧义。
 
@@ -5152,7 +5161,7 @@ IfExpression
 
 MatchExpression
     ::= "match" HeadExpression "{" MatchArm
-        ( "," MatchArm )* ","? "}"
+        ( ( "," | NEWLINE ) MatchArm )* ","? "}"
 
 MatchArm
     ::= Pattern ( "if" Expression )?
@@ -5258,6 +5267,7 @@ RecordPatternField
 | Production                  | 章节   | 成熟度     |
 | --------------------------- | ----- | ---------- |
 | `Label`                     | A.1   | `stable`   |
+| `ItemEnd`                   | A.1   | `stable`   |
 | `CompilationUnit`           | A.2   | `stable`   |
 | `ViewFragment`              | A.2   | `stable`   |
 | `ComponentEntry`            | A.2   | `stable`   |

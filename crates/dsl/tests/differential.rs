@@ -62,8 +62,8 @@ fn compiled(source: &str) -> Rc<Module> {
 }
 
 /// Each ```viso example of the documentation that compiles to behavior, with
-/// where it is and the source it compiles as: the block itself, or the block
-/// as a component's members, an action's body or a view's.
+/// where it is and the first source it compiles to behavior as: the block
+/// itself, or the block as a component's members, an action's body or a view's.
 fn doc_modules() -> Vec<(String, String)> {
     let mut out = Vec::new();
     let blocks = doc_blocks::all_blocks();
@@ -75,15 +75,15 @@ fn doc_modules() -> Vec<(String, String)> {
             format!("component Doc {{\n    action doc() {{\n{body}}}\n}}\n"),
             format!("component Doc {{\n    view {{\n{body}}}\n}}\n"),
         ];
-        let Some(source) = forms
-            .into_iter()
-            .find(|source| compile_file(source, &origin()).errors().next().is_none())
-        else {
-            continue;
+        let lowers = |source: &String| {
+            if compile_file(source, &origin()).errors().next().is_some() {
+                return false;
+            }
+            let module = compiled(source);
+            module.chunks().iter().any(|c| c.body.code().is_some())
+                && !module.components().is_empty()
         };
-        let module = compiled(&source);
-        let lowers = module.chunks().iter().any(|c| c.body.code().is_some());
-        if lowers && !module.components().is_empty() {
+        if let Some(source) = forms.into_iter().find(lowers) {
             out.push((format!("{}:{}", block.file, block.line), source));
         }
     }

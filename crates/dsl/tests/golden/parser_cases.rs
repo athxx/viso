@@ -256,7 +256,11 @@ pub const CASES: &[Case] = &[
     expr("ParenPattern", "match v { (a | b) => 0 }", OK),
     // --- View -----------------------------------------------------------
     frag("AnonymousNode", "Text { text: \"hi\"; }", OK),
-    frag("AnonymousNode", "Text { text: \"hi\" }", &["E1404"]),
+    frag(
+        "AnonymousNode",
+        "Text { text: \"hi\" color: c }",
+        &["E1404"],
+    ),
     frag("NamedNode", "node title: Text { text: label; }", OK),
     frag("NamedNode", "node title: { }", &["E1404"]),
     frag(

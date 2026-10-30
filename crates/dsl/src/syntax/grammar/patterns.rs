@@ -154,6 +154,7 @@ fn path_pattern(p: &mut Parser) -> CompletedMarker {
             p.expect(RParen);
         } else {
             p.bump_any(); // `{`
+            p.quiet_lines();
             while !p.at(RBrace) && !p.at_end() {
                 record_pattern_field(p);
                 if !p.eat(Comma) {

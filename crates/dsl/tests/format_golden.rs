@@ -12,16 +12,29 @@ mod cases;
 
 use cases::CASES;
 
-/// The non-trivia leaf tokens of `src` parsed as `entry`, kind and text, in order.
-/// Leaves rather than lexer tokens, so a `>>` the parser splits into two generic
-/// `>` compares equal to the two `>` a formatter may print.
+/// The non-trivia leaf tokens of `src` parsed as `entry`, kind and text, in order,
+/// item separators (a `;`, a `,` between `match` arms) left out since a line
+/// break stands for them. Leaves rather than lexer tokens, so a `>>` the parser
+/// splits into two generic `>` compares equal to the two `>` a formatter may print.
 fn semantic_tokens(src: &str, entry: Entry) -> Vec<(SyntaxKind, String)> {
     let parse = parse_entry(&tokenize(src), src, entry);
     SyntaxNode::new_root(parse.root.clone())
         .descendants_with_tokens()
         .into_iter()
-        .filter_map(|el| el.as_token().map(|t| (t.kind(), t.text())))
-        .filter(|(kind, _)| !kind.is_trivia() && *kind != SyntaxKind::Eof)
+        .filter_map(|el| el.as_token().cloned())
+        .filter(|t| {
+            let parent = t.parent().kind();
+            let separator = match t.kind() {
+                SyntaxKind::Semi => parent != SyntaxKind::ArrayType,
+                SyntaxKind::Comma => matches!(
+                    parent,
+                    SyntaxKind::MatchExpr | SyntaxKind::MatchStmt | SyntaxKind::ViewMatch
+                ),
+                _ => false,
+            };
+            !t.kind().is_trivia() && t.kind() != SyntaxKind::Eof && !separator
+        })
+        .map(|t| (t.kind(), t.text()))
         .collect()
 }
 

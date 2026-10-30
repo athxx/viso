@@ -37,6 +37,7 @@ pub(super) fn view_fragment_items(p: &mut Parser) {
     while !p.at_end() {
         let before = p.cursor();
         view_structure_item(p);
+        p.item_end();
         p.ensure_progress(before);
     }
 }
@@ -51,6 +52,7 @@ fn view_block(p: &mut Parser) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         view_structure_item(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -124,6 +126,7 @@ fn node_body(p: &mut Parser) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         node_member(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -223,7 +226,7 @@ pub(super) fn property_binding(p: &mut Parser) {
     property_path(p);
     p.expect(SyntaxKind::Colon);
     super::expr::expr(p);
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::PropertyBinding);
 }
 
@@ -248,7 +251,7 @@ fn two_way_binding(p: &mut Parser) {
     if p.eat_contextual(SyntaxKind::UsingKw) {
         super::types::type_(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::TwoWayBinding);
 }
 
@@ -386,7 +389,7 @@ fn view_match(p: &mut Parser) {
     p.expect(SyntaxKind::LBrace);
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         view_match_arm(p);
-        if !p.eat(SyntaxKind::Comma) {
+        if !p.eat(SyntaxKind::Comma) && !p.at_line_break() {
             break;
         }
     }
@@ -451,6 +454,6 @@ fn template_use(p: &mut Parser) {
     if p.at(SyntaxKind::LBrace) {
         node_body(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::TemplateUse);
 }

@@ -193,7 +193,7 @@ impl InferCx<'_> {
             return;
         };
         match tail.kind() {
-            SyntaxKind::ExprStmt if !tokens(&tail).iter().any(|t| t.kind() == SyntaxKind::Semi) => {
+            SyntaxKind::ExprStmt => {
                 if let Some(value) = first_child_expr(&tail) {
                     self.carry_into(value.syntax(), carry);
                 }

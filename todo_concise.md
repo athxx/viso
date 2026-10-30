@@ -24,23 +24,26 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C1 — Newline-terminated items (§14)
 
-- [ ] Lexer/token stream: each significant token knows whether a newline precedes it.
-- [ ] Parser: item ends at `;`, a newline after a complete item, `}` or end of input;
+- [x] Lexer/token stream: each significant token knows whether a newline precedes it.
+- [x] Parser: item ends at `;`, a newline after a complete item, `}` or end of input;
       newlines inside `( )`, `[ ]` and record-expression `{ }` are whitespace.
-- [ ] Continuation tokens at line start (`.` `?.` `?` `::` `,` `:` `=`, compound
+- [x] Continuation tokens at line start (`.` `?.` `?` `::` `,` `:` `=`, compound
       assignment, `->` `=>` `as` `else`, infix-only operators); `+ - ( [ {` start a new
       item; `return`/`break` before a newline have no value.
-- [ ] `match` arms separated by newline or `,`.
-- [ ] Tail rule: the last expression item is the block's value whatever follows it;
+- [x] `match` arms separated by newline or `,`.
+- [x] Tail rule: the last expression item is the block's value whatever follows it;
       a `Unit` expected type discards it (HIR).
-- [ ] Missing separator on one line reports `E1404` with a fix inserting `;`.
-- [ ] Coarse parser, incremental reparse and LSP completion work without `;`.
-- [ ] `ui!`/`component!` source text keeps the author's line breaks.
-- [ ] Formatter: drops `;` at line end and before `}`, keeps same-line `;`, drops
-      line-end `,` in `match` arms; format fuzz compares tokens modulo those.
-- [ ] Migrate every `.vs`, inline macro, spec/rationale example (```viso-pending blocks back to ```viso), test source and golden;
-      Appendix A EBNF and its golden; §1.2 and Rationale examples.
-- [ ] Tests: positive/negative parse, continuation table, tail discard, recovery,
+- [x] Missing separator on one line reports `E1404` with a fix inserting `;`.
+- [x] Coarse parser, incremental reparse and LSP completion work without `;`.
+- [x] `ui!`/`component!` source text keeps the author's line breaks.
+- [x] Formatter: one item per line in expanded blocks (`;` and `match`-arm `,`
+      dropped), `;` kept between items of a one-line block, dropped before `}`;
+      separators kept when the parse is broken; format fuzz/golden compare tokens
+      modulo separators.
+- [x] Migrate every `.vs`, inline macro, spec/rationale/design-doc example, golden;
+      Appendix A EBNF (`ItemEnd`) and its golden. Test sources keep `;`, still valid.
+      (The ```viso-pending blocks wait on C3/C5.)
+- [x] Tests: positive/negative parse, continuation table, tail discard, recovery,
       incremental edits across newlines.
 
 ## C2 — String interpolation (§17)

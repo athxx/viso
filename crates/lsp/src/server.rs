@@ -1076,7 +1076,7 @@ mod tests {
                 .get("newText")
                 .and_then(Json::as_str)
                 .unwrap()
-                .contains("    state count = 0;"),
+                .contains("    state count = 0\n}"),
             "formatted text is normalized"
         );
     }

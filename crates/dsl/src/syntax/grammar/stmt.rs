@@ -31,6 +31,7 @@ pub(super) fn block(p: &mut Parser) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         statement(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -85,7 +86,7 @@ fn let_stmt(p: &mut Parser) {
     } else {
         p.error(ParseErrorKind::MissingToken);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::LetStmt);
 }
 
@@ -101,13 +102,10 @@ fn expr_or_assign_stmt(p: &mut Parser) {
         // semantic error caught later, but the shape is still an assignment.
         p.bump_any(); // the assignment operator
         super::expr::expr(p);
-        p.expect(SyntaxKind::Semi);
+        p.eat(SyntaxKind::Semi);
         m.complete(p, SyntaxKind::AssignStmt);
     } else {
-        // The block's last expression may omit its `;`: it is the tail value.
-        if !p.at(SyntaxKind::RBrace) && !p.at_end() {
-            p.expect(SyntaxKind::Semi);
-        }
+        p.eat(SyntaxKind::Semi);
         m.complete(p, SyntaxKind::ExprStmt);
     }
 }
@@ -144,10 +142,10 @@ fn is_assign_op(kind: SyntaxKind) -> bool {
 fn return_stmt(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `return`
-    if super::expr::at_expr_start(p) {
+    if super::expr::at_expr_start(p) && !p.at_line_break() {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ReturnStmt);
 }
 
@@ -155,10 +153,10 @@ fn return_stmt(p: &mut Parser) {
 fn break_stmt(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `break`
-    if super::expr::at_expr_start(p) {
+    if super::expr::at_expr_start(p) && !p.at_line_break() {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::BreakStmt);
 }
 
@@ -166,7 +164,7 @@ fn break_stmt(p: &mut Parser) {
 fn continue_stmt(p: &mut Parser) {
     let m = p.start();
     p.bump_any(); // `continue`
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ContinueStmt);
 }
 
@@ -180,7 +178,7 @@ fn emit_stmt(p: &mut Parser) {
     } else {
         p.error(ParseErrorKind::MissingToken);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::EmitStmt);
 }
 
@@ -207,7 +205,7 @@ fn start_stmt(p: &mut Parser) {
     if p.at(SyntaxKind::LBrace) {
         start_handlers(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::StartStmt);
 }
 
@@ -223,7 +221,7 @@ fn start_handlers(p: &mut Parser) {
             p.bump_as(SyntaxKind::PolicyKw);
             p.bump_any(); // `=`
             super::expr::expr(p);
-            p.expect(SyntaxKind::Semi);
+            p.eat(SyntaxKind::Semi);
             item.complete(p, SyntaxKind::StartPolicy);
         } else if p.at_contextual(SyntaxKind::SuccessKw) && p.nth(1) == SyntaxKind::LParen {
             p.bump_as(SyntaxKind::SuccessKw);
@@ -241,6 +239,7 @@ fn start_handlers(p: &mut Parser) {
             item.abandon(p);
             p.err_and_bump(ParseErrorKind::UnexpectedTokens);
         }
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);

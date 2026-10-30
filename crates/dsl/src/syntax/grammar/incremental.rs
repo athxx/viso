@@ -332,6 +332,35 @@ impl IncrementalParse {
         if old_start + fresh.text_len() != new_end {
             return None;
         }
+        // What ends the unit decides whether the item after it needs a `;`:
+        // its last token, and whether it reported an error.
+        let last = |tokens: &[Token]| {
+            tokens
+                .iter()
+                .rev()
+                .find(|t| !t.kind.is_trivia() && t.kind != SyntaxKind::Eof)
+                .map(|t| t.kind)
+        };
+        let rest = &self.tokens[after..];
+        let next = rest
+            .iter()
+            .position(|t| !t.kind.is_trivia())
+            .map_or(SyntaxKind::Eof, |i| rest[i].kind);
+        let broken = rest
+            .iter()
+            .take_while(|t| t.kind.is_trivia())
+            .any(|t| new_source[shift_range(t.range, delta).as_usize()].contains('\n'));
+        let separated = broken
+            || matches!(
+                next,
+                SyntaxKind::Semi | SyntaxKind::RBrace | SyntaxKind::Eof
+            );
+        if !separated
+            && (last(old_span) != last(&lexed)
+                || record.errors.is_empty() != region_errors.is_empty())
+        {
+            return None;
+        }
 
         let old_errors = record.errors.clone();
         let errors_delta = region_errors.len() as i64 - old_errors.len() as i64;

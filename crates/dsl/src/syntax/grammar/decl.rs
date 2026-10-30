@@ -12,6 +12,7 @@ pub(super) fn compilation_unit(p: &mut Parser) {
     while !p.at_end() {
         let before = p.cursor();
         compilation_unit_item(p);
+        p.item_end();
         p.ensure_progress(before);
     }
 }
@@ -32,6 +33,7 @@ pub(super) fn compilation_unit_item(p: &mut Parser) {
 pub(super) fn component_entry(p: &mut Parser) {
     while p.at(SyntaxKind::ImportKw) {
         import_decl(p);
+        p.item_end();
     }
     attributes(p);
     match p.current() {
@@ -44,6 +46,7 @@ pub(super) fn component_entry(p: &mut Parser) {
         while !p.at_end() {
             let before = p.cursor();
             top_level_decl(p);
+            p.item_end();
             p.ensure_progress(before);
         }
     }
@@ -64,7 +67,9 @@ fn import_decl(p: &mut Parser) {
         }
         SyntaxKind::ColonColon => {
             p.bump_any(); // `::`
-            p.expect(SyntaxKind::LBrace);
+            if p.expect(SyntaxKind::LBrace) {
+                p.quiet_lines();
+            }
             while !p.at(SyntaxKind::RBrace) && !p.at_end() {
                 import_item(p);
                 if !p.eat(SyntaxKind::Comma) {
@@ -75,7 +80,7 @@ fn import_decl(p: &mut Parser) {
         }
         _ => {}
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ImportDecl);
 }
 
@@ -207,6 +212,7 @@ fn member_block(p: &mut Parser, f: fn(&mut Parser)) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         f(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -277,7 +283,7 @@ fn shader_member(p: &mut Parser) {
             name(p);
             p.expect(SyntaxKind::Colon);
             super::types::type_(p);
-            p.expect(SyntaxKind::Semi);
+            p.eat(SyntaxKind::Semi);
             m.complete(p, kind);
         }
         Some(kw @ (SyntaxKind::VertexKw | SyntaxKind::FragmentKw | SyntaxKind::ComputeKw))
@@ -305,7 +311,7 @@ fn input_decl(p: &mut Parser) {
     if p.eat(SyntaxKind::Eq) {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::InputDecl);
 }
 
@@ -324,10 +330,10 @@ fn state_decl(p: &mut Parser) {
     if !eq {
         p.error(ParseErrorKind::MissingToken);
     }
-    if eq || !p.at(SyntaxKind::Semi) {
+    if eq || !p.at_item_end() {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::StateDecl);
 }
 
@@ -376,6 +382,7 @@ fn effect_decl(p: &mut Parser) {
             break;
         }
         super::stmt::statement(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -409,11 +416,12 @@ fn resource_decl(p: &mut Parser) {
                 p.bump_as(kw);
                 p.bump_any(); // `=`
                 super::expr::expr(p);
-                p.expect(SyntaxKind::Semi);
+                p.eat(SyntaxKind::Semi);
                 item.complete(p, kind);
             }
             None => p.err_and_bump(ParseErrorKind::UnexpectedTokens),
         }
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -439,11 +447,12 @@ fn theme_decl(p: &mut Parser) {
             p.bump_any(); // the field name
             p.bump_any(); // `=`
             super::expr::expr(p);
-            p.expect(SyntaxKind::Semi);
+            p.eat(SyntaxKind::Semi);
             item.complete(p, SyntaxKind::ThemeItem);
         } else {
             p.err_and_bump(ParseErrorKind::UnexpectedTokens);
         }
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -478,6 +487,7 @@ fn style_decl(p: &mut Parser) {
             while !p.at(SyntaxKind::RBrace) && !p.at_end() {
                 let before = p.cursor();
                 style_binding(p);
+                p.item_end();
                 p.ensure_progress(before);
             }
             p.expect(SyntaxKind::RBrace);
@@ -485,6 +495,7 @@ fn style_decl(p: &mut Parser) {
         } else {
             style_binding(p);
         }
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -514,10 +525,10 @@ fn computed_decl(p: &mut Parser) {
     if !eq {
         p.error(ParseErrorKind::MissingToken);
     }
-    if eq || !p.at(SyntaxKind::Semi) {
+    if eq || !p.at_item_end() {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ComputedDecl);
 }
 
@@ -534,7 +545,7 @@ fn event_decl(p: &mut Parser) {
         }
     }
     p.expect(SyntaxKind::RParen);
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::EventDecl);
 }
 
@@ -565,7 +576,7 @@ fn slot_decl(p: &mut Parser) {
             p.error(ParseErrorKind::MissingToken);
         }
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::SlotDecl);
 }
 
@@ -582,6 +593,7 @@ fn record_decl(p: &mut Parser) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         record_field(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -598,7 +610,7 @@ fn record_field(p: &mut Parser) {
     if p.eat(SyntaxKind::Eq) {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::RecordField);
 }
 
@@ -615,6 +627,7 @@ fn enum_decl(p: &mut Parser) {
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let before = p.cursor();
         enum_variant(p);
+        p.item_end();
         p.ensure_progress(before);
     }
     p.expect(SyntaxKind::RBrace);
@@ -646,6 +659,7 @@ fn enum_variant(p: &mut Parser) {
             while !p.at(SyntaxKind::RBrace) && !p.at_end() {
                 let before = p.cursor();
                 record_field(p);
+                p.item_end();
                 p.ensure_progress(before);
             }
             p.expect(SyntaxKind::RBrace);
@@ -653,7 +667,7 @@ fn enum_variant(p: &mut Parser) {
         }
         _ => {}
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::EnumVariant);
 }
 
@@ -669,7 +683,7 @@ fn type_alias_decl(p: &mut Parser) {
         p.error(ParseErrorKind::MissingToken);
     }
     super::types::type_(p);
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::TypeAliasDecl);
 }
 
@@ -686,10 +700,10 @@ fn const_decl(p: &mut Parser) {
     if !eq {
         p.error(ParseErrorKind::MissingToken);
     }
-    if eq || !p.at(SyntaxKind::Semi) {
+    if eq || !p.at_item_end() {
         super::expr::expr(p);
     }
-    p.expect(SyntaxKind::Semi);
+    p.eat(SyntaxKind::Semi);
     m.complete(p, SyntaxKind::ConstDecl);
 }
 
@@ -711,7 +725,7 @@ fn fn_like(p: &mut Parser, kind: SyntaxKind, signature: bool) {
     return_type(p);
     where_clause(p);
     capability_clause(p);
-    if !(signature && p.eat(SyntaxKind::Semi)) {
+    if !(signature && (p.eat(SyntaxKind::Semi) || p.at_item_end())) {
         super::stmt::block(p);
     }
     m.complete(p, kind);
@@ -766,7 +780,7 @@ fn assoc_member(p: &mut Parser, in_trait: bool) {
             if p.eat(SyntaxKind::Eq) {
                 super::types::type_(p);
             }
-            p.expect(SyntaxKind::Semi);
+            p.eat(SyntaxKind::Semi);
             m.complete(p, SyntaxKind::AssocTypeDecl);
         }
         SyntaxKind::ConstKw if in_trait => {
@@ -778,7 +792,7 @@ fn assoc_member(p: &mut Parser, in_trait: bool) {
             if p.eat(SyntaxKind::Eq) {
                 super::expr::expr(p);
             }
-            p.expect(SyntaxKind::Semi);
+            p.eat(SyntaxKind::Semi);
             m.complete(p, SyntaxKind::ConstDecl);
         }
         SyntaxKind::ConstKw => const_decl(p),
@@ -820,7 +834,7 @@ fn native_decl(p: &mut Parser) {
         p.error(ParseErrorKind::UnexpectedTokens);
         skip_braced_group(p);
     } else {
-        p.expect(SyntaxKind::Semi);
+        p.eat(SyntaxKind::Semi);
     }
     m.complete(p, SyntaxKind::NativeDecl);
 }
