@@ -393,6 +393,13 @@ mouse+keyboard vs touch input
 
 一次绑定中 §76.1 拓宽与上述提升至多各发生一次（如 `Dp` → `MixedLength` → `Option<MixedLength>`）；提升不适用于函数实参与 `let`。
 
+同一位置上，期望类型是 Enum（或其 `Option`）时，值可以只写 Variant 名：`align: center` 即 `align: Align::center`，`width: fill` 即 `width: Sizing::fill {}`（字段全有默认值的 Record Variant 可省略 `{}`），`font_weight: semibold`、`semantics.role: heading`。简写同样适用于该位置上 `if`/`match` 各分支的 Tail（`justify: if mine { end } else { start }`）。规则：
+
+- 名字是期望 Enum 的 Variant 时取该 Variant；同时也是作用域中的值（Input、State、Computed、局部绑定、Const）时报 `E2002`（歧义，附两种写法的 Fix），不按作用域静默遮蔽；
+- 名字不是期望 Enum 的 Variant 时按普通名字解析；
+- 带 Payload 的 Variant 照常写全路径或简写加 Payload：`width: fill { weight: 2.0 }`；
+- 期望类型未知（函数实参、`let`、Computed 初值）时不简写。
+
 当前实现：本部分的 Schema Enum（`Sizing`、`Track`、`TrackMax`、`AutoRepeat`、`Axis`、`Justify`、`Align`、`GridAlign`、`Alignment2D`、`FontWeight`、`TextOverflow`、`TextAlign`、`LiveRegion`、`Role`）与 Record `Border`、`Shadow`、`AdaptiveColumns` 声明在 Prelude 中，无需 Import；以它们（或其 `Option`、`List`）为类型的 Property 按该类型检查绑定：未知 Variant 是 `E2001`（附最近候选），另一个 Enum 的 Variant 或其他类型的值是 `E2103`，`Head::variant` 的 `Head` 不是任何类型时也是 `E2001`。`Offset`、`Transition` 等其余 Record 类型的 Property 尚不按类型检查。
 
 ### U1.4 明确推迟
@@ -403,7 +410,7 @@ Flex 换行；`space_between`/`space_around`；单子节点 `align_self`；Row B
 
 ## U2. 用户 Component 的 Property 元数据
 
-用户 Component 的公开面由 `input`、`event`、`slot` 组成（§41–§45）。除 `@default`（§45.1）外，本节定义三个标准 Attribute，只附加在 Component 成员声明上，不改变成员语法：
+用户 Component 的公开面由 `input`、`event` 与 View 中的 `slot` 组成（§41–§45）。除 `@primary`（§50.1）外，本节定义三个标准 Attribute，只附加在 Component 成员声明上，不改变成员语法：
 
 | Attribute          | 位置                                          | 作用                           |
 | ------------------ | --------------------------------------------- | ------------------------------ |
@@ -411,9 +418,9 @@ Flex 换行；`space_between`/`space_around`；单子节点 `align_self`；Row B
 | `@styleable`       | `input`                                       | 允许 Style 绑定该 Input         |
 | `@selector`        | `Bool` 类型的 `input`/`state`/`computed`       | 公开为 Style 状态选择器         |
 
-### U2.1 Default Slot
+### U2.1 默认 Slot
 
-Default Slot 由 `@default` 标记，规则见 §45.1；示例见 U13.1 的 `SettingsSection`。裸子节点数量必须满足 Default Slot 基数（`Slot` 恰好一个，`OptionalSlot` 零或一个，`SlotList` 任意），否则 `E3502`。
+Component View 中的 `slot` 是默认 Slot，调用方的裸子节点放在这里，规则见 §45；示例见 U13.1 的 `SettingsSection`。
 
 ### U2.2 `@bindable`：Input 与 Event 配对
 
@@ -514,6 +521,8 @@ export style SelectedChip for Chip {
 | `Fragment` | 零节点分组：子节点直接拼接进父节点 Slot，不接受 Property，不产生 NodeId | — |
 
 叶节点 Widget（`Text`、`Button`、`Image`、`Toggle` 等）未写 `width`/`height` 的轴为 `fit`，按其内容（文字、图片、勾选标记）测量，没有内容时为 `0`；Widget 另有默认的除外（如 `GameViewport` 为 `fill`，`Avatar` 为 40dp，`SegmentedControl` 的文字段宽为 `fill`）。`ui!`/`component!`/`view!`、Hot Reload 与 Release 包按同一规则构建。
+
+View 的根节点（窗口内容）未写 `width`/`height` 的轴为 `fill`，占满窗口；其余容器未写的轴取上表的默认值。因此只有在设计需要固定尺寸、或要求子节点占满父节点（`width: fill`）时才写尺寸，示例不写死叶节点的宽高。
 
 ### U3.2 Sizing
 
@@ -777,7 +786,7 @@ Text {
 
 - 当前实现：上述样式（常量或读取值）随节点的值条目送达其文本请求，热重载就地改写，Release 包与宏路径相同；`line_height` 的 `em`/`%` 读节点解析出的字号。行盒、行数上限、省略号与对齐的算法见 Text Runtime §12.12.1；`Fit` 宽度的文本按其 max-content 宽度测量，被 `max_width` 等上下界或父容器收窄时按盒宽换行或加省略号。未设置 `font_family` 的文本取当前 Theme 的 `typography.family`，切换 Theme 时只有这些文本重新塑形；`FontFamily::named` 暂只查找应用打包的字体；
 - `text` 在 Schema 中标记为 Localizable（U10.3）。
-- `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `format("{}", count)`；对无 `Display` 的类型不给出该 Fix。
+- `String` 文本槽（`text`、`label`、`placeholder` 等）只接受 `String`（或 `Option<String>` 槽的 U1.3 提升），不做隐式 `Display` 转换：`text: count;`（`count: I64`）是 `E2103`，并附 Machine-Applicable Fix `"{count}"`；对无 `Display` 的类型不给出该 Fix。
 
 ### U5.1 图像
 
@@ -1221,7 +1230,7 @@ Text { text: tr("inbox.unread", count: unread); }
 - 复数、性别与数字格式由目录的消息格式决定；`tr` 对 `env.locale` 建立响应式依赖；
 - `tr` 可在 View、Computed、Style、Action 中使用；它读取 Context，因此不能在纯 `fn` 中使用。需要在 `fn` 中选择文案时让 `fn` 返回 `MessageKey`，由 View 调用 `tr`（U13.3）；
 - Schema 把用户可见文本 Property 标记为 Localizable：`Text.text`、`Button.text`、`Toggle.label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 以及各 Widget 的标题文本；
-- 在 Localizable Property 上用字符串拼接或含字面文字的 `format(...)` 构造文本是 `E3705`（警告），应改用带参数的 `tr`，因为语序因语言而异；只含单个占位符的 `format("{}", n)` 不受限；
+- 在 Localizable Property 上用字符串拼接或含字面文字的插值字符串构造文本是 `E3705`（警告），应改用带参数的 `tr`，因为语序因语言而异；只含单个洞的 `"{n}"` 不受限；
 - 纯字面量默认不报错；`viso check --i18n strict` 对 Localizable Property 上的字面量也报告 `E3705`。
 
 当前实现：Widget Schema 把 `Text.text`、`Button.text`、`Toggle`/`CheckBox` 的 `label`、`TextInput.placeholder`、`semantics.label`、`semantics.hint` 标为 Localizable。其值（去掉括号后）是类型为 `String` 的 `+` 拼接，或 `format` 的模板字面量含字面文字或多于一个占位符时，报 `E3705`（警告）；构建配置的 `i18n_strict`（`--i18n strict`）使之成为错误，并对 `String` 字面量同样报告。

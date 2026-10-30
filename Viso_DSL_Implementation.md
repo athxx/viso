@@ -963,7 +963,8 @@ AI 在使用未知 Component/Property/Event 前必须查询 Schema 或依赖已�
 Formatter 必须规范：
 
 - 4 空格缩进；
-- 简单语句分号；
+- 条目以换行结束，删除行尾与 `}` 前多余的 `;`，作者写在同一行、以 `;` 分隔的条目保持一行（§14）；
+- 删除 `match` Arm 行尾的 `,`；
 - Trailing Comma 用于多行列表、参数和 Record；
 - 一个空格围绕二元 Operator；
 - 泛型参数与实参的 `<` `>` 紧贴两侧（`List<List<I64>>`），不按二元 Operator 加空格；

@@ -59,6 +59,21 @@ export component Counter {
 
 规范性的清晰度硬规则与学习分层见规范 §1.2、§1.3。
 
+### 1.2 简洁性修订
+
+一次以真实 authoring 为对象的评估指出，1.0 草案的清晰度规则把书写成本推得过高：每条属性都要分号，`Text { text: "x"; }` 与 `format("{}", x)` 让最常见的两行代码变长，Shader Brush 每次都要重复同一段 Vertex 与三个保留成员，复用机制有 Component、Slot/Fill、Template、Part 四种，与“一个概念一种写法”自相矛盾。修订按“性能、资源、效果、干净、简洁、易用、灵活”的次序取舍，结论如下：
+
+| 问题 | 修订 | 为什么这样选 |
+| ---- | ---- | ------------ |
+| 每条都要 `;` | 换行结束完整条目，同一行多个条目用 `;` 分隔；`( )`、`[ ]` 内换行是空白；行首为二元/后缀 Token 或 `else` 时续行（§14） | 规则只看换行前的条目是否完整与下一行的首 Token，Parser 无需回溯、增量重解析仍以条目为单位；Go、Swift、Kotlin 证明了这种规则对人和工具都可预测。`;` 降为纯分隔符，不再区分“语句”与“Tail”，Unit 上下文丢弃最后一个表达式的值，消除了 Rust 式“多一个分号就改变类型”的陷阱 |
+| `format("{}", x)` | 字符串插值 `"Count: {count}"`，`{{`/`}}` 转义，删除 `format`（§17） | 插值在词法上是独立的 Token 序列，洞内是普通 Expression，编辑器高亮、跳转、补全直接可用；编译期即知模板与洞的类型，生成的代码与 `format` 相同；本地化仍走 `tr`，Localizable Property 上带字面文字的插值照旧报 `E3705` |
+| `Text { text: "x"; }` | 主属性：Widget Schema 或 Component 至多一个 `@primary` 属性，写作 `Text("x")`、`Button("Save") { .. }`，且只能这样写（U2） | 一个节点最常设置的那个值占据最短的位置，Schema 决定哪个是主属性，因此仍是唯一写法；它只是一次单向 Property Binding，失效类别、诊断与热重载都不变 |
+| `align: Align::center`、`width: Sizing::fill {}` | Property 与 Record 字段的期望类型是 Enum 时可写裸 Variant：`align: center`、`width: fill`；与作用域中的值同名时报歧义（U1.3） | 期望类型已知，重复类型名只是噪音；歧义是编译错误而不是静默遮蔽，读者不需要猜 |
+| 示例里写死宽高 | 容器与叶节点默认 `fit`，View 根节点 `fill`，代码与 U3.1 对齐；示例只在设计需要时写尺寸 | `fit` 是唯一不依赖父节点就能预测的默认值；根节点占满窗口符合每个应用的第一需求 |
+| Brush 样板 | `rect_pos`、`rect_size`、`viewport_size`、`time` 成为隐式 Builtin；省略 `vertex` 时使用默认四边形 Vertex，并向 Fragment 提供 `uv` 与 `local`（§100） | 只写 `fragment` 的 Brush 是常态；默认 Vertex 与手写的生成同一段代码，未读取的 Builtin Varying 不分配 Location，资源占用不增加；需要扩展几何时仍可手写 `vertex` |
+| 四种复用机制 | 只保留 Component 与 Slot：删除 `template`（即无 State 的 Component）与 `part`；Slot 在 View 中以 `slot`/`slot name` 声明兼放置，可带默认内容，调用方的裸子节点进入默认 Slot、`name { .. }` 填充具名 Slot（§45、§53） | Template 与 Component 在实现上已是同一机制；Part 的“覆盖内部节点属性”破坏封装，需要定制的值应成为 Input，需要整体替换的子树应成为带默认内容的 Slot；声明即放置去掉了 `SlotOutlet` 和 Cardinality 类型 |
+| 规范 9000 行且混有实现说明 | 拆为语言规范、UI 标准面、Game Profile 与实现文档，章节编号全局唯一（§0） | 语言规范只回答“什么程序合法、它意味着什么”，Widget 清单与编译器内部各有其读者 |
+
 ---
 
 ## 2. 可扩展性与灵活度
@@ -139,7 +154,7 @@ Viso DSL 1.0 对 AI 生成是友好的，但前提是实现下列工具合同，
 ### 3.2 AI 友好的具体设计
 
 - 一个概念尽量只有一种规范写法；
-- 简单语句必须有分号，避免换行敏感；
+- 换行结束完整条目、同一行多个条目用 `;` 分隔，续行由行首 Token 唯一决定（规范 §14），不依赖猜测；
 - 没有 `child` 可选写法；
 - 没有事件处理箭头缩写；
 - 没有 `Float` 模糊别名；

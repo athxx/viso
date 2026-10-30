@@ -1,0 +1,110 @@
+# Viso DSL — concise surface (C0 → C9)
+
+Goal: the authoring surface the 2026-10 evaluation asked for — no line-end semicolons,
+string interpolation, primary properties, enum shorthand, fit sizing that matches the
+spec, brushes that are only a `fragment`, one reuse mechanism (component + slot), a
+readable spec, and a real app of several thousand lines that exercises all of it.
+
+Order: docs first (C0), then one section per commit. Each section migrates every `.vs`
+source, spec example, test and golden it touches in the same commit, so the tree stays
+green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
+
+---
+
+## C0 — Documents
+
+- [x] Split `Viso_DSL_1.0.md` into the language spec, `Viso_DSL_UI.md`, `Viso_DSL_Game.md`
+      and `Viso_DSL_Implementation.md`; section numbers global; doc-example tests read all.
+- [x] Language implementation notes moved out of the language spec, filed by section.
+- [x] Rationale §1.2: the concise-surface decisions and why.
+- [x] Spec prose: §14 newlines and `;`, §21 `item_end`, §61/§62 tails and statements,
+      §17 interpolation, §41/§50.1 primary property, §45/§53 slots and fills,
+      §57/§58 removed, §100 brush builtins and default vertex; UI U1.3 enum shorthand,
+      U2 slots, U3.1 root sizing, U10.3 interpolation and `E3705`; Implementation §140.
+
+## C1 — Newline-terminated items (§14)
+
+- [ ] Lexer/token stream: each significant token knows whether a newline precedes it.
+- [ ] Parser: item ends at `;`, a newline after a complete item, `}` or end of input;
+      newlines inside `( )`, `[ ]` and record-expression `{ }` are whitespace.
+- [ ] Continuation tokens at line start (`.` `?.` `?` `::` `,` `:` `=`, compound
+      assignment, `->` `=>` `as` `else`, infix-only operators); `+ - ( [ {` start a new
+      item; `return`/`break` before a newline have no value.
+- [ ] `match` arms separated by newline or `,`.
+- [ ] Tail rule: the last expression item is the block's value whatever follows it;
+      a `Unit` expected type discards it (HIR).
+- [ ] Missing separator on one line reports `E1404` with a fix inserting `;`.
+- [ ] Coarse parser, incremental reparse and LSP completion work without `;`.
+- [ ] `ui!`/`component!` source text keeps the author's line breaks.
+- [ ] Formatter: drops `;` at line end and before `}`, keeps same-line `;`, drops
+      line-end `,` in `match` arms; format fuzz compares tokens modulo those.
+- [ ] Migrate every `.vs`, inline macro, spec/rationale example (```viso-pending blocks back to ```viso), test source and golden;
+      Appendix A EBNF and its golden; §1.2 and Rationale examples.
+- [ ] Tests: positive/negative parse, continuation table, tail discard, recovery,
+      incremental edits across newlines.
+
+## C2 — String interpolation (§17)
+
+- [ ] Lexer: `StringStart`/`StringMiddle`/`StringEnd` with a delimiter stack; `{{` `}}`;
+      raw strings untouched; highlighter kinds.
+- [ ] Parser/CST/AST: an interpolated string node with literal parts and hole expressions.
+- [ ] HIR: holes typed against `Display` (`E2108` for empty holes and non-`Display`);
+      lowering to the same code `format` produced; constant strings unchanged.
+- [ ] Remove the `format` builtin; `E2108` meaning updated; `E3705` on interpolation.
+- [ ] Literal-only positions (import, attribute, `asset`, `preserve`, `MessageKey`) reject
+      holes with their own codes.
+- [ ] Formatter, LSP (semantic tokens, hover/definition inside holes), hot reload.
+- [ ] Migrate every `format(` use; text-slot fix offers `"{x}"`.
+
+## C3 — Primary property (§50.1)
+
+- [ ] Widget schema `primary` flag: `Text.text`, `Button.text`, `Link.text`,
+      `Image.source`, `Svg.source`, `Video.source`, `Icon.name`.
+- [ ] `@primary input` on user components (at most one, `E3109`).
+- [ ] Grammar: `Type(expr)` with an optional body; a node with neither omits `{}`.
+- [ ] HIR: the argument lowers to the primary binding; no primary → `E3101`; primary
+      written in the body → `E3109` with a machine-applicable fix.
+- [ ] Macros, AOT, hot reload, LSP completion/schema output.
+- [ ] Migrate sources and examples.
+
+## C4 — Enum shorthand (U1.3)
+
+- [ ] Bare variant name where a property or record field expects an enum (through
+      `Option` and `if`/`match` tails); `fill` without `{}`.
+- [ ] Ambiguity with a value in scope → `E2002` with both fixes.
+- [ ] LSP completion offers variants there; migrate sources.
+
+## C5 — Slots and reuse (§45, §53)
+
+- [ ] Grammar: `slot` / `slot name` / `slot name { default }` as view items; `name { .. }`
+      fill in a component node body; remove `slot_decl`, `fill`, `SlotOutlet`, `template`,
+      `use`, `part`, `override part`, `replace part`; keyword tables.
+- [ ] HIR: slots read from the view; default content in the definer's scope; forwarding;
+      `E3003`, `E3501`, `E3502` per §45/§53; drop `E3004`, `E3601`, part codes.
+- [ ] Schema `slots` output; LSP; hot reload identities.
+- [ ] Migrate tests (`templates.rs`, `view_controls.rs`, slot unit tests, goldens).
+
+## C6 — Shader brush builtins (§100)
+
+- [ ] `viewport_size`, `rect_pos`, `rect_size`, `time` implicit; declared ones → `E8107`.
+- [ ] Default vertex when `vertex` is absent; `uv`/`local` varyings only when read.
+- [ ] Layout: builtins first; `BrushLayout` and host record fields follow.
+- [ ] Backends (MSL/WGSL/HLSL/CPU) unchanged output for a hand-written equivalent.
+- [ ] Migrate every shader; update `shader_brush`, `shader_check`, CLI and LSP tests.
+
+## C7 — Sizing defaults (U3.1)
+
+- [ ] Containers default to `fit` as in U3.1; the view root fills the window.
+- [ ] Headless layout checks for root fill and container fit.
+- [ ] Remove hard-coded sizes from examples; screenshot each example.
+
+## C8 — Real-scale app
+
+- [ ] An example app of several thousand lines of `.vs` (navigation, lists, forms,
+      async, resources, i18n, adaptive layout, custom brush, slots) built and run on
+      the desktop host; notes on what was awkward fed back as fixes.
+
+## C9 — Close
+
+- [ ] Appendix C / `docs/diagnostics.md` / CLI goldens current; spec, UI and
+      Implementation docs read through once for stale syntax.

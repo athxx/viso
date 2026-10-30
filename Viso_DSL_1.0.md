@@ -71,7 +71,7 @@ Viso DSL 1.0 采用以下唯一规范规则：
 | `ms` 已定义而 `min`、`sp` 只在例子中出现      | 完整枚举全部单位及量纲规则                                            |
 | State 默认值允许“依赖顺序明确”的前向引用      | State 初始化禁止前向引用；Computed 才允许无环前向依赖                 |
 | 条件分支与列表都使用 `key`                    | 分支缓存使用 `preserve "static-id"`；列表身份使用 `key expression`    |
-| 省略分号依赖换行猜测                          | 简单声明、属性和语句必须以 `;` 结束                                   |
+| 分号与换行的关系依赖猜测                      | 换行结束完整条目，同一行多个条目用 `;` 分隔，续行由行首 Token 决定（§14） |
 | `:=`, `+:`, `<:`, `>:` 等承担多种隐藏语义     | 从核心语言移除；View 属性只保留 `property: expr;`，其余使用明确关键词 |
 
 ### 1.3 学习曲线
@@ -299,28 +299,30 @@ Parser 只在下列位置、以至多 2 个 Token 的 Lookahead 把上下文关�
 
 ---
 
-## 14. 分号规则
+## 14. 换行与分号
 
-简单声明和简单语句必须使用分号：
-
-```viso
-state count = 0;
-count += 1;
-let label = format("Count: {}", count);
-emit changed(count);
-```
-
-以下以 block 结束的构造不使用分号：
+条目（Item）是声明、成员、Property Binding、Event Handler、Statement 与 View 结构项。条目以换行或 `;` 结束：
 
 ```viso
-action increment() {}
-if condition {}
-while condition {}
-Text {}
-on click {}
+state count = 0
+let mut i = 0; let mut j = 1
+count += 1
+emit changed(count)
 ```
 
-Block 的最后一个无分号表达式是 Tail Expression，仅允许在函数、Action、Task、闭包和普通表达式 Block 中出现；`view` 和 Node Body 不存在 Tail Expression。
+规则：
+
+- 一个条目在语法上已经完整时，其后的换行结束它；不完整时（如 `let x =`、`if ready` 之后），换行是空白；
+- 同一行写多个条目时，相邻条目之间必须写 `;`；缺少时报 `E1404`；
+- `( )` 与 `[ ]` 之内的换行一律是空白；Record 表达式的 `{ }`（§65）同样如此；
+- 下一行的首个 Token 是以下之一时，它延续上一行而不结束条目：`.` `?.` `?` `::` `,` `:` `=` 与全部复合赋值、`->` `=>` `as` `else`，以及不能作为前缀的二元操作符 `* / % << >> & | ^ == != < <= > >= && || ?? .. ..=`；
+- 行首的 `+` `-`（前缀 Unary）、`(`、`[` 与 `{` 开始新的条目；因此 Call、Index、Record 表达式与 Node Body 的开括号必须与其前面的部分写在同一行；以 `|`/`||` 开头的 Closure 若要独占一行作为表达式，须加括号；
+- `return`、`break` 后紧跟换行时没有值；
+- `match` 的 Arm 以换行或 `,` 分隔；
+- `;` 只是分隔符，不改变含义：行尾或 `}` 前的 `;` 是多余的，Formatter 删除它们；
+- 以 Block 结束的构造（`action a() {}`、`if c {}`、`Text {}`、`on click {}`）与其他条目相同，换行结束它们。
+
+Block 的最后一个条目若是 Expression，它是 Block 的值（Tail Expression，§61），仅在函数、Action、Task、闭包和普通表达式 Block 中出现；期望类型为 `Unit` 时（未写返回类型的 `fn`、Action、Event Handler、期望 `Unit` 返回的 Closure）其值被丢弃。`view` 和 Node Body 不存在 Tail Expression。
 
 ---
 
@@ -398,6 +400,8 @@ let explicit = 1.25f32;
 "hello"
 "line 1\nline 2"
 "unicode: \u{1F680}"
+"Count: {count}"
+"{user.name} 有 {items.length()} 项，{{未读}}"
 ```
 
 支持的 Escape：
@@ -431,10 +435,12 @@ r##"arbitrary # count"##
 - `\u{H...H}` 包含 1 至 6 个十六进制数字，值不得超过 U+10FFFF，也不得位于代理项范围 U+D800 至 U+DFFF；
 - Raw String 的 `#` 数量范围是 0 至 255，结束分隔符必须使用完全相同数量的 `#`；
 - `Char` 在 Escape 解码后必须恰好包含一个 Unicode Scalar Value；
-- 不提供隐式字符串插值；
-- 插值统一使用 `format(...)` 或类型安全模板 API；
-- `format(template, args...)` 是编译器内建，返回 `String`：`template` 必须是字符串字面量；`{}` 按顺序消费位置实参，`{name}` 消费同名 Named Argument（`name: expr`）；`{{`、`}}` 表示字面大括号；占位符与实参在编译期逐一匹配，每个实参类型必须实现 `Display`；不支持格式说明符，也不读取 Locale；不匹配时报 `E2108`；
+- 普通字符串可以插值：`{` 与 `}` 之间是一个 Expression（洞），求值后按 `Display` 转为文本拼入；`{{`、`}}` 表示字面大括号；Raw String 与字符字面量不插值；
+- 洞内是完整的 Expression，可以含括号、调用、`if`/`match` 与嵌套字符串；洞不能为空，洞内不能换行（字符串本身不跨行）；
+- 洞的类型必须实现 `Display`，否则报 `E2108`；不支持格式说明符，也不读取 Locale；数字、日期的本地化格式与语序由 `tr`（U10.3）负责；
 - 内建 `Display` 的类型：`Bool`、全部整数与浮点类型、`Char`、`String`、单位长度 `Dp`/`Px`/`Sp`/`Em`/`Percent`、`Duration`、`Angle`、`Frequency`；`Bytes`、`Unit`、`Color`、`MixedLength`、Tuple、`List`、`Map`、`Option`、`Result`、Range、函数、`Handle`/`NodeRef` 以及 Record 与 Enum 均无 `Display`，须显式映射为文本（例如 `match` 到 `tr(...)`），否则报 `E2108`；
+- 含洞的字符串是 `String` 类型的 Expression，不是字面量：要求字符串字面量的位置（Import 路径、Attribute 实参、`asset(..)`、`preserve`、`MessageKey`）写含洞的字符串时，按该位置的规则报错；
+- 词法上，含洞的字符串是 `StringStart`（`"…{`）、洞内的 Token、零个或多个 `StringMiddle`（`}…{`）与 `StringEnd`（`}…"`）组成的序列，不含洞的字符串仍是一个 `StringLiteral`；Lexer 以定界符栈找到洞的 `}`：洞内配对的 `{ }` 不结束洞；
 - 未闭合字符串是词法错误，但 Streaming Editor Parser 可以产生 `MissingToken` CST Node 继续诊断。
 
 ---
@@ -764,6 +770,8 @@ A | B      选择
 
 词法分析完成后，Parser 消费 Token，而不是字符流。严格关键字在 Lexer 阶段产生独立 Keyword Token；上下文关键字词法化为 identifier，由 Parser 按 §12.4 识别。
 
+条目末尾的 `item_end` 是 `;` 或结束条目的换行（§14）；`NEWLINE` 不是 Token，由 Parser 依据换行前的条目是否完整与下一行的首 Token 判定。
+
 ---
 
 # 第五部分：完整语法——模块和声明
@@ -813,7 +821,7 @@ module_path      = identifier, { "::", label } ;
 ## 23. Import
 
 ```ebnf
-import_decl      = "import", import_source, ";" ;
+import_decl      = "import", import_source, item_end ;
 
 import_source    = module_path, [ import_suffix ] ;
 
@@ -1066,7 +1074,7 @@ record_decl        = "record", identifier,
                      "{", { record_field }, "}" ;
 
 record_field       = { attribute }, label, ":", type,
-                     [ "=", const_expression ], ";" ;
+                     [ "=", const_expression ], item_end ;
 ```
 
 示例：
@@ -1098,7 +1106,7 @@ enum_decl          = "enum", identifier,
                      "{", { enum_variant }, "}" ;
 
 enum_variant       = { attribute }, label,
-                     [ tuple_variant | record_variant ], ";" ;
+                     [ tuple_variant | record_variant ], item_end ;
 
 tuple_variant      = "(", [ type_list ], ")" ;
 record_variant     = "{", { record_field }, "}" ;
@@ -1136,16 +1144,16 @@ trait_decl         = "trait", identifier,
                      "{", { trait_member }, "}" ;
 
 trait_member       = { attribute },
-                     ( function_signature, ( ";" | block )
-                     | action_signature, ( ";" | block )
-                     | task_signature, ( ";" | block )
+                     ( function_signature, ( item_end | block )
+                     | action_signature, ( item_end | block )
+                     | task_signature, ( item_end | block )
                      | associated_type_decl
                      | associated_const_decl ) ;
 
 associated_type_decl = "type", identifier,
-                       [ ":", trait_bounds ], ";" ;
+                       [ ":", trait_bounds ], item_end ;
 
-associated_const_decl = "const", identifier, ":", type, ";" ;
+associated_const_decl = "const", identifier, ":", type, item_end ;
 ```
 
 示例：
@@ -1180,9 +1188,9 @@ impl_member        = { attribute },
                      | associated_type_impl
                      | associated_const_impl ) ;
 
-associated_type_impl = "type", identifier, "=", type, ";" ;
+associated_type_impl = "type", identifier, "=", type, item_end ;
 associated_const_impl = "const", identifier, ":", type,
-                        "=", const_expression, ";" ;
+                        "=", const_expression, item_end ;
 ```
 
 `impl Trait for Type` 是 Trait 实现；`impl Type` 是 Inherent Impl。
@@ -1196,10 +1204,10 @@ Trait 中带 Block 的 Callable 是默认实现：Impl 未给出同名成员时�
 ```ebnf
 type_alias_decl    = "type", identifier,
                      [ generic_params ],
-                     "=", type, ";" ;
+                     "=", type, item_end ;
 
 const_decl         = "const", identifier, ":", type,
-                     "=", const_expression, ";" ;
+                     "=", const_expression, item_end ;
 ```
 
 `const_expression` 是可在编译期求值的 Expression 子集，禁止 I/O、State、Native Action、Task、Resource 和非确定性调用。
@@ -1462,10 +1470,10 @@ effect persist_theme when (theme_name) run EffectRun::change {
 resource_decl        = "resource", identifier, ":", type,
                        "{", { resource_item }, "}" ;
 
-resource_item        = "load", "=", expression, ";"
-                     | "key", "=", expression, ";"
-                     | "policy", "=", policy_list, ";"
-                     | "scope", "=", expression, ";" ;
+resource_item        = "load", "=", expression, item_end
+                     | "key", "=", expression, item_end
+                     | "policy", "=", policy_list, item_end
+                     | "scope", "=", expression, item_end ;
 
 policy_list          = "[",
                        [ expression,
@@ -1524,11 +1532,11 @@ Resource 状态是标准 Enum；语法没有硬编码上述成员。
 ```ebnf
 start_statement      = "start", call_expression,
                        [ "as", identifier ],
-                       [ start_handler_block ], ";" ;
+                       [ start_handler_block ], item_end ;
 
 start_handler_block  = "{", { start_handler }, "}" ;
 
-start_handler        = "policy", "=", policy_list, ";"
+start_handler        = "policy", "=", policy_list, item_end
                      | "success", "(", pattern, ")", block
                      | "error", "(", pattern, ")", block
                      | "cancelled", block ;
@@ -1580,7 +1588,6 @@ component_member     = { attribute },
                        | state_decl
                        | computed_decl
                        | event_decl
-                       | slot_decl
                        | const_decl
                        | function_decl
                        | action_decl
@@ -1595,8 +1602,8 @@ component_member     = { attribute },
 
 - 一个非抽象 Component 必须恰好声明一个 `view`；
 - Component 不支持类继承；
-- 复用通过 Composition、Trait、Template、Style 和 Slot 完成；
-- `input`、`event` 和 `slot` 构成公开 UI 接口；
+- 复用通过 Composition、Trait、Style 和 Slot 完成；
+- `input`、`event` 和 View 中的 `slot`（§45）构成公开 UI 接口；
 - `state`、`computed`、内部 Action 和节点默认是私有实现；
 - Trait 可以要求 Component 实现 Action 或 Fn；
 - 成员 `const` 是只在所属 Component 内可见的常量，规则同顶层 `const`（§32）；
@@ -1623,7 +1630,7 @@ View 中类型为同一文件内 Component 的 Node 是该 Component 的一个�
 
 ```ebnf
 input_decl           = "input", identifier, ":", type,
-                       [ "=", default_expression ], ";" ;
+                       [ "=", default_expression ], item_end ;
 ```
 
 规则：
@@ -1634,11 +1641,12 @@ input_decl           = "input", identifier, ":", type,
 - Input 默认值禁止读取另一个 Input、State、Computed、Native Runtime 或当前时间；
 - 没有默认值的 Input 是必填属性；
 - Input 类型是 Component Schema 的一部分，改变类型属于接口兼容性变更；
-- Input 变化会根据实际依赖使 Computed、View、Effect 或 Resource Key 失效。
+- Input 变化会根据实际依赖使 Computed、View、Effect 或 Resource Key 失效；
+- 至多一个 Input 可以标 `@primary`，调用方以 `Card("Profile")` 的形式给出它（§50.1）；多于一个报 `E3109`。
 
-```viso
-input title: String;
-input enabled: Bool = true;
+```viso-pending
+@primary input title: String
+input enabled: Bool = true
 ```
 
 ---
@@ -1648,7 +1656,7 @@ input enabled: Bool = true;
 ```ebnf
 state_decl           = "state", identifier,
                        [ ":", type ],
-                       "=", init_expression, ";" ;
+                       "=", init_expression, item_end ;
 ```
 
 ### 42.1 唯一初始化规则
@@ -1708,7 +1716,7 @@ state minimum: I64 = 0;
 ```ebnf
 computed_decl        = "computed", identifier,
                        [ ":", type ],
-                       "=", expression, ";" ;
+                       "=", expression, item_end ;
 ```
 
 规则：
@@ -1737,7 +1745,7 @@ computed label = format("{} items", items.length());
 
 ```ebnf
 event_decl           = "event", identifier,
-                       "(", event_parameter_list, ")", ";" ;
+                       "(", event_parameter_list, ")", item_end ;
 
 event_parameter_list = [ event_parameter,
                          { ",", event_parameter }, [ "," ] ] ;
@@ -1764,42 +1772,25 @@ event submitted(text: String, source: SubmitSource);
 
 ## 45. Slot
 
+Slot 是 Component View 中留给调用方的位置。它在 View 中声明兼放置，不在成员区重复声明：
+
 ```ebnf
-slot_decl            = "slot", identifier, ":", type,
-                       [ "=", slot_default ], ";" ;
-
-slot_default         = "None" | "empty" ;
+slot_item            = "slot", [ identifier ], [ view_block ] ;
 ```
 
-标准 Slot 类型：
+- `slot` 是默认 Slot：调用方 Node Body 中的裸结构项（`view_structure_item`，§48）按源码顺序放在这里；
+- `slot name` 是具名 Slot：调用方以 `name { .. }`（§53）填充；
+- 带 `view_block` 的 Slot 有默认内容：调用方未填充时显示它，填充时整体替换它；默认内容属于定义方，读取定义方的 Input、State 与 Computed；
+- 一个 Slot 放置零个或多个节点，在 Cardinality 检查中（§45.1）计为零个或多个；
+- 同一个 Slot 名在一个 View 中至多出现一次，`slot` 至多一个，否则报 `E3502`；Slot 位于 `for` 内（会把调用方节点放置多次）同样报 `E3502`；Slot 可以位于 `if`/`match` 分支中，分支挂载时挂载调用方的节点；
+- Slot 名属于 Component 的公开接口（Schema 的 `slots`），默认 Slot 的 Schema 名为 `children`；
+- `slot` 只出现在 Component 的 View 中；Component 可以把自己的 Slot 转放进子 Component 的 Slot：`Card { slot }`、`Card { header { slot title } }`。
 
-```text
-Slot<Node>          恰好一个节点
-OptionalSlot<Node>  零个或一个节点
-SlotList<Node>      零个或多个节点
-```
+### 45.1 Cardinality
 
-`empty` 是上下文关键字（§12.3），只在 `slot_default` 位置解释。
+Native Widget 的 Slot 由其 Native Schema 声明 Cardinality：容器（`Row`、`Column`、`Flex`、`Grid`、`Stack`、`Absolute`、`Fragment` 等）的默认 Slot 接受零个或多个节点，`Scroll` 的默认 Slot 至多一个节点，叶子 Widget（`Text`、`Button`、`TextInput` 等）没有 Slot。
 
-Slot 类型只能是以上三种，其他类型报 `E2103`。`Slot<Node>` 必须由调用方填充，不能声明默认值（写 `= None`/`= empty` 报 `E3502`）；调用方未填充 `Slot<Node>` 同样报 `E3502`。Native Widget 的 Slot 由其 Native Schema 声明：容器（`Row`、`Column`、`Flex`、`Grid`、`Stack`、`Absolute`、`Fragment` 等）有 Default Slot `children: SlotList<Node>`，`Scroll` 有 Default Slot `content: OptionalSlot<Node>`，叶子 Widget（`Text`、`Button`、`TextInput` 等）没有 Slot。
-
-```viso
-@default slot content: Slot<Node>;
-slot leading: OptionalSlot<Node> = None;
-slot actions: SlotList<Node> = empty;
-```
-
-调用方使用 `fill`，而不是把 Slot 名当动态属性。
-
-### 45.1 Default Slot
-
-- 一个 Component 或 Template 至多一个 Slot 标记 `@default`，多于一个报 `E3004`；
-- 调用方 Node Body 中不在 `fill` 内的结构项（`view_structure_item`，§48）按源码顺序进入 Default Slot，其结果必须满足该 Slot 的 Cardinality；
-- 目标 Component 没有 Default Slot 时，出现裸结构项报 `E3003`；
-- 同一 Node Body 同时出现裸结构项与 `fill <default_slot>` 报 `E3502`；
-- `fill` 的名字不是目标声明的 Slot 报 `E3501`；同一 Node Body 对 `Slot`/`OptionalSlot` 多次 `fill` 报 `E3502`，对 `SlotList` 多次 `fill` 按源码顺序拼接；
-- Cardinality 按结构项可能产生的节点数区间静态检查，区间内每个取值都必须满足 Slot 类型：普通节点计 1；`Fragment` 计其子项之和；`SlotOutlet` 计被转发 Slot 类型的区间；`if` 取各分支区间的并（无 `else` 时含 0）；`match` 取各分支区间的并；`for` 计零个或多个；
-- `@default` 只改变调用方的书写方式，不改变 Slot 类型与 Schema 名称。
+Cardinality 按结构项可能产生的节点数区间静态检查，区间内每个取值都必须被目标 Slot 接受：普通节点计 1；`Fragment` 计其子项之和；`slot` 计零个或多个；`if` 取各分支区间的并（无 `else` 时含 0）；`match` 取各分支区间的并；`for` 计零个或多个。不被接受时报 `E3502`。
 
 ---
 
@@ -1858,26 +1849,26 @@ native_function      = "fn", identifier,
                        "(", parameter_list, ")",
                        return_type,
                        [ where_clause ],
-                       [ capability_clause ], ";" ;
+                       [ capability_clause ], item_end ;
 
 native_action        = "action", identifier,
                        [ generic_params ],
                        "(", parameter_list, ")",
                        return_type,
                        [ where_clause ],
-                       [ capability_clause ], ";" ;
+                       [ capability_clause ], item_end ;
 
 native_task          = "task", identifier,
                        [ generic_params ],
                        "(", parameter_list, ")",
                        return_type,
                        [ where_clause ],
-                       [ capability_clause ], ";" ;
+                       [ capability_clause ], item_end ;
 
 native_type_decl     = "type", identifier,
                        [ generic_params ],
                        [ ":", trait_bounds ],
-                       [ where_clause ], ";" ;
+                       [ where_clause ], item_end ;
 ```
 
 静态区分：
@@ -1974,19 +1965,18 @@ view_block           = "{", { view_structure_item }, "}" ;
 view_structure_item  = { attribute },
                        ( named_node
                        | anonymous_node
-                       | part_node
+                       | slot_item
                        | view_if
                        | view_for
-                       | view_match
-                       | template_use ) ;
+                       | view_match ) ;
 ```
 
 规则：
 
 - 每个 Component 必须有且仅有一个 View；
-- `view_block` 只包含结构项；Property Binding、`bind`、`on`、`fill`、`override part` 与 `replace part` 只出现在 Node Body（§49）；
-- View 根 `view_block` 必须生成恰好一个根 Node；其他 `view_block`（`fill`、分支、`for` Body、Match Arm）的 Cardinality 由所在 Slot 决定（§53）；
-- 多个根节点必须显式包裹 `Fragment`。`Fragment` 是标准 Component，只有 `@default slot children: SlotList<Node>`，不产生自身 Layout/Paint 节点，子节点直接参与父节点布局；
+- `view_block` 只包含结构项；Property Binding、`bind`、`on` 与 Slot 填充只出现在 Node Body（§49）；
+- View 根 `view_block` 必须生成恰好一个根 Node；其他 `view_block`（Slot 填充与默认内容、分支、`for` Body、Match Arm）的 Cardinality 由所在 Slot 决定（§45.1）；
+- 多个根节点必须显式包裹 `Fragment`。`Fragment` 是标准 Component，只有一个默认 Slot，不产生自身 Layout/Paint 节点，子节点直接参与父节点布局；
 - View 是纯执行域；
 - View 中禁止普通 `let`、赋值、`return`、`emit`、`start`、I/O 和 Native Action；
 - View 可以读取 Input、State、Computed、Resource State 和当前 typed `env`；
@@ -1999,39 +1989,38 @@ view_structure_item  = { attribute },
 ## 49. 子节点语法：删除 `child`
 
 ```ebnf
-named_node           = "node", identifier, ":", component_type,
-                       node_body ;
+named_node           = "node", identifier, ":", node_head ;
 
-anonymous_node       = component_type, node_body ;
+anonymous_node       = node_head ;
+
+node_head            = component_type, [ primary_argument ], [ node_body ] ;
+
+primary_argument     = "(", expression, ")" ;
 
 component_type       = type_path ;
 
-node_body            = "{", { node_member }, "}" ;
+node_body            = "{", [ node_member, { item_end, node_member } ], [ ";" ], "}" ;
 
 node_member          = { attribute },
                        ( property_binding
                        | two_way_binding
                        | event_handler
-                       | fill_clause
+                       | slot_fill
                        | named_node
                        | anonymous_node
-                       | part_node
+                       | slot_item
                        | view_if
                        | view_for
-                       | view_match
-                       | template_use
-                       | part_override
-                       | part_replace ) ;
+                       | view_match ) ;
 ```
 
 唯一规则：
 
-```viso
+```viso-pending
 node root: Window {
     Column {
-        Text {
-            text: "Hello";
-        }
+        Text("Hello")
+        Divider
     }
 }
 ```
@@ -2039,7 +2028,7 @@ node root: Window {
 解释：
 
 - `node root: Window` 创建具有显式局部名称和稳定身份种子的节点；
-- `Column` 和 `Text` 是匿名子节点；
+- `Column`、`Text` 和 `Divider` 是匿名子节点；没有 Property 与子项的节点省略 `{}`；
 - 语言不存在 `child Column {}`；
 - `child` 是保留的迁移错误词，出现时诊断 `E3001`；
 - 匿名节点仍具有编译器生成的 Structural Node ID，但源码插入兄弟节点可能改变它；
@@ -2062,7 +2051,7 @@ node root: Window {
 ## 50. Property Binding
 
 ```ebnf
-property_binding     = property_path, ":", expression, ";" ;
+property_binding     = property_path, ":", expression, item_end ;
 
 property_path        = label, { ".", label } ;
 ```
@@ -2086,7 +2075,25 @@ Text {
 - Property Schema 必须声明 `invalidates` Dirty Class 集合（§87）；
 - Binding 依赖变化时只触发所需失效；
 - 同一 Property 在同一 Node Body 中绑定多次是错误；
-- Style 与显式 Property 的优先级在 §59 定义。
+- Style 与显式 Property 的优先级在 §59 定义；
+- 期望类型是 Enum 时，右侧可以只写 Variant 名（`align: center`、`width: fill`），规则见 U1.3。
+
+### 50.1 主属性
+
+Widget Schema 或用户 Component 至多把一个单向 Property 标为主属性（Component 中写作 `@primary input text: String`）。主属性写在节点类型之后的括号中：
+
+```viso-pending
+Text("Hello")
+Text(label) { color: theme.colors.muted }
+Button("Save") { on click { save() } }
+Image(asset("logo.png"))
+```
+
+- `T(expr)` 与在 Node Body 中写主属性的 Property Binding 语义相同：单向 Reactive Binding，失效类别、诊断与 Hot Reload 身份不变；
+- 主属性只能这样写：在 Node Body 中以 `name: expr` 绑定主属性报 `E3109`（附改写为括号形式的 Fix）；
+- 没有主属性的类型写括号实参报 `E3101`；
+- 主属性不能是 Two-way Property，也不是 Event；
+- 标准 Widget 的主属性：`Text.text`、`Button.text`、`Link.text`、`Image.source`、`Svg.source`、`Video.source`、`Icon.name`（以 `viso::widgets` Schema 的 `primary` 标记为准）。
 
 ---
 
@@ -2094,7 +2101,7 @@ Text {
 
 ```ebnf
 two_way_binding     = "bind", property_path, "<=>", assignable_path,
-                      [ "using", type_path ], ";" ;
+                      [ "using", type_path ], item_end ;
 
 assignable_path      = identifier, { ".", label | index_selector } ;
 index_selector       = "[", expression, "]" ;
@@ -2191,35 +2198,30 @@ Canvas {
 
 ---
 
-## 53. Fill Slot
+## 53. 填充 Slot
 
 ```ebnf
-fill_clause          = "fill", identifier, view_block ;
+slot_fill            = identifier, view_block ;
 ```
 
-```viso
+```viso-pending
 Dialog {
-    title: "Delete item";
-
-    fill content {
-        Text { text: "This cannot be undone."; }
-    }
-
-    fill actions {
-        Button { text: "Cancel"; }
-        Button { text: "Delete"; }
+    title: "Delete item"
+    Text("This cannot be undone.")
+    actions {
+        Button("Cancel")
+        Button("Delete")
     }
 }
 ```
 
 规则：
 
-- Slot 名必须存在于目标 Component Schema；
-- `Slot<Node>` 必须恰好生成一个节点；
-- `OptionalSlot<Node>` 生成零或一个节点；
-- `SlotList<Node>` 可生成任意数量节点；
-- 不在 `fill` 内的裸结构项进入 Default Slot（§45.1）；
-- 同一个 Single Slot 重复 `fill` 是错误。
+- 放置用户 Component 的 Node Body 中，`identifier { .. }` 在该名字是目标的具名 Slot 时填充该 Slot；Slot 名是 `snake_case`，节点类型是 `UpperCamelCase`，二者不会混淆；名字不是目标的 Slot 也不是可见的类型时报 `E3501`；
+- 不在填充内的裸结构项进入默认 Slot；目标没有默认 Slot 时报 `E3003`；
+- 同一 Node Body 对同一具名 Slot 填充两次报 `E3502`；
+- 填充的 View Block 属于调用方：读取调用方的 State，Handler 在调用方的执行域中运行；
+- Native Widget 只有默认 Slot。
 
 ---
 
@@ -2333,93 +2335,9 @@ match user.state {
 
 ---
 
-## 57. Part
+## 57.–58.（已删除）
 
-```ebnf
-part_node           = "part", identifier, ":", component_type,
-                      node_body ;
-
-part_override       = "override", "part", identifier,
-                      "{", { property_binding
-                            | two_way_binding
-                            | event_handler }, "}" ;
-
-part_replace        = "replace", "part", identifier,
-                      view_block ;
-```
-
-语义：
-
-- `part` 是 Template 或 Component 明确暴露的可定制内部节点；
-- 普通 `node` 不可被外部 Override；
-- `override part` 只能覆盖 Schema 标记为可覆盖的 Property/Event Binding；
-- `replace part` 替换整个 Part 子树，必须满足 Part Contract；
-- Part 名属于公开 Schema；
-- `override` 与 `replace` 是不同 AST Node，不存在隐式合并；
-- Runtime Hot Reload 使用 Part Stable ID 迁移状态。
-
----
-
-## 58. Template
-
-```ebnf
-template_decl       = "template", identifier,
-                      [ generic_params ],
-                      "(", parameter_list, ")",
-                      [ where_clause ],
-                      "{", template_member, { template_member }, "}" ;
-
-template_member     = slot_decl | const_decl | function_decl | view_decl ;
-
-template_use        = "use", type_path,
-                      "(", argument_list, ")",
-                      [ template_use_body ], ";" ;
-
-template_use_body   = "{", { fill_clause
-                            | part_override
-                            | part_replace }, "}" ;
-```
-
-示例：
-
-```viso
-export template TitledCard(title: String) {
-    slot content: Slot<Node>;
-
-    view {
-        Column {
-            part heading: Text { text: title; }
-            SlotOutlet { slot: content; }
-        }
-    }
-}
-```
-
-调用：
-
-```viso
-use TitledCard("Profile") {
-    override part heading {
-        color: theme.colors.accent;
-    }
-
-    fill content {
-        ProfileBody { user: user; }
-    }
-};
-```
-
-规则：
-
-- Template 没有 State、Effect、Task 或 Resource；
-- Template 是编译期 UI IR 生成器；
-- Template 参数按值传递；
-- `use` 是 View Item，但语法上以 `;` 结束以区分调用式结构；
-- Template 展开后保留 Source Origin，诊断可同时指向定义与调用点；
-- Template 递归必须有可证明的有限展开，否则编译错误；
-- 实现可以延迟 Template 实例化，但语义等价于 Typed IR 展开。
-
-在 Template 定义内部，调用方 Slot 通过标准 `SlotOutlet` Component 放入结构。`SlotOutlet` 只有一个 Property `slot`，其值是当前 Template/Component 声明的 Slot 名；它就地展开调用方为该 Slot 提供的节点，未提供时展开为 Slot 默认值（`None`/`empty` 为零个节点）。`SlotOutlet` 只能出现在声明该 Slot 的 Template/Component 的 View 中，每个 Slot 至多一个 `SlotOutlet`。`fill` 只允许出现在 Template/Component 的调用方，不能用于定义 Slot Outlet。缺少 `slot`、其值不是单个标识符、或不是当前 Component 声明的 Slot 报 `E3501`；同一 Slot 的第二个 `SlotOutlet`，或位于 `for` 内（会把调用方节点放置多次）的 `SlotOutlet` 报 `E3502`。
+`part` 与 `template` 已从语言中删除：Template 即没有 State 的 Component，直接写 `component`；需要调用方定制的内部值应成为 Input，需要整体替换的子树应成为带默认内容的 Slot（§45）。
 
 ---
 
@@ -2492,7 +2410,7 @@ theme_decl          = "theme", identifier,
                       [ ":", type_path ],
                       "{", { theme_item }, "}" ;
 
-theme_item          = identifier, "=", expression, ";" ;
+theme_item          = identifier, "=", expression, item_end ;
 ```
 
 Theme Item 只给出 `Theme` 字段的值；Theme 用到的命名常量写成模块级 `const`（Item 表达式可以读取），不在 Theme 内另设 `const` 作用域。
@@ -2532,21 +2450,23 @@ Expression 中的 `theme` 是普通 identifier，由名称解析绑定到隐式�
 ## 61. Block 与 Tail Expression
 
 ```ebnf
-block                = "{", { statement }, [ tail_expression ], "}" ;
+block                = "{", [ statement, { item_end, statement } ], [ ";" ], "}" ;
 
-tail_expression      = expression ;
+item_end             = ";" | NEWLINE ;
 ```
+
+`NEWLINE` 是 §14 中结束条目的换行，不是独立 Token：词法上换行仍是空白，Parser 依据 §14 判断它是否结束当前条目。
 
 解析规则：
 
-- 以分号结束的 Expression 是 `expression_statement`；
-- Block 结束前没有分号的最后一个 Expression 是 Tail Expression；
+- Block 的最后一个条目若是 Expression Statement，它是该 Block 的 Tail Expression，无论其后是否写了 `;`；
+- 期望类型为 `Unit` 的 Block 丢弃 Tail 的值；否则 Tail 的类型即 Block 的类型；
 - `view_block`、`node_body`、`style`、`theme` 和 Resource 配置 Block 不使用普通 Block Grammar，因此没有 Tail Expression；
 - 返回类型为 `Unit` 的 Callable 可以省略 Tail Expression；
 - 同时出现显式 `return` 和 Tail Expression 是合法的，但控制流必须通过类型检查；
 - 在 Block Item 起始位置，未加括号的 `if` 和 `match` 总是由 Statement Parser 接管；
-- 因此未加括号的 `if`/`match` 不会被当成 Tail Expression 的开头：`if a { 1 } else { 2 } - 1` 是一个 `IfStatement` 加一个独立的 Tail `- 1`，`match x { _ => v }.f()` 中的 `.f()` 是 `E1403`；要以它们开头组成更大的 Tail Expression，必须加括号或使用显式 `return`；
-- Block 需要值时，最后一项若是未加括号、无分号的 `IfStatement`/`MatchStatement`，它提供 Block 的值，各分支的 Tail 统一为该类型（`if` 须有 `else`）；
+- 因此未加括号的 `if`/`match` 不会被当成更大 Expression 的开头：`if a { 1 } else { 2 } - 1` 是一个 `IfStatement` 加一个独立的 Tail `- 1`，`match x { _ => v }.f()` 中的 `.f()` 是 `E1403`；要以它们开头组成更大的 Expression，必须加括号或使用显式 `return`；
+- Block 需要值时，最后一项若是未加括号的 `IfStatement`/`MatchStatement`，它提供 Block 的值，各分支的 Tail 统一为该类型（`if` 须有 `else`）；
 - 这一规则只解决 CST 分类，不改变 `if_expression`/`match_expression` 在赋值、参数和返回值位置的能力。
 
 ```viso
@@ -2594,31 +2514,31 @@ statement_core       = let_statement
 
 let_statement        = "let", [ "mut" ], pattern,
                        [ ":", type ],
-                       "=", expression, ";" ;
+                       "=", expression ;
 
 assignment_statement = assignable_path, assignment_operator,
-                       expression, ";" ;
+                       expression ;
 
 assignment_operator  = "=" | "+=" | "-=" | "*=" | "/=" | "%="
                      | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
 
-expression_statement = expression, ";" ;
+expression_statement = expression ;
 
-return_statement     = "return", [ expression ], ";" ;
+return_statement     = "return", [ expression ] ;
 
-break_statement      = "break", [ expression ], ";" ;
+break_statement      = "break", [ expression ] ;
 
-continue_statement   = "continue", ";" ;
+continue_statement   = "continue" ;
 
 emit_statement       = "emit", identifier,
-                       "(", argument_list, ")", ";" ;
+                       "(", argument_list, ")" ;
 
 transaction_statement = "transaction", block ;
 
 if_statement         = "if", head_expression, block,
                        [ "else", ( if_statement | block ) ] ;
 
-match_statement      = match_expression, [ ";" ] ;
+match_statement      = match_expression ;
 
 while_statement      = "while", head_expression, block ;
 
@@ -2632,16 +2552,16 @@ loop_statement       = "loop", block ;
 - `let` Pattern、`for` Pattern（Behavior 与 View）和 Closure 参数 Pattern 必须是 Irrefutable Pattern（§70.1），否则报 `E2303`；
 - Statement Attribute 必须在 Schema 中声明可作用于对应 Statement Kind；例如 Shader 循环可使用 `@max_iterations(64)`，但同一 Attribute 作用于普通 `let` 时必须报错；
 - Statement Attribute 只产生 HIR 元数据，禁止改变 Tokenization、优先级或基础控制流语义；
-- Assignment 不是 Expression，禁止 `a = b = c;`；
+- Assignment 不是 Expression，禁止 `a = b = c`；
 - 赋值目标的根必须是 `state` 或 `let mut`/`mut` 绑定的局部名，经 `.label`/`[index]` 到达其字段或元素；以 Input、Computed、Const、Callable、`env`、不可变局部绑定（含参数与 Pattern 绑定）为根，或根不是名字（调用结果、`?.`、`?` 等），报 `E2110`；
 - `return` 只允许在 Callable/Closure 中；
-- `break value;` 只允许从 `loop` 返回值；
+- `break value` 只允许从 `loop` 返回值；
 - `continue` 只允许在 Behavior Loop 中；
-- 违反以上三条（`return`/`break`/`continue` 出现在不允许的位置，或 `break value;` 不在 `loop` 中）报 `E2803`；
+- 违反以上三条（`return`/`break`/`continue` 出现在不允许的位置，或 `break value` 不在 `loop` 中）报 `E2803`；
 - Behavior `for` 没有 `key`；`key` 只属于 View `for`；
 - `transaction` 在 Action/Event Handler 中嵌套复用当前事务；在 Effect/Task Completion 中显式创建 UI 事务；
 - 普通 `fn` 中禁止 `transaction`；
-- `match_statement` 后的分号是可选的，因为它以结构化 Block 结束；Formatter 对纯 Statement 形式不输出分号。
+- Statement 之间以 `item_end`（§14）分隔，Statement 自身不含 `;`。
 
 ---
 
@@ -4036,15 +3956,15 @@ shader_member        = shader_uniform
                      | fragment_entry
                      | compute_entry ;
 
-shader_uniform       = "uniform", identifier, ":", shader_type, ";" ;
+shader_uniform       = "uniform", identifier, ":", shader_type, item_end ;
 
-shader_instance      = "instance", identifier, ":", shader_type, ";" ;
+shader_instance      = "instance", identifier, ":", shader_type, item_end ;
 
-shader_varying       = "varying", identifier, ":", shader_type, ";" ;
+shader_varying       = "varying", identifier, ":", shader_type, item_end ;
 
-shader_texture       = "texture", identifier, ":", shader_texture_type, ";" ;
+shader_texture       = "texture", identifier, ":", shader_texture_type, item_end ;
 
-shader_sampler       = "sampler", identifier, ":", shader_sampler_type, ";" ;
+shader_sampler       = "sampler", identifier, ":", shader_sampler_type, item_end ;
 
 shader_function      = "fn", identifier,
                        "(", shader_parameter_list, ")",
@@ -4198,11 +4118,32 @@ export shader RoundedRect {
 
 Shader Entry 的实际 Builtin 参数、返回 Record 和可写 Varying 由 Render Profile Schema 定义。上例展示语言形态，不允许 Backend 自行改变核心表达式优先级。
 
-当前 Render Profile：一个 Shader 恰好一个 `vertex` 与一个 `fragment` Entry（缺少、重复或声明 `compute` 报 `E8106`）。`vertex` 的参数只能是 Builtin `vertex_id: U32`（实例四边形的六个顶点之一，`quad_vertex(vertex_id)` 依次给出 `(0,0) (1,0) (0,1) (1,0) (1,1) (0,1)`）与 `instance_id: U32`，返回 `VertexOutput { clip_position: Vec4F32 }`；`fragment` 的参数只能是 `frag_coord: Vec4F32`，返回 `Vec4F32` 或 `ColorLinear`（颜色目标 0）。只有 `vertex` 写 Varying，Varying 是数值标量或向量（`F32` 透视插值，整数 Flat）；Instance 字段在两个阶段都可读；Uniform 与 Instance 成员不能含 `Bool`（无 Buffer Layout，报 `E8104`），Texture 与 Sampler 只能用 `texture`/`sampler` 声明。`to_clip(position, viewport)` 把左上原点的像素坐标映射到 Clip Space；`rounded_rect_sdf(p, size, radius)` 是 `p` 到原点在左上、尺寸 `size`、圆角 `radius` 的矩形的有符号距离，内部为负。
+Render Profile：一个 Shader 至多一个 `vertex`，恰好一个 `fragment` Entry（重复或声明 `compute` 报 `E8106`）。手写的 `vertex` 的参数只能是 Builtin `vertex_id: U32`（实例四边形的六个顶点之一，`quad_vertex(vertex_id)` 依次给出 `(0,0) (1,0) (0,1) (1,0) (1,1) (0,1)`）与 `instance_id: U32`，返回 `VertexOutput { clip_position: Vec4F32 }`；`fragment` 的参数只能是 `frag_coord: Vec4F32`，返回 `Vec4F32` 或 `ColorLinear`（颜色目标 0）。只有 `vertex` 写 Varying，Varying 是数值标量或向量（`F32` 透视插值，整数 Flat）；Instance 字段在两个阶段都可读；Uniform 与 Instance 成员不能含 `Bool`（无 Buffer Layout，报 `E8104`），Texture 与 Sampler 只能用 `texture`/`sampler` 声明。`to_clip(position, viewport)` 把左上原点的像素坐标映射到 Clip Space；`rounded_rect_sdf(p, size, radius)` 是 `p` 到原点在左上、尺寸 `size`、圆角 `radius` 的矩形的有符号距离，内部为负。
 
-Brush Profile：绘制一个节点盒子的 Shader（上例即是）。Renderer 写入三个保留成员，每个 Brush 都必须声明：`uniform viewport_size: Vec2F32`（目标的像素尺寸，`to_clip` 据此映射）、`instance rect_pos: Vec2F32` 与 `instance rect_size: Vec2F32`（盒子在目标中的像素位置与尺寸，左上原点）。Brush 还可以声明 `uniform time: F32`：窗口打开以来的秒数（取自帧时刻，Headless 的确定性时钟下可复现，重载不归零），Renderer 写入每次绘制；读它的 Brush 在屏幕上被画出时窗口持续出帧，盒子被裁掉、移出目标或节点消失即停，只走时钟的帧不上传任何 Instance。其余 Instance 成员都是参数，类型限于 Host 值可转换的 `F32 I32 U32 Vec2F32 Vec3F32 ColorLinear`；Brush 不声明这两个以外的 Uniform（Host 无从写入）。每个 `texture name: Texture2D<Vec4F32>` 也是参数：节点给出的图像，在 Shader 名所引的 Record 中排在 Instance 参数之后，取 `ImageAsset`（`asset("…")`）；`sampler` 不是参数，而是 Brush 自身的状态，所有节点相同，由成员上的 `@sampler(filter: nearest | linear, address: clamp | repeat | mirror)` 给出，缺省为双线性、钳到边缘（设置未知、取值不在其列、重复设置或标在非 `sampler` 成员上报 `E8105`）。一次绘制按声明顺序绑定节点的图像与 Brush 的 Sampler，至多 4 个 Texture、2 个 Sampler；`sample` 读到的是图像存储的预乘 RGBA，原样返回即与 `Image` 节点显示一致；图像未驻留前节点不画。缺少或类型不符的保留成员、无 Host 值的参数类型、其他 Uniform、不是 `Texture2D<Vec4F32>` 的 Texture 与超出上限的 Texture/Sampler 报 `E8107`；只在有 View 用它绘制时报告（每个 Shader 一次，附第一个绘制处），不画盒子的 Shader 不必是 Brush。`BrushLayout` 给出 Instance Stride、盒子的两个 Offset、Uniform 大小、`viewport_size` 与（声明时）`time` 的 Offset、每个参数的名字、类型与 Offset，以及 Texture 参数与每个 Sampler 的状态：节点的参数一次编码成一个盒子为零的 Instance，参数变化原地改写其字节，绘制时复制该 Instance 并写入盒子。同一 Program 经 `program::code` 得到各 Backend 的代码：Metal、WebGPU、Direct3D 12 为源码，Vulkan 为其 WGSL 经 naga 写成的 SPIR-V（`viso-shader` 的 `spirv` Feature，仅由构建期与 Dev Host 的工具启用，运行时 Crate 不链接 naga），Headless Raster 为参考解释器。
+Brush Profile：绘制一个节点盒子的 Shader。每个 Shader 都有以下 Builtin，不声明即可读取，Renderer 写入它们：
 
-Host 侧，Shader 名同时是其参数的 Record 类型：字段是除 `rect_pos`、`rect_size` 外的 Instance 成员，按声明顺序，`F32 I32 U32` 取同名 Host 标量，`Vec2F32`/`Vec3F32` 取 `viso::math` 的同名值类型，`ColorLinear` 取 `Color`（编码时由 sRGB 转为线性）；字段没有默认值，Record 表达式须给出全部参数（`E2103`），未知字段与盒子成员报 `E2001`。叶子 Widget `ShaderView` 以 `shader` 属性取这样一个值，用该 Shader 绘制自己的盒子；`shader` 的值不是 Shader 参数报 `E2103`。`shader` 只脏 `PAINT`：参数变化原地改写 Instance，不重新测量或布局；`ShaderView` 没有固有尺寸，盒子由布局属性给出。
+| Builtin | 种类 | 含义 |
+| ------- | ---- | ---- |
+| `viewport_size: Vec2F32` | Uniform | 目标的像素尺寸，`to_clip` 据此映射 |
+| `rect_pos: Vec2F32` | Instance | 盒子在目标中的像素位置，左上原点 |
+| `rect_size: Vec2F32` | Instance | 盒子的像素尺寸 |
+| `time: F32` | Uniform | 窗口打开以来的秒数（取自帧时刻，Headless 的确定性时钟下可复现，重载不归零） |
+| `uv: Vec2F32` | Varying，仅默认 Vertex | 盒内位置，左上 `(0, 0)` 到右下 `(1, 1)` |
+| `local: Vec2F32` | Varying，仅默认 Vertex | 盒内像素位置，`uv * rect_size` |
+
+省略 `vertex` 时使用默认 Vertex：它按 `quad_vertex` 展开盒子的四边形，写入 `uv` 与 `local`，与下面的手写形式生成相同的代码：
+
+```text
+vertex(vertex_id: U32) -> VertexOutput {
+    uv = quad_vertex(vertex_id)
+    local = uv * rect_size
+    return VertexOutput { clip_position: to_clip(rect_pos + local, viewport_size) }
+}
+```
+
+`uv` 与 `local` 只在 Fragment 读取它们时才占用 Varying Location；手写 `vertex` 时它们不存在，需要的 Varying 自行声明。声明与 Builtin 同名的成员报 `E8107`。读 `time` 的 Brush 在屏幕上被画出时窗口持续出帧，盒子被裁掉、移出目标或节点消失即停，只走时钟的帧不上传任何 Instance。全部 Instance 成员都是参数，类型限于 Host 值可转换的 `F32 I32 U32 Vec2F32 Vec3F32 ColorLinear`；Brush 不声明 Uniform（Host 无从写入）。每个 `texture name: Texture2D<Vec4F32>` 也是参数：节点给出的图像，在 Shader 名所引的 Record 中排在 Instance 参数之后，取 `ImageAsset`（`asset("…")`）；`sampler` 不是参数，而是 Brush 自身的状态，所有节点相同，由成员上的 `@sampler(filter: nearest | linear, address: clamp | repeat | mirror)` 给出，缺省为双线性、钳到边缘（设置未知、取值不在其列、重复设置或标在非 `sampler` 成员上报 `E8105`）。一次绘制按声明顺序绑定节点的图像与 Brush 的 Sampler，至多 4 个 Texture、2 个 Sampler；`sample` 读到的是图像存储的预乘 RGBA，原样返回即与 `Image` 节点显示一致；图像未驻留前节点不画。无 Host 值的参数类型、声明的 Uniform、不是 `Texture2D<Vec4F32>` 的 Texture 与超出上限的 Texture/Sampler 报 `E8107`；只在有 View 用它绘制时报告（每个 Shader 一次，附第一个绘制处）。`BrushLayout` 给出 Instance Stride、盒子的两个 Offset、Uniform 大小、`viewport_size` 与（读取时）`time` 的 Offset、每个参数的名字、类型与 Offset，以及 Texture 参数与每个 Sampler 的状态：节点的参数一次编码成一个盒子为零的 Instance，参数变化原地改写其字节，绘制时复制该 Instance 并写入盒子。同一 Program 经 `program::code` 得到各 Backend 的代码：Metal、WebGPU、Direct3D 12 为源码，Vulkan 为其 WGSL 经 naga 写成的 SPIR-V（`viso-shader` 的 `spirv` Feature，仅由构建期与 Dev Host 的工具启用，运行时 Crate 不链接 naga），Headless Raster 为参考解释器。
+
+Host 侧，Shader 名同时是其参数的 Record 类型：字段是声明的 Instance 成员，按声明顺序，`F32 I32 U32` 取同名 Host 标量，`Vec2F32`/`Vec3F32` 取 `viso::math` 的同名值类型，`ColorLinear` 取 `Color`（编码时由 sRGB 转为线性）；字段没有默认值，Record 表达式须给出全部参数（`E2103`），未知字段与 Builtin 报 `E2001`。叶子 Widget `ShaderView` 以 `shader` 属性取这样一个值，用该 Shader 绘制自己的盒子；`shader` 的值不是 Shader 参数报 `E2103`。`shader` 只脏 `PAINT`：参数变化原地改写 Instance，不重新测量或布局；`ShaderView` 没有固有尺寸，盒子由布局属性给出。
 
 ```viso
 import viso::math::Vec2F32;
@@ -5594,7 +5535,7 @@ RecordPatternField
 | E2105  | Computed 循环依赖（消息列出路径，如 `a` -> `b` -> `a`） |
 | E2106  | MixedLength 不能在布局前定型为具体单位                  |
 | E2107  | 非法量纲运算（MixedLength 比较/乘除、Percent 加标量等） |
-| E2108  | `format` 模板与实参不匹配（§17）                        |
+| E2108  | 字符串插值的洞为空或其类型没有 `Display`（§17）         |
 | E2109  | 长度族值常量除以 0（§19.8）                             |
 | E2110  | 赋值目标不可写（§62.1）                                 |
 | E2111  | `env` / `theme` 用在 View 执行域之外，`tr` 用在组件实例之外（§96.2、§60、§U10.3） |
