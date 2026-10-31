@@ -1782,11 +1782,7 @@ fn material_instance(
         row3: row(3),
         offset: [r[0][4], r[1][4], r[2][4], r[3][4]],
         radius: record.radius,
-        lens: [
-            refraction,
-            bevel,
-            lens.dispersion.clamp(0.0, 1.0),
-        ],
+        lens: [refraction, bevel, lens.dispersion.clamp(0.0, 1.0)],
         glint: [
             sin,
             -cos,

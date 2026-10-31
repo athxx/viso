@@ -180,3 +180,41 @@ fn an_adaptive_tint_goes_dark_over_dark_and_light_over_light() {
     assert!(over_dark < 110, "{over_dark}");
     assert!(over_light > 220, "{over_light}");
 }
+
+/// The device pixels of row `y` (in points) across the left rim that the
+/// lens moves, at `scale`.
+fn bent_reach(scale: f32) -> usize {
+    let (w, h) = ((W as f32 * scale) as u32, (H as f32 * scale) as u32);
+    let draw = |lens: Lens| {
+        let mut gpu = CpuRaster::new();
+        let surface = gpu.create_surface(RawWindowHandle::Headless, w, h);
+        let format: TextureFormat = gpu.surface_format(surface);
+        let mut r = Renderer::new(&mut gpu, format);
+        r.set_surface_size([w as f32, h as f32], scale);
+        let mut prims = stripes();
+        prims.push(glass(lens, Glint::NONE));
+        r.upload(&mut gpu, &prims);
+        r.submit(
+            &mut gpu,
+            surface,
+            [0.0, 0.0, 0.0, 1.0],
+            [W as f32, H as f32],
+        );
+        gpu.read_pixels_bgra8(surface)
+    };
+    let (plain, bent) = (draw(Lens::NONE), draw(LENS));
+    let y = (32.0 * scale) as u32;
+    let at = |px: &[u8], x: u32| px[((y * w + x) * 4 + 2) as usize];
+    let left = (16.0 * scale) as u32;
+    (left..left + (32.0 * scale) as u32)
+        .filter(|&x| at(&plain, x).abs_diff(at(&bent, x)) > 8)
+        .count()
+}
+
+#[test]
+fn the_bend_is_in_points_and_spans_twice_the_pixels_at_twice_the_scale() {
+    let (one, two) = (bent_reach(1.0), bent_reach(2.0));
+    // The bevel, held to a quarter of the shorter side, is 12 points deep.
+    assert!(one > 0 && one <= 12, "{one}");
+    assert!(two > one && two <= 24, "{one} {two}");
+}
