@@ -12,8 +12,9 @@
 //! protocol, owned by the component instance's node ([`release_tasks`]); a
 //! `resource` loads through the same tasks, gated on its key like an effect.
 //! A component's `@persist` states load and store through the store the app
-//! installs ([`install_persistence`]), and its `viso::clipboard` natives
-//! reach the clipboard the app installs ([`install_clipboard`]).
+//! installs ([`install_persistence`]), its `viso::clipboard` natives
+//! reach the clipboard the app installs ([`install_clipboard`]), and its
+//! tasks' sleeps the timers it installs ([`install_timers`]).
 //!
 //! A host is shared as `Rc<RefCell<ViewHost>>` by the `'static` handler boxes
 //! of every node of its view. The sharing is the point: the nodes of one view
@@ -49,6 +50,7 @@ mod shaders;
 mod tasks;
 mod text_style;
 mod theme;
+mod timers;
 mod values;
 mod widget;
 mod world_scene;
@@ -89,6 +91,7 @@ pub use regions::{
 pub use route::{EventRoute, PAYLOAD_ENUMS, PAYLOAD_RECORDS};
 pub use scope::Scope;
 pub use shaders::{__embedded_shader, load_shader, load_shaders};
+pub use timers::{MakeTimers, install_timers};
 pub use viso_dev_protocol::{headless, profile, tape};
 // The expression `view!` picks the target backend's code of a shader with.
 pub use tasks::release_tasks;

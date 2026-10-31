@@ -24,6 +24,7 @@ mod access_keys;
 mod convert;
 mod frame;
 mod pace;
+mod sleeps;
 mod surrounding;
 mod window_state;
 
@@ -82,6 +83,8 @@ pub(crate) struct AppDriver<A: Application> {
     /// What the views' `viso::clipboard` natives wrote and asked, handed to
     /// the platform at the end of each frame.
     pub(crate) clipboard: Rc<viso_view::HostClipboard>,
+    /// The sleeps the views' tasks wait on, timed by the frame clock.
+    pub(crate) sleeps: Rc<sleeps::Sleeps>,
     /// Reusable scratch the flush drains the views' clipboard reads into.
     pub(crate) clipboard_reads: Vec<Rc<viso_view::ClipboardRead>>,
     /// The raw sfnt faces the app registered at init through `AppCx::load_font`,
@@ -586,6 +589,8 @@ impl<A: Application> AppDriver<A> {
         shell::begin();
         let clipboard = Rc::new(viso_view::HostClipboard::default());
         viso_view::install_clipboard(Some(Rc::clone(&clipboard)));
+        let sleeps = Rc::new(sleeps::Sleeps::default());
+        viso_view::install_timers(Some(sleeps.maker()));
         Self {
             app: None,
             cx: AppCx::__new(),
@@ -593,6 +598,7 @@ impl<A: Application> AppDriver<A> {
             pending_opens: Vec::new(),
             pending_closes: Vec::new(),
             clipboard,
+            sleeps,
             clipboard_reads: Vec::new(),
             fonts: SessionFonts::default(),
             services: services.map(|s| Rc::new(s) as Rc<dyn Any>),

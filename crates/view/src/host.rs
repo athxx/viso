@@ -480,6 +480,9 @@ impl ViewHost {
         if let Some(clipboard) = crate::clipboard::service() {
             vm.services_mut().insert(clipboard);
         }
+        if let Some(timers) = crate::timers::service() {
+            vm.services_mut().insert(timers);
+        }
         let (instance, broken) = match vm.instantiate(index, inputs) {
             Ok(instance) => (instance, None),
             Err(fault) => (Instance::detached(), Some(fault)),

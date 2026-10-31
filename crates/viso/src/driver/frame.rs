@@ -908,6 +908,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
             }
         }
         let now = cx.frame_now();
+        // A sleep that came due wakes its task, which frames its window.
+        self.sleeps.ring(now);
         // A decoded asset frames the windows that show assets.
         let decoded = self.assets.receive();
         let played = self.assets.playback.receive();
@@ -1245,6 +1247,9 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                         ws.recover_gpu(raw, &self.fonts, cx.frame_now());
                     }
                 }
+                // Wake the tasks whose sleeps this frame's instant has crossed,
+                // for the polls below.
+                self.sleeps.ring(cx.frame_now());
                 for ws in &mut self.windows {
                     // Arm any one-shot timers a handler requested this frame (a
                     // toast's auto-dismiss), then fire every timer whose deadline
@@ -2287,6 +2292,7 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     .chain(w.lost_gpu.map(|l| l.due))
             })
             .chain(self.places.deadline())
+            .chain(self.sleeps.earliest())
             .min()
     }
 }

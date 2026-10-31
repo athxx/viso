@@ -92,10 +92,9 @@ export component Larder {
     state notice = ""
     state showing = false
 
-    task fetch(attempt: I64) -> Result<List<Recipe>, String> {
-        // The recipe box is at hand; fetching it again after a failure
-        // takes a moment.
-        if attempt > 0 { await time::sleep(400ms) }
+    task fetch(_attempt: I64) -> Result<List<Recipe>, String> {
+        // Fetching the recipe box takes a moment.
+        await time::sleep(300ms)
         Ok(catalog())
     }
 

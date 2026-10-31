@@ -203,8 +203,9 @@ the downsampled ladder, kept across frames while what lies behind holds still.
   - [ ] `KeyShortcut { chord: .. }` mounting;
   - [x] `VirtualList { estimated_extent }` reading a value: read as the list attaches
         its rows, then refined by the rows it measures;
-  - [ ] a task's `time::sleep` under the headless driver follows its clock, not the
-        wall clock.
+  - [x] a task's `time::sleep` under the headless driver follows its clock, not the
+        wall clock: the driver times the views' sleeps by its frame clock and keeps
+        their deadlines as it keeps a UI timer's.
 
 ## C9 — Close
 
