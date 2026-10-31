@@ -197,11 +197,15 @@ fn expr_bp(p: &mut Parser, min_bp: u8, r: Restrictions) -> Option<CompletedMarke
 
     loop {
         let cast = p.at(SyntaxKind::AsKw) && bp::CAST >= min_bp;
-        // A `+` or `-` that starts a line is a prefix operator of a new item.
+        // A `+` or `-` that starts a line is a prefix operator of a new item,
+        // and in a record body a `..` that does spreads its base.
         let binary = binary_op(p.current()).filter(|&(level, _)| {
-            level >= min_bp
-                && !(matches!(p.current(), SyntaxKind::Plus | SyntaxKind::Minus)
-                    && p.at_line_break())
+            let opens = match p.current() {
+                SyntaxKind::Plus | SyntaxKind::Minus => true,
+                SyntaxKind::DotDot => p.record_field,
+                _ => false,
+            };
+            level >= min_bp && !(opens && p.at_line_break())
         });
         if !cast && binary.is_none() {
             break;
@@ -666,19 +670,19 @@ pub(super) fn block_expr(p: &mut Parser) -> CompletedMarker {
     m.complete(p, SyntaxKind::BlockExpr)
 }
 
-/// The `{ field: expr, .. }` body of a record expression.
+/// The `{ field: expr, .. }` body of a record expression. Fields are
+/// separated by `,` or by a line break, as `match` arms are.
 fn record_body(p: &mut Parser) {
     p.bump_any(); // `{`
-    p.quiet_lines();
     while !p.at(SyntaxKind::RBrace) && !p.at_end() {
         let m = p.start();
         if p.eat(SyntaxKind::DotDot) {
             // A functional-update spread `..base`.
-            expr(p);
+            field_value(p);
         } else if super::at_label(p) && p.nth(1) == SyntaxKind::Colon {
             super::label(p);
             p.bump_any(); // `:`
-            expr(p);
+            field_value(p);
         } else if super::at_label(p) {
             // Shorthand `{ id }` binds a name, so a strict keyword is E1301.
             super::name(p);
@@ -689,11 +693,18 @@ fn record_body(p: &mut Parser) {
             continue;
         }
         m.complete(p, SyntaxKind::RecordExprField);
-        if !p.eat(SyntaxKind::Comma) {
+        if !p.eat(SyntaxKind::Comma) && !p.at_line_break() {
             break;
         }
     }
     p.expect(SyntaxKind::RBrace);
+}
+
+/// A record field's value, up to the `,`, line break or `}` after it.
+fn field_value(p: &mut Parser) {
+    let outer = std::mem::replace(&mut p.record_field, true);
+    expr(p);
+    p.record_field = outer;
 }
 
 /// A `( ... )` group: an empty unit `()`, a parenthesized expression, or a

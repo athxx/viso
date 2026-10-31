@@ -137,6 +137,45 @@ fn arms_and_node_members_end_at_a_line_break() {
     assert!(errors.is_empty(), "{errors:?}");
 }
 
+/// A record's fields are separated by `,` or a line break, as arms are; a
+/// field's value still carries on past a break at a continuing token, and a
+/// `..` that starts a line spreads a base rather than ending a range.
+#[test]
+fn record_fields_end_at_a_line_break() {
+    let fields = |src: &str| {
+        let (kinds, errors) = items(Entry::BlockBody, src);
+        assert!(errors.is_empty(), "{src:?}: {errors:?}");
+        assert_eq!(kinds, [LetStmt], "{src:?}");
+        let parse = parse_entry(&tokenize(src), src, Entry::BlockBody);
+        SyntaxNode::new_root(parse.root)
+            .descendants()
+            .into_iter()
+            .filter(|n| n.kind() == SyntaxKind::RecordExprField)
+            .map(|n| n.text().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        fields("let p = P {\n    x: 1\n    y: 2\n}"),
+        ["x: 1", "y: 2"]
+    );
+    assert_eq!(
+        fields("let p = P {\n    x: 1,\n    y: 2\n}"),
+        ["x: 1", "y: 2"]
+    );
+    assert_eq!(
+        fields("let p = P {\n    x: a\n        * b\n    y\n}"),
+        ["x: a\n        * b", "y"]
+    );
+    assert_eq!(
+        fields("let p = P {\n    x: 1\n    ..base\n}"),
+        ["x: 1", "..base"]
+    );
+    assert_eq!(fields("let r = P { x: 0..n }"), ["x: 0..n"]);
+    // On one line the fields still need their commas.
+    let (_, errors) = items(Entry::BlockBody, "let p = P { x: 1 y: 2 }");
+    assert!(!errors.is_empty());
+}
+
 #[test]
 fn the_last_expression_is_the_value_and_unit_drops_it() {
     assert_eq!(

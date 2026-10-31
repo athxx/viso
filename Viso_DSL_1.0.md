@@ -313,7 +313,7 @@ emit changed(count)
 
 - 一个条目在语法上已经完整时，其后的换行结束它；不完整时（如 `let x =`、`if ready` 之后），换行是空白；
 - 同一行写多个条目时，相邻条目之间必须写 `;`，以 `}` 结束的条目之后除外（`Row { Button {} Button {} }`）；缺少时报 `E1404`；
-- `( )` 与 `[ ]` 之内的换行一律是空白；Record 表达式的 `{ }`（§65）同样如此；
+- `( )` 与 `[ ]` 之内的换行一律是空白；Record 表达式的 `{ }`（§65）中，字段之间的换行与 `,` 一样分隔字段（同一行的字段仍以 `,` 分隔），字段值内的换行按本节其余规则处理，行首的 `..` 开始展开项而不延续区间；
 - 下一行的首个 Token 是以下之一时，它延续上一行而不结束条目：`.` `?.` `?` `::` `,` `:` `=` 与全部复合赋值、`->` `=>` `as` `else`，以及不能作为前缀的二元操作符 `* / % << >> & | ^ == != < <= > >= && || ?? .. ..=`；
 - 行首的 `+` `-`（前缀 Unary）、`(`、`[` 与 `{` 开始新的条目；因此 Call、Index、Record 表达式与 Node Body 的开括号必须与其前面的部分写在同一行；以 `|`/`||` 开头的 Closure 若要独占一行作为表达式，须加括号；
 - `return`、`break` 后紧跟换行时没有值；
@@ -2760,7 +2760,7 @@ list_expression     = "[",
 
 record_expression   = path, [ generic_call_args ], "{",
                       [ record_initializer,
-                        { ",", record_initializer }, [ "," ] ],
+                        { ( "," | NEWLINE ), record_initializer }, [ "," ] ],
                       "}" ;
 
 record_initializer  = label, ":", expression
@@ -4298,7 +4298,7 @@ Label
     ::= IDENT | STRICT_KEYWORD
 ```
 
-条目（声明、成员、语句、`match` 分支）以 `ItemEnd` 结束。`NEWLINE` 不是 Token：它指条目最后一个 Token 与下一个 Token 之间的 Trivia 含换行，且二者不在 `( )`、`[ ]`、Record 字面量或 Import 列表的 `{ }` 内；下一行以续行 Token 开头时不结束条目（§14）。以 `}` 结尾的条目、紧随其后的 `}` 与 `END_OF_FILE` 同样结束条目。
+条目（声明、成员、语句、`match` 分支）以 `ItemEnd` 结束。`NEWLINE` 不是 Token：它指条目最后一个 Token 与下一个 Token 之间的 Trivia 含换行，且二者不在 `( )`、`[ ]` 或 Import 列表的 `{ }` 内（Record 字面量内它分隔字段，同 `,`）；下一行以续行 Token 开头时不结束条目（§14）。以 `}` 结尾的条目、紧随其后的 `}` 与 `END_OF_FILE` 同样结束条目。
 
 ```ebnf
 ItemEnd
@@ -5109,7 +5109,7 @@ RecordExpression
     ::= Path GenericCallArgs? "{" RecordInitializerList? "}"
 
 RecordInitializerList
-    ::= RecordInitializer ( "," RecordInitializer )* ","?
+    ::= RecordInitializer ( ( "," | NEWLINE ) RecordInitializer )* ","?
 
 RecordInitializer
     ::= Label ":" Expression

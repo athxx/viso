@@ -198,8 +198,10 @@ fn layout(source: &str, lexed: &[Token], parsed: &Parse) -> String {
         .descendants()
         .into_iter()
         .filter(|node| {
-            node.parent()
-                .is_some_and(|parent| ITEM_LISTS.contains(&parent.kind()))
+            node.kind() == SyntaxKind::RecordExprField
+                || node
+                    .parent()
+                    .is_some_and(|parent| ITEM_LISTS.contains(&parent.kind()))
         })
         .filter_map(|node| {
             node.descendants_with_tokens()
@@ -809,6 +811,14 @@ mod tests {
         assert_eq!(
             format("component C{state count=0;}"),
             "component C { state count = 0 }\n"
+        );
+    }
+
+    #[test]
+    fn record_fields_a_line_each_keep_to_their_indent() {
+        assert_eq!(
+            format("fn f() -> P {\nP {\n  x: 1\n      y: 2\n  ..base\n}\n}"),
+            "fn f() -> P {\n    P {\n        x: 1\n        y: 2\n        ..base\n    }\n}\n"
         );
     }
 

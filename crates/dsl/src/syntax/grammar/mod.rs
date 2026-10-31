@@ -222,8 +222,11 @@ struct Parser<'t, 's> {
     /// from the significant token before it.
     line_start: Vec<bool>,
     /// Whether a line break ends an item, per open delimiter: not inside
-    /// `( )`, `[ ]` or a record body, where it is whitespace.
+    /// `( )`, `[ ]` or an import list, where it is whitespace.
     lines: Vec<bool>,
+    /// Whether the cursor is in a record field's value, where a `..` that
+    /// starts a line spreads a base rather than continuing a range.
+    record_field: bool,
     /// The error count when the last item ended: an item that reported an
     /// error is not also told it needs a `;`.
     item_errors: usize,
@@ -304,6 +307,7 @@ impl<'t, 's> Parser<'t, 's> {
             significant,
             line_start,
             lines: vec![true],
+            record_field: false,
             item_errors: 0,
             pos: 0,
             split: 0,
@@ -481,8 +485,8 @@ impl<'t, 's> Parser<'t, 's> {
             && self.line_start.get(self.pos + n).copied().unwrap_or(false))
     }
 
-    /// Makes line breaks whitespace up to the `}` just consumed's match: a
-    /// record body or an import list, which are comma-separated.
+    /// Makes line breaks whitespace up to the `}` just consumed's match: an
+    /// import list, which is comma-separated.
     fn quiet_lines(&mut self) {
         if let Some(top) = self.lines.last_mut() {
             *top = false;
