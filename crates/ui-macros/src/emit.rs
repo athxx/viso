@@ -857,6 +857,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let backdrop = entry(look.backdrop);
     let ripple = entry(look.ripple);
     let text_shadow = entry(look.text_shadow);
+    let glass_merge = entry(look.glass_merge);
     let rust = match control.rust.as_deref() {
         Some(rust) => {
             let widget = &*rust.widget;
@@ -983,6 +984,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 backdrop: #backdrop,
                 ripple: #ripple,
                 text_shadow: #text_shadow,
+                glass_merge: #glass_merge,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
             node: ::viso::__private::viso_view::NodeEntries {

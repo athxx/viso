@@ -351,9 +351,11 @@ fn paint_subtree<S: PaintSpans>(
     let world = store.bounds(root).translate(space.snapped);
     // A glass box's surface lies under everything the node draws and outside
     // its fade, which would drop the blur: it fades by its own opacity.
-    if let Some(backdrop) = store.backdrop(root) {
+    if let Some((glass, amount)) = store.drawn_glass(root)
+        && !store.melts(root)
+    {
         let radius = corner_radius(&store.style(root), world);
-        out.push(backdrop.paint(world, radius, opacity, store.backdrops.access));
+        out.push(store.paint_glass(root, glass, amount, world, radius, opacity));
     }
     // A translucent node composites itself and its subtree as one layer over
     // all its subtree draws: its reach.
@@ -368,6 +370,10 @@ fn paint_subtree<S: PaintSpans>(
     }
     let own_start = out.len();
     paint_own(store, root, world, out);
+    // Glass children that melt draw as one surface, under them all.
+    if store.glass_merge(root) > 0.0 && !store.is_scroll(root) {
+        paint_melted(store, root, space, opacity, out);
+    }
     let own_end = out.len();
 
     // A clipping node — a scroll viewport, or one asked to `clip` — clips its
@@ -465,6 +471,29 @@ fn paint_subtree<S: PaintSpans>(
                 | flag(corners.is_some(), Span::CORNERS),
         },
     );
+}
+
+/// The glass of `group`'s melting children, laid out in `space`.
+#[cold]
+fn paint_melted(
+    store: &NodeStore,
+    group: NodeId,
+    space: Space,
+    opacity: f32,
+    out: &mut Vec<Primitive>,
+) {
+    let members: Vec<_> = store
+        .arena()
+        .children(group)
+        .filter(|&c| !store.hidden(c) && store.opacity(c) > 0.0)
+        .filter_map(|c| {
+            let (glass, amount) = store.drawn_glass(c)?;
+            let world = store.bounds(c).translate(space.snapped);
+            let radius = corner_radius(&store.style(c), world);
+            Some((c, glass, amount, world, radius))
+        })
+        .collect();
+    store.paint_melted(&members, opacity, out);
 }
 
 /// The corner radius `style` rounds a box of `rect` with: its fixed part and

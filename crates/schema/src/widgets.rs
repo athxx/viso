@@ -47,6 +47,7 @@ const LAYOUT: &[WidgetProperty] = &[
     look("shadow", "List<Shadow>"),
     look("backdrop", "Option<Backdrop>"),
     look("ripple", "Bool"),
+    look("glass_merge", "Dp"),
     prop("styles", "List<StyleRef<T>>"),
 ];
 

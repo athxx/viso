@@ -322,7 +322,10 @@ export record TextShadow {
 // lies behind it — its tint's tone dark over dark content and light over
 // light — and thickens with its size. Where no glass is drawn (the system
 // saving power, a device drawing on the CPU) it is `fallback`, solid, or
-// its tint made all but opaque.
+// its tint made all but opaque. `interactive` glass lights from within
+// where it is pressed, a glow that spreads through it. Glass comes and goes
+// by its bend and frost, and a box with `glass_merge` melts the glass of
+// its children into one surface where they come within that distance.
 export record Backdrop {
     blur: Dp = 30dp
     saturation: F32 = 1.8
@@ -336,6 +339,7 @@ export record Backdrop {
     light: Angle = 315deg
     adaptive: Bool = false
     fallback: Option<Color> = Option::None
+    interactive: Bool = false
 }
 impl Backdrop {
     // Liquid glass that follows what lies behind it: the one to reach for.

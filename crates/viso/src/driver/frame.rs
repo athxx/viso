@@ -1419,6 +1419,10 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     if ws.store.is_rippling() {
                         ws.store.tick_ripples(cx.frame_delta());
                     }
+                    // The glass coming and going settles in or out.
+                    if ws.store.is_materializing() {
+                        ws.store.tick_glass(cx.frame_delta());
+                    }
                     // The progress indicators run, or ease to their values.
                     if ws.store.is_progressing() {
                         ws.store.tick_progress(cx.frame_delta());

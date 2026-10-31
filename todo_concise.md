@@ -150,11 +150,12 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       (bend, bevel, blur), worked out on the CPU. Clear does not adapt, a dimming
       tint under it. Not done: a shadow deepening over busy content, which wants
       the backdrop read back.
-- [ ] Liquid glass in motion: a press lights the glass from where it lands and the
-      glow spreads to glass nearby; glass appears and leaves by its bend (a
-      `materialize` transition), not its opacity; siblings in a `GlassGroup` share
-      one capture and melt into one shape (a smooth union of their SDFs, from a
-      cached low-resolution matte) within its `spacing`.
+- [x] Liquid glass in motion: `interactive` glass lights from where a press lands,
+      a radial glow on the ripple's timing, shared by glass melted with it; glass a
+      laid-out box turns on or off comes and goes by its bend and frost over 0.35s
+      (at once under reduced motion), not its opacity; a box's `glass_merge` melts
+      equal glass children, up to four a draw, into one surface — an analytic smooth
+      union of their SDFs in the one pass, no matte, one capture.
 - [ ] Window materials: `Window { material: mica | mica_alt | acrylic | vibrancy }`
       on the platform's compositor — DWM system backdrop on Windows 11, an
       `NSVisualEffectView` behind the surface on macOS — over a transparent surface;

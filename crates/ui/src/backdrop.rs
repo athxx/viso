@@ -18,8 +18,8 @@
 use crate::component::NodeStore;
 use crate::node::NodeId;
 use viso_render::{
-    Border, ColorMatrix, ColorOp, Corners, FrostedMaterial, Glint, Lens, Luminosity, Primitive,
-    Quad, Rect, Rgba,
+    Border, ColorMatrix, ColorOp, Corners, FrostedMaterial, GlassUnion, Glint, Glow, Lens,
+    Luminosity, Primitive, Quad, Rect, Rgba,
 };
 
 /// What a box does to the content behind it.
@@ -58,6 +58,21 @@ pub struct Backdrop {
     /// What it is where no glass is drawn, solid; `None` for its tint made
     /// all but opaque.
     pub fallback: Option<Rgba>,
+    /// Whether a press lights it from within, from where it lands.
+    pub interactive: bool,
+}
+
+/// How long glass takes to come or go, by its bend, blur and tint (seconds).
+const MATERIALIZE: f32 = 0.35;
+
+/// A backdrop coming or going: drawn by `amount` of its glass, moving to
+/// `to`; one going is drawn from `glass` after the node lets it go.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Materialize {
+    node: NodeId,
+    glass: Backdrop,
+    amount: f32,
+    to: f32,
 }
 
 /// The glint's width in dp; a faint bleed reaches four times as deep.
@@ -112,6 +127,7 @@ impl Backdrop {
         light: 315.0 * (core::f32::consts::PI / 180.0),
         adaptive: false,
         fallback: None,
+        interactive: false,
     };
 
     /// Liquid glass that follows what lies behind it and thickens with its
@@ -153,17 +169,41 @@ impl Backdrop {
         ..Backdrop::GLASS
     };
 
+    /// The glass `amount` of the way in: its bend, glint, blur and tint
+    /// grown by it, its opacity left alone — how glass comes and goes.
+    fn materialized(self, amount: f32) -> Backdrop {
+        if amount >= 1.0 {
+            return self;
+        }
+        // Eased out: it settles in.
+        let m = 1.0 - (1.0 - amount.clamp(0.0, 1.0)).powi(3);
+        Backdrop {
+            blur: self.blur * m,
+            tint: Rgba {
+                a: self.tint.a * m,
+                ..self.tint
+            },
+            luminosity: self.luminosity * m,
+            refraction: self.refraction * m,
+            highlight: self.highlight * m,
+            ..self
+        }
+    }
+
     /// What it draws over a box of `rect` rounded by `radius`, faded to
-    /// `opacity`: its frosted surface, or its solid fallback.
+    /// `opacity`, lit by `glow`: its frosted surface, or its solid fallback.
     pub(crate) fn paint(
         self,
         rect: Rect,
         radius: f32,
         opacity: f32,
         access: GlassAccess,
+        glow: Option<Glow>,
     ) -> Primitive {
         if !access.solid {
-            return Primitive::Frosted(Box::new(self.surface(rect, radius, opacity, access)));
+            let mut surface = self.surface(rect, radius, opacity, access);
+            surface.glow = glow.filter(|_| self.interactive);
+            return Primitive::Frosted(Box::new(surface));
         }
         // Its fallback, or its tint made all but opaque.
         let tint = self.followed(access).tint;
@@ -286,11 +326,17 @@ impl Backdrop {
 pub(crate) struct Backdrops {
     entries: Vec<(u32, Backdrop)>,
     pub(crate) access: GlassAccess,
+    /// The nodes whose glass children melt, and how near, in slot order.
+    merges: Vec<(u32, f32)>,
+    /// The backdrops coming or going.
+    coming: Vec<Materialize>,
 }
 
 impl Backdrops {
     pub(crate) fn clear(&mut self) {
         self.entries.clear();
+        self.merges.clear();
+        self.coming.clear();
     }
 
     /// Forgets the slot `index`, freed or reused.
@@ -298,6 +344,22 @@ impl Backdrops {
         if let Ok(at) = self.find(index) {
             self.entries.remove(at);
         }
+        if let Ok(at) = self.merges.binary_search_by_key(&index, |e| e.0) {
+            self.merges.remove(at);
+        }
+        self.coming.retain(|c| c.node.index() != index);
+    }
+
+    /// How near the glass children of slot `index` come before they melt,
+    /// `0` for apart.
+    #[inline]
+    pub(crate) fn merge(&self, index: u32) -> f32 {
+        if self.merges.is_empty() {
+            return 0.0;
+        }
+        self.merges
+            .binary_search_by_key(&index, |e| e.0)
+            .map_or(0.0, |at| self.merges[at].1)
     }
 
     fn find(&self, index: u32) -> Result<usize, usize> {
@@ -345,8 +407,37 @@ impl NodeStore {
     /// box; a change repaints it. A live-guarded write — a stale handle is a
     /// no-op.
     pub fn set_backdrop(&mut self, id: NodeId, backdrop: Option<Backdrop>) {
-        if !self.arena().is_live(id) || self.backdrop(id) == backdrop {
+        let was = self.backdrop(id);
+        if !self.arena().is_live(id) || was == backdrop {
             return;
+        }
+        // Glass a laid-out box turns on or off comes or goes by its bend,
+        // unless motion is reduced.
+        let laid_out = self.bounds(id).w > 0.0 && self.bounds(id).h > 0.0;
+        let going = self.backdrops.coming.iter().position(|c| c.node == id);
+        match (was, backdrop, going) {
+            (_, Some(glass), Some(at)) => {
+                let coming = &mut self.backdrops.coming[at];
+                (coming.glass, coming.to) = (glass, 1.0);
+            }
+            (None, Some(glass), None) if laid_out && !self.reduced_motion() => {
+                self.backdrops.coming.push(Materialize {
+                    node: id,
+                    glass,
+                    amount: 0.0,
+                    to: 1.0,
+                });
+            }
+            (Some(glass), None, None) if laid_out && !self.reduced_motion() => {
+                self.backdrops.coming.push(Materialize {
+                    node: id,
+                    glass,
+                    amount: 1.0,
+                    to: 0.0,
+                });
+            }
+            (Some(_), None, Some(at)) => self.backdrops.coming[at].to = 0.0,
+            _ => {}
         }
         let index = id.index();
         match (self.backdrops.find(index), backdrop) {
@@ -357,7 +448,168 @@ impl NodeStore {
             (Err(at), Some(b)) => self.backdrops.entries.insert(at, (index, b)),
             (Err(_), None) => {}
         }
+        self.repaint_glass(id);
+    }
+
+    /// Repaints node `id`'s glass: the node, and the node its glass melts
+    /// into.
+    fn repaint_glass(&mut self, id: NodeId) {
         self.mark_dirty(id, crate::dirty::DirtyClass::PAINT);
+        if let Some(parent) = self.parent(id)
+            && self.backdrops.merge(parent.index()) > 0.0
+        {
+            self.mark_dirty(parent, crate::dirty::DirtyClass::PAINT);
+        }
+    }
+
+    /// How near node `id`'s glass children come before they melt into one.
+    pub fn glass_merge(&self, id: NodeId) -> f32 {
+        self.backdrops.merge(id.index())
+    }
+
+    /// Makes node `id`'s glass children melt into one surface where they
+    /// come within `spacing` of each other — sharing one capture, a press
+    /// on one lighting all — or, at `0`, stand apart. A live-guarded write.
+    pub fn set_glass_merge(&mut self, id: NodeId, spacing: f32) {
+        let spacing = spacing.max(0.0);
+        if !self.arena().is_live(id) || self.glass_merge(id) == spacing {
+            return;
+        }
+        let index = id.index();
+        let merges = &mut self.backdrops.merges;
+        match (merges.binary_search_by_key(&index, |e| e.0), spacing > 0.0) {
+            (Ok(at), true) => merges[at].1 = spacing,
+            (Ok(at), false) => {
+                merges.remove(at);
+            }
+            (Err(at), true) => merges.insert(at, (index, spacing)),
+            (Err(_), false) => {}
+        }
+        self.mark_dirty(id, crate::dirty::DirtyClass::PAINT);
+        let children: Vec<NodeId> = self.arena().children(id).collect();
+        for child in children {
+            self.mark_dirty(child, crate::dirty::DirtyClass::PAINT);
+        }
+    }
+
+    /// Whether any node is glass.
+    #[inline]
+    pub(crate) fn has_glass(&self) -> bool {
+        !self.backdrops.entries.is_empty()
+    }
+
+    /// Whether node `id`'s glass melts into its parent's.
+    #[inline]
+    pub(crate) fn melts(&self, id: NodeId) -> bool {
+        !self.backdrops.merges.is_empty()
+            && self
+                .parent(id)
+                .is_some_and(|p| self.backdrops.merge(p.index()) > 0.0)
+    }
+
+    /// The glass node `id` draws and how far in it is: its backdrop, or one
+    /// still going.
+    pub(crate) fn drawn_glass(&self, id: NodeId) -> Option<(Backdrop, f32)> {
+        let coming = &self.backdrops.coming;
+        if !coming.is_empty()
+            && let Some(c) = coming.iter().find(|c| c.node == id)
+        {
+            return Some((c.glass, c.amount));
+        }
+        self.backdrop(id).map(|b| (b, 1.0))
+    }
+
+    /// Whether glass is coming or going: the frame loop beats while it is.
+    #[inline]
+    pub fn is_materializing(&self) -> bool {
+        !self.backdrops.coming.is_empty()
+    }
+
+    /// Runs the glass coming and going on by a frame of `delta`.
+    pub fn tick_glass(&mut self, delta: std::time::Duration) {
+        let step = delta.as_secs_f32().min(0.1) / MATERIALIZE;
+        let mut i = self.backdrops.coming.len();
+        while i > 0 {
+            i -= 1;
+            let c = &mut self.backdrops.coming[i];
+            c.amount = match c.to > c.amount {
+                true => (c.amount + step).min(c.to),
+                false => (c.amount - step).max(c.to),
+            };
+            let (node, done) = (c.node, c.amount == c.to);
+            if done || self.reduced_motion() {
+                self.backdrops.coming.swap_remove(i);
+            }
+            if self.arena().is_live(node) {
+                self.repaint_glass(node);
+            }
+        }
+    }
+
+    /// What node `id`'s glass, `amount` of the way in, draws over its box
+    /// `world` rounded by `radius`.
+    pub(crate) fn paint_glass(
+        &self,
+        id: NodeId,
+        glass: Backdrop,
+        amount: f32,
+        world: Rect,
+        radius: f32,
+        opacity: f32,
+    ) -> Primitive {
+        let glow = self.press_glow(id, world).filter(|_| glass.interactive);
+        glass
+            .materialized(amount)
+            .paint(world, radius, opacity, self.backdrops.access, glow)
+    }
+
+    /// The glass of node `id`'s melting children, over their boxes in
+    /// `space` (each child's box and corner radius), in runs of the same
+    /// glass, at most [`GlassUnion::MAX`] a surface.
+    pub(crate) fn paint_melted(
+        &self,
+        members: &[(NodeId, Backdrop, f32, Rect, f32)],
+        opacity: f32,
+        out: &mut Vec<Primitive>,
+    ) {
+        let spacing = members
+            .first()
+            .and_then(|m| self.parent(m.0))
+            .map_or(0.0, |p| self.backdrops.merge(p.index()));
+        let access = self.backdrops.access;
+        let mut start = 0;
+        while start < members.len() {
+            let (_, glass, amount, ..) = members[start];
+            let mut end = start + 1;
+            while end < members.len()
+                && end - start < GlassUnion::MAX
+                && members[end].1 == glass
+                && members[end].2 == amount
+            {
+                end += 1;
+            }
+            let run = &members[start..end];
+            start = end;
+            if access.solid || run.len() == 1 {
+                for &(id, glass, amount, world, radius) in run {
+                    out.push(self.paint_glass(id, glass, amount, world, radius, opacity));
+                }
+                continue;
+            }
+            let shapes: Vec<(Rect, f32)> = run.iter().map(|m| (m.3, m.4)).collect();
+            let Some(union) = GlassUnion::of(&shapes, spacing) else {
+                continue;
+            };
+            let glow = run.iter().find_map(|m| self.press_glow(m.0, m.3));
+            let mut surface =
+                glass
+                    .materialized(amount)
+                    .surface(union.bounds(), 0.0, opacity, access);
+            surface.merged = Some(union);
+            surface.border = Border::NONE;
+            surface.glow = glow.filter(|_| glass.interactive);
+            out.push(Primitive::Frosted(Box::new(surface)));
+        }
     }
 }
 
@@ -388,6 +640,13 @@ mod tests {
         panel
     }
 
+    /// Lets the glass coming and going settle.
+    fn settle(store: &mut NodeStore) {
+        while store.is_materializing() {
+            store.tick_glass(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn paint(store: &NodeStore, root: NodeId) -> Vec<Primitive> {
         let mut out = Vec::new();
         crate::paint::paint_tree(store, root, &mut out);
@@ -409,6 +668,7 @@ mod tests {
         assert!(matches!(out[1], Primitive::Quad(_)), "then the box's fill");
 
         store.set_backdrop(panel, None);
+        settle(&mut store);
         let out = paint(&store, panel);
         assert!(!out.iter().any(|p| matches!(p, Primitive::Frosted(_))));
     }
@@ -550,5 +810,125 @@ mod tests {
             panic!("solid");
         };
         assert_eq!((solid.color.r, solid.color.a), (0.2, 0.5), "its fallback");
+    }
+
+    #[test]
+    fn a_press_lights_interactive_glass_from_where_it_landed() {
+        let mut store = NodeStore::new();
+        let panel = panel(&mut store, 1.0);
+        store.set_backdrop(
+            panel,
+            Some(Backdrop {
+                interactive: true,
+                ..liquid()
+            }),
+        );
+        settle(&mut store);
+        assert!(surface_of(&store, panel).glow.is_none(), "unpressed: dark");
+        store.start_ripple(panel, 40.0, 30.0);
+        store.tick_ripples(std::time::Duration::from_millis(120));
+        let out = paint(&store, panel);
+        let Primitive::Frosted(lit) = &out[0] else {
+            panic!("the glass first: {out:?}");
+        };
+        let glow = lit.glow.expect("a press lights it");
+        assert_eq!((glow.at.x, glow.at.y), (40.0, 30.0), "where it landed");
+        assert!(glow.strength > 0.0 && glow.radius > 0.0);
+        assert!(
+            !out.iter()
+                .any(|p| matches!(p, Primitive::AnalyticEllipse(_))),
+            "no ink over glass: {out:?}"
+        );
+        // Plain glass a press reaches does not light.
+        store.set_backdrop(panel, Some(liquid()));
+        store.start_ripple(panel, 40.0, 30.0);
+        assert!(surface_of(&store, panel).glow.is_none());
+    }
+
+    #[test]
+    fn glass_turned_on_comes_in_by_its_bend_and_goes_the_same_way() {
+        let mut store = NodeStore::new();
+        let panel = panel(&mut store, 1.0);
+        let glass = liquid();
+        store.set_backdrop(panel, None);
+        settle(&mut store);
+        store.set_backdrop(panel, Some(glass));
+        assert!(store.is_materializing());
+        assert_eq!(store.drawn_glass(panel), Some((glass, 0.0)));
+        let start = surface_of(&store, panel);
+        assert!(!start.lens.is_on() && start.backdrop_sigma < 1.0, "flat");
+        store.tick_glass(std::time::Duration::from_millis(100));
+        let mid = surface_of(&store, panel);
+        assert!(mid.lens.is_on() && mid.backdrop_sigma < 15.0, "{mid:?}");
+        for _ in 0..5 {
+            store.tick_glass(std::time::Duration::from_millis(100));
+        }
+        assert!(!store.is_materializing(), "settled");
+        assert_eq!(surface_of(&store, panel).backdrop_sigma, 15.0);
+        // Off, it still draws as it goes, then nothing.
+        store.set_backdrop(panel, None);
+        assert_eq!(store.drawn_glass(panel), Some((glass, 1.0)));
+        for _ in 0..4 {
+            store.tick_glass(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(store.drawn_glass(panel), None);
+        // Reduced motion: at once.
+        store.set_reduced_motion(true);
+        store.set_backdrop(panel, Some(glass));
+        assert!(!store.is_materializing());
+    }
+
+    #[test]
+    fn a_merging_group_melts_its_glass_children_into_one_surface() {
+        use crate::component::FlexStyle;
+        let mut store = NodeStore::new();
+        let (row, pills) = {
+            let mut cx = BuildCx::new(&mut store);
+            let mut pills = Vec::new();
+            cx.flex(
+                FlexStyle {
+                    gap: 6.0,
+                    ..FlexStyle::default()
+                },
+                |cx| {
+                    for _ in 0..3 {
+                        let pill = cx.leaf(LeafStyle {
+                            size: Sizing::fixed(40.0, 24.0),
+                            style: BoxStyle::NONE.with_radius(12.0),
+                        });
+                        cx.backdrop(pill, liquid());
+                        pills.push(pill.id());
+                    }
+                },
+            );
+            (cx.root().unwrap(), pills)
+        };
+        store.layout(row, Rect::new(0.0, 0.0, 300.0, 40.0), &mut Vec::new());
+        let surfaces = |store: &NodeStore| -> Vec<FrostedMaterial> {
+            paint(store, row)
+                .into_iter()
+                .filter_map(|p| match p {
+                    Primitive::Frosted(s) => Some(*s),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(surfaces(&store).len(), 3, "apart: each its own");
+        store.set_glass_merge(row, 12.0);
+        let melted = surfaces(&store);
+        let [one] = &melted[..] else {
+            panic!("one surface: {melted:?}");
+        };
+        let union = one.merged.expect("the shapes melted");
+        assert_eq!(union.count, 3);
+        assert_eq!(union.spacing, 12.0);
+        assert_eq!(union.shapes[1].0, store.world(pills[1]));
+        // Different glass melts in runs of the same.
+        store.set_backdrop(pills[2], Some(Backdrop::REGULAR));
+        settle(&mut store);
+        let runs = surfaces(&store);
+        assert_eq!(runs.len(), 2, "{runs:?}");
+        assert_eq!(runs[0].merged.map(|u| u.count), Some(2));
+        assert!(runs[1].merged.is_none(), "a run of one is plain glass");
     }
 }

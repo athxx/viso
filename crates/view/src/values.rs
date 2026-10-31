@@ -235,6 +235,7 @@ pub(crate) fn control_cells(
         look.backdrop,
         look.ripple,
         look.text_shadow,
+        look.glass_merge,
         semantics.label,
         semantics.hint,
         semantics.value,
@@ -330,7 +331,7 @@ pub(crate) fn control_cells(
 /// a video's `playing`, `looping`, `muted`, `volume`, `rate`, `controls`
 /// and `fullscreen`, a camera view's `mirror`, its `backdrop` and
 /// `ripple`, and its text's `text_shadow`.
-const SHOWN: usize = 80;
+const SHOWN: usize = 81;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -414,6 +415,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Backdrop,
     ControlInput::Ripple,
     ControlInput::TextShadow,
+    ControlInput::GlassMerge,
 ];
 
 /// Where `input`'s value sits among the values a node shows.
@@ -434,15 +436,18 @@ macro_rules! shown {
 
 /// Where a video's `controls` and `fullscreen` sit among the values a node
 /// shows.
-const CONTROLS: usize = SHOWN - 6;
-const FULLSCREEN: usize = SHOWN - 5;
+const CONTROLS: usize = at(ControlInput::Controls);
+const FULLSCREEN: usize = at(ControlInput::Fullscreen);
 
 /// Where its `backdrop` and `ripple` sit among the values a node shows.
-const BACKDROP: usize = SHOWN - 3;
-const RIPPLE: usize = SHOWN - 2;
+const BACKDROP: usize = at(ControlInput::Backdrop);
+const RIPPLE: usize = at(ControlInput::Ripple);
 
 /// Where its text's `text_shadow` sits among the values a node shows.
-const TEXT_SHADOW: usize = SHOWN - 1;
+const TEXT_SHADOW: usize = at(ControlInput::TextShadow);
+
+/// Where its `glass_merge` sits among the values a node shows.
+const GLASS_MERGE: usize = at(ControlInput::GlassMerge);
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 35;
@@ -726,6 +731,7 @@ impl Shown {
             backdrop,
             ripple,
             text_shadow,
+            glass_merge,
         ] = shown!(
             showing,
             Value,
@@ -769,6 +775,7 @@ impl Shown {
             Backdrop,
             Ripple,
             TextShadow,
+            GlassMerge,
         );
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -1020,6 +1027,9 @@ impl Shown {
                 given => frost(given),
             };
             store.set_backdrop(self.node, backdrop);
+        }
+        if shown(GLASS_MERGE) && (first || changed(GLASS_MERGE)) {
+            store.set_glass_merge(self.node, dp(glass_merge).max(0.0));
         }
         // A press ripples a button or a chip the platform's way, unless its
         // `ripple` says otherwise.
@@ -2748,6 +2758,7 @@ fn frost(value: &Value) -> Option<Backdrop> {
             light,
             adaptive,
             fallback,
+            interactive,
         ] => Some(Backdrop {
             blur: dp(blur).max(0.0),
             saturation: float(saturation, 1.0),
@@ -2764,6 +2775,7 @@ fn frost(value: &Value) -> Option<Backdrop> {
                 Value::Nil => None,
                 given => Some(color(given)),
             },
+            interactive: truth(interactive, false),
         }),
         _ => None,
     }

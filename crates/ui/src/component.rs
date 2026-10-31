@@ -7113,6 +7113,10 @@ impl LayoutTree for NodeStore {
         {
             self.note_moved(parent.get());
         }
+        // Glass that melts into its parent's is drawn by it.
+        if !parent.is_none() && self.backdrops.merge(parent.get()) > 0.0 {
+            self.note_moved(parent.get());
+        }
     }
 
     #[inline]

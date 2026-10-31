@@ -435,6 +435,7 @@ impl WindowState {
             || self.store.is_spinning()
             || self.store.is_shimmering()
             || self.store.is_rippling()
+            || self.store.is_materializing()
             || self.store.is_progressing()
             || self.store.is_sliding()
             || self.store.refreshes_due()

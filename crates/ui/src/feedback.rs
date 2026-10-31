@@ -9,6 +9,10 @@
 //! ripples of a store run on the frame loop only while one shows; under
 //! reduced motion the ink covers the box at once and only fades.
 //!
+//! Interactive glass lights from within instead: the same press, timed the
+//! same way, is a glow its glass draws from where it landed, spreading
+//! through the glass and any glass melted into it.
+//!
 //! A haptic is asked for through [`EventCx::feedback`](crate::EventCx::feedback)
 //! and played once the frame is done: a frame plays one, the last asked.
 //! The table of rippling nodes is cold: one entry for each node told, kept
@@ -42,6 +46,9 @@ pub const NATIVE_RIPPLE: bool = cfg!(target_os = "android");
 /// (seconds).
 const SPREAD: f32 = 0.3;
 const FADE: f32 = 0.2;
+/// How bright a press's glow inside glass is at its peak.
+const GLOW: f32 = 0.35;
+
 /// How strong the ink is over a light fill, and over a dark one.
 const DARK_INK: f32 = 0.12;
 const LIGHT_INK: f32 = 0.24;
@@ -137,12 +144,12 @@ impl NodeStore {
     /// Starts the ripple of a press at `(x, y)` in the window on `target`:
     /// on the nearest node from it up that ripples.
     pub(crate) fn start_ripple(&mut self, target: NodeId, x: f32, y: f32) {
-        if self.feedback.nodes.is_empty() {
+        if self.feedback.nodes.is_empty() && !self.has_glass() {
             return;
         }
         let mut at = Some(target);
         while let Some(node) = at {
-            if self.ripples(node) {
+            if self.ripples(node) || self.glows(node) {
                 let world = self.world(node);
                 self.feedback.showing.push(Ripple {
                     node,
@@ -151,10 +158,39 @@ impl NodeStore {
                     released: None,
                 });
                 self.mark_dirty(node, DirtyClass::PAINT);
+                if let Some(parent) = self.parent(node)
+                    && self.glass_merge(parent) > 0.0
+                {
+                    self.mark_dirty(parent, DirtyClass::PAINT);
+                }
                 return;
             }
             at = self.parent(node);
         }
+    }
+
+    /// Whether a press on node `id` lights its glass from within.
+    #[inline]
+    fn glows(&self, id: NodeId) -> bool {
+        self.backdrop(id).is_some_and(|b| b.interactive)
+    }
+
+    /// The glow a press on node `id` lights its glass with, over its box
+    /// `world`: from where it landed, reaching further as it spreads.
+    pub(crate) fn press_glow(&self, id: NodeId, world: Rect) -> Option<viso_render::Glow> {
+        let showing = &self.feedback.showing;
+        if showing.is_empty() {
+            return None;
+        }
+        let ripple = showing.iter().rev().find(|r| r.node == id)?;
+        let [x, y] = ripple.from;
+        let reach = x.max(world.w - x).hypot(y.max(world.h - y));
+        let spread = ripple.spread(self.reduced_motion());
+        Some(viso_render::Glow {
+            at: viso_render::Point::new(world.x + x, world.y + y),
+            radius: reach * (0.4 + 0.6 * spread),
+            strength: GLOW * ripple.strength(),
+        })
     }
 
     /// Lets go of the ripples a press holds: they fade as they spread on.
@@ -210,7 +246,7 @@ impl NodeStore {
         out: &mut Vec<Primitive>,
     ) {
         let showing = &self.feedback.showing;
-        if showing.is_empty() || !showing.iter().any(|r| r.node == node) {
+        if showing.is_empty() || !showing.iter().any(|r| r.node == node) || self.glows(node) {
             return;
         }
         let reduced = self.reduced_motion();

@@ -1384,9 +1384,9 @@ out     = mix(color, saturate(1 + (color - luma)·2.85), g)       // 提亮成�
 - 有透镜、高光或亮度层的表面即使不模糊也开 capture（sigma 取 ladder 最低档之上一点）；
 - 位移只向内，capture ROI 不变，一组相邻面板仍共享一次 capture 和一条 ladder；
 - 每段参数是 per-instance 的，分支在一次 draw 内一致，不引入发散；
-- 合并形状（`GlassGroup`）：组内各 SDF 取 smooth-min 并集，先在一个低分辨率 matte（RGBA16F：距离、法线×强度、半短边）里求出，几何不变就缓存，最终 pass 一次线性采样复原边缘与法线；单个表面直接解析求 SDF，不走 matte；
+- 合并形状（`glass_merge`）：同一父节点下相同玻璃的子节点，每至多 4 个画成一个表面（`FrostedMaterial.merged`，`GlassUnion`），其圆角矩形 SDF 在片元内解析求出、按 `spacing` 取多项式 smooth-min 并集（`k = spacing`，两形状相距不足 `spacing` 时连成一体），法线取并集 SDF 的有限差分；一次 draw、一次 capture，不用 matte、不额外开 pass；表面的 rect 是各形状包围盒外扩 `spacing/4`；
 - `regular` 自适应：背后平均亮度取 ladder 最粗一级（不读回），据此切明暗、调阴影深浅、把 tint 映射成随亮度变化的一组色调；尺寸越大越「厚」（bevel、位移、模糊、阴影随之加大），在 CPU 侧算出；`clear` 不自适应，下垫一层压暗；
-- 按压光（指针处的径向辉光，扩散到相邻玻璃）在同一 pass 内求值；出现与消失调的是透镜强度（materialize），不是不透明度。
+- 按压光（`Glow`：指针处的径向辉光，`t²` 衰减、screen 叠加，随按压的墨迹时序扩散与淡出）在同一 pass 内求值，融合的一组玻璃共用一个；出现与消失（materialize，约 0.35s，ease-out cubic）同时调模糊、tint alpha、亮度层、位移与高光，不是不透明度；减少动态效果时立即到位。
 
 ## 19.2 HDR / Wide Gamut
 

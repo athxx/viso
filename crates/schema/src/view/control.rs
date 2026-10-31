@@ -382,6 +382,7 @@ impl ControlKind {
             (_, "shadow") => ControlInput::Shadow,
             (_, "backdrop") => ControlInput::Backdrop,
             (_, "ripple") => ControlInput::Ripple,
+            (_, "glass_merge") => ControlInput::GlassMerge,
             (
                 ControlKind::Label
                 | ControlKind::Button
@@ -1214,6 +1215,9 @@ pub enum ControlInput {
     Ripple,
     /// A text's `text_shadow`: the soft copies of its glyphs it casts.
     TextShadow,
+    /// The node's `glass_merge`: how near its glass children come before
+    /// they melt into one.
+    GlassMerge,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1501,7 +1505,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 89] = [
+    pub const ALL: [ControlInput; 90] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1591,6 +1595,7 @@ impl ControlInput {
         ControlInput::Backdrop,
         ControlInput::Ripple,
         ControlInput::TextShadow,
+        ControlInput::GlassMerge,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1636,6 +1641,8 @@ pub struct Look {
     pub ripple: Option<u32>,
     /// Its text's `text_shadow`: a `List<TextShadow>`.
     pub text_shadow: Option<u32>,
+    /// Its `glass_merge`: a `Dp`, `0` for glass children apart.
+    pub glass_merge: Option<u32>,
     /// Its `transition.background`: how a new background moves in.
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
@@ -1744,6 +1751,7 @@ impl Control {
             ControlInput::Backdrop => self.look.backdrop,
             ControlInput::Ripple => self.look.ripple,
             ControlInput::TextShadow => self.look.text_shadow,
+            ControlInput::GlassMerge => self.look.glass_merge,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Translate => self.look.translate,
@@ -1849,6 +1857,7 @@ impl Control {
             ControlInput::Backdrop => &mut self.look.backdrop,
             ControlInput::Ripple => &mut self.look.ripple,
             ControlInput::TextShadow => &mut self.look.text_shadow,
+            ControlInput::GlassMerge => &mut self.look.glass_merge,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Translate => &mut self.look.translate,
@@ -1995,6 +2004,7 @@ impl Encode for Control {
             look.backdrop,
             look.ripple,
             look.text_shadow,
+            look.glass_merge,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -2161,6 +2171,7 @@ impl Decode for Control {
                 backdrop: entry()?,
                 ripple: entry()?,
                 text_shadow: entry()?,
+                glass_merge: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -2502,6 +2513,7 @@ mod tests {
                 backdrop: None,
                 ripple: None,
                 text_shadow: None,
+                glass_merge: None,
             },
             arms: Box::new([LookArm {
                 target: Switched::Input(ControlInput::Border),

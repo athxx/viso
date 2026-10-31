@@ -179,3 +179,56 @@ fn the_regular_and_clear_presets_are_the_liquid_glasses_in_every_target() {
         assert_eq!(surfaces[1].adaptive_tint, None, "clear does not");
     }
 }
+
+const MELT: &str = r##"
+export component Melt {
+    view {
+        Row {
+            gap: 6dp;
+            glass_merge: 12dp;
+            Column {
+                width: 40dp; height: 24dp; corner_radius: 12dp;
+                backdrop: Option::Some(Backdrop { interactive: true, ..Backdrop::regular() });
+            }
+            Column {
+                width: 40dp; height: 24dp; corner_radius: 12dp;
+                backdrop: Option::Some(Backdrop { interactive: true, ..Backdrop::regular() });
+            }
+        }
+    }
+}
+"##;
+
+#[test]
+fn a_merging_row_melts_its_interactive_glass_into_one_surface_in_every_target() {
+    for mut rt in [Rt::mount(MELT), Rt::packaged(MELT)] {
+        assert_eq!(rt.fault(), None);
+        rt.relayout();
+        let root = rt.root.expect("mounted");
+        assert_eq!(rt.store.glass_merge(root), 12.0);
+        let [a, _]: [NodeId; 2] = rt.children(root).try_into().expect("two");
+        let glass = rt.store.backdrop(a).expect("glass");
+        assert!(glass.interactive);
+        assert_eq!(
+            glass,
+            Backdrop {
+                interactive: true,
+                ..Backdrop::REGULAR
+            }
+        );
+
+        let mut out = Vec::new();
+        viso_ui::paint::paint_tree(&rt.store, root, &mut out);
+        let surfaces: Vec<_> = out
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Frosted(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        let [one] = &surfaces[..] else {
+            panic!("one melted surface: {surfaces:?}");
+        };
+        assert_eq!(one.merged.map(|u| u.count), Some(2));
+    }
+}
