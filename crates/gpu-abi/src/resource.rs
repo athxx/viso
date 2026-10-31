@@ -441,6 +441,9 @@ pub enum BlendMode {
     Replace,
     /// Premultiplied-alpha "over": `src + dst * (1 - src.a)`. The Viso default.
     PremultipliedOver,
+    /// Porter-Duff "destination out": `dst * (1 - src.a)` — the source's
+    /// coverage erases what lies under it and adds nothing of its own.
+    DestinationOut,
 }
 
 /// How a texture is sampled at coordinates between texels (and, for

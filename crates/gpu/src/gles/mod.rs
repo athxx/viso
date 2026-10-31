@@ -757,6 +757,10 @@ impl Gles3Backend {
                         (gl.glEnable)(GL_BLEND);
                         (gl.glBlendFunc)(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
                     }
+                    BlendMode::DestinationOut => {
+                        (gl.glEnable)(GL_BLEND);
+                        (gl.glBlendFunc)(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+                    }
                 }
                 if p.target >= 0 {
                     (gl.glUniform4f)(p.target, flip, fh as f32, f32::from(turns), fw as f32);

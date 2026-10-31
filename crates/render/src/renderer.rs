@@ -214,6 +214,9 @@ pub(crate) enum SegmentKind {
     /// A single image, in the image buffer, sampling `bind_group`'s texture.
     /// `start`/`count` count instances in that buffer.
     Image { bind_group: BindGroupId },
+    /// An erasing layer's composite, in the image buffer, sampling
+    /// `bind_group`'s texture: its coverage cuts its parent target.
+    Erase { bind_group: BindGroupId },
     /// One run of glyphs, in the glyph buffer, sampling `bind_group`'s A8 pool.
     /// `start`/`count` count instances in that buffer.
     GlyphRun { bind_group: BindGroupId },
@@ -268,6 +271,7 @@ impl SegmentKind {
             SegmentKind::AnalyticCapsule => BatchFamily::AnalyticCapsule,
             SegmentKind::AnalyticLine => BatchFamily::AnalyticLine,
             SegmentKind::Image { .. } => BatchFamily::Image,
+            SegmentKind::Erase { .. } => BatchFamily::Erase,
             SegmentKind::GlyphRun { .. } => BatchFamily::GlyphRun,
             SegmentKind::MtsdfRun { .. } => BatchFamily::MtsdfRun,
             SegmentKind::Gradient { .. } => BatchFamily::Gradient,
@@ -294,6 +298,7 @@ impl SegmentKind {
     pub(crate) fn resource(self) -> Option<BindGroupId> {
         match self {
             SegmentKind::Image { bind_group }
+            | SegmentKind::Erase { bind_group }
             | SegmentKind::GlyphRun { bind_group }
             | SegmentKind::MtsdfRun { bind_group }
             | SegmentKind::Gradient { bind_group }
@@ -469,6 +474,10 @@ struct OffscreenPass {
     /// draw has no color-matrix slot, a blended layer's whole color chain is
     /// realized as [`PassWork::ColorTransform`] rungs and `color` stays `None`.
     blend: Option<(Blend, usize)>,
+    /// Whether the composite erases its parent target by its coverage (a
+    /// `DstOut` layer) rather than drawing over it: the fixed-function stage
+    /// expresses it, so it reads no destination and nests anywhere.
+    erase: bool,
     /// The rounded rect the composite is masked to, in world space: the clip
     /// of a layer whose [`Primitive::ClipCorners`] rounds it. `None` for a
     /// layer its scissor clips.
@@ -563,7 +572,10 @@ fn scan_layer_subtree(primitives: &[Primitive], layer_index: usize) -> SubtreeFa
                 continue;
             }
             // Pure annotations on whichever layer owns them.
-            Primitive::ColorEffect(_) | Primitive::Blend(_) | Primitive::ClipCorners(_) => continue,
+            Primitive::ColorEffect(_)
+            | Primitive::Blend(_)
+            | Primitive::ClipCorners(_)
+            | Primitive::Isolate => continue,
             _ if depth > 0 => continue,
             Primitive::Quad(quad) => Some(quad.rect),
             Primitive::AnalyticRRect(rrect) => Some(rrect.rect),
@@ -825,6 +837,9 @@ pub(crate) enum CompositeLowering {
     ColorTransform,
     /// The ordinary case: one textured quad through the image pipeline.
     Image,
+    /// An erasing layer: the same quad through the image pipeline that
+    /// blends destination-out.
+    Erase,
 }
 
 /// A (source, destination) texture pair's bind group, cached the same way and for
@@ -1133,6 +1148,9 @@ pub struct Renderer {
     analytic_line_pipeline: PipelineId,
     /// The Image built-in pipeline (registered once).
     image_pipeline: PipelineId,
+    /// The image pipeline blending destination-out: an erasing layer's
+    /// composite.
+    erase_pipeline: PipelineId,
     /// The GlyphRun built-in pipeline (registered once).
     glyph_pipeline: PipelineId,
     /// The Mtsdf built-in pipeline — the scalable text lane (registered once).
@@ -1912,6 +1930,15 @@ impl Renderer {
                 &ImageInstance::LAYOUT,
             )
             .expect("ImageInstance layout matches the image shader schema");
+        let erase_pipeline = backend
+            .create_pipeline(
+                &PipelineDesc {
+                    blend: viso_gpu::BlendMode::DestinationOut,
+                    ..desc(entry(PipelineFamily::Image), "erase")
+                },
+                &ImageInstance::LAYOUT,
+            )
+            .expect("ImageInstance layout matches the image shader schema");
 
         let glyph_pipeline = backend
             .create_pipeline(
@@ -2007,6 +2034,7 @@ impl Renderer {
             analytic_capsule_pipeline,
             analytic_line_pipeline,
             image_pipeline,
+            erase_pipeline,
             glyph_pipeline,
             mtsdf_pipeline,
             gradient_pipeline,
@@ -2987,8 +3015,10 @@ impl Renderer {
                             Primitive::ColorEffect(_)
                                 | Primitive::Blend(_)
                                 | Primitive::ClipCorners(_)
+                                | Primitive::Isolate
                         )
                     });
+                    let isolated = markers.clone().any(|p| matches!(p, Primitive::Isolate));
                     // The last corners marker rounds the clip; sharp corners
                     // leave it to the scissor.
                     let mask = markers
@@ -3061,6 +3091,7 @@ impl Renderer {
                         shared_backdrop,
                         // A clip in a turned root is no scissor.
                         complex_mask: mask.is_some() || self.transforms.turned(),
+                        isolated,
                         ..LayerRequest::default()
                     };
                     let plan = plan_layer(&request);
@@ -3133,7 +3164,9 @@ impl Renderer {
                         // the surface pass can capture (see `backdrop_roi`); a
                         // nested one still isolates, but composites `SrcOver`.
                         let mut isolate = None;
+                        let erase = blend == Blend::DstOut;
                         if blend != Blend::SrcOver
+                            && !erase
                             && matches!(target, PassTarget::Main)
                             && let Some(roi) = self.backdrop_roi(world_clip, 0.0)
                         {
@@ -3141,7 +3174,8 @@ impl Renderer {
                             isolate = Some((blend, capture));
                             self.blend_isolations += 1;
                         }
-                        let idx = self.open_offscreen(world_clip, layer.opacity, isolate, mask);
+                        let idx =
+                            self.open_offscreen(world_clip, layer.opacity, isolate, erase, mask);
                         self.layers[record as usize].drawn = LayerDrawn::Offscreen(idx);
                         self.layer_stack.push(LayerEntry {
                             clip: world_clip,
@@ -3167,7 +3201,10 @@ impl Renderer {
                 // over them again here is the no-op that keeps the chain a pure
                 // annotation on the layer — and makes a marker anywhere else in
                 // the stream harmless rather than an error.
-                Primitive::ColorEffect(_) | Primitive::Blend(_) | Primitive::ClipCorners(_) => {}
+                Primitive::ColorEffect(_)
+                | Primitive::Blend(_)
+                | Primitive::ClipCorners(_)
+                | Primitive::Isolate => {}
                 Primitive::Transform(slot) => {
                     self.transforms
                         .push(slot.0, !matches!(target, PassTarget::Main));
@@ -3845,7 +3882,10 @@ impl Renderer {
                 let start = self.image_scratch.len() as u32;
                 self.image_scratch.push(instance);
                 self.merge_or_push(Segment {
-                    kind: SegmentKind::Image { bind_group },
+                    kind: match self.offscreen_passes[pass].erase {
+                        true => SegmentKind::Erase { bind_group },
+                        false => SegmentKind::Image { bind_group },
+                    },
                     start,
                     count: 1,
                     clip,
@@ -4384,6 +4424,8 @@ impl Renderer {
         let p = &self.offscreen_passes[pass];
         if p.blend.is_some() {
             CompositeLowering::AdvancedBlend
+        } else if p.erase {
+            CompositeLowering::Erase
         } else if p.color.is_some() {
             CompositeLowering::ColorTransform
         } else {
@@ -4419,6 +4461,11 @@ impl Renderer {
     /// The Image pipeline handle, for batch introspection.
     pub(crate) fn image_pipeline_id(&self) -> PipelineId {
         self.image_pipeline
+    }
+
+    /// The erasing image pipeline handle, for batch introspection.
+    pub(crate) fn erase_pipeline_id(&self) -> PipelineId {
+        self.erase_pipeline
     }
 
     /// The GlyphRun pipeline handle, for batch introspection.
@@ -5015,6 +5062,7 @@ impl Renderer {
         world_clip: Rect,
         opacity: f32,
         blend: Option<(Blend, usize)>,
+        erase: bool,
         mask: Option<RoundMask>,
     ) -> usize {
         let idx = self.offscreen_passes.len();
@@ -5027,6 +5075,7 @@ impl Renderer {
             opacity,
             color: None,
             blend,
+            erase,
             mask,
             key: 0,
             slot: self.transforms.slot(),
@@ -5376,13 +5425,16 @@ impl Renderer {
         }
         .masked(pass.mask);
         let bounds = crate::scene::bounds::Bounds::from_world(pass.rect, 0.0, 0.0);
+        // The composite draws into the parent target: the surface, or the
+        // enclosing offscreen layer it is nested in, at that layer's origin.
+        let parent = self.emit_context();
         self.scene.ingest_composite(
             composite,
             idx,
             EmitContext {
                 clip: None,
-                offscreen: None,
-                origin: [0.0, 0.0],
+                offscreen: parent.offscreen,
+                origin: parent.origin,
                 space: self.transforms.space(self.active_chain()),
                 fold: 1.0,
             },
@@ -5694,8 +5746,11 @@ impl Renderer {
                 uniforms,
                 scissor,
             },
-            SegmentKind::Image { bind_group } => DrawCommand {
-                pipeline: self.image_pipeline,
+            SegmentKind::Image { bind_group } | SegmentKind::Erase { bind_group } => DrawCommand {
+                pipeline: match seg.kind {
+                    SegmentKind::Erase { .. } => self.erase_pipeline,
+                    _ => self.image_pipeline,
+                },
                 bind_group: Some(bind_group),
                 geometry: Geometry::Generated { count: seg.count },
                 instance_buffer: self

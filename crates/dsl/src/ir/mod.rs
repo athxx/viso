@@ -710,7 +710,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                         &mut pending,
                     ) {
                         Fold::Folded => {}
-                        Fold::Pending if layout_slot(kind, &name).is_some() => {
+                        Fold::Pending if layout_slot(kind, control, &name).is_some() => {
                             laid.push(name.clone());
                             control_reads.push((name, at, instance));
                         }
@@ -786,7 +786,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                 Some(format!(
                     "a `{type_name}`'s padding is the area it avoids; pad its content instead"
                 ))
-            } else if !kind.pads() {
+            } else if !pads(kind, control) {
                 Some(format!(
                     "a `{type_name}` has no content box to pad; pad a container around it"
                 ))
@@ -1393,12 +1393,14 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             &mut root.style,
                             &mut root.pending,
                         );
-                        if matches!(fold, Fold::Pending) && layout_slot(root.kind, &name).is_some() {
+                        if matches!(fold, Fold::Pending)
+                            && layout_slot(root.kind, control, &name).is_some()
+                        {
                             root.control_reads.push((name.clone(), at, parent));
                             continue;
                         }
                         let reason = match fold {
-                            Fold::Folded if name == "padding" && !root.kind.pads() => Some(format!(
+                            Fold::Folded if name == "padding" && !pads(root.kind, control) => Some(format!(
                                 "a `{}` has no content box to pad; pad a container around it",
                                 root.type_name
                             )),
@@ -1417,7 +1419,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
                     let laid: Vec<String> = root
                         .control_reads
                         .iter()
-                        .filter(|(name, ..)| layout_slot(root.kind, name).is_some())
+                        .filter(|(name, ..)| layout_slot(root.kind, control, name).is_some())
                         .map(|(name, ..)| name.clone())
                         .collect();
                     root.style.unsettle_rules();
@@ -1483,9 +1485,21 @@ fn unapplied(
     }
 }
 
+/// Whether a node of `kind` showing `control` has a content box its
+/// `padding` insets: a container, or a button or field, whose caption or
+/// text keeps from its edges.
+fn pads(kind: NodeKind, control: ControlKind) -> bool {
+    kind.pads()
+        || kind == NodeKind::Leaf
+            && matches!(
+                control,
+                ControlKind::Button | ControlKind::TextInput | ControlKind::Number
+            )
+}
+
 /// The layout slot the binding of property `name` on a node of `kind` sets
 /// from its value as it changes; `None` for one no such node lays out by.
-fn layout_slot(kind: NodeKind, name: &str) -> Option<LayoutSlot> {
+fn layout_slot(kind: NodeKind, control: ControlKind, name: &str) -> Option<LayoutSlot> {
     let slot = LayoutSlot::of(name)?;
     let applies = match slot {
         LayoutSlot::Width
@@ -1495,7 +1509,7 @@ fn layout_slot(kind: NodeKind, name: &str) -> Option<LayoutSlot> {
         | LayoutSlot::MinHeight
         | LayoutSlot::MaxHeight
         | LayoutSlot::Margin => kind != NodeKind::Component,
-        LayoutSlot::Padding => kind.pads(),
+        LayoutSlot::Padding => pads(kind, control),
         LayoutSlot::Gap => matches!(kind, NodeKind::Flex | NodeKind::Flow | NodeKind::Grid),
         LayoutSlot::Axis => kind == NodeKind::Flex,
         LayoutSlot::Justify | LayoutSlot::Align => matches!(kind, NodeKind::Flex | NodeKind::Flow),

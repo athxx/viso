@@ -1024,6 +1024,9 @@ struct InstanceIn {
     uint use_lut;
     packed_float4 color0;
     packed_float4 color1;
+    packed_float2 mask_pos;
+    packed_float2 mask_size;
+    packed_float4 mask_radius;
 };
 
 struct Uniforms {
@@ -1035,17 +1038,20 @@ struct Uniforms {
 
 struct VOut {
     float4 position [[position]];
-    float2 local;       // pixel-space sample position
-    float2 rect_min;    // rect top-left (pixels)
-    float2 rect_max;    // rect bottom-right (pixels)
-    uint kind [[flat]];          // 0=linear 1=radial 2=sweep
-    uint extend [[flat]];        // 0=clamp 1=repeat 2=mirror
-    float2 g0;          // gradient p0 (pixels)
-    float2 g1;          // gradient p1 / (radius,_) / (angle,_)
-    float lut_v;        // LUT row for this gradient
-    uint use_lut [[flat]];       // 0=inline 2-stop 1=LUT
-    float4 color0;      // inline stop 0 (premultiplied)
-    float4 color1;      // inline stop 1 (premultiplied)
+    float2 local;          // pixel-space sample position
+    float2 rect_min;       // rect top-left (pixels)
+    float2 rect_max;       // rect bottom-right (pixels)
+    uint kind [[flat]];             // 0=linear 1=radial 2=sweep
+    uint extend [[flat]];           // 0=clamp 1=repeat 2=mirror
+    float2 g0;             // gradient p0 (pixels)
+    float2 g1;             // gradient p1 / (radius,_) / (angle,_)
+    float lut_v;           // LUT row for this gradient
+    uint use_lut [[flat]];          // 0=inline 2-stop 1=LUT
+    float4 color0;         // inline stop 0 (premultiplied)
+    float4 color1;         // inline stop 1 (premultiplied)
+    float2 mask_center;
+    float2 mask_half;
+    float4 mask_radius;    // lt, rt, rb, lb; all 0 = unmasked
 };
 
 vertex VOut vertex_main(uint vid [[vertex_id]],
@@ -1090,6 +1096,9 @@ vertex VOut vertex_main(uint vid [[vertex_id]],
     out.use_lut = inst.use_lut;
     out.color0 = float4(inst.color0);
     out.color1 = float4(inst.color1);
+    out.mask_center = float2(inst.mask_pos) + float2(inst.mask_size) * 0.5;
+    out.mask_half = float2(inst.mask_size) * 0.5;
+    out.mask_radius = float4(inst.mask_radius);
     return out;
 }
 
@@ -1126,6 +1135,19 @@ static inline float gradient_extend(uint mode, float t) {
     return clamp(t, 0.0, 1.0);
 }
 
+// Signed distance to a rounded box with an independent radius per corner
+// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+// inside; the radius convention is the Quad's.
+static inline float rrect_sdf(float2 p, float2 center, float2 half_ext, float4 radii) {
+    float2 d = p - center;
+    float r = d.x < 0.0 ? (d.y < 0.0 ? radii.x : radii.w)
+                        : (d.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(d) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
 // Device-pixel coverage factor: how many SDF units span one screen pixel at the
 // current sampling position, inverted. Coverage ramps over ~1 device pixel
 // regardless of scale, so the AA width tracks the physical grid.
@@ -1144,6 +1166,13 @@ fragment float4 fragment_main(VOut in [[stage_in]],
     float d = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0);
     float aa = aa_factor(in.local);
     float cov = clamp(-d * aa, 0.0, 1.0);
+    // A rounded mask (a rounded box's background) covers what lies inside it,
+    // antialiased over one device pixel; without one every sample is in.
+    float4 r = in.mask_radius;
+    if (max(max(r.x, r.y), max(r.z, r.w)) > 0.0) {
+        float md = rrect_sdf(in.local, in.mask_center, in.mask_half, r);
+        cov = cov * clamp(-md * aa, 0.0, 1.0);
+    }
 
     // Gradient color at this sample: raw parameter → extend wrap → LUT sample or
     // inline 2-stop lerp. Both the LUT texel and the inline colors are premultiplied

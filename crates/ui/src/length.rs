@@ -942,6 +942,7 @@ impl NodeStore {
                     *padding = folded;
                     moved
                 }
+                LayoutInput::Leaf { .. } => self.content_insets.set(id.index(), folded),
                 _ => false,
             };
             if moved {

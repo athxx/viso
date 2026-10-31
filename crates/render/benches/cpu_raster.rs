@@ -102,6 +102,7 @@ fn dashboard(highlight: f32) -> Vec<Primitive> {
             },
         ],
         interp: InterpolationSpace::LinearRgb,
+        mask: None,
     })];
     for row in 0..3 {
         for col in 0..4 {

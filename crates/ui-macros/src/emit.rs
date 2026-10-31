@@ -648,7 +648,10 @@ impl Emit<'_> {
             }
             NodeKind::Leaf => {
                 let style = leaf_style_tokens(&node.style);
-                quote! { cx.leaf(#style) }
+                match node.style.padding.map(inset_tokens) {
+                    Some(padding) => quote! { cx.padded_leaf(#style, #padding) },
+                    None => quote! { cx.leaf(#style) },
+                }
             }
             NodeKind::Component => {
                 let path = syn::parse_str::<syn::Path>(&node.type_name)
@@ -853,6 +856,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let shadow = entry(look.shadow);
     let backdrop = entry(look.backdrop);
     let ripple = entry(look.ripple);
+    let text_shadow = entry(look.text_shadow);
     let rust = match control.rust.as_deref() {
         Some(rust) => {
             let widget = &*rust.widget;
@@ -978,6 +982,7 @@ fn control_tokens(control: Control) -> TokenStream {
                 shadow: #shadow,
                 backdrop: #backdrop,
                 ripple: #ripple,
+                text_shadow: #text_shadow,
             },
             arms: ::std::boxed::Box::new([#(#arms),*]),
             node: ::viso::__private::viso_view::NodeEntries {

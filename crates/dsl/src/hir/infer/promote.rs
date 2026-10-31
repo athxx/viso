@@ -1,7 +1,9 @@
 //! The conversions a value takes where its slot types it: a single-unit length
-//! widening to `MixedLength`, and a length standing for `fixed` of a
-//! `Sizing` or `all` of an `EdgeInsets`. Inference records each where
-//! it types the value; lowering converts the value's representation there.
+//! widening to `MixedLength`, a length standing for `fixed` of a `Sizing` or
+//! `all` of an `EdgeInsets`, a `Color` standing for `Fill::color` of it, and
+//! a value standing for the one-item list of it. Inference records each
+//! where it types the value; lowering converts the value's representation
+//! there.
 
 use super::InferCx;
 use crate::hir::ty::Ty;
@@ -68,6 +70,11 @@ pub(crate) struct Promotion {
     pub(crate) unit: Option<LengthUnit>,
     /// What the (widened) length then stands for.
     pub(crate) stands_for: Option<StandsFor>,
+    /// Whether the `Color` stands for `Fill::color` of it.
+    pub(crate) fill: bool,
+    /// Whether the value (as it converted above) stands for the one-item
+    /// list of it.
+    pub(crate) listed: bool,
 }
 
 impl InferCx<'_> {
@@ -94,6 +101,22 @@ impl InferCx<'_> {
             .entry((node.text_range(), node.kind()))
             .or_default()
             .stands_for = Some(stands_for);
+    }
+
+    /// Notes that the `Color` `node` stands for `Fill::color` of it.
+    pub(super) fn note_fill(&mut self, node: &SyntaxNode) {
+        self.promotions
+            .entry((node.text_range(), node.kind()))
+            .or_default()
+            .fill = true;
+    }
+
+    /// Notes that the value `node` stands for the one-item list of it.
+    pub(super) fn note_listed(&mut self, node: &SyntaxNode) {
+        self.promotions
+            .entry((node.text_range(), node.kind()))
+            .or_default()
+            .listed = true;
     }
 
     /// Forgets the conversions noted within `range`, before it is typed again.

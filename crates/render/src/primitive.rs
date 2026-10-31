@@ -527,6 +527,9 @@ pub struct Gradient {
     /// The color space the stops are interpolated in — an explicit
     /// choice, never inferred from the target format.
     pub interp: InterpolationSpace,
+    /// A rounded box the fill is masked to (a rounded box's background
+    /// layer), antialiased; `None` fills the whole rect.
+    pub mask: Option<RoundMask>,
 }
 
 impl Gradient {
@@ -560,6 +563,17 @@ impl Gradient {
             let p1 = c1.premultiply();
             ([p0.r, p0.g, p0.b, p0.a], [p1.r, p1.g, p1.b, p1.a])
         };
+        let (mask_pos, mask_size, mask_radius) = match self.mask {
+            Some(mask) if !mask.radius.is_sharp() => {
+                let rect = mask.rect;
+                (
+                    [rect.x, rect.y],
+                    [rect.w, rect.h],
+                    mask.radius.normalized(rect.w, rect.h).to_array(),
+                )
+            }
+            _ => ([0.0; 2], [0.0; 2], [0.0; 4]),
+        };
         GradientInstance {
             rect_pos: [self.rect.x, self.rect.y],
             rect_size: [self.rect.w, self.rect.h],
@@ -571,6 +585,9 @@ impl Gradient {
             use_lut: use_lut as u32,
             color0,
             color1,
+            mask_pos,
+            mask_size,
+            mask_radius,
         }
     }
 }
@@ -1999,6 +2016,14 @@ pub enum Primitive {
     /// a plain layer does; any rounded corner renders the layer offscreen and
     /// composites it through the rounded mask.
     ClipCorners(Corners),
+    /// Draw the layer just opened offscreen, whatever else it asks for, so
+    /// what composites into it — an erasing layer's cut — lands on its own
+    /// content and never on what lies behind it.
+    ///
+    /// Same placement rule as [`Primitive::ColorEffect`]: valid only in the
+    /// marker run immediately after [`Primitive::Layer`], ignored anywhere
+    /// else.
+    Isolate,
     /// Pop the most recent [`Primitive::Layer`] clip (and, for a translucent
     /// layer, close its offscreen pass and emit the composite).
     LayerEnd,
@@ -2066,6 +2091,7 @@ impl Primitive {
             Primitive::ColorEffect(_) => "color_effect",
             Primitive::Blend(_) => "blend",
             Primitive::ClipCorners(_) => "clip_corners",
+            Primitive::Isolate => "isolate",
             Primitive::LayerEnd => "layer_end",
             Primitive::Transform(_) => "transform",
             Primitive::TransformEnd => "transform_end",
@@ -2283,6 +2309,13 @@ pub struct GradientInstance {
     /// Last inline stop, **premultiplied** linear RGBA (used only when
     /// `use_lut == 0`).
     pub color1: [f32; 4],
+    /// The rounded mask's top-left corner, in points.
+    pub mask_pos: [f32; 2],
+    /// The rounded mask's size, in points.
+    pub mask_size: [f32; 2],
+    /// The mask's corner radii (left-top, right-top, right-bottom,
+    /// left-bottom); all zero leaves the fill unmasked.
+    pub mask_radius: [f32; 4],
 }
 
 /// GPU instance for the Image built-in shader.
@@ -3898,6 +3931,7 @@ mod tests {
                 },
             ],
             interp: InterpolationSpace::LinearRgb,
+            mask: None,
         };
         // Inline two-stop path: use_lut == 0, colors carried premultiplied.
         let inst = g.to_instance(0.0, false);

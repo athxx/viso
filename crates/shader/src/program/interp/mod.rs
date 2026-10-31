@@ -374,6 +374,7 @@ impl Canvas<'_, '_> {
                 BlendMode::PremultipliedOver => {
                     std::array::from_fn(|i| src[i] + dst[i] * (1.0 - src[3]))
                 }
+                BlendMode::DestinationOut => dst.map(|d| d * (1.0 - src[3])),
             };
             self.0.pixels[at] = if self.0.unorm8 { unorm8(out) } else { out };
         }

@@ -793,6 +793,8 @@ impl Jsx<'_> {
                         Prop::Var { name, token } => {
                             let value = match token {
                                 VarToken::Color => format!("show.color({v})"),
+                                VarToken::Background => format!("show.fill({v})"),
+                                VarToken::TextShadow => format!("show.textShadow({v})"),
                                 VarToken::Opacity => format!("show.opacity({v})"),
                                 VarToken::Radius => format!("show.radius({v})"),
                                 VarToken::Border => format!("show.stroke({v})"),

@@ -147,6 +147,9 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("use_lut", U1),
             ("color0", F4),
             ("color1", F4),
+            ("mask_pos", F2),
+            ("mask_size", F2),
+            ("mask_radius", F4),
         ],
         BuiltinShader::Path | BuiltinShader::Mesh => {
             &[("pos", F2), ("color", F4), ("edge", F1), ("extrude", F2)]
@@ -1024,7 +1027,8 @@ fn advanced_blend(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
 
 /// A gradient over an axis-aligned rect: the parameter by kind, the extend
 /// wrap, then a LUT row or the inline two-stop lerp, both premultiplied,
-/// times the rect's edge coverage; dithered on a target that bands.
+/// times the rect's edge coverage and its rounded mask's; dithered on a
+/// target that bands.
 fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let (pos, size) = (i.f2(0), i.f2(1));
     if size[0] <= 0.0 || size[1] <= 0.0 {
@@ -1033,6 +1037,11 @@ fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let (kind, extend, g0, g1, lut_v, use_lut) =
         (i.u1(2), i.u1(3), i.f2(4), i.f2(5), i.f1(6), i.u1(7));
     let (color0, color1) = (i.f4(8), i.f4(9));
+    let (mask_pos, mask_size, radius) = (i.f2(10), i.f2(11), i.f4(12));
+    let masked = radius.iter().any(|&r| r > 0.0);
+    let mask_half = [mask_size[0] * 0.5, mask_size[1] * 0.5];
+    let mask_center = [mask_pos[0] + mask_half[0], mask_pos[1] + mask_half[1]];
+    let ramp = cx.pixels();
     let lut = if use_lut != 0 {
         let Some(lut) = texture_bindings(cx, 0) else {
             return;
@@ -1055,7 +1064,10 @@ fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
             ];
             let m = [q[0].max(0.0), q[1].max(0.0)];
             let d = (m[0] * m[0] + m[1] * m[1]).sqrt() + q[0].max(q[1]).min(0.0);
-            let cov = (-d * aa).clamp(0.0, 1.0);
+            let mut cov = (-d * aa).clamp(0.0, 1.0);
+            if masked {
+                cov *= (-rrect_sdf(p, mask_center, mask_half, radius) * ramp).clamp(0.0, 1.0);
+            }
             if cov <= 0.0 {
                 *px = [0.0; 4];
                 continue;

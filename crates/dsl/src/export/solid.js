@@ -327,6 +327,8 @@ export const show = {
   radius,
   stroke,
   shadow,
+  fill,
+  textShadow,
   backdrop,
   frost,
   offset,

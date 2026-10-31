@@ -559,6 +559,16 @@ impl EnumVariant {
     pub fn name(&self) -> Option<SyntaxToken> {
         support::name_token(&self.syntax)
     }
+
+    /// A record variant's fields, in order; none for any other.
+    pub fn fields(&self) -> impl Iterator<Item = RecordField> {
+        self.syntax
+            .children()
+            .into_iter()
+            .filter(|c| c.kind() == SyntaxKind::VariantPayload)
+            .flat_map(|payload| payload.children())
+            .filter_map(RecordField::cast)
+    }
 }
 
 impl InputDecl {

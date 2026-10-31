@@ -125,6 +125,7 @@ fn gradient(x: f32) -> Primitive {
         ],
         extend: ExtendMode::Clamp,
         interp: InterpolationSpace::LinearRgb,
+        mask: None,
     })
 }
 

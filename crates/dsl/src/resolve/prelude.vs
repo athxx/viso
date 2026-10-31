@@ -276,6 +276,24 @@ export record Shadow {
     color: Color
     inset: Bool = false
 }
+// One layer of a box's background, painted bottom-up under its border: a
+// color, a gradient across the whole box (a linear one along a CSS angle,
+// a radial one from a point of the box out to its farthest corner; its
+// `stops` place the colors, evenly spread when empty), or an image.
+export enum Fill {
+    color(Color)
+    linear { angle: Angle = 180deg; colors: List<Color>; stops: List<F32> = [] }
+    radial { x: F32 = 0.5; y: F32 = 0.5; colors: List<Color>; stops: List<F32> = [] }
+    image { asset: ImageAsset; fit: ImageFit = ImageFit::cover; opacity: F32 = 1.0 }
+}
+// A soft copy of a text's glyphs: under them, or inside them when `inset`.
+export record TextShadow {
+    x: Dp = 0dp
+    y: Dp = 1dp
+    blur: Dp = 2dp
+    color: Color
+    inset: Bool = false
+}
 // What a box does to the content behind it, as glass: blurs it by `blur`
 // (as CSS's blur radius), scales its saturation by `saturation`, lays
 // `tint` over it by the tint's alpha, and adds a grain of `noise` (0..1).

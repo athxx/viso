@@ -511,9 +511,48 @@ impl InferCx<'_> {
 
     /// Types a property value or a record-field initializer against its
     /// type, with the implicit promotions such a slot allows: a `T`
-    /// initializes an `Option<T>`, and a length an `EdgeInsets` as `all` of it.
+    /// initializes an `Option<T>` and a `List<T>` (as the one-item list), a
+    /// length an `EdgeInsets` as `all` of it, and a `Color` a `Fill`.
     pub(crate) fn infer_promoted(&mut self, value: &Expr, target: &Ty) -> Ty {
         let range = value.syntax().text_range();
+        if is_fill(target) {
+            let mark = self.diagnostics.len();
+            let ty = self.infer_expr(value, Some(target));
+            if self.diagnostics.len() == mark {
+                return ty;
+            }
+            let wanted = self.diagnostics.split_off(mark);
+            self.forget_promotions(range);
+            let _ = self.infer_expr(value, Some(&Ty::Color));
+            if self.diagnostics.len() == mark {
+                self.note_fill(value.syntax());
+                return target.clone();
+            }
+            self.diagnostics.truncate(mark);
+            self.diagnostics.extend(wanted);
+            return ty;
+        }
+        if let Ty::List(item) = target
+            && value.syntax().kind() != SyntaxKind::ListExpr
+        {
+            let mark = self.diagnostics.len();
+            let ty = self.infer_expr(value, Some(target));
+            if self.diagnostics.len() == mark {
+                return ty;
+            }
+            // Not a list: one item stands for the list of it.
+            let wanted = self.diagnostics.split_off(mark);
+            self.forget_promotions(range);
+            let _ = self.infer_promoted(value, item);
+            if self.diagnostics.len() == mark {
+                self.note_listed(value.syntax());
+                return target.clone();
+            }
+            self.diagnostics.truncate(mark);
+            self.diagnostics.extend(wanted);
+            self.forget_promotions(range);
+            return ty;
+        }
         if let Some(stands_for) = takes_length(target) {
             let mark = self.diagnostics.len();
             let ty = self.infer_expr(value, Some(target));
@@ -550,6 +589,21 @@ impl InferCx<'_> {
 
     /// [`Self::infer_promoted`] for a value whose type is already known.
     fn check_promoted(&mut self, ty: Ty, target: &Ty, node: &SyntaxNode) {
+        let lifted = |ty: &Ty, item: &Ty| compatible(ty, item) || is_fill(item) && *ty == Ty::Color;
+        if is_fill(target) && ty == Ty::Color {
+            self.note_fill(node);
+            return;
+        }
+        if let Ty::List(item) = target
+            && !matches!(ty, Ty::List(_))
+            && lifted(&ty, item)
+        {
+            if is_fill(item) && ty == Ty::Color {
+                self.note_fill(node);
+            }
+            self.note_listed(node);
+            return;
+        }
         if let Ty::Option(inner) = target
             && !matches!(ty, Ty::Option(_))
             && compatible(&ty, inner)
@@ -564,6 +618,11 @@ impl InferCx<'_> {
         }
         let _ = self.check_against(ty, Some(target), node);
     }
+}
+
+/// Whether `ty` is the prelude's `Fill`, which a `Color` stands for.
+pub(super) fn is_fill(ty: &Ty) -> bool {
+    matches!(ty, Ty::Named(id, args) if args.is_empty() && *id == crate::resolve::prelude::fill_enum())
 }
 
 /// What a length stands for as a value of `ty`: `all` of an `EdgeInsets`,

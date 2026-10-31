@@ -222,6 +222,15 @@ fn build_state(
             attach.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
             attach.setAlphaBlendOperation(MTLBlendOperation::Add);
         }
+        BlendMode::DestinationOut => {
+            attach.setBlendingEnabled(true);
+            attach.setSourceRGBBlendFactor(MTLBlendFactor::Zero);
+            attach.setDestinationRGBBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            attach.setRgbBlendOperation(MTLBlendOperation::Add);
+            attach.setSourceAlphaBlendFactor(MTLBlendFactor::Zero);
+            attach.setDestinationAlphaBlendFactor(MTLBlendFactor::OneMinusSourceAlpha);
+            attach.setAlphaBlendOperation(MTLBlendOperation::Add);
+        }
     }
     device
         .newRenderPipelineStateWithDescriptor_error(&pd)

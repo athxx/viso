@@ -234,13 +234,18 @@ pub(super) enum Prop {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VarToken {
     Color,
+    /// A `List<Fill>`, as a `background`: its layers top first, its first
+    /// color the bottom layer's color.
+    Background,
+    /// A `List<TextShadow>`, as a `text-shadow`.
+    TextShadow,
     Opacity,
     /// A `MixedLength` corner radius, as `border-radius`.
     Radius,
     /// An `Option<Border>`, as an inset `box-shadow` in `--vx-border`: it
     /// strokes inside the box without moving its content.
     Border,
-    /// An `Option<Shadow>`, as a `box-shadow` in `--vx-shadow`.
+    /// A `List<Shadow>`, as the `box-shadow` list in `--vx-shadow`.
     Shadow,
     /// An `Option<Backdrop>`, as the `backdrop-filter` in the variable named
     /// and its tint in its `-tint` twin.
@@ -2812,7 +2817,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         at: TextRange,
     ) -> String {
         let what = match token {
-            VarToken::Color => "the background",
+            VarToken::Color => "the color",
+            VarToken::Background => "the background",
+            VarToken::TextShadow => "the text shadow",
             VarToken::Opacity => "the opacity",
             VarToken::Radius => "the corner radius",
             VarToken::Border => "the border",
@@ -2843,6 +2850,18 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 VarToken::Radius => radius(&v),
                 VarToken::Border => stroke(&v),
                 VarToken::Shadow => cast(&v),
+                VarToken::Background => self.background(&v, at),
+                VarToken::TextShadow => {
+                    if css::inset_text_shadow(&v) {
+                        self.need(
+                            Need::Unsupported,
+                            at,
+                            "an inset text shadow has no CSS `text-shadow`: the page leaves it out",
+                            Vec::new(),
+                        );
+                    }
+                    css::text_shadow(&v)
+                }
                 VarToken::Backdrop => css::backdrop(&v).0,
                 VarToken::Translate => offset(&v),
                 VarToken::Scale => css::number(v.as_float().unwrap_or(1.0)),
@@ -2888,10 +2907,15 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
         decls.push(("--vx-frost", tint));
         decls.push(("-webkit-backdrop-filter", filter.clone()));
         decls.push(("backdrop-filter", filter));
-        decls.push((
-            "background-image",
-            "linear-gradient(var(--vx-frost), var(--vx-frost))".to_owned(),
-        ));
+        // The tint lies over the box's own background layers.
+        let frost = "linear-gradient(var(--vx-frost), var(--vx-frost))";
+        match decls
+            .iter_mut()
+            .find(|(property, _)| *property == "background")
+        {
+            Some((_, background)) => *background = format!("{frost}, {background}"),
+            None => decls.push(("background-image", frost.to_owned())),
+        }
     }
 
     /// The node's background, opacity, corner radius, border and shadow, each
@@ -2926,9 +2950,16 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             (
                 look.background,
                 viso_schema::view::ControlInput::Background,
-                "background-color",
-                "background-color",
-                VarToken::Color,
+                "background",
+                "background",
+                VarToken::Background,
+            ),
+            (
+                look.text_shadow,
+                viso_schema::view::ControlInput::TextShadow,
+                "text-shadow",
+                "text-shadow",
+                VarToken::TextShadow,
             ),
             (
                 look.opacity,
@@ -3030,8 +3061,9 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 .rule(None, format!(".{own}{selector}"), &[("color", value)]);
             el.own_class = true;
         }
-        const LOOKS: [viso_schema::view::ControlInput; 9] = [
+        const LOOKS: [viso_schema::view::ControlInput; 10] = [
             viso_schema::view::ControlInput::Background,
+            viso_schema::view::ControlInput::TextShadow,
             viso_schema::view::ControlInput::Opacity,
             viso_schema::view::ControlInput::CornerRadius,
             viso_schema::view::ControlInput::Border,
@@ -3049,8 +3081,7 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                 at,
                 "a style's `when` switches a value the export does not switch yet: \
                  `background`, `opacity`, `corner_radius`, `border`, `shadow`, `translate`, \
-                 `scale`, \
-                 `rotation` and a text's `color` do",
+                 `scale`, `rotation` and a text's `color` and `text_shadow` do",
                 Vec::new(),
             );
         }
@@ -3193,6 +3224,26 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
             stack.push(next);
         }
         stack.pop().flatten()
+    }
+
+    /// A `background` value as CSS: its layers top first, an image's url
+    /// recorded for the export to copy. CSS cannot fade one image layer, so
+    /// a faded one shows opaque.
+    fn background(&mut self, value: &Value, at: TextRange) -> String {
+        let mut faded = false;
+        let css = css::background(value, &mut |id, opacity| {
+            faded |= opacity < 1.0;
+            self.asset(id)
+        });
+        if faded {
+            self.need(
+                Need::Unsupported,
+                at,
+                "CSS cannot fade one background image: the page shows it opaque",
+                Vec::new(),
+            );
+        }
+        css
     }
 
     /// The url of the asset `id` shows, recorded for the export to copy.
@@ -4133,5 +4184,12 @@ fn stroke(value: &Value) -> String {
 
 /// An `Option<Shadow>` as a `box-shadow`, [`NO_SHADOW`] for no shadow.
 fn cast(value: &Value) -> String {
-    css::shadow(value).unwrap_or_else(|| NO_SHADOW.to_owned())
+    let shadows: Vec<String> = match value {
+        Value::List(list) => list.iter().filter_map(css::shadow).collect(),
+        one => css::shadow(one).into_iter().collect(),
+    };
+    match shadows.is_empty() {
+        true => NO_SHADOW.to_owned(),
+        false => shadows.join(", "),
+    }
 }

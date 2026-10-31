@@ -37,9 +37,8 @@ pub fn property_dirty_class(name: &str) -> DirtyClass {
 
         // Pure paint properties: the pixels change, nothing about size or box.
         "color" | "background" | "background_color" | "foreground" | "fill" | "border_color"
-        | "opacity" | "shadow" | "backdrop" | "ripple" | "tint" | "shader" | "fit" | "camera" => {
-            D::PAINT
-        }
+        | "opacity" | "shadow" | "backdrop" | "ripple" | "text_shadow" | "tint" | "shader"
+        | "fit" | "camera" => D::PAINT,
 
         // An image's source moves its natural size with its pixels.
         "source" => D::MEASURE | D::LAYOUT | D::PAINT,

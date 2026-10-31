@@ -33,6 +33,7 @@ use viso_ui::ColorToken;
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_schema::view::route::EventRoute;
 use viso_ui::backdrop::Backdrop;
+use viso_ui::background::FillLayer;
 use viso_ui::color_picker::{
     ColorPickerParts, ColorPickerStyle, DEFAULT_COLOR, PickSink, PickerSpec,
 };
@@ -45,6 +46,7 @@ use viso_ui::search_field::{Report as SearchReport, SearchParts, SearchSpec};
 use viso_ui::segments::Segments;
 use viso_ui::shader::BrushProgram;
 use viso_ui::slider::{Slider as SliderMark, SliderRange, SliderShape};
+use viso_ui::text_shadow::TextShadow;
 use viso_ui::video_controls::{VideoControls, VideoControlsStyle, VideoLabels};
 use viso_ui::{
     Alignment2D, BoundSize, Camera, CameraFacing, FontWeight, LayoutValue, LengthTerms, Playback,
@@ -232,6 +234,7 @@ pub(crate) fn control_cells(
         look.shadow,
         look.backdrop,
         look.ripple,
+        look.text_shadow,
         semantics.label,
         semantics.hint,
         semantics.value,
@@ -325,9 +328,9 @@ pub(crate) fn control_cells(
 /// `options`, `free_text` and `empty_text` — a search field's `suggestions`
 /// are its `options` — a search field's `debounce`, an image's `animate`,
 /// a video's `playing`, `looping`, `muted`, `volume`, `rate`, `controls`
-/// and `fullscreen`, a camera view's `mirror`, and its `backdrop` and
-/// `ripple`.
-const SHOWN: usize = 79;
+/// and `fullscreen`, a camera view's `mirror`, its `backdrop` and
+/// `ripple`, and its text's `text_shadow`.
+const SHOWN: usize = 80;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -410,6 +413,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Mirror,
     ControlInput::Backdrop,
     ControlInput::Ripple,
+    ControlInput::TextShadow,
 ];
 
 /// Where `input`'s value sits among the values a node shows.
@@ -430,12 +434,15 @@ macro_rules! shown {
 
 /// Where a video's `controls` and `fullscreen` sit among the values a node
 /// shows.
-const CONTROLS: usize = SHOWN - 5;
-const FULLSCREEN: usize = SHOWN - 4;
+const CONTROLS: usize = SHOWN - 6;
+const FULLSCREEN: usize = SHOWN - 5;
 
 /// Where its `backdrop` and `ripple` sit among the values a node shows.
-const BACKDROP: usize = SHOWN - 2;
-const RIPPLE: usize = SHOWN - 1;
+const BACKDROP: usize = SHOWN - 3;
+const RIPPLE: usize = SHOWN - 2;
+
+/// Where its text's `text_shadow` sits among the values a node shows.
+const TEXT_SHADOW: usize = SHOWN - 1;
 
 /// Where its `translate` sits among the values a node shows.
 const TRANSLATE: usize = 35;
@@ -718,6 +725,7 @@ impl Shown {
             drop_operation,
             backdrop,
             ripple,
+            text_shadow,
         ] = shown!(
             showing,
             Value,
@@ -760,6 +768,7 @@ impl Shown {
             DropOperation,
             Backdrop,
             Ripple,
+            TextShadow,
         );
         let access_key = access_key.as_str().and_then(|key| key.chars().next());
         let spanned = crate::text_style::spans(pieces);
@@ -992,7 +1001,16 @@ impl Shown {
             store.set_border(self.node, stroke(border));
         }
         if shown(SHADOW) && changed(SHADOW) {
-            store.set_shadow(self.node, cast(shadow));
+            store.set_shadows(self.node, &casts(shadow));
+        }
+        if shown(TEXT_SHADOW) && changed(TEXT_SHADOW) {
+            store.set_text_shadows(self.node, &text_shadows(text_shadow));
+        }
+        // A background's first color is the box's fill, the one a
+        // transition moves; the layers past it paint over it.
+        let (base, layers) = fills(background);
+        if shown_background.is_some() && changed(LOOK) && !sheet {
+            store.set_background_layers(self.node, layers);
         }
         // A `BlurView` without a backdrop of its own is the standard glass.
         let glass = control.kind == ControlKind::Glass;
@@ -1013,9 +1031,9 @@ impl Shown {
             (
                 LOOK,
                 shown_background,
-                LookValue::Fill(match background {
-                    Value::Nil if dialog || sheet => SCRIM,
-                    background => color(background),
+                LookValue::Fill(match base {
+                    None if (dialog || sheet) && no_fills(background) => SCRIM,
+                    base => base.unwrap_or(Rgba::TRANSPARENT),
                 }),
             ),
             (
@@ -2573,6 +2591,106 @@ fn stroke(value: &Value) -> Border {
         },
         _ => Border::NONE,
     }
+}
+
+/// A `List<Shadow>` value (or one `Shadow`) as the shadows a node casts.
+fn casts(value: &Value) -> Vec<Shadow> {
+    match value {
+        Value::List(list) => list.iter().filter_map(cast).collect(),
+        one => cast(one).into_iter().collect(),
+    }
+}
+
+/// A `List<TextShadow>` value (or one `TextShadow`) as the shadows a text
+/// casts.
+fn text_shadows(value: &Value) -> Vec<TextShadow> {
+    let one = |value: &Value| {
+        let Value::Agg(shadow) = value else {
+            return None;
+        };
+        match &shadow.fields[..] {
+            [x, y, blur, paint, inset] => Some(TextShadow {
+                color: color(paint),
+                offset: Vec2 { x: dp(x), y: dp(y) },
+                blur: dp(blur).max(0.0),
+                inset: truth(inset, false),
+            }),
+            _ => None,
+        }
+    };
+    match value {
+        Value::List(list) => list.iter().filter_map(one).collect(),
+        single => one(single).into_iter().collect(),
+    }
+}
+
+/// Whether a `background` value gives no layer at all.
+fn no_fills(value: &Value) -> bool {
+    match value {
+        Value::Nil => true,
+        Value::List(list) => list.is_empty(),
+        _ => false,
+    }
+}
+
+/// A `List<Fill>` value (or one `Fill` or `Color`) as the box's fill, its
+/// first layer when that is a color, and the layers over it.
+fn fills(value: &Value) -> (Option<Rgba>, Vec<FillLayer>) {
+    let one = std::slice::from_ref(value);
+    let all = match value {
+        Value::Nil => &[][..],
+        Value::List(list) => &list[..],
+        _ => one,
+    };
+    let mut layers: Vec<FillLayer> = all.iter().filter_map(fill_layer).collect();
+    let base = match layers.first() {
+        Some(FillLayer::Color(color)) => Some(*color),
+        _ => None,
+    };
+    if base.is_some() {
+        layers.remove(0);
+    }
+    (base, layers)
+}
+
+/// A `Fill` value (or a `Color`) as one layer of a background.
+fn fill_layer(value: &Value) -> Option<FillLayer> {
+    const COLOR: u32 = 0;
+    const LINEAR: u32 = 1;
+    const RADIAL: u32 = 2;
+    const IMAGE: u32 = 3;
+    let Value::Agg(fill) = value else {
+        return value.as_int().map(|_| FillLayer::Color(color(value)));
+    };
+    let stops = |colors: &Value, at: &Value| {
+        let list = |v: &Value| match v {
+            Value::List(list) => list.to_vec(),
+            _ => Vec::new(),
+        };
+        let colors: Vec<Rgba> = list(colors).iter().map(color).collect();
+        let at: Vec<f32> = list(at).iter().map(|v| float(v, 0.0)).collect();
+        FillLayer::stops(&colors, &at)
+    };
+    Some(match (fill.tag, &fill.fields[..]) {
+        (COLOR, [paint]) => FillLayer::Color(color(paint)),
+        (LINEAR, [angle, colors, at]) => FillLayer::Linear {
+            angle: float(angle, 180.0).to_radians(),
+            stops: stops(colors, at),
+        },
+        (RADIAL, [x, y, colors, at]) => FillLayer::Radial {
+            center: Vec2 {
+                x: float(x, 0.5),
+                y: float(y, 0.5),
+            },
+            stops: stops(colors, at),
+        },
+        (IMAGE, [asset, fit, opacity]) => FillLayer::Image {
+            resource: resource(asset)?,
+            fit: asset_fit_or(fit, AssetFit::Cover),
+            opacity: float(opacity, 1.0),
+        },
+        _ => return None,
+    })
 }
 
 /// A `Shadow` value as the shadow the node casts, none for `None`.

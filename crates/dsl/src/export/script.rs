@@ -450,6 +450,12 @@ fn mount(
                         Prop::Fit { shown } => format!("P.fit({el}, {value}, {})", shown.code()),
                         Prop::Var { name, token } => match token {
                             VarToken::Color => format!("P.vcolor({el}, {value}, \"{name}\")"),
+                            VarToken::Background => {
+                                format!("P.vfill({el}, {value}, \"{name}\")")
+                            }
+                            VarToken::TextShadow => {
+                                format!("P.vtext_shadow({el}, {value}, \"{name}\")")
+                            }
                             VarToken::Opacity => {
                                 format!("P.vopacity({el}, {value}, \"{name}\")")
                             }

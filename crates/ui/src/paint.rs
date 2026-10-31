@@ -492,19 +492,41 @@ pub(crate) fn clip_corners(store: &NodeStore, node: NodeId, world: Rect) -> Opti
 fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
     let style = store.style(node);
     let radius = corner_radius(&style, world);
-    let shadow = store.shadow(node);
-    if let Some(shadow) = shadow.filter(|s| !s.inset) {
+    let shadows = store.shadows(node);
+    for &shadow in shadows.iter().filter(|s| !s.inset) {
         paint_shadow(shadow, world, radius, out);
     }
-    if style.is_visible() {
-        out.push(Primitive::Quad(Quad {
-            rect: world,
-            color: style.fill,
-            radius,
-            border: style.border,
-        }));
+    let layers = store.background_layers(node);
+    if layers.is_empty() {
+        if style.is_visible() {
+            out.push(Primitive::Quad(Quad {
+                rect: world,
+                color: style.fill,
+                radius,
+                border: style.border,
+            }));
+        }
+    } else {
+        // The layers lie between the fill and the border.
+        if style.fill.a > 0.0 {
+            out.push(Primitive::Quad(Quad {
+                rect: world,
+                color: style.fill,
+                radius,
+                border: Border::NONE,
+            }));
+        }
+        crate::background::paint_layers(store, layers, world, radius, out);
+        if style.border.width > 0.0 {
+            out.push(Primitive::Quad(Quad {
+                rect: world,
+                color: Rgba::TRANSPARENT,
+                radius,
+                border: style.border,
+            }));
+        }
     }
-    if let Some(shadow) = shadow.filter(|s| s.inset) {
+    if shadows.iter().any(|s| s.inset) {
         let width = style.border.width.max(0.0);
         let inner = Rect {
             x: world.x + width,
@@ -512,7 +534,9 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             w: (world.w - 2.0 * width).max(0.0),
             h: (world.h - 2.0 * width).max(0.0),
         };
-        paint_shadow(shadow, inner, (radius - width).max(0.0), out);
+        for &shadow in shadows.iter().filter(|s| s.inset) {
+            paint_shadow(shadow, inner, (radius - width).max(0.0), out);
+        }
     }
     if store.is_rippling() {
         let body = store.check_mark(node).and_then(|m| m.body_radius(world));
@@ -529,8 +553,17 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             paint_check(store, node, mark, content, world, out);
             return;
         }
+        // Its content lies in its box less its padding.
+        let inner = crate::content_inset::inset_rect(world, store.content_inset(node));
         let ring = if let Some(marks) = store.field_marks(node) {
-            paint_field(marks, store.palette(), content, world, out);
+            paint_field(
+                marks,
+                store.palette(),
+                content,
+                inner,
+                store.text_shadows(node),
+                out,
+            );
             if marks.handles.is_some() {
                 paint_handles(store.field_handles(node), store.palette(), out);
             }
@@ -556,7 +589,14 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
                     rect: world,
                     radius: Corners::uniform(radius),
                 });
-                paint_content(content, world, mask, store.access_cues(), out);
+                let shadows = store.text_shadows(node);
+                if !shadows.is_empty() {
+                    crate::text_shadow::paint_text_shadows(content, inner, shadows, false, out);
+                }
+                paint_content(content, inner, mask, store.access_cues(), out);
+                if !shadows.is_empty() {
+                    crate::text_shadow::paint_text_shadows(content, inner, shadows, true, out);
+                }
             }
             false
         };
@@ -620,6 +660,7 @@ fn paint_field(
     palette: &Palette,
     content: &Content,
     world: Rect,
+    shadows: &[crate::text_shadow::TextShadow],
     out: &mut Vec<Primitive>,
 ) {
     out.push(Primitive::Layer(LayerClip {
@@ -648,7 +689,13 @@ fn paint_field(
         y: oy,
         ..world
     };
+    if !shadows.is_empty() {
+        crate::text_shadow::paint_text_shadows(content, text, shadows, false, out);
+    }
     paint_content(content, text, None, false, out);
+    if !shadows.is_empty() {
+        crate::text_shadow::paint_text_shadows(content, text, shadows, true, out);
+    }
     let ink = palette.resolve(marks.ink);
     out.extend(marks.underlines.iter().map(|r| quad(r, ink)));
     out.extend(marks.caret.iter().map(|r| quad(r, ink)));
@@ -899,7 +946,7 @@ pub(crate) fn paint_content(
 /// An asset of `natural` size placed into `world` by `fit`, a raster
 /// flipped left to right when `mirrored`.
 #[allow(clippy::too_many_arguments)]
-fn paint_asset(
+pub(crate) fn paint_asset(
     draw: &AssetDraw,
     natural: Vec2,
     fit: AssetFit,

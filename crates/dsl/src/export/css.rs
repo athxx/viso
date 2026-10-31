@@ -169,6 +169,157 @@ pub(super) fn shadow(value: &Value) -> Option<String> {
     ))
 }
 
+/// A `List<Fill>` (or one `Fill` or `Color`) as a `background`: its layers
+/// top first, its first color the bottom layer's color, an image's url
+/// from `asset` (given its id and opacity). The gradients blend in linear
+/// light, as the renderer's do.
+pub(super) fn background(value: &Value, asset: &mut dyn FnMut(u64, f64) -> String) -> String {
+    let one = std::slice::from_ref(value);
+    let all = match value {
+        Value::Nil => &[][..],
+        Value::List(list) => &list[..],
+        _ => one,
+    };
+    let paint = |v: &Value| {
+        v.as_int()
+            .map_or("transparent".to_owned(), |c| color(c as u32))
+    };
+    let stops = |colors: &Value, at: &Value| {
+        let list = |v: &Value| match v {
+            Value::List(list) => list.to_vec(),
+            _ => Vec::new(),
+        };
+        let (colors, at) = (list(colors), list(at));
+        let placed = at.len() == colors.len();
+        let stops: Vec<String> = colors
+            .iter()
+            .enumerate()
+            .map(|(i, c)| match placed {
+                true => format!(
+                    "{} {}%",
+                    paint(c),
+                    number(at[i].as_float().unwrap_or(0.0).clamp(0.0, 1.0) * 100.0)
+                ),
+                false => paint(c),
+            })
+            .collect();
+        match stops.len() {
+            0 => None,
+            1 => Some(format!("{0}, {0}", stops[0])),
+            _ => Some(stops.join(", ")),
+        }
+    };
+    let mut base = None;
+    let mut layers = Vec::new();
+    for (at, fill) in all.iter().enumerate() {
+        let layer = match fill {
+            Value::Int(c) if at == 0 => {
+                base = Some(color(*c as u32));
+                continue;
+            }
+            Value::Int(c) => {
+                let c = color(*c as u32);
+                format!("linear-gradient({c}, {c})")
+            }
+            Value::Agg(fill) => match (fill.tag, &fill.fields[..]) {
+                (0, [c]) if at == 0 => {
+                    base = Some(paint(c));
+                    continue;
+                }
+                (0, [c]) => format!("linear-gradient({0}, {0})", paint(c)),
+                (1, [angle, colors, at]) => {
+                    let Some(stops) = stops(colors, at) else {
+                        continue;
+                    };
+                    let angle = number(angle.as_float().unwrap_or(180.0));
+                    format!("linear-gradient(in srgb-linear {angle}deg, {stops})")
+                }
+                (2, [x, y, colors, at]) => {
+                    let Some(stops) = stops(colors, at) else {
+                        continue;
+                    };
+                    let (x, y) = (
+                        number(x.as_float().unwrap_or(0.5) * 100.0),
+                        number(y.as_float().unwrap_or(0.5) * 100.0),
+                    );
+                    format!(
+                        "radial-gradient(in srgb-linear circle farthest-corner at {x}% {y}%, {stops})"
+                    )
+                }
+                (3, [image, fit, opacity]) => {
+                    let Value::Agg(image) = image else { continue };
+                    let Some(id) = image.fields.first().and_then(Value::as_int) else {
+                        continue;
+                    };
+                    let href = asset(id.cast_unsigned(), opacity.as_float().unwrap_or(1.0));
+                    if href.is_empty() {
+                        continue;
+                    }
+                    let place = match fit.as_int() {
+                        Some(0) => "center / contain no-repeat",
+                        Some(2) => "center / 100% 100% no-repeat",
+                        Some(3) => "0 0 repeat",
+                        _ => "center / cover no-repeat",
+                    };
+                    format!("url(\"{href}\") {place}")
+                }
+                _ => continue,
+            },
+            _ => continue,
+        };
+        layers.push(layer);
+    }
+    layers.reverse();
+    match (layers.is_empty(), base) {
+        (true, base) => base.unwrap_or_else(|| "transparent".to_owned()),
+        (false, None) => layers.join(", "),
+        (false, Some(base)) => format!("{}, {base}", layers.join(", ")),
+    }
+}
+
+/// A `List<TextShadow>` (or one) as a `text-shadow`; CSS has no inset one,
+/// so those are left out.
+pub(super) fn text_shadow(value: &Value) -> String {
+    let shadows: Vec<String> = text_shadows(value)
+        .filter(|f| f.get(4).and_then(Value::as_int).unwrap_or(0) == 0)
+        .filter_map(|f| {
+            let [x, y, blur, tint, _] = f else {
+                return None;
+            };
+            let tint = tint
+                .as_int()
+                .map_or("transparent".to_owned(), |c| color(c as u32));
+            Some(format!(
+                "{} {} {} {tint}",
+                px(dp(x)),
+                px(dp(y)),
+                px(dp(blur).max(0.0))
+            ))
+        })
+        .collect();
+    match shadows.is_empty() {
+        true => "none".to_owned(),
+        false => shadows.join(", "),
+    }
+}
+
+/// Whether a `List<TextShadow>` has an inset one.
+pub(super) fn inset_text_shadow(value: &Value) -> bool {
+    text_shadows(value).any(|f| f.get(4).and_then(Value::as_int).unwrap_or(0) != 0)
+}
+
+fn text_shadows(value: &Value) -> impl Iterator<Item = &[Value]> {
+    let all = match value {
+        Value::List(list) => &list[..],
+        Value::Agg(_) => std::slice::from_ref(value),
+        _ => &[][..],
+    };
+    all.iter().filter_map(|v| match v {
+        Value::Agg(agg) => Some(&agg.fields[..]),
+        _ => None,
+    })
+}
+
 /// The standard glass a `BlurView` shows: its `backdrop-filter` and tint.
 pub(super) const GLASS: (&str, &str) = ("blur(30px) saturate(1.8)", "#ffffff40");
 

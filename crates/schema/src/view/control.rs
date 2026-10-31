@@ -382,6 +382,16 @@ impl ControlKind {
             (_, "shadow") => ControlInput::Shadow,
             (_, "backdrop") => ControlInput::Backdrop,
             (_, "ripple") => ControlInput::Ripple,
+            (
+                ControlKind::Label
+                | ControlKind::Button
+                | ControlKind::TextInput
+                | ControlKind::Number
+                | ControlKind::Badge
+                | ControlKind::Avatar
+                | ControlKind::Chip,
+                "text_shadow",
+            ) => ControlInput::TextShadow,
             (_, "transition.background") => ControlInput::BackgroundTransition,
             (_, "transition.opacity") => ControlInput::OpacityTransition,
             (_, "translate") => ControlInput::Translate,
@@ -1202,6 +1212,8 @@ pub enum ControlInput {
     Backdrop,
     /// The node's `ripple`: whether a press spreads ink over its box.
     Ripple,
+    /// A text's `text_shadow`: the soft copies of its glyphs it casts.
+    TextShadow,
 }
 
 /// A view-driven native node: its kind and the handler-table entries that
@@ -1489,7 +1501,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 88] = [
+    pub const ALL: [ControlInput; 89] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1578,6 +1590,7 @@ impl ControlInput {
         ControlInput::Mirror,
         ControlInput::Backdrop,
         ControlInput::Ripple,
+        ControlInput::TextShadow,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1621,6 +1634,8 @@ pub struct Look {
     pub backdrop: Option<u32>,
     /// Its `ripple`: a `Bool`, the platform's way when absent.
     pub ripple: Option<u32>,
+    /// Its text's `text_shadow`: a `List<TextShadow>`.
+    pub text_shadow: Option<u32>,
     /// Its `transition.background`: how a new background moves in.
     pub background_transition: Option<u32>,
     /// Its `transition.opacity`: how a new opacity moves in.
@@ -1728,6 +1743,7 @@ impl Control {
             ControlInput::Shadow => self.look.shadow,
             ControlInput::Backdrop => self.look.backdrop,
             ControlInput::Ripple => self.look.ripple,
+            ControlInput::TextShadow => self.look.text_shadow,
             ControlInput::BackgroundTransition => self.look.background_transition,
             ControlInput::OpacityTransition => self.look.opacity_transition,
             ControlInput::Translate => self.look.translate,
@@ -1832,6 +1848,7 @@ impl Control {
             ControlInput::Shadow => &mut self.look.shadow,
             ControlInput::Backdrop => &mut self.look.backdrop,
             ControlInput::Ripple => &mut self.look.ripple,
+            ControlInput::TextShadow => &mut self.look.text_shadow,
             ControlInput::BackgroundTransition => &mut self.look.background_transition,
             ControlInput::OpacityTransition => &mut self.look.opacity_transition,
             ControlInput::Translate => &mut self.look.translate,
@@ -1977,6 +1994,7 @@ impl Encode for Control {
             look.shadow,
             look.backdrop,
             look.ripple,
+            look.text_shadow,
             semantics.label,
             semantics.hint,
             semantics.value,
@@ -2142,6 +2160,7 @@ impl Decode for Control {
                 shadow: entry()?,
                 backdrop: entry()?,
                 ripple: entry()?,
+                text_shadow: entry()?,
             },
             arms: Box::new([]),
             semantics: SemanticEntries {
@@ -2482,6 +2501,7 @@ mod tests {
                 shadow: Some(26),
                 backdrop: None,
                 ripple: None,
+                text_shadow: None,
             },
             arms: Box::new([LookArm {
                 target: Switched::Input(ControlInput::Border),

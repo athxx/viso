@@ -1309,6 +1309,14 @@ impl<'a> InferCx<'a> {
             Some(Ty::List(inner)) => Some(inner.as_ref()),
             _ => None,
         };
+        // A list of fills takes colors among them.
+        if let Some(item) = expected_elem.filter(|t| record::is_fill(t)) {
+            let item = item.clone();
+            for e in &elems {
+                let _ = self.infer_promoted(e, &item);
+            }
+            return Ty::List(Box::new(item));
+        }
         let mut elem_ty: Option<Ty> = expected_elem.cloned();
         for e in &elems {
             let t = self.infer_expr(e, elem_ty.as_ref().or(expected_elem));

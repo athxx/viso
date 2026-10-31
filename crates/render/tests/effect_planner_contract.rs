@@ -116,6 +116,7 @@ fn gradient(r: Rect) -> Primitive {
             },
         ],
         interp: InterpolationSpace::LinearRgb,
+        mask: None,
     })
 }
 

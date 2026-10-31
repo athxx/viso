@@ -75,6 +75,7 @@ pub const GL_NO_ERROR: GLenum = 0;
 pub const GL_TRUE: GLboolean = 1;
 pub const GL_FALSE: GLboolean = 0;
 pub const GL_TRIANGLES: GLenum = 0x0004;
+pub const GL_ZERO: GLenum = 0;
 pub const GL_ONE: GLenum = 1;
 pub const GL_ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
 pub const GL_BLEND: GLenum = 0x0BE2;

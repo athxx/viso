@@ -125,6 +125,9 @@ pub enum BatchPipeline {
     AnalyticLine,
     /// A single textured image (the image pipeline).
     Image,
+    /// An erasing layer's composite (the image pipeline blending
+    /// destination-out).
+    Erase,
     /// One run of exact-coverage glyphs (the glyph pipeline).
     GlyphRun,
     /// One run of MTSDF glyphs (the scalable-text pipeline).
@@ -160,6 +163,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticCapsule => "analytic-capsule",
             BatchPipeline::AnalyticLine => "analytic-line",
             BatchPipeline::Image => "image",
+            BatchPipeline::Erase => "erase",
             BatchPipeline::GlyphRun => "glyph",
             BatchPipeline::MtsdfRun => "mtsdf",
             BatchPipeline::Mesh => "mesh",
@@ -183,6 +187,7 @@ impl BatchPipeline {
             BatchPipeline::AnalyticCapsule => BatchFamily::AnalyticCapsule,
             BatchPipeline::AnalyticLine => BatchFamily::AnalyticLine,
             BatchPipeline::Image => BatchFamily::Image,
+            BatchPipeline::Erase => BatchFamily::Erase,
             BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
             BatchPipeline::MtsdfRun => BatchFamily::MtsdfRun,
             BatchPipeline::Mesh => BatchFamily::Mesh,
@@ -442,6 +447,11 @@ impl Renderer {
                 self.image_pipeline_id(),
                 Some(bind_group),
             ),
+            SegmentKind::Erase { bind_group } => (
+                BatchPipeline::Erase,
+                self.erase_pipeline_id(),
+                Some(bind_group),
+            ),
             SegmentKind::GlyphRun { bind_group } => (
                 BatchPipeline::GlyphRun,
                 self.glyph_pipeline_id(),
@@ -613,6 +623,11 @@ impl Renderer {
                         let start = image_cursor;
                         image_cursor += 1;
                         (BatchPipeline::Image, start, 1)
+                    }
+                    CompositeLowering::Erase => {
+                        let start = image_cursor;
+                        image_cursor += 1;
+                        (BatchPipeline::Erase, start, 1)
                     }
                 },
                 StoreRef::MaterialComposite { .. } => {
@@ -850,6 +865,7 @@ impl Renderer {
                     CompositeLowering::AdvancedBlend => (BatchFamily::AdvancedBlend, true),
                     CompositeLowering::ColorTransform => (BatchFamily::ColorTransform, true),
                     CompositeLowering::Image => (BatchFamily::Image, true),
+                    CompositeLowering::Erase => (BatchFamily::Erase, true),
                 },
                 StoreRef::MaterialComposite { .. } => (BatchFamily::Material, true),
                 StoreRef::Gradient(_) => (BatchFamily::Gradient, true),

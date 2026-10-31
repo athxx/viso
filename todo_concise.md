@@ -111,13 +111,45 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C7a — Box and text look (U3.3)
 
-- [ ] `background: List<Fill>`: colors, linear and radial gradients, images (`fit`,
+- [x] `background: List<Fill>`: colors, linear and radial gradients, images (`fit`,
       `opacity`), painted in order; a single value stays valid.
-- [ ] `shadow: List<Shadow>`: outer and `inset` shadows on one box.
-- [ ] `padding` on `Button` and `TextInput` insets their label or field (today E3711).
-- [ ] `text_shadow: List<TextShadow>` on `Text`, `Button`, `TextInput`.
+- [x] `shadow: List<Shadow>`: outer and `inset` shadows on one box.
+- [x] `padding` on `Button` and `TextInput` insets their label or field (today E3711).
+- [x] `text_shadow: List<TextShadow>` on `Text`, `Button`, `TextInput`.
 - [ ] Renderer on every backend and the CPU raster; Style `when`, transitions, hot
-      reload, AOT, macros, Web export; headless pictures.
+      reload, AOT, macros, Web export; headless pictures. (Done but for building the
+      Vulkan, D3D12, WebGPU and GLES paths, not built on this host.)
+
+## C7b — Materials (U3.3)
+
+Six looks an `examples/materials` gallery shows side by side. Each is paint data or
+one fused backdrop pass: captures shared per group, scoped to their ROI, blurred on
+the downsampled ladder, kept across frames while what lies behind holds still.
+
+- [ ] Skeuomorphism / Aqua: gloss, glow and bevel from layered fills, inset and
+      outer shadows and an embossed `text_shadow`; a fill layer takes `inset` (a
+      highlight inside the box). No offscreen pass but a blurred text shadow.
+- [ ] Background blur, glassmorphism: `backdrop` blur + saturation + tint + noise, a
+      light border and a soft shadow (exists; pictures and stats in the gallery).
+- [ ] Acrylic: `Backdrop` gains `luminosity` (the backdrop's light kept under the
+      tint, so text on it reads) beside tint and noise, in the fused color op.
+- [ ] Reduced transparency: an environment flag (system setting, battery saver, a
+      device without the capability) draws every backdrop as its solid `fallback`,
+      opening no capture.
+- [ ] Liquid glass: `Backdrop` gains `refraction` (lensing of what lies behind,
+      strongest at the rounded edge, from the box's SDF), `dispersion` (the color
+      fringe of that bend) and `highlight` (a specular rim lit from `light`
+      angle); the capture widens by the bend; one pass, a fixed number of taps.
+- [ ] Liquid glass in motion: a press lights the glass from where it lands; glass
+      siblings in a `GlassGroup` share one capture and melt into one shape (a
+      smooth union of their SDFs) as they near.
+- [ ] Window materials: `Window { material: mica | mica_alt | acrylic | vibrancy }`
+      on the platform's compositor — DWM system backdrop on Windows 11, an
+      `NSVisualEffectView` behind the surface on macOS — over a transparent surface;
+      elsewhere, and while the window is inactive, its solid fallback. Costs Viso
+      nothing per frame.
+- [ ] `examples/materials`: the six side by side over a moving picture, headless
+      pictures, frame stats (captures, capture pixels) asserted.
 
 ## C8 — Real-scale app
 

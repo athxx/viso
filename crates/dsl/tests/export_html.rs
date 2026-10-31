@@ -126,8 +126,8 @@ export component Shapes {
             Column { width: 40dp; height: 20dp; corner_radius: 4dp + 1sp; border: Option::Some(Border { width: 2dp, color: #ff0000 }); }
             Column { width: 40dp; height: 20dp; corner_radius: 50%; }
             Column { width: 40dp; height: 20dp; corner_radius: if round { 10% } else { 0dp }; }
-            Column { width: 40dp; height: 20dp; shadow: Option::Some(Shadow { y: 4dp, blur: 12dp, color: #00000040 }); border: Option::Some(Border { color: #0000ff }); }
-            Column { width: 40dp; height: 20dp; shadow: if round { Option::Some(Shadow { color: #000000, inset: true }) } else { Option::None }; }
+            Column { width: 40dp; height: 20dp; shadow: Shadow { y: 4dp, blur: 12dp, color: #00000040 }; border: Option::Some(Border { color: #0000ff }); }
+            Column { width: 40dp; height: 20dp; shadow: if round { [Shadow { color: #000000, inset: true }] } else { [] }; }
         }
     }
 }
@@ -1604,13 +1604,12 @@ export component C { view { Column { Chip { styles: [Lit]; } } } }
     let page = export(source, false).expect("exports");
     let script = page.script.expect("a script");
     assert!(
-        page.styles
-            .contains("background-color: var(--v1-background-color)"),
+        page.styles.contains("background: var(--v1-background)"),
         "{}",
         page.styles
     );
     assert!(
-        script.contains("u.push([[0], () => P.vcolor(e[0]"),
+        script.contains("u.push([[0], () => P.vfill(e[0]"),
         "the tint follows `open`: {script}"
     );
 }

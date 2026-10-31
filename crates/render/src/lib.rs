@@ -594,6 +594,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 },
             ],
             interp: InterpolationSpace::LinearRgb,
+            mask: None,
         }),
         // A radial gradient (three stops → the baked-LUT path, `use_lut == 1`):
         // a small disc in the mid gap, bright center fading through green to
@@ -640,6 +641,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 },
             ],
             interp: InterpolationSpace::LinearRgb,
+            mask: None,
         }),
         // A sweep gradient (three stops in sRGB interpolation space → the baked-LUT
         // path with a per-texel gamma→linear conversion): an angular ramp about a
@@ -686,6 +688,7 @@ pub fn test_scene(texture: TextureId, glyphs: GlyphRunDraw) -> Vec<Primitive> {
                 },
             ],
             interp: InterpolationSpace::Srgb,
+            mask: None,
         }),
     ]
 }

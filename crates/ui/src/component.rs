@@ -870,7 +870,7 @@ pub struct NodeStore {
     /// The scene commits being marked, kept for its capacity.
     scratch_scene_marks: Vec<(NodeId, u64)>,
     /// The assets `Content::Asset` nodes show, by resource.
-    assets: AssetTable,
+    pub(crate) assets: AssetTable,
     /// Cold: the nodes shown in place of an asset node's picture while it
     /// loads and once it fails, by the asset node.
     asset_fallbacks: Vec<AssetFallbacks>,
@@ -1031,6 +1031,12 @@ pub struct NodeStore {
     pub(crate) wakes: Vec<(NodeId, u32)>,
     /// Cold: the nodes that cast shadows.
     pub(crate) shadows: crate::shadow::Shadows,
+    /// Cold: the nodes whose boxes paint background layers.
+    pub(crate) backgrounds: crate::background::Backgrounds,
+    /// Cold: the nodes whose text casts shadows.
+    pub(crate) text_shadows: crate::text_shadow::TextShadows,
+    /// Cold: the leaves whose content keeps from their edges.
+    pub(crate) content_insets: crate::content_inset::ContentInsets,
     /// Cold: the nodes whose boxes are glass.
     pub(crate) backdrops: crate::backdrop::Backdrops,
     /// Cold: the nodes a press ripples, the ripples showing and the haptic
@@ -1244,6 +1250,9 @@ impl NodeStore {
         self.anchors.clear();
         self.wakes.clear();
         self.shadows.clear();
+        self.backgrounds.clear();
+        self.text_shadows.clear();
+        self.content_insets.clear();
         self.backdrops.clear();
         self.feedback.clear();
         self.ring.clear();
@@ -2874,6 +2883,12 @@ impl NodeStore {
                 }
                 *padding = inset;
             }
+            // A leaf's padding keeps its content from its edges.
+            LayoutInput::Leaf { .. } => {
+                if !self.content_insets.set(id.index(), inset) {
+                    return;
+                }
+            }
             _ => return,
         }
         self.mark_dirty(
@@ -4340,6 +4355,7 @@ impl NodeStore {
         }
         let index = node.index() as usize;
         self.leave_content(node);
+        self.leave_background(node);
         self.content_payload[index] = None;
         // The handlers and the controls' parts go with the node: a handle to a
         // control it rooted goes stale now.
@@ -6160,6 +6176,8 @@ impl NodeStore {
         self.layers.forget(i as u32);
         self.anchors.forget(i as u32);
         self.shadows.forget(i as u32);
+        self.text_shadows.forget(i as u32);
+        self.content_insets.forget(i as u32);
         self.backdrops.forget(i as u32);
         self.feedback.forget(i as u32);
         self.ring.forget(i as u32);
@@ -7212,26 +7230,38 @@ impl LayoutTree for NodeStore {
     #[inline]
     fn content_natural(&self, index: u32) -> Option<Vec2> {
         let content = self.content_payload[index as usize].as_deref();
-        match self.check_marks.copied(index as usize) {
+        let natural = match self.check_marks.copied(index as usize) {
             Some((mark, shown)) => {
                 let (text, baseline) = caption_of(content);
                 Some(mark.natural(text, baseline, shown))
             }
             None => content.map(|c| c.natural()),
+        };
+        // A padded leaf measures to its content and the padding round it.
+        let inset = self.content_insets.get(index);
+        if inset == Inset::default() {
+            return natural;
         }
+        let natural = natural.unwrap_or(Vec2::ZERO);
+        Some(Vec2::new(
+            natural.x + inset.left + inset.right,
+            natural.y + inset.top + inset.bottom,
+        ))
     }
 
     #[inline]
     fn content_min_width(&self, index: u32) -> f32 {
         let content = self.content_payload[index as usize].as_deref();
         let min = content.map_or(0.0, |c| c.min_width());
+        let inset = self.content_insets.get(index);
+        let padded = inset.left + inset.right;
         match self.check_marks.copied(index as usize) {
             Some((mark, shown)) => {
                 let (text, baseline) = caption_of(content);
                 let lead = mark.natural(text, baseline, shown).x - text.x;
-                lead + min
+                lead + min + padded
             }
-            None => min,
+            None => min + padded,
         }
     }
 
@@ -7328,6 +7358,9 @@ impl LayoutTree for NodeStore {
             }
             None => width,
         };
+        // A padded leaf's text lays out in its box less the padding.
+        let inset = self.content_insets.get(index);
+        let width = (width - inset.left - inset.right).max(0.0);
         let qwidth = width.round();
         const EPS: f32 = 0.5;
         let changed = match (shaped_at_width, width_use) {
@@ -8046,6 +8079,14 @@ impl<'a> BuildCx<'a> {
     pub fn leaf(&mut self, style: LeafStyle) -> Handle {
         let id = self.push_node(LayoutInput::Leaf { size: style.size }, style.style);
         Handle::of(id)
+    }
+
+    /// Declare a leaf whose content — a caption, a field's text — keeps
+    /// `padding` from the edges of its box.
+    pub fn padded_leaf(&mut self, style: LeafStyle, padding: Inset) -> Handle {
+        let handle = self.leaf(style);
+        self.store.set_padding(handle.id(), padding);
+        handle
     }
 
     /// Declare an editable text leaf: a leaf node plus a retained edit

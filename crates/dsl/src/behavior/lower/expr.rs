@@ -556,6 +556,7 @@ impl Lowerer<'_, '_> {
             .cx
             .symbol_at(last.text_range())
             .filter(|id| self.env.record_fields(*id).is_some());
+        let mut variant_of = None;
         let (owner, tag, fields) = match record {
             Some(id) => (
                 Some(id),
@@ -568,21 +569,28 @@ impl Lowerer<'_, '_> {
                         .env
                         .enum_variants(id)
                         .and_then(|vs| vs.get(index))
-                        .map(|v| (index as u32, v.clone())),
+                        .map(|v| (id, index as u32, v.clone())),
                     None => heads
                         .len()
                         .checked_sub(2)
                         .and_then(|i| self.cx.symbol_at(heads[i].text_range()))
-                        .and_then(|id| self.variant(id, &last.text())),
+                        .and_then(|id| {
+                            self.variant(id, &last.text())
+                                .map(|(tag, info)| (id, tag, info))
+                        }),
                 };
                 match variant {
                     Some((
+                        id,
                         tag,
                         VariantInfo {
                             payload: VariantPayload::Record(fields),
                             ..
                         },
-                    )) => (None, tag, fields),
+                    )) => {
+                        variant_of = Some(id);
+                        (None, tag, fields)
+                    }
                     _ => return self.bail("this record literal names no record type"),
                 }
             }
@@ -652,6 +660,18 @@ impl Lowerer<'_, '_> {
                 (None, None, Some(record)) if fields[index].has_default => {
                     let name = format!("{}.{}", last.text(), fields[index].name);
                     let func = self.b.field_default_slot(record, index as u32, &name);
+                    let dst = self.reg();
+                    self.emit(Inst::Call {
+                        dst,
+                        func,
+                        args: Vec::new(),
+                    });
+                    dst
+                }
+                (None, None, None) if fields[index].has_default && variant_of.is_some() => {
+                    let name = format!("{}.{}", last.text(), fields[index].name);
+                    let key = super::ProgramBuilder::variant_field(tag, index as u32);
+                    let func = self.b.field_default_slot(variant_of.unwrap(), key, &name);
                     let dst = self.reg();
                     self.emit(Inst::Call {
                         dst,

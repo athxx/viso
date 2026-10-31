@@ -231,7 +231,11 @@ pub fn restyle_aot_node(
             (built.size, Some(built.gap), Some(built.padding))
         }
         AotNodeKind::Scroll => (scroll_style(node).size, None, None),
-        AotNodeKind::Leaf => (leaf_style(node).size, None, None),
+        AotNodeKind::Leaf => (
+            leaf_style(node).size,
+            None,
+            Some(style.padding.unwrap_or_default()),
+        ),
     };
     // Insets bound to environment lengths are theirs to fold.
     if lengths.is_none_or(|lengths| lengths.insets.is_none()) {
@@ -338,7 +342,10 @@ pub fn build_aot_node(
         AotNodeKind::Scroll => cx.scroll(scroll_style(node), children),
         // A leaf hosts no child region; the view guarantees `child_count == 0`
         // for a leaf.
-        AotNodeKind::Leaf => cx.leaf(leaf_style(node)),
+        AotNodeKind::Leaf => match style.padding {
+            Some(padding) => cx.padded_leaf(leaf_style(node), padding),
+            None => cx.leaf(leaf_style(node)),
+        },
     };
     if let Some(rules) = node.rules() {
         cx.set_box_rules(handle, rules);

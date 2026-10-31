@@ -1,12 +1,12 @@
-//! Shadows: a soft shadow a node's box casts under itself, lifting a menu,
-//! a popover or a card off what lies beneath.
+//! Shadows: the soft shadows a node's box casts under itself, lifting a
+//! menu, a popover or a card off what lies beneath.
 //!
 //! A shadow is the box's rounded rect grown by its spread, moved by its
 //! offset and blurred; it paints under the box, as part of the node's own
 //! drawables, in closed form (no offscreen pass). An inset shadow darkens
 //! the inside of the box near its edge instead, over its fill and within its
-//! border. The table is cold: one
-//! entry for each node that casts one, kept in slot order so paint finds a
+//! border. A box casts any number, painted in order. The table is cold: one
+//! entry for each node that casts any, kept in slot order so paint finds a
 //! node's in a binary search and a tree with none checks an empty table.
 
 use crate::component::NodeStore;
@@ -66,7 +66,7 @@ impl Shadow {
 /// The nodes that cast shadows, in slot order.
 #[derive(Debug, Default)]
 pub(crate) struct Shadows {
-    entries: Vec<(u32, Shadow)>,
+    entries: Vec<(u32, Box<[Shadow]>)>,
 }
 
 impl Shadows {
@@ -86,34 +86,45 @@ impl Shadows {
     }
 
     #[inline]
-    pub(crate) fn get(&self, index: u32) -> Option<Shadow> {
+    pub(crate) fn get(&self, index: u32) -> &[Shadow] {
         if self.entries.is_empty() {
-            return None;
+            return &[];
         }
-        self.find(index).ok().map(|at| self.entries[at].1)
+        self.find(index).map_or(&[], |at| &self.entries[at].1)
     }
 }
 
 impl NodeStore {
-    /// The shadow node `id` casts.
+    /// The first shadow node `id` casts.
     pub fn shadow(&self, id: NodeId) -> Option<Shadow> {
+        self.shadows.get(id.index()).first().copied()
+    }
+
+    /// The shadows node `id` casts, in paint order.
+    pub fn shadows(&self, id: NodeId) -> &[Shadow] {
         self.shadows.get(id.index())
     }
 
     /// Makes node `id` cast `shadow` under its box, or none; a change
     /// repaints it. A live-guarded write — a stale handle is a no-op.
     pub fn set_shadow(&mut self, id: NodeId, shadow: Option<Shadow>) {
-        if !self.arena().is_live(id) || self.shadow(id) == shadow {
+        self.set_shadows(id, shadow.as_slice());
+    }
+
+    /// Makes node `id` cast `shadows`, painted in order: the outer ones
+    /// under its box, the inset ones over its fill. A change repaints it.
+    pub fn set_shadows(&mut self, id: NodeId, shadows: &[Shadow]) {
+        if !self.arena().is_live(id) || self.shadows(id) == shadows {
             return;
         }
         let index = id.index();
-        match (self.shadows.find(index), shadow) {
-            (Ok(at), Some(s)) => self.shadows.entries[at].1 = s,
-            (Ok(at), None) => {
+        match (self.shadows.find(index), shadows.is_empty()) {
+            (Ok(at), false) => self.shadows.entries[at].1 = shadows.into(),
+            (Ok(at), true) => {
                 self.shadows.entries.remove(at);
             }
-            (Err(at), Some(s)) => self.shadows.entries.insert(at, (index, s)),
-            (Err(_), None) => {}
+            (Err(at), false) => self.shadows.entries.insert(at, (index, shadows.into())),
+            (Err(_), true) => {}
         }
         self.mark_dirty(id, crate::dirty::DirtyClass::PAINT);
     }
@@ -164,6 +175,58 @@ mod tests {
             "then the box"
         );
         store.set_shadow(card, None);
+        assert_eq!(store.shadow(card), None);
+    }
+
+    #[test]
+    fn a_box_casts_its_shadows_in_order_outer_under_and_inset_over() {
+        let mut store = NodeStore::new();
+        let card = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.leaf(LeafStyle {
+                size: Sizing::fixed(100.0, 40.0),
+                style: BoxStyle::solid(Rgba {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 1.0,
+                }),
+            })
+            .id()
+        };
+        let near = Shadow::below(Rgba::TRANSPARENT, 1.0, 2.0);
+        let far = Shadow::FLOATING;
+        let inner = Shadow::FLOATING.inside();
+        store.set_shadows(card, &[near, inner, far]);
+        assert_eq!(store.shadows(card), [near, inner, far]);
+        assert_eq!(store.shadow(card), Some(near), "the first");
+        store.layout(
+            card,
+            viso_render::Rect::new(0.0, 0.0, 100.0, 40.0),
+            &mut Vec::new(),
+        );
+        let mut out = Vec::new();
+        crate::paint::paint_tree(&store, card, &mut out);
+        let kinds: Vec<_> = out
+            .iter()
+            .map(|p| match p {
+                viso_render::Primitive::AnalyticShadow(s) => {
+                    (if s.inner { "inset" } else { "outer" }, s.sigma)
+                }
+                viso_render::Primitive::Quad(_) => ("box", 0.0),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("outer", 1.0),
+                ("outer", 10.0),
+                ("box", 0.0),
+                ("inset", 10.0)
+            ]
+        );
+        store.set_shadows(card, &[]);
         assert_eq!(store.shadow(card), None);
     }
 

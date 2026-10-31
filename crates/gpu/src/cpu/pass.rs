@@ -487,6 +487,43 @@ impl<R: Rows> Rows for Replacing<'_, R> {
     }
 }
 
+/// Rows whose every blend erases by the source's coverage, for a pipeline
+/// that blends destination-out.
+struct Erasing<'r, R>(&'r mut R);
+
+impl<R: Rows> Erasing<'_, R> {
+    fn erase(&mut self, y: u32, x0: u32, src: &[[f32; 4]]) {
+        let mut dst = [[0.0f32; 4]; 64];
+        for (at, chunk) in src.chunks(dst.len()).enumerate() {
+            let x = x0 + (at * dst.len()) as u32;
+            let dst = &mut dst[..chunk.len()];
+            self.0.load(y, x, dst);
+            for (d, s) in dst.iter_mut().zip(chunk) {
+                *d = d.map(|c| c * (1.0 - s[3]));
+            }
+            self.0.replace(y, x, dst);
+        }
+    }
+}
+
+impl<R: Rows> Rows for Erasing<'_, R> {
+    fn blend(&mut self, y: u32, x0: u32, src: &[[f32; 4]]) {
+        self.erase(y, x0, src);
+    }
+
+    fn blend_dithered(&mut self, y: u32, x0: u32, src: &[[f32; 4]]) {
+        self.erase(y, x0, src);
+    }
+
+    fn replace(&mut self, y: u32, x0: u32, src: &[[f32; 4]]) {
+        self.0.replace(y, x0, src);
+    }
+
+    fn load(&self, y: u32, x0: u32, out: &mut [[f32; 4]]) {
+        self.0.load(y, x0, out);
+    }
+}
+
 /// The pass an item belongs to.
 struct Pass<'a> {
     commands: &'a [DrawCommand],
@@ -543,12 +580,17 @@ fn draw<P: Px>(
             let place = uniform_place(cmd);
             let unplace = place.inverse();
             let scale = uniform_scale(cmd, pass.size[0]);
-            // A replacing pipeline writes its fragments as they are.
+            // A replacing pipeline writes its fragments as they are; an
+            // erasing one takes its fragments' coverage out of the target.
             let mut replacing = Replacing(&mut *rows);
-            let rows: &mut dyn Rows = if pipe.blend == BlendMode::Replace {
-                &mut replacing
-            } else {
-                replacing.0
+            let mut erasing;
+            let rows: &mut dyn Rows = match pipe.blend {
+                BlendMode::Replace => &mut replacing,
+                BlendMode::DestinationOut => {
+                    erasing = Erasing(replacing.0);
+                    &mut erasing
+                }
+                BlendMode::PremultipliedOver => replacing.0,
             };
             let l = match shared.layer_of.get(item.cmd as usize) {
                 Some(&l) if l != NO_LAYER => l as usize,

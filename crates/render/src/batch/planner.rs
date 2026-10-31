@@ -105,6 +105,10 @@ pub enum BatchFamily {
     /// own buffer. The program's slot is part of the key
     /// ([`BatchKey::with_program`]), so only draws of one program merge.
     Program,
+    /// One erasing composite: an offscreen layer drawn from the shared image
+    /// buffer through the image pipeline whose blend is destination-out, so
+    /// its coverage cuts what lies under it in its parent target.
+    Erase,
 }
 
 impl BatchFamily {
@@ -127,6 +131,7 @@ impl BatchFamily {
             BatchFamily::Material => 12,
             BatchFamily::MtsdfRun => 13,
             BatchFamily::Program => 14,
+            BatchFamily::Erase => 15,
         }
     }
 
@@ -148,6 +153,7 @@ impl BatchFamily {
             12 => Some(BatchFamily::Material),
             13 => Some(BatchFamily::MtsdfRun),
             14 => Some(BatchFamily::Program),
+            15 => Some(BatchFamily::Erase),
             _ => None,
         }
     }
@@ -553,6 +559,7 @@ mod tests {
             BatchFamily::ColorTransform,
             BatchFamily::AdvancedBlend,
             BatchFamily::Program,
+            BatchFamily::Erase,
         ] {
             let key = BatchKey::pack(family, BatchTarget::Main, None);
             assert_eq!(key.family(), family);

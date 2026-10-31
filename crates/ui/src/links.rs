@@ -160,7 +160,7 @@ impl NodeStore {
     /// Where link `link` of node `id` draws, in the window: one box for each
     /// line it is on.
     pub fn link_boxes(&self, id: NodeId, link: u16) -> impl Iterator<Item = Rect> + '_ {
-        let world = self.world(id);
+        let world = self.content_box(id);
         let boxes = match self.content_payload(id) {
             Some(Content::Text { ink: Some(ink), .. }) => &ink.links[..],
             _ => &[],
@@ -177,7 +177,7 @@ impl NodeStore {
 
     /// The link of node `id` at window point `(x, y)`.
     fn link_at(&self, id: NodeId, x: f32, y: f32) -> Option<u16> {
-        let world = self.world(id);
+        let world = self.content_box(id);
         let (x, y) = (x - world.x, y - world.y);
         match self.content_payload(id) {
             Some(Content::Text { ink: Some(ink), .. }) => ink

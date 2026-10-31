@@ -514,6 +514,11 @@ fn raster<P: Px>(target: &mut SceneTarget<'_, P>, draw: &Draw<'_>, color: [f32; 
             match draw.pipe.blend {
                 BlendMode::Replace => P::replace(px, &[shaded], target.fmt),
                 BlendMode::PremultipliedOver => P::blend(px, &[shaded], target.fmt, None),
+                BlendMode::DestinationOut => {
+                    let mut dst = [[0.0; 4]];
+                    P::load(px, &mut dst, target.fmt);
+                    P::replace(px, &[dst[0].map(|d| d * (1.0 - shaded[3]))], target.fmt);
+                }
             }
         }
     }

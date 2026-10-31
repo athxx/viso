@@ -470,6 +470,20 @@ fn lower_wanted_defaults(
     let mut percent = PercentSources::default();
     for item in prelude.unit.items() {
         let Item::Export(export) = item else { continue };
+        if let Some(Item::Enum(decl)) = export.declaration()
+            && let Some(&symbol) = scope.declared.get(&decl.syntax().text_range())
+        {
+            let wants = |key: u32| wanted.binary_search(&(symbol, key)).is_ok();
+            check_variant_defaults(
+                &decl,
+                &prelude.module.refs,
+                &env,
+                &mut diagnostics,
+                &mut percent,
+                wants,
+            );
+            continue;
+        }
         let Some(Item::Record(record)) = export.declaration() else {
             continue;
         };
@@ -586,6 +600,7 @@ fn lower_module(
             Item::Enum(e) => {
                 input::check_derives(&e, env, diagnostics);
                 check_variant_payloads(&e, env, diagnostics);
+                check_variant_defaults(&e, refs, env, diagnostics, &mut percent, |_| true);
             }
             Item::Record(r) => match env.scope.declared.get(&r.syntax().text_range()) {
                 Some(sym) if env.decls.shader_values.contains_key(sym) => {
@@ -1176,6 +1191,71 @@ fn check_variant_payloads(decl: &EnumDecl, env: &ModuleEnv<'_>, diagnostics: &mu
             );
         }
     }
+}
+
+/// Types each default of a record variant's field that `wanted` names by its
+/// key against the field's type; a variant literal that omits a defaulted
+/// field carries what the default does.
+fn check_variant_defaults(
+    decl: &EnumDecl,
+    refs: &[ResolvedRef],
+    env: &ModuleEnv<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+    percent: &mut PercentSources,
+    wanted: impl Fn(u32) -> bool,
+) {
+    let Some(&symbol) = env.scope.declared.get(&decl.syntax().text_range()) else {
+        return;
+    };
+    let enum_name = name_of(decl.name());
+    let mut cx = InferCx::new(refs, env);
+    let named = decl.variants().filter(|v| v.name().is_some());
+    for (tag, variant) in named.enumerate() {
+        for (index, field) in variant.fields().enumerate() {
+            let key =
+                crate::behavior::lower::ProgramBuilder::variant_field(tag as u32, index as u32);
+            let Some(value) = field.default() else {
+                continue;
+            };
+            if !wanted(key) {
+                continue;
+            }
+            let want = env.annotation_of(field.syntax());
+            let errors = cx.diagnostics().len();
+            let _ = if want.has_unknown() {
+                cx.infer_expr(&value, None)
+            } else {
+                cx.infer_promoted(&value, &want)
+            };
+            check_body(
+                refs,
+                BodyContext::Initializer,
+                env,
+                value.syntax(),
+                diagnostics,
+            );
+            percent.define(Resolution::Symbol(symbol), cx.carry(value.syntax()));
+            let name = format!(
+                "{enum_name}::{}.{}",
+                name_of(variant.name()),
+                name_of(field.name())
+            );
+            let slot = env
+                .behavior
+                .borrow_mut()
+                .field_default_slot(symbol, key, &name);
+            let def = Def {
+                name,
+                kind: FunctionKind::FieldDefault,
+                symbol: Some(symbol),
+                module: env.module,
+                into: Some(slot),
+            };
+            lower_checked(env, &cx, def, &value, errors);
+        }
+    }
+    percent.extend(cx.take_percent_defs());
+    diagnostics.extend(cx.into_diagnostics());
 }
 
 /// Types each record field default `wanted` names by index against its field type; a

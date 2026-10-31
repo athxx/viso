@@ -3026,17 +3026,18 @@ fn compile_stage(source: &str, entry: &str, pixel: bool) -> Result<ID3DBlob, Str
 
 /// A render-target blend description for `blend`.
 fn blend_desc(blend: BlendMode) -> D3D12_RENDER_TARGET_BLEND_DESC {
-    let (enable, dest) = match blend {
-        BlendMode::Replace => (false, D3D12_BLEND_ZERO),
-        BlendMode::PremultipliedOver => (true, D3D12_BLEND_INV_SRC_ALPHA),
+    let (enable, source, dest) = match blend {
+        BlendMode::Replace => (false, D3D12_BLEND_ONE, D3D12_BLEND_ZERO),
+        BlendMode::PremultipliedOver => (true, D3D12_BLEND_ONE, D3D12_BLEND_INV_SRC_ALPHA),
+        BlendMode::DestinationOut => (true, D3D12_BLEND_ZERO, D3D12_BLEND_INV_SRC_ALPHA),
     };
     D3D12_RENDER_TARGET_BLEND_DESC {
         BlendEnable: enable.into(),
         LogicOpEnable: false.into(),
-        SrcBlend: D3D12_BLEND_ONE,
+        SrcBlend: source,
         DestBlend: dest,
         BlendOp: D3D12_BLEND_OP_ADD,
-        SrcBlendAlpha: D3D12_BLEND_ONE,
+        SrcBlendAlpha: source,
         DestBlendAlpha: dest,
         BlendOpAlpha: D3D12_BLEND_OP_ADD,
         LogicOp: D3D12_LOGIC_OP_NOOP,

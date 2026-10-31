@@ -378,7 +378,7 @@ impl NodeStore {
         let Some([start, end]) = marks.handles else {
             return [None, None];
         };
-        let view = self.world(id);
+        let view = self.content_box(id);
         let place = |r: Rect| Rect {
             x: view.x - marks.scroll.x + r.x,
             y: view.y - marks.scroll.y + r.y,
@@ -476,7 +476,7 @@ impl NodeStore {
     /// way takes nothing, so the scroll reaches what holds it.
     pub fn scroll_field(&mut self, id: NodeId, delta: Vec2) -> Vec2 {
         let view = {
-            let b = self.world(id);
+            let b = self.content_box(id);
             Vec2 { x: b.w, y: b.h }
         };
         let Some(marks) = self.fields.get_mut(id) else {

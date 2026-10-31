@@ -732,6 +732,12 @@ impl ProgramBuilder {
 
     /// The function computing the default of field `index` of the record
     /// `record`, reserving a placeholder named `name` until it is lowered.
+    /// The key of field `index` of record variant `tag` among its enum's
+    /// field defaults: a record's fields are keyed by their index alone.
+    pub(crate) fn variant_field(tag: u32, index: u32) -> u32 {
+        ((tag + 1) << 16) | index
+    }
+
     pub(crate) fn field_default_slot(
         &mut self,
         record: SymbolId,

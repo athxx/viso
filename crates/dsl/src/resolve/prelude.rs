@@ -74,6 +74,17 @@ pub(crate) fn sizing_enum() -> SymbolId {
     })
 }
 
+/// The prelude enum of a background layer, which a `Color` stands for as
+/// `color` of it.
+pub(crate) fn fill_enum() -> SymbolId {
+    fingerprint(SymbolIdentity {
+        package: PRELUDE_MODULE,
+        module_path: PRELUDE_MODULE,
+        kind: SymbolKind::Enum,
+        decl_path: "Fill",
+    })
+}
+
 /// The prelude record of a raster asset, which only `asset("…")` makes.
 pub(crate) fn image_record() -> SymbolId {
     fingerprint(SymbolIdentity {

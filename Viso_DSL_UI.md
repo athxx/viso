@@ -387,9 +387,11 @@ mouse+keyboard vs touch input
 
 - `T` → `Option<T>`，提升为 `Option::Some(v)`，因此 `max_width: 640dp;`、`semantics.label: tr("x");` 合法；
 - 长度族值与 `MixedLength` → `Sizing`，提升为 `Sizing::fixed(v)`（U3.2）；
-- 长度族值与 `MixedLength` → `EdgeInsets`，提升为 `EdgeInsets::all(v)`（U3.3）。
+- 长度族值与 `MixedLength` → `EdgeInsets`，提升为 `EdgeInsets::all(v)`（U3.3）；
+- `Color` → `Fill`，提升为 `Fill::color(v)`（U3.3）；
+- `T` → `List<T>`，提升为单元素 List `[v]`；期望类型为 `List<T>` 时，List 字面量的每个元素也按 `T` 提升，因此 `background: #fff`、`background: [#fff, Fill::linear { colors: [#0000, #0004] }]` 与 `shadow: theme.elevation.low` 合法。
 
-一次绑定中 §76.1 拓宽与上述提升至多各发生一次（如 `Dp` → `MixedLength` → `Option<MixedLength>`）；提升不适用于函数实参与 `let`。
+一次绑定中 §76.1 拓宽与上述提升至多各发生一次（如 `Dp` → `MixedLength` → `Option<MixedLength>`，`Color` → `Fill` → `List<Fill>`）；提升不适用于函数实参与 `let`。
 
 同一位置上，期望类型是 Enum（或其 `Option`）时，值可以只写 Variant 名：`align: center` 即 `align: Align::center`，`width: fill` 即 `width: Sizing::fill {}`（字段全有默认值的 Record Variant 可省略 `{}`），`font_weight: semibold`、`semantics.role: heading`。简写同样适用于该位置上 `if`/`match` 各分支的 Tail（`justify: if mine { end } else { start }`）。规则：
 
@@ -556,10 +558,10 @@ export enum Sizing { fixed(MixedLength); fill { weight: F32 = 1.0 }; fit; min_co
 | `max_height`    | `Option<MixedLength>` | `Option::None`       | `MEASURE\|LAYOUT` | 父内容盒可用高度              |
 | `padding`       | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | `start`/`end` 父宽，`top`/`bottom` 父高 |
 | `margin`        | `EdgeInsets`          | `EdgeInsets::zero()` | `MEASURE\|LAYOUT` | 同 `padding` |
-| `background`    | `Option<Color>`       | `Option::None`       | `PAINT`           | —                             |
+| `background`    | `List<Fill>`          | `[]`                 | `PAINT`           | —                             |
 | `corner_radius` | `MixedLength`         | `0dp`                | `PAINT`           | 自身 Border Box 较短边        |
 | `border`        | `Option<Border>`      | `Option::None`       | `PAINT`           | —                             |
-| `shadow`        | `Option<Shadow>`      | `Option::None`       | `PAINT`           | —                             |
+| `shadow`        | `List<Shadow>`        | `[]`                 | `PAINT`           | —                             |
 | `backdrop`      | `Option<Backdrop>`    | `Option::None`       | `PAINT`           | —                             |
 | `ripple`        | `Bool`                | 平台惯例             | `PAINT`           | —                             |
 | `styles`        | `List<StyleRef<T>>`   | `[]`                 | `STYLE`           | —                             |
@@ -580,6 +582,12 @@ export record Shadow {
     color: Color
     inset: Bool = false
 }
+export enum Fill {
+    color(Color)
+    linear { angle: Angle = 180deg; colors: List<Color>; stops: List<F32> = [] }
+    radial { x: F32 = 0.5; y: F32 = 0.5; colors: List<Color>; stops: List<F32> = [] }
+    image { asset: ImageAsset; fit: ImageFit = ImageFit::cover; opacity: F32 = 1.0 }
+}
 export record Backdrop {
     blur: Dp = 30dp
     saturation: F32 = 1.8
@@ -591,12 +599,13 @@ export record Backdrop {
 - 构造函数：`EdgeInsets::zero()`、`EdgeInsets::all(v)`、`EdgeInsets::axes(inline: a, block: b)`（`a` 用于 `start`/`end`，`b` 用于 `top`/`bottom`）；
 - 按 U1.3，§19.5 的 `padding: 1em;` 提升为 `EdgeInsets::all(1em)`；
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
-- `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；`theme.elevation.*` 即 `Shadow`，可直接绑定；
+- `background` 是盒的各层填充，按书写顺序自下而上绘制，每层按 `corner_radius` 取圆角、画在 `border` 之下：`color` 为平涂；`linear` 沿 `angle`（CSS 约定：`0deg` 朝上、顺时针，`180deg` 自上而下）穿过整个盒，`radial` 以盒内比例位置 `x`/`y` 为圆心、到最远角为半径；二者的 `colors` 至少两种（只有一种时为该色平涂，没有时不绘制），`stops` 为各色在 `0..1` 上的位置，空时均分，与 `colors` 不等长时报 `E2103`（读取值时执行域报告 Fault 并均分），颜色在线性 RGB 中插值；`image` 按 `fit` 放置图片（同 `Image`），按 `opacity` 淡化，解码前不绘制。只有一层 `color` 时它是盒的底色，`transition.background` 在两个底色之间过渡；其他背景变化立即显示；
+- `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；多个阴影按书写顺序自下而上绘制，外阴影都在盒下、内阴影都在背景之上，因此一个盒可同时有外阴影与内阴影；`theme.elevation.*` 即 `Shadow`，可直接绑定；
 - `backdrop` 使盒成为玻璃：盒背后已绘制的内容按 `blur`（CSS 模糊半径）模糊、按 `saturation` 调整饱和度、按 `tint` 的 alpha 叠上 `tint`，再加 `noise`（0..1）颗粒，按 `corner_radius` 取圆角，画在 `background` 之下；节点自身 `opacity` 小于 1 时玻璃按该 opacity 淡出而保持模糊（嵌套在其他半透明祖先之内的玻璃不模糊）。同一背景上同一模糊的多块玻璃共用一次背景捕获与模糊。`BlurView` 是纵向排列子节点的 Flex 容器（属性同 `Column`），未给 `backdrop` 时为标准玻璃 `Backdrop {}`。Web 导出为 `backdrop-filter: blur(..) saturate(..)` 加一层 `tint` 平涂；
 - `ripple` 为 `true` 时，按下该节点（或其内未开 `ripple` 的后代）从按下点向外铺开一圈墨迹，约 0.3s 盖满整个盒，按 `corner_radius` 裁圆角，画在 `background` 之上、内容之下；松手或按压被平移手势接管后墨迹边扩边淡出（约 0.2s）。墨迹取盒的反差色：浅色或透明底上为暗墨，深色底上为亮墨。减少动态效果（reduced motion）时墨迹不扩散，一按即满并淡出。未给 `ripple` 时按平台惯例：Android 上 `Button`、`Chip` 默认开启，其他平台默认关闭；Web 导出不带墨迹。手指或触控笔改变控件时伴随系统触觉：`Toggle`/`CheckBox`/可选 `Chip`/`Stepper`/`Select`/`Segmented` 改变值时为 selection 轻触，设了 `step` 的 `Slider` 每到一个刻度一次；按钮点击、鼠标与键盘不触发触觉；
 - `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
 - `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边；
-- `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Absolute`、`Grid`）的内容盒；`padding` 可为常量（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`）或读取值（见 U3.4 的绑定布局值），每条边按 §19.8 取非负，含 `%` 分量的边在布局时读到父内容盒后取非负；非容器节点上的 `padding` 报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏；
+- `padding` 只作用于容器（`Row`、`Column`、`Flex`、`Stack`、`Absolute`、`Grid`）的内容盒，以及 `Button` 与 `TextInput`：`Button` 的文字与 `TextInput` 的编辑区放在内边距之内，盒的 Fit 尺寸含内边距，未写时按各自默认；`padding` 可为常量（长度、`EdgeInsets::zero/all/axes` 或各字段为常量的 `EdgeInsets { .. }`）或读取值（见 U3.4 的绑定布局值），每条边按 §19.8 取非负，含 `%` 分量的边在布局时读到父内容盒后取非负；非容器节点上的 `padding` 报 `E3711`，不会被静默丢弃。纯 `dp` 且 `start` 与 `end` 相等的 `padding` 在编译期折叠为物理内边距；含 `px`/`sp`/`em` 分量或 `start` 与 `end` 不等的，随 §19.6 环境与 `env.layout_direction` 在布局时折叠，只有折叠结果变化的节点被标脏；
 - 常量 `min_*`/`max_*`（`max_*` 另接受 `Option::None` 与 `Option::Some(v)`）与常量 `margin` 适用于任意布局节点，写法同 `padding`：`%` 读父内容盒（父轴不定时 `%` 分量取 `0`），`max_*` 为 `Option::None` 时无上界，`margin` 可为负、计入父容器的自然尺寸；Fill 子项在各自上下界内分配剩余空间。这些规则与 `%` 内边距均不读环境且 `start` 与 `end` 相等时在编译期折叠为节点的盒规则；否则随 §19.6 环境与 `env.layout_direction` 在布局时折叠。读取值的 `min_*`/`max_*`/`margin` 随值布局（U3.4），与节点的常量规则一同在布局时折叠。
 
 ### U3.4 Flex 容器（`Row` / `Column` / `Flex`）
@@ -630,7 +639,7 @@ export record Backdrop {
 
 当前实现：`gap`、`row_gap`、`justify`、`align` 与 Flex 容器同样折叠或随值送达；Web 导出为 `display: flex; flex-wrap: wrap`，`fill` 子节点为 `width: 100%`。Rust 侧为 `BuildCx::flow(FlowStyle, ..)`（`LayoutInput::Flow`，亦支持沿块方向换列）。
 
-当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius`、`border` 与 `shadow` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容；`shadow` 改变只重绘节点。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`shadow`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。`border` 与 `shadow` 导出为同一个 `box-shadow` 列表（`border` 为 `inset` 描边），各自为一个自定义属性，Style 的 `when` 只改写其中一个。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
+当前实现：常量的 `width`/`height`（长度，即 `Sizing::fixed`，以及 `Sizing::fixed(..)`、`Sizing::fill`、`Sizing::fill { weight: w }`、`Sizing::fit`）、Flex 容器的 `justify`、`align` 与 `axis`（`Axis::row`/`Axis::column`）在编译期折叠进节点样式，`Grid` 取其 `width`/`height`；值可以是本文件或按名 import 的 `const`（经 `const` 链折叠，链可跨文件）。热重载就地改写保留节点的排列，Release 包与宏路径相同。`Sizing::fit`/`min_content`/`max_content` 按 U3.2 布局。`corner_radius`、`border` 与 `shadow` 可为常量或读取值，可由 Style 的 `when` 切换：`corner_radius` 的 `%` 读节点绘制时自身盒的较短边，`px`/`sp`/`em` 随 §19.6 环境，圆角不超过较短边的一半；`border` 在盒内侧描边，不移动内容；`shadow` 改变只重绘节点。`clip` 可为常量或读取值：为 `true` 时子树的绘制与命中只落在节点自身盒内，按节点的 `corner_radius` 取圆角（圆角处的像素按覆盖率淡出，圆角外的指针不命中子节点）；HTML 导出为 `overflow: hidden`。尚无运行时路径的 Property（变换）报 `E3711`，不会被静默丢弃；`viso check` 与 `view!` 报告相同。`visible`（折出布局、绘制与语义树）、`focusable`，以及 `Text`/`Button`/`TextInput` 的 `color`、`soft_wrap` 与 `font_size`（节点解析出的字号）随值送达节点，可绑定；文本挂载后其字号与 `line_height` 在塑形时按节点解析出的字号与环境解析，文字缩放、缩放因子或根字号变化、或字号来源变化时只重新排布（em 布局不变），读取值的 `font_size` 随值改写节点的字号来源。读取值（State、Input、`theme` 等）的布局 Property——`font_size`、`width`/`height`、`min_*`/`max_*`、`margin`、`padding`、`gap`、`justify`/`align`/`axis`、Grid 的模板、间距与对齐、`content_align`、子节点的 `grid.column`/`grid.row`/`grid.*_span`、`stack.*` 与 `absolute.*`——随值变化重新布局节点，只标脏其移动的部分：长度经节点的环境长度在布局时折叠（`px`/`sp`/`em` 随 §19.6 环境，`%` 读其基准），与节点的常量长度一同折叠；热重载后全部重新送达，Release 包与宏路径相同。送达的值为 `minmax`/`fit_content`/`AdaptiveColumns` 中含 `%` 的长度时，执行域报告 Fault，节点保留此前的布局。读取值的 `areas`/`grid.area` 报 `E3711`。Style 给出的 Property 与节点自身的走同一送达路径：常量折叠进样式，读取值（含 `theme`）随值送达；Style 的 `when` 可切换节点运行时送达的任何 Property（外观、变换、文本样式、布局等），无 `when` 成立时显示基值；被 `when` 切换的布局 Property 须在 Style 中另有不带 `when` 的基值，否则 `E3711`。Web 导出切换 `background`、`opacity`、`corner_radius`、`border`、`shadow`、`translate`、`scale`、`rotation` 与文本 `color`，其余报导出诊断。`border` 与 `shadow` 导出为同一个 `box-shadow` 列表（`border` 为 `inset` 描边），各自为一个自定义属性，Style 的 `when` 只改写其中一个；`background` 的各层导出为 CSS `background` 列表（顺序反转，因 CSS 首层在上；`linear-gradient`/`radial-gradient`/`url()`，`fit` 为 `background-size`/`background-repeat`），`opacity` 小于 1 的图片层报导出诊断。交叉轴上的 `fill` 在任何 `align` 下都占满；`align: stretch` 只拉伸交叉轴为 `fit` 的子节点，固定或百分比尺寸按自身尺寸由 `align` 定位。
 
 ### U3.5 Grid
 
@@ -773,8 +782,10 @@ export record AdaptiveColumns {
 | `align`       | `TextAlign`           | `TextAlign::start`            | `LAYOUT\|PAINT`                     | —                         |
 | `selectable`  | `Bool`                | `false`                       | `PAINT\|HIT_TEST\|SEMANTICS`        | —                         |
 | `locale`      | `Option<Locale>`      | `Option::None`（`env.locale`）| `MEASURE\|LAYOUT\|PAINT`            | —                         |
+| `text_shadow` | `List<TextShadow>`    | `[]`                          | `PAINT`                             | —                         |
 
 - `FontWeight { thin; light; regular; medium; semibold; bold; heavy; }`（字重 100、300、400、500、600、700、900）；`FontFamily { system_ui; serif; monospace; named(String); }`（`named` 为 App 字体中的族名，无此族时取主 UI 字体）；`TextOverflow { clip; ellipsis; }`；`TextAlign { start; center; end; }`（`start`/`end` 随段落方向解析，`justify` 推迟）；
+- `record TextShadow { x: Dp = 0dp; y: Dp = 1dp; blur: Dp = 2dp; color: Color; inset: Bool = false }`：`text_shadow` 是字形的投影，按 `x`/`y` 偏移、按 `blur`（CSS 模糊半径）淡出，画在文字之下，不参与布局与命中；`inset: true` 时落在字形之内、画在文字之上（被偏移的字形之外的部分着色），即内阴影；多个按书写顺序绘制，`Text`、`Button` 与 `TextInput` 都接受，`TextInput` 的阴影随其文本，不作用于占位文字与光标；HTML 导出为 `text-shadow`，内阴影报导出诊断；
 - `FontStyle { normal; italic; }`：`italic` 取该族的斜体字体（有则用之）；
 - **富文本**：`spans` 只属于 `Text`，非空时各片段的 `text` 依次拼接成节点的文本（取代 `text`，也是无障碍名称），每个片段按自身样式绘制。`record Span { text: String; color: Option<Color> = None; background: Option<Color> = None; font_weight: Option<FontWeight> = None; font_style: Option<FontStyle> = None; font_family: Option<FontFamily> = None; font_size: Option<MixedLength> = None; raise: Option<MixedLength> = None; underline: Bool = false; strikethrough: Bool = false; link: Option<String> = None; }`：`None` 的字段沿用节点自身的值，`color` 为 `None` 的片段随节点 `color`（及其过渡）；`font_size` 的 `em`/`%` 相对节点字号，`raise` 把片段基线抬高（负值降低），其 `em`/`%` 相对片段自身字号；`background` 填在片段字体的 ascent 到 descent 之间，`underline`/`strikethrough` 的位置与粗细取字体度量。只改颜色、背景与线条的片段不打断整形（字距与连字保持），改字体、字号、字重、倾斜或抬升的片段单独整形；一行的高度取该行各片段行盒的最大值（Text Runtime §12.12.2）。片段读取的 State 变化时整段重新声明。HTML 与 Solid 导出把片段写成带内联样式的 `<span>`，变化的片段由页面脚本重建；
 - **链接**：带 `link` 的片段是链接，总有下划线。鼠标在其上显示手形，在同一链接上按下并抬起即激活它，`Text` 及其祖先收到 `link(LinkEvent)`；有链接的 `Text` 可获得焦点，Tab/Shift+Tab 先在其链接间逐个移动再离开，Enter 激活焦点所在的链接，键盘移动焦点时该链接外画焦点环。辅助技术把每个链接读作 `Role::link` 的子节点（名称为链接文字，Click 激活、Focus 聚焦它）。HTML 导出为 `<a href>`，有 `on link` 时点击由页面脚本拦截并投递，没有时按浏览器默认跟随；原生运行时上，激活的链接沿路由没有处理器调用 `prevent_default` 时（`on link` 总会调用）交给系统打开（`Launcher::open_url`：浏览器、邮件等外部应用），否则由作者处理；

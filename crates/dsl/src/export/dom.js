@@ -216,12 +216,64 @@ const stroke = (v) => {
   if (v === null) return noShadow;
   return "inset 0 0 0 " + Math.max(dp(v.f[0]), 0) + "px " + color(v.f[1]);
 };
-// An `Option<Shadow>` as a `box-shadow`.
+// A `List<Shadow>` (or one) as a `box-shadow` list.
 const shadow = (v) => {
-  if (v === null) return noShadow;
-  const [x, y, blur, spread, paint, inset] = v.f;
-  return (Number(inset ?? 0n) === 1 ? "inset " : "") + dp(x) + "px " + dp(y) + "px " +
-    Math.max(dp(blur), 0) + "px " + dp(spread) + "px " + color(paint);
+  const all = (Array.isArray(v) ? v : v === null ? [] : [v]).map((s) => {
+    const [x, y, blur, spread, paint, inset] = s.f;
+    return (Number(inset ?? 0n) === 1 ? "inset " : "") + dp(x) + "px " + dp(y) + "px " +
+      Math.max(dp(blur), 0) + "px " + dp(spread) + "px " + color(paint);
+  });
+  return all.length ? all.join(", ") : noShadow;
+};
+// A `List<TextShadow>` (or one) as a `text-shadow`; CSS has no inset one.
+const textShadow = (v) => {
+  const all = (Array.isArray(v) ? v : v === null ? [] : [v])
+    .filter((s) => Number(s.f[4] ?? 0n) !== 1)
+    .map((s) => {
+      const [x, y, blur, paint] = s.f;
+      return dp(x) + "px " + dp(y) + "px " + Math.max(dp(blur), 0) + "px " + color(paint);
+    });
+  return all.length ? all.join(", ") : "none";
+};
+// A `List<Fill>` (or one `Fill` or colour) as a `background`: its layers top
+// first, its first colour the bottom layer's colour.
+const fill = (v) => {
+  const all = Array.isArray(v) ? v : v === null ? [] : [v];
+  const stops = (colors, at) => {
+    const placed = at.length === colors.length;
+    const all = colors.map((c, i) =>
+      color(c) + (placed ? " " + Math.min(Math.max(Number(at[i]), 0), 1) * 100 + "%" : ""));
+    return all.length === 1 ? all[0] + ", " + all[0] : all.join(", ");
+  };
+  let base = null;
+  const layers = [];
+  all.forEach((f, i) => {
+    if (typeof f === "bigint") {
+      if (i === 0) base = color(f);
+      else layers.push("linear-gradient(" + color(f) + ", " + color(f) + ")");
+      return;
+    }
+    const k = Number(f.t ?? 0), g = f.f;
+    if (k === 0) {
+      if (i === 0) base = color(g[0]);
+      else layers.push("linear-gradient(" + color(g[0]) + ", " + color(g[0]) + ")");
+    } else if (k === 1 && g[1].length) {
+      layers.push("linear-gradient(in srgb-linear " + Number(g[0] ?? 180) + "deg, " + stops(g[1], g[2]) + ")");
+    } else if (k === 2 && g[2].length) {
+      layers.push("radial-gradient(in srgb-linear circle farthest-corner at " + Number(g[0]) * 100 +
+        "% " + Number(g[1]) * 100 + "%, " + stops(g[2], g[3]) + ")");
+    } else if (k === 3) {
+      const href = url(g[0]);
+      const fit = fits[Number(g[1] ?? 1n)];
+      const place = fit === "contain" ? "center / contain no-repeat"
+        : fit === "fill" ? "center / 100% 100% no-repeat"
+        : fit === "tile" ? "0 0 repeat" : "center / cover no-repeat";
+      if (href) layers.push('url("' + href + '") ' + place);
+    }
+  });
+  layers.reverse();
+  if (base !== null) layers.push(base);
+  return layers.length ? layers.join(", ") : "transparent";
 };
 // An `Option<Backdrop>` as a `backdrop-filter`, and its tint as a colour.
 const backdrop = (v) =>
@@ -751,6 +803,8 @@ const P = {
   vradius: (el, v, name) => el.style.setProperty(name, radius(v)),
   vborder: (el, v, name) => el.style.setProperty(name, stroke(v)),
   vshadow: (el, v, name) => el.style.setProperty(name, shadow(v)),
+  vfill: (el, v, name) => el.style.setProperty(name, fill(v)),
+  vtext_shadow: (el, v, name) => el.style.setProperty(name, textShadow(v)),
   vbackdrop(el, v, name) {
     el.style.setProperty(name, backdrop(v));
     el.style.setProperty(name + "-tint", frost(v));

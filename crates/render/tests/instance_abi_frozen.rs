@@ -158,7 +158,11 @@ fn glyph_instance_layout_is_frozen() {
 
 #[test]
 fn gradient_instance_layout_is_frozen() {
-    assert_eq!(size_of::<GradientInstance>(), 80, "GradientInstance stride");
+    assert_eq!(
+        size_of::<GradientInstance>(),
+        112,
+        "GradientInstance stride"
+    );
     assert_eq!(align_of::<GradientInstance>(), 4, "GradientInstance align");
     assert_eq!(offset_of!(GradientInstance, rect_pos), 0);
     assert_eq!(offset_of!(GradientInstance, rect_size), 8);
@@ -170,6 +174,9 @@ fn gradient_instance_layout_is_frozen() {
     assert_eq!(offset_of!(GradientInstance, use_lut), 44);
     assert_eq!(offset_of!(GradientInstance, color0), 48);
     assert_eq!(offset_of!(GradientInstance, color1), 64);
+    assert_eq!(offset_of!(GradientInstance, mask_pos), 80);
+    assert_eq!(offset_of!(GradientInstance, mask_size), 88);
+    assert_eq!(offset_of!(GradientInstance, mask_radius), 96);
 }
 
 #[test]

@@ -471,6 +471,7 @@ fn gradient_grid_scene(count: usize) -> Vec<Primitive> {
             },
             stops,
             interp: InterpolationSpace::LinearRgb,
+            mask: None,
         }));
     }
     scene

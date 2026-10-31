@@ -1325,6 +1325,22 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 - 多个相邻/重叠 material 按 §17.2 共享 capture 与 blur；
 - 静态 UI 不因 blur/glass 存在而持续重绘（§24.4）。
 
+## 18.1 材质配方
+
+六种常见观感都落在同一套原语上，不另开 pass 类型：
+
+| 观感 | 配方 | 每帧代价 |
+|---|---|---|
+| Skeuomorphism / Aqua | 分层 fill（渐变光泽、径向辉光、带 `inset` 的高光层）+ 外/内阴影 + 浮雕 `text_shadow` | 纯 instance draw；仅模糊的文字阴影开 layer |
+| Background blur | backdrop → blur | 共享 capture + blur ladder |
+| Glassmorphism | backdrop → blur → saturation/tint → 亮边框 + 柔和外阴影 | 同上 + analytic 阴影 |
+| Acrylic | backdrop → blur → luminosity（保留背后亮度）→ tint → noise | 同上，luminosity/tint 合进 fused color op |
+| Mica | 窗口级：系统合成器采样一次壁纸、重模糊、按主题着色；Viso 表面透明 | 0（`MaterialLane::Native`） |
+| Liquid glass | backdrop（轻模糊）→ SDF 边缘折射位移 + 色散 → 镜面边缘高光 → 自适应 tint | 一次 capture（ROI 按最大位移外扩）+ 单 pass 固定 tap 数 |
+
+- **降级**：环境的 reduced transparency（系统设置、省电、设备无该能力）把每个 backdrop 画成其实心 `fallback`，不开 capture；窗口失活时窗口级材质同样回退实色。
+- **不叠玻璃**：glass 上再放 glass 会让上层 capture 重渲下层材质；同一平面的玻璃元素放进一个 `GlassGroup`，共享一次 capture。
+
 ---
 
 # 19. M1 — Platform Material / Liquid Glass / HDR
@@ -1334,6 +1350,25 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 平台高级材质最后实现。Apple 平台可以存在 Native System Material Lane（`NativeMaterialRegion`，`LayerReason::NativeMaterialBoundary`）与 GPU Material Lane。选择取决于系统集成要求、视觉一致性、可组合性、动画需求、性能 profile、是否需要 Viso GPU 内容参与。
 
 不得为了 Liquid Glass 把平台私有 API 泄漏到通用 Render IR。
+
+窗口级材质（Mica、Mica Alt、Acrylic、vibrancy）走 Native lane：Windows 11 的 DWM system backdrop、macOS 表面后的 `NSVisualEffectView`；表面以透明背景合成。其他平台、或系统不支持时，画成主题的实心回退色。
+
+## 19.1a GPU Liquid glass
+
+在 Frosted 管线（§18）上多一步采样位移，仍是一个 composite：
+
+```text
+d      = rounded-rect SDF（负在内），n = ∇d
+edge   = saturate(1 + d / band)            // band：边缘透镜带宽，随盒子尺寸
+offset = -n · refraction · lens(edge)      // lens：凸透镜高度剖面的导数，边缘最强
+color  = sample(backdrop, p + offset ± dispersion·offset)   // RGB 三 tap 时才色散
+spec   = highlight · pow(edge, k) · max(0, dot(n, light))   // 加上对侧较弱的一圈
+out    = tint(color, mean_luma(backdrop)) + spec            // tint 随背后亮度在明暗间切换
+```
+
+- capture ROI 外扩 `refraction`，位移不越界采样；
+- 背后平均亮度取 blur ladder 最粗一级，不额外读回；
+- 按压光（指针处的径向辉光）与合并形状（`GlassGroup` 内各 SDF 的 smooth-min 并集）都在同一 pass 内求值。
 
 ## 19.2 HDR / Wide Gamut
 

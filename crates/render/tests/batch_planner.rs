@@ -32,6 +32,7 @@ fn pipeline_family(pipeline: BatchPipeline) -> BatchFamily {
         BatchPipeline::AnalyticCapsule => BatchFamily::AnalyticCapsule,
         BatchPipeline::AnalyticLine => BatchFamily::AnalyticLine,
         BatchPipeline::Image => BatchFamily::Image,
+        BatchPipeline::Erase => BatchFamily::Erase,
         BatchPipeline::GlyphRun => BatchFamily::GlyphRun,
         BatchPipeline::MtsdfRun => BatchFamily::MtsdfRun,
         BatchPipeline::Mesh => BatchFamily::Mesh,

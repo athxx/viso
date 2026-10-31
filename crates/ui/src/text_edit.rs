@@ -2207,7 +2207,7 @@ pub fn reconcile(
             continue;
         }
         let placed = geometry.and_then(|g| g.layout(node)).map(|layout| {
-            let world = store.world(node);
+            let world = store.content_box(node);
             let scroll = store.field_marks(node).map_or(Vec2::ZERO, |m| m.scroll);
             Placed {
                 layout,

@@ -17,7 +17,7 @@ style Ring for Column {
     when hover {
         corner_radius: 6dp;
         border: Option::Some(Border { width: 3dp, color: #0000ff });
-        shadow: Option::Some(Shadow { y: 1dp, blur: 4dp, color: #000000, inset: true });
+        shadow: Shadow { y: 1dp, blur: 4dp, color: #000000, inset: true };
     }
 }
 
@@ -32,7 +32,7 @@ export component Card {
                 background: #ff0000;
                 corner_radius: if round { 50% } else { 4dp };
                 border: if round { Option::Some(Border { width: 2dp, color: #000000 }) } else { Option::None };
-                shadow: if round { Option::Some(Shadow { x: 1dp, y: 4dp, blur: 12dp, spread: -2dp, color: #00000040 }) } else { Option::None };
+                shadow: if round { [Shadow { x: 1dp, y: 4dp, blur: 12dp, spread: -2dp, color: #00000040 }] } else { [] };
             }
             Column { width: 10dp; height: 10dp; corner_radius: 2sp; }
             Column { width: 20dp; height: 20dp; styles: [Ring]; }

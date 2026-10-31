@@ -1037,6 +1037,9 @@ pub fn gradient_ir() -> ShaderIr {
         IrField::new("use_lut", IrType::U32),
         IrField::new("color0", IrType::F32X4),
         IrField::new("color1", IrType::F32X4),
+        IrField::new("mask_pos", IrType::F32X2),
+        IrField::new("mask_size", IrType::F32X2),
+        IrField::new("mask_radius", IrType::F32X4),
     ];
     static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
@@ -1067,6 +1070,14 @@ pub fn gradient_ir() -> ShaderIr {
         Varying::new("use_lut", IrType::U32, " [[flat]]", "0=inline 2-stop 1=LUT"),
         Varying::new("color0", IrType::F32X4, "", "inline stop 0 (premultiplied)"),
         Varying::new("color1", IrType::F32X4, "", "inline stop 1 (premultiplied)"),
+        Varying::new("mask_center", IrType::F32X2, "", ""),
+        Varying::new("mask_half", IrType::F32X2, "", ""),
+        Varying::new(
+            "mask_radius",
+            IrType::F32X4,
+            "",
+            "lt, rt, rb, lb; all 0 = unmasked",
+        ),
     ];
     ShaderIr {
         kind: PrimitiveKind::Gradient,
@@ -3694,6 +3705,9 @@ out.lut_v = inst.lut_v;
 out.use_lut = inst.use_lut;
 out.color0 = float4(inst.color0);
 out.color1 = float4(inst.color1);
+out.mask_center = float2(inst.mask_pos) + float2(inst.mask_size) * 0.5;
+out.mask_half = float2(inst.mask_size) * 0.5;
+out.mask_radius = float4(inst.mask_radius);
 return out;";
 
 const GRADIENT_HELPERS: &str = "\
@@ -3730,6 +3744,19 @@ static inline float gradient_extend(uint mode, float t) {
     return clamp(t, 0.0, 1.0);
 }
 
+// Signed distance to a rounded box with an independent radius per corner
+// (`radii` ordered left-top, right-top, right-bottom, left-bottom), negative
+// inside; the radius convention is the Quad's.
+static inline float rrect_sdf(float2 p, float2 center, float2 half_ext, float4 radii) {
+    float2 d = p - center;
+    float r = d.x < 0.0 ? (d.y < 0.0 ? radii.x : radii.w)
+                        : (d.y < 0.0 ? radii.y : radii.z);
+    float k = min(2.0 * r, min(half_ext.x, half_ext.y));
+    float2 q = abs(d) - (half_ext - k);
+    float2 mx = max(q, float2(0.0));
+    return length(mx) + min(max(q.x, q.y), 0.0) - k;
+}
+
 // Device-pixel coverage factor: how many SDF units span one screen pixel at the
 // current sampling position, inverted. Coverage ramps over ~1 device pixel
 // regardless of scale, so the AA width tracks the physical grid.
@@ -3746,6 +3773,13 @@ float2 q = abs(in.local - center) - half_ext;
 float d = length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0);
 float aa = aa_factor(in.local);
 float cov = clamp(-d * aa, 0.0, 1.0);
+// A rounded mask (a rounded box's background) covers what lies inside it,
+// antialiased over one device pixel; without one every sample is in.
+float4 r = in.mask_radius;
+if (max(max(r.x, r.y), max(r.z, r.w)) > 0.0) {
+    float md = rrect_sdf(in.local, in.mask_center, in.mask_half, r);
+    cov = cov * clamp(-md * aa, 0.0, 1.0);
+}
 
 // Gradient color at this sample: raw parameter → extend wrap → LUT sample or
 // inline 2-stop lerp. Both the LUT texel and the inline colors are premultiplied

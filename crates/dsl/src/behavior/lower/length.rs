@@ -29,23 +29,41 @@ impl Lowerer<'_, '_> {
             terms[unit.term()] = Some(value);
             value = self.make_length(terms);
         }
-        let Some(stands_for) = promotion.stands_for else {
-            return value;
-        };
-        let dst = self.reg();
-        self.emit(match stands_for {
-            StandsFor::Fixed => Inst::Make {
+        if let Some(stands_for) = promotion.stands_for {
+            let dst = self.reg();
+            self.emit(match stands_for {
+                StandsFor::Fixed => Inst::Make {
+                    dst,
+                    tag: 0,
+                    fields: vec![value],
+                },
+                StandsFor::All => Inst::Make {
+                    dst,
+                    tag: 0,
+                    fields: vec![value; 4],
+                },
+            });
+            value = dst;
+        }
+        // `Fill::color`, the first variant.
+        if promotion.fill {
+            let dst = self.reg();
+            self.emit(Inst::Make {
                 dst,
                 tag: 0,
                 fields: vec![value],
-            },
-            StandsFor::All => Inst::Make {
+            });
+            value = dst;
+        }
+        if promotion.listed {
+            let dst = self.reg();
+            self.emit(Inst::List {
                 dst,
-                tag: 0,
-                fields: vec![value; 4],
-            },
-        });
-        dst
+                items: vec![value],
+            });
+            value = dst;
+        }
+        value
     }
 
     /// The type `e` has before it converts where it is typed: a widened

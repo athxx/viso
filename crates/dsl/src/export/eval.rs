@@ -232,6 +232,15 @@ impl<'a> Eval<'a> {
                     at = Some(dst);
                 }
                 Inst::Move { dst, src } if at == Some(src) => at = Some(dst),
+                // A color standing for a fill, and a value for its list.
+                Inst::Make {
+                    dst,
+                    tag: 0,
+                    ref fields,
+                } if at.is_some() && fields[..] == [at.unwrap()] => at = Some(dst),
+                Inst::List { dst, ref items } if at.is_some() && items[..] == [at.unwrap()] => {
+                    at = Some(dst)
+                }
                 Inst::Return { src } if at == Some(src) && !path.is_empty() => {
                     return Some(path);
                 }

@@ -1015,7 +1015,10 @@ mod tests {
                 "lut_v",
                 "use_lut",
                 "color0",
-                "color1"
+                "color1",
+                "mask_pos",
+                "mask_size",
+                "mask_radius"
             ]
         );
         assert_three_legs_agree(GRADIENT_MSL(), &gradient_schema(), &ir_names);

@@ -42,9 +42,9 @@ const LAYOUT: &[WidgetProperty] = &[
     based_look("padding", "EdgeInsets"),
     based_look("margin", "EdgeInsets"),
     based_look("corner_radius", "MixedLength"),
-    look("background", "Option<Color>"),
+    look("background", "List<Fill>"),
     look("border", "Option<Border>"),
-    look("shadow", "Option<Shadow>"),
+    look("shadow", "List<Shadow>"),
     look("backdrop", "Option<Backdrop>"),
     look("ripple", "Bool"),
     prop("styles", "List<StyleRef<T>>"),
@@ -157,6 +157,7 @@ const TEXT_STYLE: &[WidgetProperty] = &[
     look("font_family", "Option<FontFamily>"),
     based_look("line_height", "Option<MixedLength>"),
     look("color", "Color"),
+    look("text_shadow", "List<TextShadow>"),
     look("soft_wrap", "Bool"),
     look("max_lines", "Option<U32>"),
     look("overflow", "TextOverflow"),
@@ -424,7 +425,6 @@ const FOCUS_SCOPE: &[WidgetProperty] = &[prop("trap", "Bool"), prop("restore_foc
 
 const KEY_SHORTCUT: &[WidgetProperty] =
     &[prop("chord", "KeyChord"), prop("scope", "ShortcutScope")];
-
 
 const VIRTUAL_LIST: &[WidgetProperty] = &[
     prop("axis", "Axis"),

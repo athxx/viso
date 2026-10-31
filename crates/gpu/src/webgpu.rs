@@ -1373,11 +1373,16 @@ impl WebGpuBackend {
             cull,
         } = fixed;
         let target = obj(&[("format", gpu_format(color_format).into())]);
-        if blend == BlendMode::PremultipliedOver {
+        let source = match blend {
+            BlendMode::Replace => None,
+            BlendMode::PremultipliedOver => Some("one"),
+            BlendMode::DestinationOut => Some("zero"),
+        };
+        if let Some(source) = source {
             let over = || {
                 obj(&[
                     ("operation", "add".into()),
-                    ("srcFactor", "one".into()),
+                    ("srcFactor", source.into()),
                     ("dstFactor", "one-minus-src-alpha".into()),
                 ])
             };
