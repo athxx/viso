@@ -382,6 +382,9 @@ const SEGMENTED: &[WidgetProperty] = &[two_way("selected", "U32"), look("tint", 
 const DISCLOSURE: &[WidgetProperty] = &[two_way("expanded", "Bool")];
 const OPEN: &[WidgetProperty] = &[two_way("open", "Bool")];
 
+/// Whether a `Toast` shows: it never closes itself, so its owner says.
+const TOAST: &[WidgetProperty] = &[prop("open", "Bool")];
+
 /// Whether a `Sheet` shows, the detent it rests at among its `detents`
 /// (none for all of its panel), the edge it slides in from, and whether a
 /// drag past its least detent dismisses it.
@@ -910,10 +913,10 @@ pub const STANDARD: &[NativeWidget] = &[
     layout(
         "Toast",
         WidgetNode::Stack,
-        &[OPEN, STACK, LAYOUT, TRANSFORM, FOCUS],
+        &[TOAST, STACK, LAYOUT, TRANSFORM, FOCUS],
     )
     .provides(&STACK_CHILD)
-    .events(&[TOGGLE_EVENTS, STANDARD_EVENTS])
+    .events(&[STANDARD_EVENTS])
     .slots(CHILDREN),
     layout("RadioGroup", COLUMN, &[SELECTED, LAYOUT, TRANSFORM, FOCUS])
         .events(&[SELECTED_EVENTS, STANDARD_EVENTS])

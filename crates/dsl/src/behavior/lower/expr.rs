@@ -16,7 +16,9 @@ use crate::hir::infer::body::{child_of, emit_args};
 use crate::hir::infer::interpolation::string_literal;
 use crate::hir::infer::pattern::unescape;
 use crate::hir::infer::translate::{ArgPass, TrCall};
-use crate::hir::infer::{NativeCall, VariantInfo, VariantPayload, is_spread, record_spread};
+use crate::hir::infer::{
+    FieldInfo, NativeCall, VariantInfo, VariantPayload, is_spread, record_spread,
+};
 use crate::hir::infer::{
     binary_op_kind, builtin_variant, child_exprs, first_child_expr, in_base_unit, is_integer_ty,
     parse_float_literal, parse_int_literal, split_unit_literal, unary_op_kind, unify_numeric,
@@ -310,6 +312,14 @@ impl Lowerer<'_, '_> {
                     payload: VariantPayload::Unit,
                     ..
                 }) => Ok(self.constant(Const::Tag(index as u32))),
+                Some(VariantInfo {
+                    payload: VariantPayload::Record(fields),
+                    name,
+                    ..
+                }) => {
+                    let (fields, name) = (fields.clone(), name.clone());
+                    self.defaulted_variant(owner, index as u32, &fields, &name)
+                }
                 _ => self.bail("a variant constructor used as a value"),
             };
         }
@@ -339,8 +349,11 @@ impl Lowerer<'_, '_> {
                 let Some((index, variant)) = self.variant(id, &segments[1].text()) else {
                     return self.bail("this path names no enum variant");
                 };
-                match variant.payload {
+                match &variant.payload {
                     VariantPayload::Unit => Ok(self.constant(Const::Tag(index))),
+                    VariantPayload::Record(fields) => {
+                        self.defaulted_variant(id, index, fields, &variant.name)
+                    }
                     _ => self.bail("a variant constructor used as a value"),
                 }
             }
@@ -353,6 +366,41 @@ impl Lowerer<'_, '_> {
             None if builtin_variant(&segments) == Some("None") => Ok(self.constant(Const::Nil)),
             _ => self.bail("this path has no runtime value yet"),
         }
+    }
+
+    /// The record variant `tag` of the enum `owner`, written bare: each of
+    /// its `fields` takes its default.
+    fn defaulted_variant(
+        &mut self,
+        owner: SymbolId,
+        tag: u32,
+        fields: &[FieldInfo],
+        name: &str,
+    ) -> Lower<Reg> {
+        let mut regs = Vec::with_capacity(fields.len());
+        for (index, field) in fields.iter().enumerate() {
+            if !field.has_default {
+                return self.bail(format!("the field `{}` has no value", field.name));
+            }
+            let key = super::ProgramBuilder::variant_field(tag, index as u32);
+            let func = self
+                .b
+                .field_default_slot(owner, key, &format!("{name}.{}", field.name));
+            let dst = self.reg();
+            self.emit(Inst::Call {
+                dst,
+                func,
+                args: Vec::new(),
+            });
+            regs.push(dst);
+        }
+        let dst = self.reg();
+        self.emit(Inst::Make {
+            dst,
+            tag,
+            fields: regs,
+        });
+        Ok(dst)
     }
 
     /// Variant `name` of the enum `owner`, with its index.

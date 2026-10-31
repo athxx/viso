@@ -525,6 +525,58 @@ fn a_forwarded_property_on_a_multi_root_view_is_e3711() {
 }
 
 #[test]
+fn a_control_property_forwarded_to_a_component_root_packages() {
+    let source = "component Card {
+            view { Column { width: fill; slot } }
+        }
+        component Group {
+            input shown: Bool = true;
+            view { Card { visible: shown; opacity: if shown { 1.0 } else { 0.5 }; Text(\"x\") } }
+        }
+        export component App {
+            state on = true;
+            view { Column { Group { shown: on; } Card { visible: true; Text(\"y\") } } }
+        }";
+    if let Err(errors) = build_view_package(source, &origin()) {
+        panic!("{errors:#?}");
+    }
+}
+
+#[test]
+fn a_record_variant_whose_fields_all_default_is_written_bare() {
+    let source = "export component App {
+            state narrow = false;
+            view {
+                Row {
+                    width: fill;
+                    Text(\"x\") { width: if narrow { Sizing::fit } else { Sizing::fill } }
+                }
+            }
+        }";
+    if let Err(errors) = build_view_package(source, &origin()) {
+        panic!("{errors:#?}");
+    }
+}
+
+#[test]
+fn a_toast_is_opened_one_way() {
+    let codes = codes(
+        "export component App {
+            state shown = false;
+            view { Stack { Toast { bind open <=> shown; Text(\"saved\") } } }
+        }",
+    );
+    assert_eq!(codes, ["E3103"]);
+    let source = "export component App {
+            state shown = false;
+            view { Stack { Toast { open: shown; Text(\"saved\") } } }
+        }";
+    if let Err(errors) = build_view_package(source, &origin()) {
+        panic!("{errors:#?}");
+    }
+}
+
+#[test]
 fn an_inlined_view_binds_the_mounted_sources_it_reads() {
     let compiled = viso_dsl::frontend::compile_file(
         r#"component Label {

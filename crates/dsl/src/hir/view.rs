@@ -351,6 +351,9 @@ struct Owner<'e> {
     inputs: &'e [InputProp],
     /// The user component the node instantiates; its children fill its default slot.
     component: Option<SymbolId>,
+    /// The kind of a component's view root, which the properties forwarded
+    /// to it set.
+    root: Option<ControlKind>,
     /// The slots its callers fill: the component's, else the widget's.
     slots: Vec<SlotSpec<'e>>,
     schema: WidgetSchema,
@@ -371,10 +374,13 @@ impl Owner<'_> {
     /// own property, which its implementation takes.
     fn reads_control(&self, name: &str) -> bool {
         let widget = self.schema.native();
-        self.component.is_none()
-            && (ControlKind::of(&self.name).input(name).is_some()
-                || name == "list.full_line"
-                || (widget.is_rust() && widget.own_property(name).is_some()))
+        if self.component.is_some() {
+            return !self.inputs.iter().any(|i| i.name == name)
+                && self.root.is_some_and(|root| root.input(name).is_some());
+        }
+        ControlKind::of(&self.name).input(name).is_some()
+            || name == "list.full_line"
+            || (widget.is_rust() && widget.own_property(name).is_some())
     }
 
     /// Whether `path` is a layout property a native node sets from its value
@@ -865,6 +871,10 @@ impl<'a> ViewWalk<'a> {
                 name,
                 inputs: self.env.component_inputs(*id)?,
                 component: Some(*id),
+                root: self
+                    .env
+                    .component_root(*id)
+                    .map(|root| ControlKind::of(&root.ty)),
                 slots: self
                     .env
                     .component_slots(*id)
@@ -916,6 +926,7 @@ impl<'a> ViewWalk<'a> {
                     name,
                     inputs: &[],
                     component: None,
+                    root: None,
                 })
             }
         }
