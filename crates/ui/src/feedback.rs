@@ -80,6 +80,12 @@ impl Ripple {
             .map_or(1.0, |at| (1.0 - (self.age - at) / FADE).max(0.0))
     }
 
+    /// Whether it is held, already covering the box: it shows unchanged
+    /// until let go.
+    fn settled(&self, reduced: bool) -> bool {
+        self.released.is_none() && (reduced || self.age >= SPREAD)
+    }
+
     fn done(&self) -> bool {
         // A frame's rounding short of the fade still ends it.
         self.released.is_some_and(|at| self.age - at >= FADE - 1e-3)
@@ -195,25 +201,50 @@ impl NodeStore {
 
     /// Lets go of the ripples a press holds: they fade as they spread on.
     pub(crate) fn release_ripples(&mut self) {
-        for ripple in &mut self.feedback.showing {
-            ripple.released.get_or_insert(ripple.age);
+        let mut i = self.feedback.showing.len();
+        while i > 0 {
+            i -= 1;
+            let ripple = &mut self.feedback.showing[i];
+            if ripple.released.is_none() {
+                ripple.released = Some(ripple.age);
+                // A ripple held still wakes the frame loop to fade.
+                let node = ripple.node;
+                if self.arena().is_live(node) {
+                    self.mark_dirty(node, DirtyClass::PAINT);
+                }
+            }
         }
     }
 
-    /// Whether a ripple shows: the frame loop beats while one does.
+    /// Whether any ripple shows, spreading, held or fading.
+    #[inline]
+    pub(crate) fn shows_ripples(&self) -> bool {
+        !self.feedback.showing.is_empty()
+    }
+
+    /// Whether a ripple spreads or fades: the frame loop beats while one
+    /// does. One held over the whole box waits for its release.
     #[inline]
     pub fn is_rippling(&self) -> bool {
-        !self.feedback.showing.is_empty()
+        let showing = &self.feedback.showing;
+        !showing.is_empty() && {
+            let reduced = self.reduced_motion();
+            showing.iter().any(|r| !r.settled(reduced))
+        }
     }
 
     /// Runs the ripples on by a frame of `delta`, repainting their nodes and
     /// dropping the ones faded out.
     pub fn tick_ripples(&mut self, delta: Duration) {
         let step = delta.as_secs_f32().min(0.1);
+        let reduced = self.reduced_motion();
         let mut i = self.feedback.showing.len();
         while i > 0 {
             i -= 1;
             let ripple = &mut self.feedback.showing[i];
+            if ripple.settled(reduced) {
+                continue;
+            }
             ripple.age += step;
             let (node, done) = (ripple.node, ripple.done());
             if done || !self.arena().is_live(node) {
@@ -356,6 +387,7 @@ mod tests {
 
         store.tick_ripples(Duration::from_millis(100));
         store.tick_ripples(Duration::from_millis(100));
+        assert!(!store.is_rippling(), "held over the box, it waits");
         let covering = ink_drawn(&store, id)[0];
         let world = store.world(id);
         let reach = (world.w - 10.0).hypot(world.h - 20.0);
@@ -365,6 +397,7 @@ mod tests {
         );
 
         store.release_ripples();
+        assert!(store.is_rippling(), "let go, it moves again");
         store.tick_ripples(Duration::from_millis(100));
         assert!(
             ink_drawn(&store, id)[0].color.a < DARK_INK,

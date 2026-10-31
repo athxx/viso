@@ -565,7 +565,7 @@ fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primiti
             paint_shadow(shadow, inner, (radius - width).max(0.0), out);
         }
     }
-    if store.is_rippling() {
+    if store.shows_ripples() {
         let body = store.check_mark(node).and_then(|m| m.body_radius(world));
         store.paint_ripples(node, world, body.unwrap_or(radius), style.fill, out);
     }
