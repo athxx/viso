@@ -584,9 +584,9 @@ export record Shadow {
 }
 export enum Fill {
     color(Color)
-    linear { angle: Angle = 180deg; colors: List<Color>; stops: List<F32> = [] }
-    radial { x: F32 = 0.5; y: F32 = 0.5; colors: List<Color>; stops: List<F32> = [] }
-    image { asset: ImageAsset; fit: ImageFit = ImageFit::cover; opacity: F32 = 1.0 }
+    linear { angle: Angle = 180deg; colors: List<Color>; stops: List<F32> = []; inset: EdgeInsets = 0dp }
+    radial { x: F32 = 0.5; y: F32 = 0.5; colors: List<Color>; stops: List<F32> = []; inset: EdgeInsets = 0dp }
+    image { asset: ImageAsset; fit: ImageFit = ImageFit::cover; opacity: F32 = 1.0; inset: EdgeInsets = 0dp }
 }
 export record Backdrop {
     blur: Dp = 30dp
@@ -599,7 +599,7 @@ export record Backdrop {
 - 构造函数：`EdgeInsets::zero()`、`EdgeInsets::all(v)`、`EdgeInsets::axes(inline: a, block: b)`（`a` 用于 `start`/`end`，`b` 用于 `top`/`bottom`）；
 - 按 U1.3，§19.5 的 `padding: 1em;` 提升为 `EdgeInsets::all(1em)`；
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
-- `background` 是盒的各层填充，按书写顺序自下而上绘制，每层按 `corner_radius` 取圆角、画在 `border` 之下：`color` 为平涂；`linear` 沿 `angle`（CSS 约定：`0deg` 朝上、顺时针，`180deg` 自上而下）穿过整个盒，`radial` 以盒内比例位置 `x`/`y` 为圆心、到最远角为半径；二者的 `colors` 至少两种（只有一种时为该色平涂，没有时不绘制），`stops` 为各色在 `0..1` 上的位置，空时均分，与 `colors` 不等长时报 `E2103`（读取值时执行域报告 Fault 并均分），颜色在线性 RGB 中插值；`image` 按 `fit` 放置图片（同 `Image`），按 `opacity` 淡化，解码前不绘制。只有一层 `color` 时它是盒的底色，`transition.background` 在两个底色之间过渡；其他背景变化立即显示；
+- `background` 是盒的各层填充，按书写顺序自下而上绘制，每层按 `corner_radius` 取圆角、画在 `border` 之下：`color` 为平涂；`linear` 沿 `angle`（CSS 约定：`0deg` 朝上、顺时针，`180deg` 自上而下）穿过整个盒，`radial` 以盒内比例位置 `x`/`y` 为圆心、到最远角为半径；二者的 `colors` 至少两种（只有一种时为该色平涂，没有时不绘制），`stops` 为各色在 `0..1` 上的位置，空或与 `colors` 不等长时均分，颜色在线性 RGB 中插值；`image` 按 `fit` 放置图片（同 `Image`），按 `opacity` 淡化，解码前不绘制。渐变与图片层铺在盒减去其 `inset` 的区域内，圆角取盒的圆角向内收缩，`inset` 取 dp（`Fill::linear { colors: [#ffffffb0, #ffffff20, #ffffff00], stops: [0.0, 0.5, 0.5], inset: EdgeInsets { top: 1dp, start: 2dp, end: 2dp } }` 即 Aqua 式上半高光）。第一层是 `color` 时它是盒的底色，`transition.background` 在两个底色之间过渡；其他背景变化立即显示；
 - `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；多个阴影按书写顺序自下而上绘制，外阴影都在盒下、内阴影都在背景之上，因此一个盒可同时有外阴影与内阴影；`theme.elevation.*` 即 `Shadow`，可直接绑定；
 - `backdrop` 使盒成为玻璃：盒背后已绘制的内容按 `blur`（CSS 模糊半径）模糊、按 `saturation` 调整饱和度、按 `tint` 的 alpha 叠上 `tint`，再加 `noise`（0..1）颗粒，按 `corner_radius` 取圆角，画在 `background` 之下；节点自身 `opacity` 小于 1 时玻璃按该 opacity 淡出而保持模糊（嵌套在其他半透明祖先之内的玻璃不模糊）。同一背景上同一模糊的多块玻璃共用一次背景捕获与模糊。`BlurView` 是纵向排列子节点的 Flex 容器（属性同 `Column`），未给 `backdrop` 时为标准玻璃 `Backdrop {}`。Web 导出为 `backdrop-filter: blur(..) saturate(..)` 加一层 `tint` 平涂；
 - `ripple` 为 `true` 时，按下该节点（或其内未开 `ripple` 的后代）从按下点向外铺开一圈墨迹，约 0.3s 盖满整个盒，按 `corner_radius` 裁圆角，画在 `background` 之上、内容之下；松手或按压被平移手势接管后墨迹边扩边淡出（约 0.2s）。墨迹取盒的反差色：浅色或透明底上为暗墨，深色底上为亮墨。减少动态效果（reduced motion）时墨迹不扩散，一按即满并淡出。未给 `ripple` 时按平台惯例：Android 上 `Button`、`Chip` 默认开启，其他平台默认关闭；Web 导出不带墨迹。手指或触控笔改变控件时伴随系统触觉：`Toggle`/`CheckBox`/可选 `Chip`/`Stepper`/`Select`/`Segmented` 改变值时为 selection 轻触，设了 `step` 的 `Slider` 每到一个刻度一次；按钮点击、鼠标与键盘不触发触觉；

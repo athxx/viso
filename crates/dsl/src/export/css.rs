@@ -227,14 +227,15 @@ pub(super) fn background(value: &Value, asset: &mut dyn FnMut(u64, f64) -> Strin
                     continue;
                 }
                 (0, [c]) => format!("linear-gradient({0}, {0})", paint(c)),
-                (1, [angle, colors, at]) => {
+                (1, [angle, colors, at, inset]) => {
                     let Some(stops) = stops(colors, at) else {
                         continue;
                     };
                     let angle = number(angle.as_float().unwrap_or(180.0));
-                    format!("linear-gradient(in srgb-linear {angle}deg, {stops})")
+                    let layer = format!("linear-gradient(in srgb-linear {angle}deg, {stops})");
+                    placed(layer, inset)
                 }
-                (2, [x, y, colors, at]) => {
+                (2, [x, y, colors, at, inset]) => {
                     let Some(stops) = stops(colors, at) else {
                         continue;
                     };
@@ -242,11 +243,12 @@ pub(super) fn background(value: &Value, asset: &mut dyn FnMut(u64, f64) -> Strin
                         number(x.as_float().unwrap_or(0.5) * 100.0),
                         number(y.as_float().unwrap_or(0.5) * 100.0),
                     );
-                    format!(
+                    let layer = format!(
                         "radial-gradient(in srgb-linear circle farthest-corner at {x}% {y}%, {stops})"
-                    )
+                    );
+                    placed(layer, inset)
                 }
-                (3, [image, fit, opacity]) => {
+                (3, [image, fit, opacity, _]) => {
                     let Value::Agg(image) = image else { continue };
                     let Some(id) = image.fields.first().and_then(Value::as_int) else {
                         continue;
@@ -275,6 +277,28 @@ pub(super) fn background(value: &Value, asset: &mut dyn FnMut(u64, f64) -> Strin
         (false, None) => layers.join(", "),
         (false, Some(base)) => format!("{}, {base}", layers.join(", ")),
     }
+}
+
+/// A gradient layer covering its box less `inset`: placed and sized within
+/// it, unrepeated.
+fn placed(layer: String, inset: &Value) -> String {
+    let Value::Agg(edges) = inset else {
+        return layer;
+    };
+    let [top, end, bottom, start] = &edges.fields[..] else {
+        return layer;
+    };
+    let [top, end, bottom, start] = [top, end, bottom, start].map(dp);
+    if [top, end, bottom, start] == [0.0; 4] {
+        return layer;
+    }
+    format!(
+        "{layer} {} {} / calc(100% - {}) calc(100% - {}) no-repeat",
+        px(start),
+        px(top),
+        px(start + end),
+        px(top + bottom)
+    )
 }
 
 /// A `List<TextShadow>` (or one) as a `text-shadow`; CSS has no inset one,

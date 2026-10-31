@@ -2673,24 +2673,43 @@ fn fill_layer(value: &Value) -> Option<FillLayer> {
     };
     Some(match (fill.tag, &fill.fields[..]) {
         (COLOR, [paint]) => FillLayer::Color(color(paint)),
-        (LINEAR, [angle, colors, at]) => FillLayer::Linear {
+        (LINEAR, [angle, colors, at, inset]) => FillLayer::Linear {
             angle: float(angle, 180.0).to_radians(),
             stops: stops(colors, at),
+            inset: edge_insets(inset),
         },
-        (RADIAL, [x, y, colors, at]) => FillLayer::Radial {
+        (RADIAL, [x, y, colors, at, inset]) => FillLayer::Radial {
             center: Vec2 {
                 x: float(x, 0.5),
                 y: float(y, 0.5),
             },
             stops: stops(colors, at),
+            inset: edge_insets(inset),
         },
-        (IMAGE, [asset, fit, opacity]) => FillLayer::Image {
+        (IMAGE, [asset, fit, opacity, inset]) => FillLayer::Image {
             resource: resource(asset)?,
             fit: asset_fit_or(fit, AssetFit::Cover),
             opacity: float(opacity, 1.0),
+            inset: edge_insets(inset),
         },
         _ => return None,
     })
+}
+
+/// An `EdgeInsets` value's edges in dp, its start on the left.
+fn edge_insets(value: &Value) -> viso_ui::Inset {
+    let Value::Agg(edges) = value else {
+        return viso_ui::Inset::default();
+    };
+    match &edges.fields[..] {
+        [top, end, bottom, start] => viso_ui::Inset {
+            left: dp(start),
+            top: dp(top),
+            right: dp(end),
+            bottom: dp(bottom),
+        },
+        _ => viso_ui::Inset::default(),
+    }
 }
 
 /// A `Shadow` value as the shadow the node casts, none for `None`.

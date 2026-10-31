@@ -235,6 +235,14 @@ const textShadow = (v) => {
     });
   return all.length ? all.join(", ") : "none";
 };
+// A gradient layer covering its box less `inset`, placed and sized within it.
+const placed = (layer, inset) => {
+  if (!inset || !inset.f) return layer;
+  const [t, e, b, s] = inset.f.map(dp);
+  if (!t && !e && !b && !s) return layer;
+  return layer + " " + s + "px " + t + "px / calc(100% - " + (s + e) + "px) calc(100% - " +
+    (t + b) + "px) no-repeat";
+};
 // A `List<Fill>` (or one `Fill` or colour) as a `background`: its layers top
 // first, its first colour the bottom layer's colour.
 const fill = (v) => {
@@ -258,10 +266,11 @@ const fill = (v) => {
       if (i === 0) base = color(g[0]);
       else layers.push("linear-gradient(" + color(g[0]) + ", " + color(g[0]) + ")");
     } else if (k === 1 && g[1].length) {
-      layers.push("linear-gradient(in srgb-linear " + Number(g[0] ?? 180) + "deg, " + stops(g[1], g[2]) + ")");
+      layers.push(placed("linear-gradient(in srgb-linear " + Number(g[0] ?? 180) + "deg, " +
+        stops(g[1], g[2]) + ")", g[3]));
     } else if (k === 2 && g[2].length) {
-      layers.push("radial-gradient(in srgb-linear circle farthest-corner at " + Number(g[0]) * 100 +
-        "% " + Number(g[1]) * 100 + "%, " + stops(g[2], g[3]) + ")");
+      layers.push(placed("radial-gradient(in srgb-linear circle farthest-corner at " +
+        Number(g[0]) * 100 + "% " + Number(g[1]) * 100 + "%, " + stops(g[2], g[3]) + ")", g[4]));
     } else if (k === 3) {
       const href = url(g[0]);
       const fit = fits[Number(g[1] ?? 1n)];

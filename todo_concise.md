@@ -126,7 +126,7 @@ Six looks an `examples/materials` gallery shows side by side. Each is paint data
 one fused backdrop pass: captures shared per group, scoped to their ROI, blurred on
 the downsampled ladder, kept across frames while what lies behind holds still.
 
-- [ ] Skeuomorphism / Aqua: gloss, glow and bevel from layered fills, inset and
+- [x] Skeuomorphism / Aqua: gloss, glow and bevel from layered fills, inset and
       outer shadows and an embossed `text_shadow`; a fill layer takes `inset` (a
       highlight inside the box). No offscreen pass but a blurred text shadow.
 - [ ] Background blur, glassmorphism: `backdrop` blur + saturation + tint + noise, a

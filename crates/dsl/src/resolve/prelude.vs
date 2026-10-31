@@ -277,14 +277,31 @@ export record Shadow {
     inset: Bool = false
 }
 // One layer of a box's background, painted bottom-up under its border: a
-// color, a gradient across the whole box (a linear one along a CSS angle,
-// a radial one from a point of the box out to its farthest corner; its
-// `stops` place the colors, evenly spread when empty), or an image.
+// color, a gradient (a linear one along a CSS angle, a radial one from a
+// point of its area out to the farthest corner; its `stops` place the
+// colors, evenly spread when empty), or an image. A layer covers the box
+// less its `inset`, its corners rounded inside the box's.
 export enum Fill {
     color(Color)
-    linear { angle: Angle = 180deg; colors: List<Color>; stops: List<F32> = [] }
-    radial { x: F32 = 0.5; y: F32 = 0.5; colors: List<Color>; stops: List<F32> = [] }
-    image { asset: ImageAsset; fit: ImageFit = ImageFit::cover; opacity: F32 = 1.0 }
+    linear {
+        angle: Angle = 180deg
+        colors: List<Color>
+        stops: List<F32> = []
+        inset: EdgeInsets = 0dp
+    }
+    radial {
+        x: F32 = 0.5
+        y: F32 = 0.5
+        colors: List<Color>
+        stops: List<F32> = []
+        inset: EdgeInsets = 0dp
+    }
+    image {
+        asset: ImageAsset
+        fit: ImageFit = ImageFit::cover
+        opacity: F32 = 1.0
+        inset: EdgeInsets = 0dp
+    }
 }
 // A soft copy of a text's glyphs: under them, or inside them when `inset`.
 export record TextShadow {

@@ -14,7 +14,7 @@ export component Cards {
         Column {
             Row {
                 width: 100dp; height: 40dp; corner_radius: 8dp
-                background: [#ffffff, Fill::linear { angle: 90deg, colors: [#ff0000, #0000ff] }]
+                background: [#ffffff, Fill::linear { angle: 90deg, colors: [#ff0000, #0000ff], inset: EdgeInsets { top: 2dp, bottom: 20dp } }]
                 shadow: [Shadow { y: 1dp, blur: 2dp, color: #00000040 },
                          Shadow { blur: 4dp, color: #00000020, inset: true }]
             }
@@ -45,11 +45,19 @@ fn a_box_paints_its_layers_and_casts_its_shadows_in_every_target() {
         // The first color is the fill; the gradient paints over it.
         let card = rows[0];
         assert_eq!(rt.store.style(card).fill.a, 1.0);
-        let [FillLayer::Linear { angle, stops }] = rt.store.background_layers(card) else {
+        let [
+            FillLayer::Linear {
+                angle,
+                stops,
+                inset,
+            },
+        ] = rt.store.background_layers(card)
+        else {
             panic!("{:?}", rt.store.background_layers(card));
         };
         assert!((angle - core::f32::consts::FRAC_PI_2).abs() < 1e-4);
         assert_eq!(stops.len(), 2);
+        assert_eq!((inset.top, inset.bottom, inset.left), (2.0, 20.0, 0.0));
         let shadows = rt.store.shadows(card);
         assert_eq!(shadows.len(), 2);
         assert!(!shadows[0].inset && shadows[1].inset);

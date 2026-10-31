@@ -12,7 +12,7 @@
 
 use crate::asset::{AssetDraw, AssetFit};
 use crate::component::NodeStore;
-use crate::layout::Vec2;
+use crate::layout::{Inset, Vec2};
 use crate::node::NodeId;
 use viso_render::asset::ResourceId;
 use viso_render::{
@@ -30,18 +30,21 @@ pub enum FillLayer {
     Linear {
         angle: f32,
         stops: Box<[GradientStop]>,
+        inset: Inset,
     },
-    /// A circular gradient from `center` (a fraction of the box on each
-    /// axis) out to the box's farthest corner.
+    /// A circular gradient from `center` (a fraction of its area on each
+    /// axis) out to the area's farthest corner.
     Radial {
         center: Vec2,
         stops: Box<[GradientStop]>,
+        inset: Inset,
     },
     /// An image placed by `fit` and faded by `opacity`.
     Image {
         resource: ResourceId,
         fit: AssetFit,
         opacity: f32,
+        inset: Inset,
     },
 }
 
@@ -151,12 +154,22 @@ pub(crate) fn paint_layers(
     if world.w <= 0.0 || world.h <= 0.0 {
         return;
     }
-    let mask = (radius > 0.0).then_some(RoundMask {
-        rect: world,
-        radius: Corners::uniform(radius),
-    });
-    let center = Point::new(world.x + world.w * 0.5, world.y + world.h * 0.5);
     for layer in layers {
+        // A layer covers the box less its inset, its corners the box's
+        // drawn inside it.
+        let (world, mask) = match layer {
+            FillLayer::Color(_) => (world, round(world, radius, Inset::default())),
+            FillLayer::Linear { inset, .. }
+            | FillLayer::Radial { inset, .. }
+            | FillLayer::Image { inset, .. } => (
+                crate::content_inset::inset_rect(world, *inset),
+                round(world, radius, *inset),
+            ),
+        };
+        if world.w <= 0.0 || world.h <= 0.0 {
+            continue;
+        }
+        let center = Point::new(world.x + world.w * 0.5, world.y + world.h * 0.5);
         match layer {
             FillLayer::Color(color) => out.push(Primitive::Quad(Quad {
                 rect: world,
@@ -164,7 +177,7 @@ pub(crate) fn paint_layers(
                 radius,
                 border: viso_render::Border::NONE,
             })),
-            FillLayer::Linear { angle, stops } => {
+            FillLayer::Linear { angle, stops, .. } => {
                 // The CSS gradient line: through the center along the angle,
                 // as long as the box's extent along it, so the corners take
                 // the end colors.
@@ -181,7 +194,9 @@ pub(crate) fn paint_layers(
                     mask,
                 );
             }
-            FillLayer::Radial { center: at, stops } => {
+            FillLayer::Radial {
+                center: at, stops, ..
+            } => {
                 let origin = Point::new(world.x + world.w * at.x, world.y + world.h * at.y);
                 let reach_x = (origin.x - world.x).max(world.x + world.w - origin.x);
                 let reach_y = (origin.y - world.y).max(world.y + world.h - origin.y);
@@ -200,6 +215,7 @@ pub(crate) fn paint_layers(
                 resource,
                 fit,
                 opacity,
+                ..
             } => {
                 let (draw, [w, h]) = store.assets.resolve(*resource);
                 let opacity = opacity.clamp(0.0, 1.0);
@@ -248,6 +264,22 @@ pub(crate) fn paint_layers(
             }
         }
     }
+}
+
+/// The corners of a box at `world` rounded by `radius`, drawn inside it by
+/// `inset`: none when they are sharp.
+fn round(world: Rect, radius: f32, inset: Inset) -> Option<RoundMask> {
+    let corner = |a: f32, b: f32| (radius - a.max(b)).max(0.0);
+    let corners = Corners {
+        left_top: corner(inset.left, inset.top),
+        right_top: corner(inset.right, inset.top),
+        right_bottom: corner(inset.right, inset.bottom),
+        left_bottom: corner(inset.left, inset.bottom),
+    };
+    (corners != Corners::uniform(0.0)).then_some(RoundMask {
+        rect: crate::content_inset::inset_rect(world, inset),
+        radius: corners,
+    })
 }
 
 /// A gradient over `rect` from `p0` by `p1`, masked to the box's corners.
@@ -344,6 +376,7 @@ mod tests {
             vec![FillLayer::Linear {
                 angle: core::f32::consts::FRAC_PI_2,
                 stops: stops.clone(),
+                inset: Inset::default(),
             }],
             8.0,
         );
@@ -366,6 +399,7 @@ mod tests {
             vec![FillLayer::Linear {
                 angle: core::f32::consts::PI,
                 stops,
+                inset: Inset::default(),
             }],
             0.0,
         );
@@ -384,6 +418,7 @@ mod tests {
                 FillLayer::Radial {
                     center: Vec2::new(0.0, 0.0),
                     stops: FillLayer::stops(&[red(), Rgba::TRANSPARENT], &[]),
+                    inset: Inset::default(),
                 },
             ],
             0.0,
@@ -394,5 +429,30 @@ mod tests {
         assert_eq!(q.color, blue());
         assert_eq!((g.p0.x, g.p0.y), (0.0, 0.0));
         assert!((g.p1.x - 100.0f32.hypot(40.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_inset_layer_covers_the_box_less_its_inset_rounded_inside_it() {
+        let gloss = FillLayer::Linear {
+            angle: core::f32::consts::PI,
+            stops: FillLayer::stops(&[Rgba::TRANSPARENT, red()], &[]),
+            inset: Inset {
+                left: 2.0,
+                top: 2.0,
+                right: 2.0,
+                bottom: 20.0,
+            },
+        };
+        let out = painted(vec![gloss], 8.0);
+        let [Primitive::Gradient(g)] = &out[..] else {
+            panic!("one gradient: {out:?}");
+        };
+        assert_eq!(g.rect, Rect::new(2.0, 2.0, 96.0, 18.0));
+        let mask = g.mask.unwrap();
+        assert_eq!(mask.rect, g.rect);
+        assert_eq!(mask.radius.left_top, 6.0);
+        assert_eq!(mask.radius.left_bottom, 0.0, "20 in from the bottom: sharp");
+        // The line runs top to bottom across the layer, not the box.
+        assert!((g.p0.y - 2.0).abs() < 1e-3 && (g.p1.y - 20.0).abs() < 1e-3);
     }
 }
