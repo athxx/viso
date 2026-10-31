@@ -72,7 +72,7 @@ pub use module::{
     ComponentEffect, DEFAULT_TICK_RATE, EffectRun, Migrator, Module, NativeImport, PersistSlot,
     ResourceLoad, SnapshotSlot, Span, StableId, System, TaskPolicy, VerifyError,
 };
-pub use op::{Arith, ArithOp, DisplayKind, NodeAction, Num, Op};
+pub use op::{Arith, ArithOp, DisplayKind, NodeAction, Num, Op, StrOp, StrValue};
 pub use value::{Aggregate, Closure, Text, Value};
 pub use vm::{
     Budget, Cost, Deferred, Event, Fault, FaultKind, Fiber, Instance, Location, NodeRequest,

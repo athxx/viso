@@ -400,7 +400,7 @@ let explicit = 1.25f32
 "line 1\nline 2"
 "unicode: \u{1F680}"
 "Count: {count}"
-"{user.name} 有 {items.length()} 项，{{未读}}"
+"{user.name} 有 {items.len()} 项，{{未读}}"
 ```
 
 支持的 Escape：
@@ -1057,6 +1057,19 @@ NodeRef<T>
 - 未知方法报 `E2001` 并给出最近方法名 Fix；实参个数或类型不符报 `E2103`；
 - 列表按值语义：修改只影响被写的位置，不影响此前读出的副本；写入在原存储上进行，只有存储被共享时才复制一次；
 - Audio Realtime 中 `push`/`insert` 会分配，报 `E9108`（§108.3），`remove`/`pop`/`clear` 原地进行。
+
+`String` 的内建方法（Receiver 为 `String`，都不修改它）：
+
+| 方法 | 类型 | 语义 |
+| ---- | ---- | ---- |
+| `len()` | `I64` | 字符（Unicode 标量值）个数 |
+| `is_empty()` | `Bool` | `len() == 0` |
+| `contains(s: String)` | `Bool` | 含有子串 `s` |
+| `starts_with(s: String)` / `ends_with(s: String)` | `Bool` | 以 `s` 开头 / 结尾 |
+| `trim()` | `String` | 去掉两端空白 |
+| `to_lowercase()` / `to_uppercase()` | `String` | 按 Unicode 规则转为小写 / 大写，与 Locale 无关 |
+
+未知方法报 `E2001` 并给出最近方法名 Fix；实参个数或类型不符报 `E2103`。比较大小写无关的文本时先各自 `to_lowercase()`。
 
 ---
 
@@ -1732,7 +1745,7 @@ computed subtotal: Money = items.fold(Money::zero(), |sum, item| {
     return sum + item.price
 })
 
-computed label = "{items.length()} items"
+computed label = "{items.len()} items"
 ```
 
 ---

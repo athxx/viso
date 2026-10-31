@@ -6,6 +6,8 @@
 //! ([`Code::ext`](crate::Code::ext)) and holds the table offset; each such
 //! variant documents its operand layout.
 
+use alloc::string::String;
+
 /// The machine type a typed operator works at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -201,6 +203,83 @@ pub enum DisplayKind {
     Char,
     /// A `String`, as is.
     Str,
+}
+
+/// What [`Op::Str`] reads of a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum StrOp {
+    /// Its length in characters, as `I64`.
+    Len,
+    /// Whether it holds the string in `b`.
+    Contains,
+    /// Whether it starts with the string in `b`.
+    StartsWith,
+    /// Whether it ends with the string in `b`.
+    EndsWith,
+    /// It without the whitespace at either end.
+    Trim,
+    /// It in lower case.
+    Lower,
+    /// It in upper case.
+    Upper,
+}
+
+impl StrOp {
+    /// Every operation, by wire tag.
+    pub const ALL: [StrOp; 7] = [
+        StrOp::Len,
+        StrOp::Contains,
+        StrOp::StartsWith,
+        StrOp::EndsWith,
+        StrOp::Trim,
+        StrOp::Lower,
+        StrOp::Upper,
+    ];
+
+    /// Whether it reads a second string, in `b`.
+    pub const fn binary(self) -> bool {
+        matches!(self, StrOp::Contains | StrOp::StartsWith | StrOp::EndsWith)
+    }
+
+    /// The method that spells it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            StrOp::Len => "len",
+            StrOp::Contains => "contains",
+            StrOp::StartsWith => "starts_with",
+            StrOp::EndsWith => "ends_with",
+            StrOp::Trim => "trim",
+            StrOp::Lower => "to_lowercase",
+            StrOp::Upper => "to_uppercase",
+        }
+    }
+
+    /// The operation spelt `name`.
+    pub fn of(name: &str) -> Option<StrOp> {
+        StrOp::ALL.into_iter().find(|op| op.name() == name)
+    }
+
+    /// `op(a, b)`, `b` read only by a binary operation.
+    pub fn apply(self, a: &str, b: &str) -> StrValue {
+        match self {
+            StrOp::Len => StrValue::Int(a.chars().count() as i64),
+            StrOp::Contains => StrValue::Bool(a.contains(b)),
+            StrOp::StartsWith => StrValue::Bool(a.starts_with(b)),
+            StrOp::EndsWith => StrValue::Bool(a.ends_with(b)),
+            StrOp::Trim => StrValue::Str(a.trim().into()),
+            StrOp::Lower => StrValue::Str(a.to_lowercase()),
+            StrOp::Upper => StrValue::Str(a.to_uppercase()),
+        }
+    }
+}
+
+/// What a [`StrOp`] gives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StrValue {
+    Int(i64),
+    Bool(bool),
+    Str(String),
 }
 
 /// What a node method asks of a named node of the view ([`Op::Node`]).
@@ -455,6 +534,9 @@ pub enum Op {
     SetPath { root: u16, ext: u32 },
     /// `dst = len(src)` of a list.
     Len { dst: u16, src: u16 },
+    /// `dst = op(a, b)` of the string in `a`, `b` the string a binary
+    /// operation reads.
+    Str { op: StrOp, dst: u16, a: u16, b: u16 },
     /// Appends `item` to the list in `list`, in place (copy on write).
     Push { list: u16, item: u16 },
     /// Inserts `item` before position `index` of the list in `list`, in place;

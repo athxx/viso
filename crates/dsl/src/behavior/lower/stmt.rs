@@ -3,7 +3,7 @@
 
 use super::super::ir::{BinaryOp, Const, Inst, Num, PathStep, Reg};
 use super::{LoopCx, Lower, Lowerer, Place};
-use viso_behavior::TaskPolicy;
+use viso_behavior::{StrOp, TaskPolicy};
 
 use crate::ast::{AssignablePath, AstNode, CallExpr, Expr, StartStmt};
 use crate::hir::Ty;
@@ -502,6 +502,53 @@ impl Lowerer<'_, '_> {
         };
         self.write(root, path, list);
         Ok(Some(result))
+    }
+
+    /// `recv.name(args)` on a string, `None` when `name` is no string
+    /// method.
+    pub(super) fn string_call(&mut self, call: &CallExpr) -> Lower<Option<Reg>> {
+        let Some(field) = call
+            .callee()
+            .and_then(|c| crate::ast::FieldExpr::cast(c.syntax().clone()))
+        else {
+            return Ok(None);
+        };
+        let (Some(recv), Some(name)) = (field.receiver(), field.field()) else {
+            return Ok(None);
+        };
+        if self.cx.type_of(&recv) != Some(&Ty::String) {
+            return Ok(None);
+        }
+        let name = name.text();
+        let empty = name == "is_empty";
+        let Some(op) = StrOp::of(if empty { "len" } else { &name }) else {
+            return Ok(None);
+        };
+        let args: Vec<Expr> = emit_args(call.syntax())
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect();
+        let src = self.expr(&recv)?;
+        let args = self.operands(&args)?;
+        let arg = match (op.binary(), args.as_slice()) {
+            (true, &[arg]) => arg,
+            (false, []) => src,
+            _ => return self.bail(format!("`{name}` with these arguments")),
+        };
+        let dst = self.reg();
+        self.emit(Inst::Str { dst, op, src, arg });
+        if !empty {
+            return Ok(Some(dst));
+        }
+        let zero = self.constant(Const::Int(0));
+        let none = self.reg();
+        self.emit(Inst::Binary {
+            dst: none,
+            op: BinaryOp::Eq,
+            lhs: dst,
+            rhs: zero,
+        });
+        Ok(Some(none))
     }
 
     /// A list method that only reads `list`.

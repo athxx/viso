@@ -254,6 +254,7 @@ impl InferCx<'_> {
                 };
                 self.list_method(&name, &receiver, elem, args, expected, node)
             }
+            Lookup::None if recv == Ty::String => self.string_method(&name, args, expected, node),
             Lookup::None if let Ty::NodeRef(target) = &recv => {
                 self.node_method(&name, target, args, expected, node)
             }

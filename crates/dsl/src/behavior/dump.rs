@@ -161,6 +161,17 @@ fn write_inst(out: &mut String, inst: &Inst) -> fmt::Result {
             write!(out, " = {}", reg(*src))
         }
         Inst::Len { dst, src } => write!(out, "{} = len {}", reg(*dst), reg(*src)),
+        Inst::Str { dst, op, src, arg } if op.binary() => write!(
+            out,
+            "{} = {} {} {}",
+            reg(*dst),
+            op.name(),
+            reg(*src),
+            reg(*arg)
+        ),
+        Inst::Str { dst, op, src, .. } => {
+            write!(out, "{} = {} {}", reg(*dst), op.name(), reg(*src))
+        }
         Inst::Push { list, item } => write!(out, "push {} {}", reg(*list), reg(*item)),
         Inst::Insert { list, index, item } => {
             write!(out, "insert {}[{}] {}", reg(*list), reg(*index), reg(*item))

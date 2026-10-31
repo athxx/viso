@@ -802,6 +802,15 @@ impl Lower<'_> {
                 r(dst.into()),
                 t(&format!("rt::len(&{})", r(src.into())))
             )),
+            Op::Str { op, dst, a, b } => line(format!(
+                "{} = {};",
+                r(dst.into()),
+                t(&format!(
+                    "rt::string(vm, rt::StrOp::{op:?}, &{}, &{})",
+                    r(a.into()),
+                    r(b.into())
+                ))
+            )),
             Op::Tag { dst, src } => line(format!(
                 "{} = {};",
                 r(dst.into()),

@@ -1573,7 +1573,7 @@ fn check_email(value: String) -> Option<FieldIssue> {
 }
 
 fn check_password(value: String) -> Option<FieldIssue> {
-    if !value.is_empty() && value.length() < 8 { return Option::Some(FieldIssue::too_short) }
+    if !value.is_empty() && value.len() < 8 { return Option::Some(FieldIssue::too_short) }
     return Option::None
 }
 

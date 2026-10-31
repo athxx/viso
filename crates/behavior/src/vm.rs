@@ -60,7 +60,7 @@ use crate::native::{
 };
 use crate::op::NodeAction;
 #[cfg(feature = "interpreter")]
-use crate::op::{DisplayKind, Op};
+use crate::op::{DisplayKind, Op, StrValue};
 use crate::value::Value;
 #[cfg(feature = "interpreter")]
 use crate::value::{Aggregate, Closure};
@@ -1776,6 +1776,7 @@ impl Vm {
                 | Op::Translate { dst, .. }
                 | Op::Index { dst, .. }
                 | Op::Len { dst, .. }
+                | Op::Str { dst, .. }
                 | Op::Tag { dst, .. }
                 | Op::Display { dst, .. }
                 | Op::DisplayDim { dst, .. }) => (dst, self.compute(code, base, op)?),
@@ -1882,6 +1883,25 @@ impl Vm {
                     return Err(FaultKind::Internal);
                 };
                 Value::Int(items.len() as i64)
+            }
+            Op::Str { op, a, b, .. } => {
+                let text = self.stack[base + usize::from(a)]
+                    .as_str()
+                    .ok_or(FaultKind::Internal)?;
+                let other = match op.binary() {
+                    true => self.stack[base + usize::from(b)]
+                        .as_str()
+                        .ok_or(FaultKind::Internal)?,
+                    false => "",
+                };
+                match op.apply(text, other) {
+                    StrValue::Int(n) => Value::Int(n),
+                    StrValue::Bool(yes) => Value::bool(yes),
+                    StrValue::Str(text) => {
+                        self.charge(16 + text.len() as u64)?;
+                        Value::str(text)
+                    }
+                }
             }
             Op::Tag { src, .. } => match &self.stack[base + usize::from(src)] {
                 Value::Agg(agg) => Value::Int(i64::from(agg.tag)),

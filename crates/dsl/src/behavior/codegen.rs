@@ -390,6 +390,12 @@ impl Emitter {
                 dst: reg(*dst),
                 src: reg(*src),
             },
+            Inst::Str { dst, op, src, arg } => Op::Str {
+                op: *op,
+                dst: reg(*dst),
+                a: reg(*src),
+                b: reg(*arg),
+            },
             Inst::Push { list, item } => Op::Push {
                 list: reg(*list),
                 item: reg(*item),

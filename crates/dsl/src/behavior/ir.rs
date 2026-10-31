@@ -26,7 +26,7 @@ pub use viso_behavior::NativeImport;
 
 use viso_behavior::game::InputSchema;
 use viso_behavior::native::NativeId;
-use viso_behavior::{NodeAction, PersistSlot, TaskPolicy};
+use viso_behavior::{NodeAction, PersistSlot, StrOp, TaskPolicy};
 use viso_schema::EnvField;
 use viso_schema::view::GameQuery;
 
@@ -273,6 +273,14 @@ pub enum Inst {
     },
     /// `dst = len(src)` of a list, as `I64`.
     Len { dst: Reg, src: Reg },
+    /// `dst = op(src, arg)` of the string in `src`; `arg` is the string a
+    /// binary operation reads, `src` again for the others.
+    Str {
+        dst: Reg,
+        op: StrOp,
+        src: Reg,
+        arg: Reg,
+    },
     /// Appends `item` to the list in `list`, in place (copy on write).
     Push { list: Reg, item: Reg },
     /// Inserts `item` before position `index` of the list in `list`, in place.

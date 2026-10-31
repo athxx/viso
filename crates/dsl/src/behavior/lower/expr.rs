@@ -722,6 +722,9 @@ impl Lowerer<'_, '_> {
         if let Some(value) = self.list_call(&call)? {
             return Ok(value);
         }
+        if let Some(value) = self.string_call(&call)? {
+            return Ok(value);
+        }
         if let Some(value) = self.node_call(&call)? {
             return Ok(value);
         }

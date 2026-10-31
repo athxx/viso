@@ -847,6 +847,11 @@ fn regs(inst: &mut Inst, f: &impl Fn(Reg) -> Reg) {
             *dst = f(*dst);
             *src = f(*src);
         }
+        Inst::Str { dst, src, arg, .. } => {
+            *dst = f(*dst);
+            *src = f(*src);
+            *arg = f(*arg);
+        }
         Inst::Binary { dst, lhs, rhs, .. } => {
             *dst = f(*dst);
             *lhs = f(*lhs);

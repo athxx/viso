@@ -20,7 +20,8 @@ use core::mem;
 use super::{Event, Instance, Memo, Step, Vm};
 use crate::arith;
 use crate::module::{Module, TaskPolicy};
-use crate::op::{ArithOp, DisplayKind, NodeAction, Num};
+pub use crate::op::StrOp;
+use crate::op::{ArithOp, DisplayKind, NodeAction, Num, StrValue};
 use crate::value::{Aggregate, Closure, Value};
 use crate::vm::{FaultKind, Start};
 
@@ -493,6 +494,23 @@ pub fn len(v: &Value) -> Step<Value> {
         return Err(FaultKind::Internal);
     };
     Ok(Value::Int(items.len() as i64))
+}
+
+/// `op` of the string `a`, `b` the string a binary operation reads.
+pub fn string(vm: &mut Vm, op: StrOp, a: &Value, b: &Value) -> Step<Value> {
+    let text = a.as_str().ok_or(FaultKind::Internal)?;
+    let other = match op.binary() {
+        true => b.as_str().ok_or(FaultKind::Internal)?,
+        false => "",
+    };
+    Ok(match op.apply(text, other) {
+        StrValue::Int(n) => Value::Int(n),
+        StrValue::Bool(yes) => Value::bool(yes),
+        StrValue::Str(text) => {
+            vm.charge(16 + text.len() as u64)?;
+            Value::Str(Rc::new(text.into()))
+        }
+    })
 }
 
 /// The elements of the list `list` to edit in place, copied first when

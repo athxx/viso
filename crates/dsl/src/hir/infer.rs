@@ -41,6 +41,7 @@ pub(crate) mod promote;
 mod record;
 mod schema;
 mod shorthand;
+pub(crate) mod string;
 pub(crate) mod translate;
 
 pub use native::NativeCall;

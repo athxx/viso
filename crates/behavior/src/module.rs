@@ -1173,6 +1173,7 @@ impl Verifier<'_> {
             | Op::LtF64 { dst, a, b }
             | Op::LeF64 { dst, a, b }
             | Op::Arith { dst, a, b, .. }
+            | Op::Str { dst, a, b, .. }
             | Op::Eq { dst, a, b }
             | Op::Ne { dst, a, b } => self.regs(&[dst, a, b]),
             Op::Index { dst, list, index } => self.regs(&[dst, list, index]),

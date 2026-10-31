@@ -11,8 +11,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use viso_behavior::Value;
 use viso_behavior::i18n::{CaseKey, Catalog, Category, DateLength, PatternOp, Table};
+use viso_behavior::{StrOp, Value};
 use viso_schema::view::ControlKind;
 
 use super::eval::{Deps, Eval};
@@ -1298,6 +1298,18 @@ fn inst_js(
             )
         }
         Inst::Len { dst, src } => format!("{} = BigInt({}.length);", r(*dst), r(*src)),
+        Inst::Str { dst, op, src, arg } => {
+            let (d, s, a) = (r(*dst), r(*src), r(*arg));
+            match op {
+                StrOp::Len => format!("{d} = BigInt([...{s}].length);"),
+                StrOp::Contains => format!("{d} = {s}.includes({a});"),
+                StrOp::StartsWith => format!("{d} = {s}.startsWith({a});"),
+                StrOp::EndsWith => format!("{d} = {s}.endsWith({a});"),
+                StrOp::Trim => format!("{d} = {s}.trim();"),
+                StrOp::Lower => format!("{d} = {s}.toLowerCase();"),
+                StrOp::Upper => format!("{d} = {s}.toUpperCase();"),
+            }
+        }
         Inst::Push { list, item } => format!("{0} = $.push({0}, {1});", r(*list), r(*item)),
         Inst::Insert { list, index, item } => format!(
             "{0} = $.insert({0}, {1}, {2});",

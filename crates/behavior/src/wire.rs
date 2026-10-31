@@ -36,7 +36,7 @@ use crate::module::{
     VerifyError,
 };
 use crate::native::{Determinism, NativeId};
-use crate::op::{Arith, ArithOp, DisplayKind, Num, Op};
+use crate::op::{Arith, ArithOp, DisplayKind, Num, Op, StrOp};
 use crate::retype::ValueSchema;
 use crate::value::{Aggregate, Text, Value};
 
@@ -809,6 +809,7 @@ mod opcode {
     pub const REMOVE: u8 = 51;
     pub const TRUNCATE: u8 = 52;
     pub const NODE: u8 = 53;
+    pub const STR: u8 = 54;
 }
 
 fn write_op(enc: &mut Encoder, op: &Op) {
@@ -913,6 +914,10 @@ fn write_op(enc: &mut Encoder, op: &Op) {
             enc.write_u32(ext);
         }
         Op::Len { dst, src } => regs(enc, LEN, &[dst, src]),
+        Op::Str { op, dst, a, b } => {
+            regs(enc, STR, &[dst, a, b]);
+            enc.write_u8(op as u8);
+        }
         Op::Push { list, item } => regs(enc, PUSH, &[list, item]),
         Op::Insert { list, index, item } => regs(enc, INSERT, &[list, index, item]),
         Op::Remove { dst, list, index } => regs(enc, REMOVE, &[dst, list, index]),
@@ -1088,6 +1093,14 @@ fn read_op(dec: &mut Decoder<'_>) -> Result<Op, DecodeError> {
             dst: r(dec)?,
             src: r(dec)?,
         },
+        STR => {
+            let (dst, a, b) = (r(dec)?, r(dec)?, r(dec)?);
+            let op = dec.read_u8()?;
+            let op = *StrOp::ALL
+                .get(usize::from(op))
+                .ok_or_else(|| malformed(dec))?;
+            Op::Str { op, dst, a, b }
+        }
         PUSH => Op::Push {
             list: r(dec)?,
             item: r(dec)?,
