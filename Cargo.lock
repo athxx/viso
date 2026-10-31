@@ -3210,6 +3210,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-larder"
+version = "0.0.0"
+dependencies = [
+ "viso",
+ "viso-image",
+]
+
+[[package]]
 name = "viso-example-links"
 version = "0.0.0"
 dependencies = [

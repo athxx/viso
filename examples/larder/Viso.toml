@@ -1,0 +1,6 @@
+[package]
+name = "larder"
+capabilities = ["storage.persist"]
+
+[i18n]
+source = "en"

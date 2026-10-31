@@ -177,9 +177,26 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 
 ## C8 — Real-scale app
 
-- [ ] An example app of several thousand lines of `.vs` (navigation, lists, forms,
+- [x] An example app of several thousand lines of `.vs` (navigation, lists, forms,
       async, resources, i18n, adaptive layout, custom brush, slots) built and run on
       the desktop host; notes on what was awkward fed back as fixes.
+      `examples/larder` (~3.2k lines of `.vs`, headless tests and a golden). Fed back:
+      record fields end at a line break; `String` methods; `viso check` reports mount
+      failures; properties forwarded onto a component root mount; bare all-defaulted
+      record variants (`Sizing::fill`) lower; Toast `open` is one-way (E3103); a rounded
+      clip's layer is sized to its text; a themed placeholder draws.
+- [ ] Still awkward, from Larder:
+  - [ ] a user `enum Unit` silently shadows the built-in `Unit` ("expected `Unit`,
+        found `Unit`"): warn on shadowing a prelude type, or qualify the message;
+  - [ ] a one-parameter event payload is still a record (`on opened(e) { e.id }`);
+  - [ ] no index in `for` / no `enumerate`: numbering rows takes a helper;
+  - [ ] `TextInput { invalid: x }` reaching the node (semantics and a default look)
+        without a style selector reading it;
+  - [ ] `env` readable in a `computed`;
+  - [ ] `KeyShortcut { chord: .. }` mounting;
+  - [ ] `VirtualList { estimated_extent }` reading a value;
+  - [ ] a task's `time::sleep` under the headless driver follows its clock, not the
+        wall clock.
 
 ## C9 — Close
 

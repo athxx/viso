@@ -1,0 +1,22 @@
+[package]
+name = "viso-example-larder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# A kitchen companion written in `.vs`: recipes to browse, search and cook
+# from, a shopping list, a week's meal plan, kitchen timers and settings.
+# The shell is a sidebar on a wide window and a tab bar on a narrow one; a
+# recipe opens over its list on a navigation stack; the catalog loads as a
+# resource; timers tick as tasks and draw with a brush of their own; every
+# label is translated.
+[dependencies]
+viso = { workspace = true }
+
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }
+viso-image = { workspace = true }
+
+[lints]
+workspace = true

@@ -1741,7 +1741,7 @@ Maintain a progression such as:
 99-full-app
 ```
 
-Today only `01-counter`, `04-navigation`, `10-custom-shader` and `11-native-widget` (a native package's Rust widget in a `view!`) exist from this list, beside `hello_world` and named feature examples (`i18n`, `images`, `links`, `persist`, `pointer`, `shell`, `video`, `code-editor`, `map`, `materials`); fill the numbered steps as they land.
+Today only `01-counter`, `04-navigation`, `10-custom-shader` and `11-native-widget` (a native package's Rust widget in a `view!`) exist from this list, beside `hello_world` and named feature examples (`i18n`, `images`, `links`, `persist`, `pointer`, `shell`, `video`, `code-editor`, `map`, `materials`) and `larder`, a full app of some three thousand lines of `.vs` standing in for `99-full-app`; fill the numbered steps as they land.
 
 New examples should demonstrate the Viso 1.0 architecture, not Makepad compatibility patterns.
 
