@@ -2735,11 +2735,28 @@ fn frost(value: &Value) -> Option<Backdrop> {
         return None;
     };
     match &backdrop.fields[..] {
-        [blur, saturation, tint, noise] => Some(Backdrop {
+        [
+            blur,
+            saturation,
+            tint,
+            noise,
+            luminosity,
+            refraction,
+            bevel,
+            dispersion,
+            highlight,
+            light,
+        ] => Some(Backdrop {
             blur: dp(blur).max(0.0),
             saturation: float(saturation, 1.0),
             tint: color(tint),
             noise: float(noise, 0.0),
+            luminosity: float(luminosity, 0.0),
+            refraction: dp(refraction).max(0.0),
+            bevel: dp(bevel).max(0.0),
+            dispersion: float(dispersion, 0.0),
+            highlight: float(highlight, 0.0),
+            light: float(light, 315.0).to_radians(),
         }),
         _ => None,
     }

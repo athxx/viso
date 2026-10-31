@@ -131,19 +131,20 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       highlight inside the box). No offscreen pass but a blurred text shadow.
 - [ ] Background blur, glassmorphism: `backdrop` blur + saturation + tint + noise, a
       light border and a soft shadow (exists; pictures and stats in the gallery).
-- [ ] Acrylic: `Backdrop` gains `luminosity` (the backdrop's light kept under the
-      tint, so text on it reads) beside tint and noise, in the fused color op.
+- [x] Acrylic: `Backdrop` gains `luminosity` (the backdrop's light evened toward
+      the tint's, so text on it reads) beside tint and noise, a stage of the one
+      composite.
 - [ ] Reduced transparency: an environment flag (system setting, battery saver)
       makes every backdrop frostier and its tint denser; a device without the
       capability draws it as its solid `fallback`, opening no capture. Increased
       contrast: glass goes near black or white with a contrasting border; reduced
       motion: no elastic morph.
-- [ ] Liquid glass: `Backdrop` gains `refraction` and `bevel` (a quarter-circle
+- [x] Liquid glass: `Backdrop` gains `refraction` and `bevel` (a quarter-circle
       bevel at the rim bending what lies behind inward), `dispersion` (the color
       fringe of that bend) and `highlight` (a thin glint on the walls along the
       `light` angle) — each its own stage of the one pass, a fixed number of taps,
-      the capture not widened. Renderer stages (`Lens`, `Glint`, `Luminosity`)
-      done, CPU and Metal alike; the DSL fields to wire.
+      the capture not widened; CPU and Metal draw it alike. The web draws the
+      blur and tint alone.
 - [ ] Liquid glass, adaptive: `regular` and `clear` presets. Regular reads the
       backdrop's mean light from the ladder's coarsest level (no readback): it
       flips light or dark, deepens its shadow over busy content, and maps its tint

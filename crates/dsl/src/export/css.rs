@@ -352,7 +352,7 @@ pub(super) fn backdrop(value: &Value) -> (String, String) {
     let Value::Agg(agg) = value else {
         return ("none".to_owned(), "transparent".to_owned());
     };
-    let [blur, saturation, tint, _noise] = &agg.fields[..] else {
+    let [blur, saturation, tint, ..] = &agg.fields[..] else {
         return ("none".to_owned(), "transparent".to_owned());
     };
     let tint = tint

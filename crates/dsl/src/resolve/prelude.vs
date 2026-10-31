@@ -314,11 +314,22 @@ export record TextShadow {
 // What a box does to the content behind it, as glass: blurs it by `blur`
 // (as CSS's blur radius), scales its saturation by `saturation`, lays
 // `tint` over it by the tint's alpha, and adds a grain of `noise` (0..1).
+// `luminosity` (0..1) evens the backdrop's light toward the tint's, as
+// acrylic does. Liquid glass bends what lies behind it inward by
+// `refraction` at the edge, across a rounded `bevel` at the rim, splits the
+// bend's colors by `dispersion` (0..1), and catches a thin `highlight`
+// (0..1) on the walls along the `light` angle.
 export record Backdrop {
     blur: Dp = 30dp
     saturation: F32 = 1.8
     tint: Color = #ffffff40
     noise: F32 = 0.0
+    luminosity: F32 = 0.0
+    refraction: Dp = 0dp
+    bevel: Dp = 20dp
+    dispersion: F32 = 0.0
+    highlight: F32 = 0.0
+    light: Angle = 315deg
 }
 
 // The values of the standard widgets' enum properties.

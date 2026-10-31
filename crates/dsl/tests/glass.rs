@@ -52,7 +52,7 @@ fn glass_boxes_frost_what_lies_behind_them_in_every_target() {
             blur,
             saturation: 1.2,
             tint: rgba(0x1c1c_1e80),
-            noise: 0.0,
+            ..Backdrop::GLASS
         };
         assert_eq!(rt.store.backdrop(tuned), Some(tuned_glass(10.0)));
         assert_eq!(
@@ -81,4 +81,64 @@ fn glass_boxes_frost_what_lies_behind_them_in_every_target() {
         assert_eq!(surfaces[1].backdrop_sigma, 30.0, "half the blur radius");
         assert_eq!(rt.fault(), None);
     }
+}
+
+const LIQUID: &str = r##"
+export component Liquid {
+    view {
+        Column {
+            width: 120dp;
+            height: 48dp;
+            corner_radius: 24dp;
+            backdrop: Option::Some(Backdrop {
+                blur: 4dp,
+                tint: #ffffff20,
+                luminosity: 0.5,
+                refraction: 12dp,
+                bevel: 16dp,
+                dispersion: 0.2,
+                highlight: 0.8,
+                light: 0deg,
+            });
+        }
+    }
+}
+"##;
+
+#[test]
+fn liquid_glass_bends_glints_and_evens_its_light_in_every_target() {
+    for mut rt in [Rt::mount(LIQUID), Rt::packaged(LIQUID)] {
+        assert_eq!(rt.fault(), None);
+        rt.relayout();
+        let root = rt.root.expect("mounted");
+        let glass = rt.store.backdrop(root).expect("glass");
+        assert_eq!(
+            (glass.refraction, glass.bevel, glass.dispersion),
+            (12.0, 16.0, 0.2)
+        );
+        assert_eq!((glass.highlight, glass.light), (0.8, 0.0));
+        assert_eq!(glass.luminosity, 0.5);
+
+        let mut out = Vec::new();
+        viso_ui::paint::paint_tree(&rt.store, root, &mut out);
+        let Some(Primitive::Frosted(surface)) = out.first() else {
+            panic!("the glass first: {out:?}");
+        };
+        assert_eq!(surface.lens.refraction, 12.0);
+        assert_eq!(surface.lens.bevel, 16.0);
+        assert_eq!(surface.glint.strength, 0.8);
+        assert!(surface.glint.width > 0.0, "a thin line");
+        assert_eq!(surface.luminosity.amount, 0.5);
+        // Its light gives way to the tint's: white.
+        assert!((surface.luminosity.luminance - 1.0).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn the_standard_glass_is_flat_and_unlit() {
+    let glass = Backdrop::GLASS;
+    assert_eq!(
+        (glass.refraction, glass.highlight, glass.luminosity),
+        (0.0, 0.0, 0.0)
+    );
 }

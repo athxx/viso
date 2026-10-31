@@ -1,5 +1,5 @@
 //! Backdrops: a box of glass, which blurs, saturates and tints what lies
-//! behind it.
+//! behind it, and may even its light, bend it at the rim and catch a glint.
 //!
 //! A backdrop is drawn as the node's frosted surface under its own fill,
 //! outside the layer a translucent node fades through, so the glass fades
@@ -11,7 +11,9 @@
 
 use crate::component::NodeStore;
 use crate::node::NodeId;
-use viso_render::{ColorMatrix, ColorOp, Corners, FrostedMaterial, Rect, Rgba};
+use viso_render::{
+    ColorMatrix, ColorOp, Corners, FrostedMaterial, Glint, Lens, Luminosity, Rect, Rgba,
+};
 
 /// What a box does to the content behind it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,7 +29,25 @@ pub struct Backdrop {
     pub tint: Rgba,
     /// A grain over the glass, `0..=1`.
     pub noise: f32,
+    /// How far, `0..=1`, its light gives way to the tint's, so what lies on
+    /// it reads the same over light and dark: acrylic's luminosity layer.
+    pub luminosity: f32,
+    /// How far, in dp, what lies behind shifts inward at the edge: liquid
+    /// glass's bend; `0` for flat glass.
+    pub refraction: f32,
+    /// How deep, in dp, the rounded bevel the bend crosses reaches in.
+    pub bevel: f32,
+    /// How far the bend splits the colors, `0..=1`.
+    pub dispersion: f32,
+    /// The thin glint the rim catches, `0..=1`.
+    pub highlight: f32,
+    /// Where the light comes from, in radians: CSS's angle, `0` up and
+    /// clockwise.
+    pub light: f32,
 }
+
+/// The glint's width in dp; a faint bleed reaches four times as deep.
+const GLINT_WIDTH: f32 = 1.0;
 
 impl Backdrop {
     /// The standard glass: a strong blur, deepened colour and a light
@@ -43,6 +63,13 @@ impl Backdrop {
             a: 64.0 / 255.0,
         },
         noise: 0.0,
+        luminosity: 0.0,
+        refraction: 0.0,
+        bevel: 20.0,
+        dispersion: 0.0,
+        highlight: 0.0,
+        // `315deg`, from the upper left, as `to_radians` makes it.
+        light: 315.0 * (core::f32::consts::PI / 180.0),
     };
 
     /// The frosted surface it draws over a box of `rect` rounded by
@@ -56,6 +83,20 @@ impl Backdrop {
             gamma: 1.0,
         };
         surface.noise = self.noise.clamp(0.0, 1.0);
+        surface.luminosity = Luminosity {
+            amount: self.luminosity.clamp(0.0, 1.0),
+            luminance: 0.2126 * self.tint.r + 0.7152 * self.tint.g + 0.0722 * self.tint.b,
+        };
+        surface.lens = Lens {
+            refraction: self.refraction.max(0.0),
+            bevel: self.bevel.max(0.0),
+            dispersion: self.dispersion.clamp(0.0, 1.0),
+        };
+        surface.glint = Glint {
+            strength: self.highlight.clamp(0.0, 1.0),
+            light: self.light,
+            width: GLINT_WIDTH,
+        };
         surface.opacity = opacity;
         surface
     }
