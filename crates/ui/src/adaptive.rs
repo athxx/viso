@@ -808,7 +808,7 @@ mod tests {
         for field in EnvField::ENVIRONMENT {
             assert_eq!(EnvField::named(field.name()), Some(field));
         }
-        assert_eq!(EnvField::from_tag(13), None);
+        assert_eq!(EnvField::from_tag(EnvField::ALL.len() as u8), None);
         assert_eq!(
             EnvField::named("theme"),
             None,

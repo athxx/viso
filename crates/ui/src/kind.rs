@@ -18,8 +18,8 @@ macro_rules! kinds {
 }
 
 kinds! {
-    Row, Column, Flex, AdaptiveScope, SafeArea, KeyboardAvoiding, BlurView, Grid, Stack,
-    Absolute, InteractiveViewer, SwipeRow, SwipeActions, DragPreview, ReorderHandle, Scroll,
+    Row, Column, Flex, AdaptiveScope, SafeArea, KeyboardAvoiding, BlurView, Wrap, Grid, Stack,
+    Absolute, Island, InteractiveViewer, SwipeRow, SwipeActions, DragPreview, ReorderHandle, Scroll,
     Fragment,
     Text, LinkLabel, TextInput, NumberField, Button, Toggle, CheckBox, Chip, Stepper, Slider,
     Knob, ComboBox, SearchField, ColorPicker, RouterView, Image, Svg, Video, CameraView,
