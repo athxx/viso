@@ -674,6 +674,63 @@ mod tests {
     }
 
     #[test]
+    fn a_resized_glass_box_splices_its_surface_onto_its_new_box() {
+        use crate::component::{Painted, StackStyle};
+        use crate::dirty::DirtyClass;
+        let mut store = NodeStore::new();
+        let mut panel = None;
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.stack(
+                StackStyle {
+                    size: Sizing::fill(),
+                    ..StackStyle::default()
+                },
+                |cx| {
+                    let leaf = cx.leaf(LeafStyle {
+                        size: Sizing::fill(),
+                        style: BoxStyle::solid(Rgba::TRANSPARENT).with_radius(12.0),
+                    });
+                    cx.backdrop(leaf, Backdrop::GLASS);
+                    panel = Some(leaf.id());
+                },
+            )
+            .id()
+        };
+        let panel = panel.unwrap();
+        let mut scratch = Vec::new();
+        store.layout(root, Rect::new(0.0, 0.0, 400.0, 300.0), &mut scratch);
+        let mut out = Vec::new();
+        store.repaint(root, &mut out);
+        store.clear_dirty();
+        // The window resizes, again and again.
+        for (w, h) in [(500.0, 320.0), (360.0, 280.0), (420.0, 260.0)] {
+            store.mark_dirty(
+                root,
+                DirtyClass::MEASURE | DirtyClass::LAYOUT | DirtyClass::PAINT,
+            );
+            store.layout(root, Rect::new(0.0, 0.0, w, h), &mut scratch);
+            let painted = store.repaint_dirty(root, &mut out);
+            assert!(
+                !matches!(painted, Painted::Whole(_)),
+                "spliced: {painted:?}"
+            );
+            store.clear_dirty();
+            let Some(Primitive::Frosted(surface)) =
+                out.iter().find(|p| matches!(p, Primitive::Frosted(_)))
+            else {
+                panic!("the glass: {out:?}");
+            };
+            assert_eq!(
+                surface.rect,
+                store.world(panel),
+                "the glass follows its box"
+            );
+            assert_eq!(out, paint(&store, root), "as a whole paint draws it");
+        }
+    }
+
+    #[test]
     fn a_fading_glass_box_fades_its_surface_outside_its_layer() {
         let mut store = NodeStore::new();
         let panel = panel(&mut store, 0.5);

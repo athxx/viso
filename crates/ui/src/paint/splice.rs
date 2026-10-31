@@ -22,7 +22,7 @@
 
 use viso_render::{LayerClip, Primitive, Splice, TransformSlot};
 
-use super::{PaintSpans, Space, Span, clip_corners, paint_own, paint_subtree};
+use super::{PaintSpans, Space, Span, clip_corners, corner_radius, paint_own, paint_subtree};
 use crate::component::NodeStore;
 use crate::layout::Vec2;
 use crate::node::{Logged, NodeId, NodeIndex};
@@ -58,11 +58,12 @@ impl Record {
         (self.len >> 24) as u8 & flag != 0
     }
 
-    /// Its first primitive: a transform root's `Transform` and a fade's
-    /// `Layer` open its span.
+    /// Its first primitive: a transform root's `Transform`, a glass
+    /// surface and a fade's `Layer` open its span.
     #[inline]
     fn start(&self) -> u32 {
-        self.own - u32::from(self.has(Span::ROOT)) - u32::from(self.has(Span::FADED))
+        let flag = |flag: u8| u32::from(self.has(flag));
+        self.own - flag(Span::ROOT) - flag(Span::GLASS) - flag(Span::FADED)
     }
 
     /// The run its children painted into.
@@ -879,6 +880,28 @@ impl Walk<'_> {
         let shift = self.painted(record.slot())?;
         let world = store.bounds(node).translate(shift);
         let (own, len) = (record.own as usize, record.len() as usize);
+        // Glass that melts is drawn among the group's own drawables from its
+        // children's boxes: the group, or a glass child melting into it,
+        // paints again whole.
+        let melted = store.glass_merge(node) > 0.0 && !store.is_scroll(node);
+        if melted || record.has(Span::MELTED) || store.melts(node) {
+            return None;
+        }
+        // A glass surface follows the box; glass coming or going is a new
+        // shape.
+        let glass = store.drawn_glass(node).filter(|_| !store.melts(node));
+        if record.has(Span::GLASS) != glass.is_some() {
+            return None;
+        }
+        if let Some((glass, amount)) = glass {
+            let at = record.start() + u32::from(record.has(Span::ROOT));
+            let radius = corner_radius(&store.style(node), world);
+            let opacity = store.opacity(node);
+            let surface = store.paint_glass(node, glass, amount, world, radius, opacity);
+            if *self.out.get(at as usize)? != surface {
+                self.replace(at, surface)?;
+            }
+        }
         if record.has(Span::FADED) {
             let at = own.checked_sub(1)?;
             let Primitive::Layer(old) = self.out.get(at)? else {

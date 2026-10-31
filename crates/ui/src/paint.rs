@@ -187,6 +187,10 @@ impl Span {
     pub(crate) const CLIP: u8 = 8;
     /// Its clip is rounded: a `ClipCorners` follows the clip's `Layer`.
     pub(crate) const CORNERS: u8 = 16;
+    /// It is glass: its surface follows its `Transform`, ahead of its fade.
+    pub(crate) const GLASS: u8 = 32;
+    /// Its glass children melt: their surface follows its own drawables.
+    pub(crate) const MELTED: u8 = 64;
 }
 
 /// A walk that records nothing; the calls compile away.
@@ -351,9 +355,8 @@ fn paint_subtree<S: PaintSpans>(
     let world = store.bounds(root).translate(space.snapped);
     // A glass box's surface lies under everything the node draws and outside
     // its fade, which would drop the blur: it fades by its own opacity.
-    if let Some((glass, amount)) = store.drawn_glass(root)
-        && !store.melts(root)
-    {
+    let glass = store.drawn_glass(root).filter(|_| !store.melts(root));
+    if let Some((glass, amount)) = glass {
         let radius = corner_radius(&store.style(root), world);
         out.push(store.paint_glass(root, glass, amount, world, radius, opacity));
     }
@@ -371,7 +374,8 @@ fn paint_subtree<S: PaintSpans>(
     let own_start = out.len();
     paint_own(store, root, world, out);
     // Glass children that melt draw as one surface, under them all.
-    if store.glass_merge(root) > 0.0 && !store.is_scroll(root) {
+    let melted = store.glass_merge(root) > 0.0 && !store.is_scroll(root);
+    if melted {
         paint_melted(store, root, space, opacity, out);
     }
     let own_end = out.len();
@@ -468,7 +472,9 @@ fn paint_subtree<S: PaintSpans>(
                 | flag(scroll, Span::SCROLL)
                 | flag(own, Span::ROOT)
                 | flag(clips, Span::CLIP)
-                | flag(corners.is_some(), Span::CORNERS),
+                | flag(corners.is_some(), Span::CORNERS)
+                | flag(glass.is_some(), Span::GLASS)
+                | flag(melted, Span::MELTED),
         },
     );
 }
