@@ -370,8 +370,9 @@ impl Owner<'_> {
 
     /// Whether `path` is a property a view-driven native node reads: a
     /// control's value or range, a label's text, or its look; one its
-    /// list reads of it as a row, its `list.full_line`; or a Rust widget's
-    /// own property, which its implementation takes.
+    /// list reads of it as a row, its `list.full_line`; a list's own
+    /// `estimated_extent`, read as it attaches; or a Rust widget's own
+    /// property, which its implementation takes.
     fn reads_control(&self, name: &str) -> bool {
         let widget = self.schema.native();
         if self.component.is_some() {
@@ -380,6 +381,7 @@ impl Owner<'_> {
         }
         ControlKind::of(&self.name).input(name).is_some()
             || name == "list.full_line"
+            || (name == "estimated_extent" && self.name == "VirtualList")
             || (widget.is_rust() && widget.own_property(name).is_some())
     }
 

@@ -34,6 +34,7 @@ pub(super) struct ListEntries {
     pub(super) items: u32,
     pub(super) key: u32,
     pub(super) estimate: LengthTerms,
+    pub(super) estimated: Option<u32>,
     pub(super) overscan: u32,
     pub(super) sticky: Option<u32>,
     pub(super) pages: bool,
@@ -152,7 +153,7 @@ impl Patch<'_, '_> {
                     state.mark_data_dirty();
                 }
             } else {
-                self.attach(rows, list, parent, count);
+                self.attach(rows, list, scope, parent, count);
             }
             moved = true;
         }
@@ -193,7 +194,14 @@ impl Patch<'_, '_> {
 
     /// Makes `parent` the list of `count` rows the template mounts, in place
     /// of any list it was.
-    fn attach(&mut self, rows: &mut Rows, list: ListEntries, parent: NodeId, count: usize) {
+    fn attach(
+        &mut self,
+        rows: &mut Rows,
+        list: ListEntries,
+        scope: &Scope,
+        parent: NodeId,
+        count: usize,
+    ) {
         let Some(axis) = self.cx.store.scroll_axis(parent) else {
             self.fail::<()>(
                 FaultKind::Internal,
@@ -211,9 +219,16 @@ impl Patch<'_, '_> {
                 .free_tree(canvas, &mut *self.cx.effects, &mut *self.scratch);
             self.freed = true;
         }
+        // An estimate read from a value is read as the list attaches; the
+        // rows it measures refine it from then on.
+        let estimate = list
+            .estimated
+            .and_then(|entry| self.evaluate(entry, scope, None))
+            .and_then(|value| crate::layout_values::length(&value))
+            .unwrap_or(list.estimate);
         let shape = ListShape {
             axis,
-            estimated_row: self.cx.store.fold_extent(parent, list.estimate).max(1.0),
+            estimated_row: self.cx.store.fold_extent(parent, estimate).max(1.0),
             overscan: list.overscan as usize,
             pages: list.pages,
             grid: list.lanes.map(|lanes| {

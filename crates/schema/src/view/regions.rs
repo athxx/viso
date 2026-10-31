@@ -86,6 +86,9 @@ pub enum RegionKind {
         /// The extent a row not measured yet is estimated at, folded at the
         /// list.
         estimate: LengthTerms,
+        /// The entry of an estimate the list reads from a value, in place of
+        /// `estimate`, read when the list attaches.
+        estimated: Option<u32>,
         /// The rows mounted past each end of the viewport.
         overscan: u32,
         /// Whether an item's row heads a section (called with the item too):
@@ -305,6 +308,7 @@ impl Encode for ViewRegions {
                     items,
                     key,
                     estimate,
+                    estimated,
                     overscan,
                     sticky,
                     pages,
@@ -315,6 +319,7 @@ impl Encode for ViewRegions {
                     enc.write_varint(u64::from(items));
                     enc.write_varint(u64::from(key));
                     encode_terms(&estimate, enc);
+                    enc.write_varint(estimated.map_or(0, |at| u64::from(at) + 1));
                     enc.write_varint(u64::from(overscan));
                     enc.write_varint(sticky.map_or(0, |sticky| u64::from(sticky) + 1));
                     enc.write_bool(pages);
@@ -441,6 +446,7 @@ impl Decode for ViewRegions {
                     items: read_u32(dec)?,
                     key: read_u32(dec)?,
                     estimate: decode_terms(dec)?,
+                    estimated: read_u32(dec)?.checked_sub(1),
                     overscan: read_u32(dec)?,
                     sticky: read_u32(dec)?.checked_sub(1),
                     pages: dec.read_bool()?,
@@ -791,6 +797,7 @@ mod tests {
             key: 3,
             estimate: LengthTerms::dp(30.0) + LengthTerms::em(1.5),
             overscan: 4,
+            estimated: Some(7),
             sticky: Some(5),
             pages: true,
             lanes: Some(ListLanes {
@@ -810,6 +817,7 @@ mod tests {
             items: 2,
             key: 3,
             estimate: LengthTerms::dp(f32::NAN),
+            estimated: None,
             overscan: 4,
             sticky: None,
             pages: false,

@@ -714,6 +714,12 @@ impl<'a, 'l> Lowering<'a, 'l> {
                             laid.push(name.clone());
                             control_reads.push((name, at, instance));
                         }
+                        // A list reads it as it attaches its rows.
+                        Fold::Pending
+                            if name == "estimated_extent" && kind == NodeKind::VirtualList =>
+                        {
+                            control_reads.push((name, at, instance));
+                        }
                         Fold::Pending => bound.push((name, at, at)),
                         Fold::Unsupported(reason) => self.unmount((at, reason)),
                         Fold::Invalid(reason) => self.misplace((at, reason)),

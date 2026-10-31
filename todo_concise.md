@@ -201,7 +201,8 @@ the downsampled ladder, kept across frames while what lies behind holds still.
   - [x] `env` readable in a `computed` (and `theme`): it reads its instance's fields
         and is recomputed as they change;
   - [ ] `KeyShortcut { chord: .. }` mounting;
-  - [ ] `VirtualList { estimated_extent }` reading a value;
+  - [x] `VirtualList { estimated_extent }` reading a value: read as the list attaches
+        its rows, then refined by the rows it measures;
   - [ ] a task's `time::sleep` under the headless driver follows its clock, not the
         wall clock.
 

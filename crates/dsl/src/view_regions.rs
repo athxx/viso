@@ -487,6 +487,13 @@ impl Builder<'_> {
                 };
                 let sticky = read("sticky");
                 let full = read("list.full_line");
+                let estimated = list.and_then(|list| {
+                    let &(_, at, instance) = list
+                        .control_reads
+                        .iter()
+                        .find(|(name, ..)| name == "estimated_extent")?;
+                    Some(self.entry(instance, Some(at), region.origin))
+                });
                 let kind = match (list, key) {
                     (Some(list), Some(key)) => {
                         let shape = list.style.list.unwrap_or_default();
@@ -494,6 +501,7 @@ impl Builder<'_> {
                             items,
                             key,
                             estimate: terms_of(shape.estimate),
+                            estimated,
                             overscan: shape.overscan,
                             sticky,
                             pages: shape.pages,

@@ -825,3 +825,44 @@ fn a_scroll_across_scrolls_both_ways() {
         400.0
     );
 }
+
+#[test]
+fn a_list_reads_an_estimate_from_a_value_as_it_attaches() {
+    let source = |estimate: &str| {
+        format!(
+            "component Feed {{
+    state roomy = true
+    view {{
+        Column {{
+            width: 200dp
+            height: 300dp
+            VirtualList {{
+                width: 200dp
+                height: 200dp
+                estimated_extent: {estimate}
+                for i in 0..100 key i {{
+                    Text(\"{{i}}\") {{ width: 200dp; height: 20dp }}
+                }}
+            }}
+        }}
+    }}
+}}"
+        )
+    };
+    for (estimate, total) in [
+        ("if roomy { 50dp } else { 10dp }", 5000.0),
+        ("if !roomy { 50dp } else { 10dp }", 1000.0),
+    ] {
+        let blob = build_view_package(&source(estimate), &origin()).expect("packages");
+        let mut store = NodeStore::new();
+        let mut states = StateStore::new();
+        let mut bindings = BindingTable::new();
+        let mut lists = VirtualLists::new();
+        let view =
+            load_view(&blob, &mut store, &mut states, &mut bindings, &mut lists).expect("loads");
+        let root = view.root.expect("a root");
+        let list = store.arena().children(root).next().expect("the list");
+        let state = lists.get(list).expect("attached");
+        assert_eq!(state.total_extent(), total, "{estimate}");
+    }
+}
