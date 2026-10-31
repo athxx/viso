@@ -3361,9 +3361,17 @@ impl Renderer {
             if let Some(top) = self.layer_stack.last()
                 && let PassTarget::Offscreen(_) = top.target
             {
+                // A path, mesh or glyph run records no bounds; its retained
+                // extent stands in, as it does for damage.
                 let mut union = top.content_union;
-                for entry in &self.scene.paint_order[record_start..] {
-                    union = union.accumulate(entry.bounds.paint);
+                for (i, entry) in self.scene.paint_order.iter().enumerate().skip(record_start) {
+                    let paint = match self.scene.key(i).1 {
+                        Some(extent) if !entry.bounds.paint.has_area() => {
+                            extent.inflate(self.scene.reach(i))
+                        }
+                        _ => entry.bounds.paint,
+                    };
+                    union = union.accumulate(paint);
                 }
                 if let Some(top) = self.layer_stack.last_mut() {
                     top.content_union = union;
