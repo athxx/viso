@@ -886,22 +886,33 @@ fn analytic_shadow(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) 
     let (offset, sigma, spread, shape, inner) = (i.f2(4), i.f1(5), i.f1(6), i.u1(7), i.u1(8));
     let half = [size[0] * 0.5, size[1] * 0.5];
     let center = [pos[0] + half[0], pos[1] + half[1]];
-    let half_ext = [(half[0] + spread).max(0.0), (half[1] + spread).max(0.0)];
+    let grown = [(half[0] + spread).max(0.0), (half[1] + spread).max(0.0)];
+    let hole = [(half[0] - spread).max(0.0), (half[1] - spread).max(0.0)];
+    let hole_radii = radii.map(|r| (r - spread).max(0.0));
     let aa = cx.aa();
-    shade(cx, out, clip, |p| {
-        let p = [p[0] - center[0] - offset[0], p[1] - center[1] - offset[1]];
-        let d = shadow_sdf(shape, p, half_ext, radii);
+    shade(cx, out, clip, |at| {
+        let p = [at[0] - center[0] - offset[0], at[1] - center[1] - offset[1]];
         // `1.4142135` (not `SQRT_2`) is byte-exact with the emitted literal.
         #[allow(clippy::approx_constant)]
-        let cov = if sigma <= 0.01 {
-            (-d * aa).clamp(0.0, 1.0)
-        } else if inner != 0 {
-            let soft = 0.5 * (1.0 + erf_approx(d / (1.4142135 * sigma)));
-            let inside = 0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)));
-            (soft * inside).clamp(0.0, 1.0)
+        let cov = if inner != 0 {
+            // Inside the box, outside its blurred hole.
+            let dh = shadow_sdf(shape, p, hole, hole_radii);
+            let outside = if sigma > 0.01 {
+                0.5 * (1.0 + erf_approx(dh / (1.4142135 * sigma)))
+            } else {
+                1.0 - (-dh * aa).clamp(0.0, 1.0)
+            };
+            let db = shadow_sdf(shape, [at[0] - center[0], at[1] - center[1]], half, radii);
+            outside * (-db * aa).clamp(0.0, 1.0)
         } else {
-            (0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)))).clamp(0.0, 1.0)
-        };
+            let d = shadow_sdf(shape, p, grown, radii);
+            if sigma > 0.01 {
+                0.5 * (1.0 - erf_approx(d / (1.4142135 * sigma)))
+            } else {
+                (-d * aa).clamp(0.0, 1.0)
+            }
+        }
+        .clamp(0.0, 1.0);
         let fa = fill[3] * cov;
         [fill[0] * fa, fill[1] * fa, fill[2] * fa, fa]
     });

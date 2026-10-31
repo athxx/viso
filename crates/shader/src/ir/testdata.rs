@@ -1336,34 +1336,37 @@ static inline float shadow_aa(float2 p) {
 
 fragment float4 fragment_main(VOut in [[stage_in]]) {
     // Sample in rect-centered space, shifted opposite the shadow offset so the
-    // silhouette lands at +offset on screen. Spread grows (or shrinks) the
-    // silhouette by insetting the half-extents.
+    // silhouette lands at +offset on screen.
     float2 p = in.local - in.center - in.offset;
-    float2 half_ext = max(in.half_size + float2(in.spread), float2(0.0));
-    float d = shadow_sdf(in.shape, p, half_ext, in.radius);
-
-    // Soft coverage: model the blurred edge as a 1-D Gaussian applied to the signed
-    // distance. An outer drop shadow fills the silhouette and fades outward
-    // (coverage = 1 - Phi(d/sigma) = 0.5*(1 - erf(d/(sqrt2*sigma)))). An inner shadow
-    // is its complement clipped to the interior: the blurred silhouette of the hole,
-    // darkest at the edge and fading toward the center — 0.5*(1 + erf(...)) times an
-    // inside mask. A near-zero sigma has no blur, so fall back to a device-pixel AA
-    // ramp (a signed hairline at the edge for the inner case, a filled ramp otherwise).
+    float aa = shadow_aa(in.local);
     float cov;
     if (in.inner != 0u) {
+        // An inner shadow falls inside the box, outside its hole: the box moved by
+        // the offset and shrunk by the spread, its corners with it. Coverage is the
+        // complement of the hole's blurred silhouette (Phi(d/sigma), or a
+        // device-pixel ramp for a near-zero sigma), cut to the box's own edge.
+        float2 hole_ext = max(in.half_size - float2(in.spread), float2(0.0));
+        float4 hole_radius = max(in.radius - float4(in.spread), float4(0.0));
+        float dh = shadow_sdf(in.shape, p, hole_ext, hole_radius);
+        float outside;
         if (in.sigma > 0.01) {
-            float soft = 0.5 * (1.0 + erf_approx(d / (1.4142135 * in.sigma)));
-            // Clip to the interior with the same Gaussian edge, so the darkening
-            // lives inside the silhouette and vanishes at and beyond the edge.
-            float inside = 0.5 * (1.0 - erf_approx(d / (1.4142135 * in.sigma)));
-            cov = soft * inside;
+            outside = 0.5 * (1.0 + erf_approx(dh / (1.4142135 * in.sigma)));
         } else {
-            cov = clamp(-d * shadow_aa(in.local), 0.0, 1.0);
+            outside = 1.0 - clamp(-dh * aa, 0.0, 1.0);
         }
-    } else if (in.sigma > 0.01) {
-        cov = 0.5 * (1.0 - erf_approx(d / (1.4142135 * in.sigma)));
+        float db = shadow_sdf(in.shape, in.local - in.center, in.half_size, in.radius);
+        cov = outside * clamp(-db * aa, 0.0, 1.0);
     } else {
-        cov = clamp(-d * shadow_aa(in.local), 0.0, 1.0);
+        // An outer drop shadow fills the silhouette grown by the spread and fades
+        // outward: 1 - Phi(d/sigma) = 0.5*(1 - erf(d/(sqrt2*sigma))), or a
+        // device-pixel ramp for a near-zero sigma.
+        float2 half_ext = max(in.half_size + float2(in.spread), float2(0.0));
+        float d = shadow_sdf(in.shape, p, half_ext, in.radius);
+        if (in.sigma > 0.01) {
+            cov = 0.5 * (1.0 - erf_approx(d / (1.4142135 * in.sigma)));
+        } else {
+            cov = clamp(-d * aa, 0.0, 1.0);
+        }
     }
     cov = clamp(cov, 0.0, 1.0);
 

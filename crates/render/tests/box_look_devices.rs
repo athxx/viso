@@ -1,16 +1,17 @@
 //! The box looks drawn on each GPU device here as on the CPU raster: a
 //! gradient masked to rounded corners, a destination-out cut inside an
-//! isolated layer (the inset text shadow's), and a liquid glass surface that
-//! bends, splits, lights and evens its backdrop.
+//! isolated layer (the inset text shadow's), inset shadows sharp and soft,
+//! and a liquid glass surface that bends, splits, lights and evens its
+//! backdrop.
 
 mod devices;
 
 use devices::{Device, Draw, differing, on_devices};
 use viso_gpu::{CpuRaster, TextureDesc, TextureFormat};
 use viso_render::{
-    Blend, Border, Corners, ExtendMode, FrostedMaterial, GlassUnion, Glint, Glow, Gradient,
-    GradientKind, GradientStop, InterpolationSpace, LayerClip, Lens, Luminosity, Point, Primitive,
-    Quad, Rect, Renderer, Rgba, RoundMask,
+    AnalyticShadow, Blend, Border, Corners, ExtendMode, FrostedMaterial, GlassUnion, Glint, Glow,
+    Gradient, GradientKind, GradientStop, InterpolationSpace, LayerClip, Lens, Luminosity, Point,
+    Primitive, Quad, Rect, Renderer, Rgba, RoundMask, ShadowShape,
 };
 
 const W: u32 = 128;
@@ -124,6 +125,30 @@ fn scene() -> Vec<Primitive> {
         strength: 0.5,
     });
     out.push(Primitive::Frosted(Box::new(pills)));
+    // A pressed-in well: a sharp highlight along its top, a soft shade
+    // inside its rim.
+    let well = Rect::new(8.0, 56.0, 48.0, 32.0);
+    out.push(Primitive::Quad(Quad {
+        rect: well,
+        color: Rgba::new(0.4, 0.3, 0.2, 1.0),
+        radius: 8.0,
+        border: Border::NONE,
+    }));
+    for (offset, sigma, spread, color) in [
+        ([0.0, 1.0], 0.0, 0.0, Rgba::new(1.0, 1.0, 1.0, 0.5)),
+        ([0.0, 2.0], 4.0, -2.0, Rgba::new(0.0, 0.0, 0.0, 0.6)),
+    ] {
+        out.push(Primitive::AnalyticShadow(AnalyticShadow {
+            rect: well,
+            color,
+            radius: Corners::uniform(8.0),
+            offset,
+            sigma,
+            spread,
+            shape: ShadowShape::RoundedBox,
+            inner: true,
+        }));
+    }
     out
 }
 
