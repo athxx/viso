@@ -1012,6 +1012,8 @@ pub struct NodeStore {
     pub(crate) fields: crate::field_marks::Fields,
     /// Cold: the nodes that take text themselves ([`crate::text_entry`]).
     pub(crate) text_entries: crate::text_entry::TextEntries,
+    /// Cold: the shortcut nodes and where each hears keys.
+    pub(crate) shortcuts: crate::shortcut::Shortcuts,
     /// Cold: each pointer's last press, which a press soon after counts on.
     pub(crate) clicks: crate::clicks::Clicks,
     /// Cold: the cursors nodes name.
@@ -1241,6 +1243,7 @@ impl NodeStore {
         self.paged.clear();
         self.fields.clear();
         self.text_entries.clear();
+        self.shortcuts.clear();
         self.clicks.clear();
         self.cursors.clear();
         self.links.clear();
@@ -6171,6 +6174,7 @@ impl NodeStore {
         self.paged.forget(i as u32);
         self.fields.forget(i as u32);
         self.text_entries.forget(i as u32);
+        self.shortcuts.forget(i as u32);
         self.clicks.forget(i as u32);
         self.cursors.forget(i as u32);
         self.links.forget(i as u32);

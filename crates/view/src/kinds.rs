@@ -72,6 +72,7 @@ kinds! {
     Select: None, Some(values::select_state);
     Segmented: None, Some(values::segmented);
     Disclosure: None, Some(values::disclosure);
+    Shortcut: None, Some(values::shortcut);
 }
 
 #[cfg(test)]

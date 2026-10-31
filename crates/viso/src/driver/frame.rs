@@ -488,7 +488,8 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                     // does: a running game takes them. An auto-repeat is not
                     // a new press for it; a key the game has no use for
                     // reaches the viewport's ancestry. With nothing focused,
-                    // a key no game takes scrolls the window's viewport.
+                    // a key no game takes reaches the shortcuts, then scrolls
+                    // the window's viewport.
                     if ws.store.focused().is_none() {
                         let took = if k.repeat {
                             ws.store.has_frame_clients()
@@ -502,8 +503,19 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                                 repeat: k.repeat,
                                 modifiers,
                             };
-                            ws.store
-                                .scroll_by_key(root, &ev, viso_ui::primary_is_logo());
+                            let taken = KeyRouter::route_key_taken(
+                                &mut ws.store,
+                                &mut ws.states,
+                                &ws.bindings,
+                                &mut ws.text_edits,
+                                root,
+                                ev,
+                                &mut ws.route_chain,
+                            );
+                            if !taken {
+                                ws.store
+                                    .scroll_by_key(root, &ev, viso_ui::primary_is_logo());
+                            }
                         }
                     }
                 } else {

@@ -33,7 +33,8 @@ mod tests {
 
     use viso::__test_support::{DrivenApp, drive_scripted_frames};
     use viso::platform::{
-        Modifiers, PointerButtons, PointerPhase, RawEvent, RawPointer, RawText, WindowId,
+        KeyCode, Modifiers, PointerButtons, PointerPhase, RawEvent, RawKey, RawPointer, RawText,
+        WindowId,
     };
     use viso::ui::{NodeId, NodeStore};
     use viso_image::snapshot::{Image, compare};
@@ -141,6 +142,40 @@ mod tests {
         then_click(&mut script, "All recipes");
         let app = drive(&script);
         assert!(shows(&app, "16 recipes"), "back on the list");
+    }
+
+    /// A press and release of `code` with `modifiers` held, and frames for
+    /// what it opens to settle.
+    fn key(code: KeyCode, modifiers: Modifiers) -> Vec<RawEvent> {
+        let raw = |pressed| {
+            RawEvent::Key(RawKey {
+                window: WIN,
+                code,
+                pressed,
+                repeat: false,
+                modifiers,
+            })
+        };
+        let mut out = vec![raw(true), raw(false)];
+        out.extend(settle());
+        out
+    }
+
+    #[test]
+    fn the_keyboard_writes_a_recipe_and_goes_back_from_one() {
+        let mut script = settle();
+        let primary = Modifiers {
+            logo: viso::platform::primary_is_logo(),
+            control: !viso::platform::primary_is_logo(),
+            ..Modifiers::default()
+        };
+        script.extend(key(KeyCode::N, primary));
+        assert!(shows(&drive(&script), "Save recipe"), "the editor opened");
+
+        let mut script = settle();
+        then_click(&mut script, "Shakshuka");
+        script.extend(key(KeyCode::Escape, Modifiers::default()));
+        assert!(shows(&drive(&script), "16 recipes"), "back on the list");
     }
 
     #[test]

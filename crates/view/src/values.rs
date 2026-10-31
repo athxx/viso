@@ -1300,6 +1300,19 @@ pub(crate) fn swipe_actions(d: &mut Delivery<'_, '_>) {
     d.cx.store.set_swipe_panel(d.node, Some(edge));
 }
 
+/// A key shortcut hears keys in the scope its value names, out of layout,
+/// paint and the semantics tree whatever its look says.
+pub(crate) fn shortcut(d: &mut Delivery<'_, '_>) {
+    let [value] = shown!(d.showing, Value);
+    let scope = match value.as_int() {
+        Some(1) => viso_ui::ShortcutScope::Window,
+        _ => viso_ui::ShortcutScope::Parent,
+    };
+    let store = &mut *d.cx.store;
+    store.set_hidden(d.node, true);
+    store.set_shortcut(d.node, Some(scope));
+}
+
 /// A handle carries the reorderable row it lies in, the pointer showing a
 /// grab over it unless its `cursor` says.
 pub(crate) fn reorder_handle(d: &mut Delivery<'_, '_>) {

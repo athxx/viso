@@ -2178,6 +2178,48 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     el.attr("aria-label", &fixed.text());
                 }
             }
+            // A key shortcut is a hidden element the page offers each key
+            // press nothing focused took; its chord and scope are fixed.
+            ControlKind::Shortcut => {
+                el.attr("hidden", "");
+                decls.push(("display", "none".to_owned()));
+                let chord = control
+                    .chord
+                    .map(|entry| self.fixed(entry, "the chord", at));
+                match chord {
+                    Some(Fixed::Value(chord)) => match chord_text(&chord) {
+                        Some(text) => el.attr("data-chord", &text),
+                        None => self.need(
+                            Need::Unsupported,
+                            at,
+                            "a page cannot hear this chord's key",
+                            Vec::new(),
+                        ),
+                    },
+                    Some(_) => self.need(
+                        Need::Unsupported,
+                        at,
+                        "a key shortcut's chord changes while the page is open",
+                        vec!["give `chord` a value that reads no state".to_owned()],
+                    ),
+                    None => {}
+                }
+                let scope = control
+                    .value
+                    .map(|entry| self.fixed(entry, "the scope", at));
+                match scope {
+                    Some(Fixed::Value(v)) if v.as_int() == Some(1) => {
+                        el.attr("data-scope", "window");
+                    }
+                    Some(Fixed::Value(_)) | None => {}
+                    Some(_) => self.need(
+                        Need::Unsupported,
+                        at,
+                        "a key shortcut's scope changes while the page is open",
+                        vec!["give `scope` a value that reads no state".to_owned()],
+                    ),
+                }
+            }
             // A chip is a button pressed while selected, its caption its
             // text; a removable one's cross the page draws at its end.
             ControlKind::Chip => {
@@ -3690,6 +3732,75 @@ fn css_cursor(tag: i64) -> Option<&'static str> {
 }
 
 /// A value's text where the page shows it as text.
+/// A prelude `KeyChord` as a page matches it: its modifiers, each
+/// followed by `+`, then a letter or digit as the key's code names it, or
+/// the DOM name of any other key; `None` for a key a page cannot hear.
+fn chord_text(chord: &Value) -> Option<String> {
+    let [key, primary, shift, alt, control] = chord.fields()? else {
+        return None;
+    };
+    let mut out = String::new();
+    for (flag, name) in [
+        (primary, "primary"),
+        (shift, "shift"),
+        (alt, "alt"),
+        (control, "control"),
+    ] {
+        if flag.as_int().is_some_and(|v| v != 0) {
+            out.push_str(name);
+            out.push('+');
+        }
+    }
+    const NAMED: [&str; 15] = [
+        "",
+        "Enter",
+        "Escape",
+        "Tab",
+        "Backspace",
+        "Delete",
+        " ",
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+    ];
+    match key {
+        Value::Int(tag) => out.push_str(
+            NAMED
+                .get(usize::try_from(*tag).ok()?)
+                .filter(|n| !n.is_empty())?,
+        ),
+        Value::Agg(agg) => {
+            let field = agg.fields.first()?.as_int()?;
+            match agg.tag {
+                0 => {
+                    let c = char::from_u32(u32::try_from(field).ok()?)?;
+                    if c.is_ascii_alphabetic() {
+                        out.push_str("Key");
+                        out.push(c.to_ascii_uppercase());
+                    } else if c.is_ascii_digit() {
+                        out.push_str("Digit");
+                        out.push(c);
+                    } else {
+                        out.push(c);
+                    }
+                }
+                15 => {
+                    out.push('F');
+                    out.push_str(&field.to_string());
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
 fn text_of(v: &Value) -> String {
     match v {
         Value::Str(s) => s.as_str().to_owned(),

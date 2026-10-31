@@ -1096,6 +1096,8 @@ KeyShortcut {
 - 冲突时焦点链上最近的快捷键生效；焦点位于 `TextInput` 时，不带修饰键的快捷键不触发；
 - 快捷键导出到语义树，作为宿主节点的 `keyboard_shortcut` 描述。
 
+当前实现：`KeyShortcut` 挂载为隐藏节点（不占布局、不绘制、不进语义树，`visible` 等外观 Property 不改变这一点）。按键先沿焦点链分派；没有节点 `stop_propagation` 时（或没有焦点时），依次交给父节点位于焦点链上的 `parent` 快捷键（离焦点近者先；无焦点时焦点链只含根）与窗口内的 `window` 快捷键，第一个 `chord` 匹配的取走该键并收到 `triggered`；按住重复的按键被取走但不再触发。匹配要求修饰键完全一致；字母不分大小写，符号按不按 Shift 时的键比较。焦点在文本输入（`TextInput`、可选文本等）上时，不带 Control、Alt 或 Command 的按键不交给快捷键。位于隐藏子树（未显示的页面、折叠的分支）中的快捷键不触发。`chord` 与 `scope` 可为读取值，热重载、Release 包与宏路径相同。Web 导出为带 `data-chord`/`data-scope` 的隐藏元素，页面在 `keydown` 未被处理时按同样顺序匹配（字母、数字按 `KeyboardEvent.code`，其余按 `key`）；导出时 `chord` 与 `scope` 必须为常量。语义树的 `keyboard_shortcut` 描述尚未实现。
+
 ### U7.5 交互 Widget 基线
 
 以下条目补充 U3–U5 的公共 Property；所有交互 Widget 均有 `enabled`（U7.2）且默认 `focusable: true`。

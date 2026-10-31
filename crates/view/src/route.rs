@@ -389,6 +389,40 @@ fn key_event(event: &KeyEvent) -> Value {
     ])
 }
 
+/// Whether key press `ev` is the prelude `KeyChord` `chord`: its key — a
+/// letter in either case, a symbol as the unshifted key types it — with
+/// exactly the modifiers it holds, `primary` being Command on Apple
+/// platforms and Control elsewhere.
+pub(crate) fn chord_hears(chord: &Value, ev: &KeyEvent) -> bool {
+    let Some([want, primary, shift, alt, control]) = chord.fields() else {
+        return false;
+    };
+    let flag = |v: &Value| v.as_int().is_some_and(|v| v != 0);
+    let apple = viso_ui::primary_is_logo();
+    let primary = flag(primary);
+    let held = Modifiers {
+        shift: flag(shift),
+        control: flag(control) || (primary && !apple),
+        alt: flag(alt),
+        logo: primary && apple,
+    };
+    if ev.modifiers != held {
+        return false;
+    }
+    let lower = |v: &Value| match v {
+        Value::Agg(agg) if agg.tag == 0 => agg.fields.first().and_then(Value::as_int).map(|c| {
+            char::from_u32(c as u32).map_or(c, |c| i64::from(u32::from(c.to_ascii_lowercase())))
+        }),
+        _ => None,
+    };
+    let pressed = key(ev.key, false);
+    match (lower(want), lower(&pressed)) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => *want == pressed,
+        _ => false,
+    }
+}
+
 /// The prelude `Key` of a physical key: a letter, digit or US-layout symbol is
 /// `char`, upper-case under shift for a letter.
 fn key(key: Key, shift: bool) -> Value {

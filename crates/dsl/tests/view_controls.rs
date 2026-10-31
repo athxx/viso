@@ -315,7 +315,8 @@ impl Rt {
         self.key_with(key, Modifiers::default());
     }
 
-    /// A press of `key` with `modifiers` held to the focused node.
+    /// A press of `key` with `modifiers` held to the focused node, then to
+    /// the shortcuts if no node takes it.
     fn key_with(&mut self, key: Key, modifiers: Modifiers) {
         let event = KeyEvent {
             key,
@@ -323,7 +324,7 @@ impl Rt {
             repeat: false,
             modifiers,
         };
-        KeyRouter::route_key(
+        KeyRouter::route_key_taken(
             &mut self.store,
             &mut self.states,
             &self.bindings,
@@ -776,6 +777,107 @@ export component Mixer {
         assert_eq!(rt.float("amount"), 3.0);
         rt.click(10.0, 30.0);
         assert_eq!(rt.int("taps"), 1, "the caller's handler on its caption");
+        assert!(!rt.faulted());
+    }
+}
+
+#[test]
+fn a_key_shortcut_hears_the_chord_no_focused_node_took() {
+    const SHORTCUTS: &str = r#"
+export component Editor {
+    state name = "";
+    state saves = 0;
+    state panel_saves = 0;
+    state finds = 0;
+    state escapes = 0;
+    view {
+        Row {
+            width: 400dp;
+            height: 100dp;
+            gap: 10dp;
+            KeyShortcut {
+                chord: KeyChord { key: Key::char('S'), primary: true };
+                on triggered { saves += 1; }
+            }
+            KeyShortcut {
+                chord: KeyChord { key: Key::escape };
+                on triggered { escapes += 1; }
+            }
+            TextInput { width: 100dp; height: 20dp; bind value <=> name; }
+            Column {
+                width: 100dp;
+                height: 40dp;
+                Button("Go") { width: 100dp; height: 20dp; }
+                KeyShortcut {
+                    chord: KeyChord { key: Key::char('s'), primary: true };
+                    on triggered { panel_saves += 1; }
+                }
+                KeyShortcut {
+                    chord: KeyChord { key: Key::char('f'), alt: true, shift: true };
+                    scope: ShortcutScope::window;
+                    on triggered { finds += 1; }
+                }
+            }
+        }
+    }
+}
+"#;
+    let primary = Modifiers {
+        logo: viso_ui::primary_is_logo(),
+        control: !viso_ui::primary_is_logo(),
+        ..Modifiers::default()
+    };
+    for mut rt in [Rt::reloaded(SHORTCUTS), Rt::packaged(SHORTCUTS)] {
+        let [save, escape, field, panel] = rt.children_of_root()[..] else {
+            panic!("two shortcuts, a field and a panel");
+        };
+        assert!(rt.store.hidden(save) && rt.store.hidden(escape));
+        assert_eq!(rt.store.bounds(field).x, 0.0, "a shortcut takes no room");
+        let button = rt.children(panel)[0];
+
+        rt.key_with(Key::S, primary);
+        rt.key(Key::Escape);
+        assert_eq!(
+            (rt.int("saves"), rt.int("escapes")),
+            (1, 1),
+            "no focus: the root's"
+        );
+        rt.key_with(
+            Key::F,
+            Modifiers {
+                alt: true,
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(rt.int("finds"), 1, "a window shortcut hears it anywhere");
+
+        rt.store.set_focused(button.into());
+        rt.key_with(Key::S, primary);
+        assert_eq!(
+            (rt.int("saves"), rt.int("panel_saves")),
+            (1, 1),
+            "the nearest"
+        );
+        rt.key_with(
+            Key::S,
+            Modifiers {
+                shift: true,
+                ..primary
+            },
+        );
+        assert_eq!(
+            rt.int("panel_saves"),
+            1,
+            "a chord holds exactly its modifiers"
+        );
+
+        rt.click(10.0, 10.0);
+        assert_eq!(rt.store.focused(), Some(field));
+        rt.key(Key::Escape);
+        assert_eq!(rt.int("escapes"), 1, "a bare key is the field's");
+        rt.key_with(Key::S, primary);
+        assert_eq!(rt.int("saves"), 2);
         assert!(!rt.faulted());
     }
 }

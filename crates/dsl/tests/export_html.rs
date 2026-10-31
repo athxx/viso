@@ -2221,6 +2221,47 @@ fn chips_export_as_buttons_pressed_while_selected_with_a_cross_when_removable() 
     assert!(script.contains("P.data("), "{script}");
 }
 
+const SHORTCUTS: &str = r##"
+export component Shortcuts {
+    state saves = 0;
+    state primary = true;
+    view {
+        Column {
+            KeyShortcut {
+                chord: KeyChord { key: Key::char('s'), primary: true };
+                on triggered { saves += 1; }
+            }
+            KeyShortcut {
+                chord: KeyChord { key: Key::escape, shift: true };
+                scope: ShortcutScope::window;
+                on triggered { saves = 0; }
+            }
+            Text("saved")
+        }
+    }
+}
+"##;
+
+#[test]
+fn key_shortcuts_export_as_hidden_elements_the_page_offers_keys() {
+    let page = export(SHORTCUTS, false).unwrap();
+    let index = &page.index;
+    assert!(
+        index.contains(r#"data-chord="primary+KeyS""#) && index.contains(" hidden"),
+        "{index}"
+    );
+    assert!(
+        index.contains(r#"data-chord="shift+Escape""#) && index.contains(r#"data-scope="window""#),
+        "{index}"
+    );
+    let changing = SHORTCUTS.replace("primary: true", "primary: primary");
+    let found = export(&changing, false).err().map(|f| format!("{f:?}"));
+    assert!(
+        found.is_some_and(|f| f.contains("chord changes while the page is open")),
+        "a chord reading state cannot export"
+    );
+}
+
 const STEPPERS: &str = r##"
 export component Steppers {
     state guests: F64 = 2.0;

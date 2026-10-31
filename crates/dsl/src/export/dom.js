@@ -1958,6 +1958,46 @@ const crossed = (el, e) => {
   return getComputedStyle(el).direction === "rtl" ? e.clientX <= b.left + trail : e.clientX >= b.right - trail;
 };
 
+// The key shortcuts on the page. A key press nothing focused took is
+// offered to those whose parent holds the focus, nearest first, then to the
+// window's; the first whose chord it is takes it. While the focus takes
+// text, a key held with no Control, Alt or Command is the text's.
+const shortcuts = [];
+const apple = /Mac|iPhone|iPad/.test(navigator.platform);
+const chorded = (el, e) => {
+  const chord = el.dataset.chord;
+  if (!chord) return false;
+  const parts = chord.split("+");
+  const name = parts.pop() || "+";
+  const held = new Set(parts);
+  const primary = held.has("primary");
+  if (e.shiftKey !== held.has("shift") || e.altKey !== held.has("alt")) return false;
+  if (e.ctrlKey !== (held.has("control") || (primary && !apple)) || e.metaKey !== (primary && apple)) return false;
+  if (/^(Key[A-Z]|Digit[0-9])$/.test(name)) return e.code === name;
+  return e.key === name;
+};
+const shortcut = (el, fire) => {
+  el.$shortcut = fire;
+  shortcuts.push(el);
+  if (shortcuts.length > 1) return;
+  addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || e.isComposing) return;
+    const focus = document.activeElement === document.body ? null : document.activeElement;
+    const texty = focus && (focus.isContentEditable || focus.matches("input, textarea, select"));
+    if (texty && !e.ctrlKey && !e.altKey && !e.metaKey) return;
+    const live = shortcuts.filter((s) => s.isConnected && s.parentElement.checkVisibility?.() !== false);
+    const order = [];
+    for (let n = focus ?? document.body.firstElementChild; n; n = n.parentElement) {
+      for (const s of live) if (s.dataset.scope !== "window" && s.parentElement === n) order.push(s);
+    }
+    for (const s of live) if (s.dataset.scope === "window") order.push(s);
+    const hit = order.find((s) => chorded(s, e));
+    if (!hit) return;
+    e.preventDefault();
+    if (!e.repeat) hit.$shortcut(null);
+  });
+};
+
 const DOM = ["click", "click", "pointerdown", "pointermove", "pointerup", "pointerenter", "pointerleave", "keydown", "keyup"];
 
 // Calls `fire` with the payload of each `route` event of `el`, a control
@@ -2119,6 +2159,8 @@ const listen = (el, route, capture, control, fire) => {
     el.addEventListener("viso-drop", (e) => {
       if (e.target === el && e.detail.phase === phase) fire(dropEvent(el, e.detail));
     }, capture);
+  } else if (route === 43) {
+    shortcut(el, fire);
   } else if (route === 35) {
     // A click on a chip's cross, or Delete or Backspace on it, asks it to go.
     el.addEventListener("click", live((e) => { if (crossed(el, e)) fire(null); }), capture);

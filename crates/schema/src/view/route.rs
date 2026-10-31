@@ -127,11 +127,14 @@ pub enum EventRoute {
     /// A `RouterView`'s `back_requested` (`BackRequest`): a system back
     /// action is about to pop its page; `e.prevent_default()` keeps it.
     BackRequested = 42,
+    /// A `KeyShortcut`'s `triggered`: a key no focused node took was its
+    /// chord.
+    Triggered = 43,
 }
 
 impl EventRoute {
     /// Every route, by discriminant.
-    pub const ALL: [EventRoute; 43] = [
+    pub const ALL: [EventRoute; 44] = [
         EventRoute::Click,
         EventRoute::Tap,
         EventRoute::PointerDown,
@@ -175,6 +178,7 @@ impl EventRoute {
         EventRoute::PlayingChanged,
         EventRoute::FullscreenChanged,
         EventRoute::BackRequested,
+        EventRoute::Triggered,
     ];
 
     /// The route of standard DSL event `event`, `None` for an event the runtime
@@ -232,6 +236,7 @@ impl EventRoute {
             EventRoute::PlayingChanged => "playing_changed",
             EventRoute::FullscreenChanged => "fullscreen_changed",
             EventRoute::BackRequested => "back_requested",
+            EventRoute::Triggered => "triggered",
         }
     }
 
@@ -281,6 +286,7 @@ impl EventRoute {
             EventRoute::PlayingChanged => "PlayingChanged",
             EventRoute::FullscreenChanged => "FullscreenChanged",
             EventRoute::BackRequested => "BackRequested",
+            EventRoute::Triggered => "Triggered",
         }
     }
 
@@ -364,6 +370,7 @@ impl EventRoute {
                 | EventRoute::DetentChanged
                 | EventRoute::Removed
                 | EventRoute::BackRequested
+                | EventRoute::Triggered
         )
     }
 }

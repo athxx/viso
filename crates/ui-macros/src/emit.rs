@@ -797,6 +797,7 @@ fn control_tokens(control: Control) -> TokenStream {
     let fullscreen = entry(control.fullscreen);
     let mirror = entry(control.mirror);
     let invalid = entry(control.invalid);
+    let chord = entry(control.chord);
     let semantics = control.semantics;
     let role = match semantics.role {
         Some(role) => {
@@ -963,6 +964,7 @@ fn control_tokens(control: Control) -> TokenStream {
             fullscreen: #fullscreen,
             mirror: #mirror,
             invalid: #invalid,
+            chord: #chord,
             shader: #shader,
             look: ::viso::__private::viso_view::Look {
                 background: #background,

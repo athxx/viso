@@ -166,11 +166,16 @@ pub enum ControlKind {
     /// node's content once, takes the values of the widget's own properties
     /// the view binds ([`RustEntries`]) and raises the widget's own events.
     Rust = 38,
+    /// `KeyShortcut`: an invisible node offered each key press no focused
+    /// node took, while the focus is in its parent's subtree or, with
+    /// `scope: window`, anywhere in the window; a press that is its `chord`
+    /// reports `triggered`.
+    Shortcut = 39,
 }
 
 impl ControlKind {
     /// Every kind, by discriminant.
-    pub const ALL: [ControlKind; 39] = [
+    pub const ALL: [ControlKind; 40] = [
         ControlKind::Check,
         ControlKind::Slider,
         ControlKind::Select,
@@ -210,6 +215,7 @@ impl ControlKind {
         ControlKind::Glass,
         ControlKind::Router,
         ControlKind::Rust,
+        ControlKind::Shortcut,
     ];
 
     /// The kind native widget `widget` is; a Rust widget is
@@ -253,6 +259,7 @@ impl ControlKind {
             "CameraView" => ControlKind::Camera,
             "BlurView" => ControlKind::Glass,
             "RouterView" => ControlKind::Router,
+            "KeyShortcut" => ControlKind::Shortcut,
             _ => ControlKind::Plain,
         }
     }
@@ -268,6 +275,7 @@ impl ControlKind {
             "detent_changed" => EventRoute::DetentChanged,
             "removed" => EventRoute::Removed,
             "back_requested" => EventRoute::BackRequested,
+            "triggered" => EventRoute::Triggered,
             _ => return None,
         };
         self.reports(route).then_some(route)
@@ -367,6 +375,7 @@ impl ControlKind {
                 | (ControlKind::Button | ControlKind::Chip, EventRoute::Click)
                 | (ControlKind::Chip, EventRoute::Removed)
                 | (ControlKind::Router, EventRoute::BackRequested)
+                | (ControlKind::Shortcut, EventRoute::Triggered)
         )
     }
 
@@ -619,9 +628,10 @@ impl ControlKind {
             (ControlKind::Sheet, "detent") => ControlInput::Min,
             (ControlKind::Viewer, "pan_margin") => ControlInput::PanMargin,
             (ControlKind::Label, "url") => ControlInput::Url,
-            (ControlKind::SwipeRow, "full_swipe") | (ControlKind::SwipeActions, "edge") => {
-                ControlInput::Value
-            }
+            (ControlKind::SwipeRow, "full_swipe")
+            | (ControlKind::SwipeActions, "edge")
+            | (ControlKind::Shortcut, "scope") => ControlInput::Value,
+            (ControlKind::Shortcut, "chord") => ControlInput::Chord,
             _ => return None,
         })
     }
@@ -668,6 +678,7 @@ impl ControlKind {
             ControlKind::Glass => "Glass",
             ControlKind::Router => "Router",
             ControlKind::Rust => "Rust",
+            ControlKind::Shortcut => "Shortcut",
         }
     }
 
@@ -1212,6 +1223,8 @@ pub enum ControlInput {
     Mirror,
     /// A text field's `invalid`: whether the value it holds is refused.
     Invalid,
+    /// A key shortcut's `chord`: the key press it hears.
+    Chord,
     /// The node's `backdrop`: how its box treats what lies behind it.
     Backdrop,
     /// The node's `ripple`: whether a press spreads ink over its box.
@@ -1304,6 +1317,8 @@ pub struct Control {
     pub mirror: Option<u32>,
     /// The entry of whether a text field's value is refused.
     pub invalid: Option<u32>,
+    /// The entry of the key press a key shortcut hears.
+    pub chord: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1510,7 +1525,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 91] = [
+    pub const ALL: [ControlInput; 92] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1602,6 +1617,7 @@ impl ControlInput {
         ControlInput::TextShadow,
         ControlInput::GlassMerge,
         ControlInput::Invalid,
+        ControlInput::Chord,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1725,6 +1741,7 @@ impl Control {
             fullscreen: None,
             mirror: None,
             invalid: None,
+            chord: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1835,6 +1852,7 @@ impl Control {
             ControlInput::Fullscreen => self.fullscreen,
             ControlInput::Mirror => self.mirror,
             ControlInput::Invalid => self.invalid,
+            ControlInput::Chord => self.chord,
         }
     }
 
@@ -1942,6 +1960,7 @@ impl Control {
             ControlInput::Fullscreen => &mut self.fullscreen,
             ControlInput::Mirror => &mut self.mirror,
             ControlInput::Invalid => &mut self.invalid,
+            ControlInput::Chord => &mut self.chord,
         };
         *slot = Some(entry);
     }
@@ -1992,6 +2011,7 @@ impl Encode for Control {
             self.fullscreen,
             self.mirror,
             self.invalid,
+            self.chord,
             self.shader,
             look.background,
             look.opacity,
@@ -2159,6 +2179,7 @@ impl Decode for Control {
             fullscreen: entry()?,
             mirror: entry()?,
             invalid: entry()?,
+            chord: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2502,6 +2523,7 @@ mod tests {
             fullscreen: Some(54),
             mirror: Some(55),
             invalid: Some(56),
+            chord: Some(57),
             shader: Some(2),
             look: Look {
                 background: Some(3),

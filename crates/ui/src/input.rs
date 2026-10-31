@@ -1775,6 +1775,8 @@ impl KeyRouter {
     /// [`route_key`](Self::route_key), telling whether a handler took the
     /// key: stopped it, so what the framework does with it by default — Tab
     /// moving the focus, Escape dismissing a transient layer — does not run.
+    /// A press no node on the focus chain takes, or one with no focus, is
+    /// offered to the shortcuts ([`crate::shortcut`]).
     pub fn route_key_taken(
         store: &mut NodeStore,
         states: &mut StateStore,
@@ -1784,14 +1786,27 @@ impl KeyRouter {
         ev: KeyEvent,
         chain: &mut Vec<NodeId>,
     ) -> bool {
-        let Some(target) = store.focused() else {
-            chain.clear();
-            return false;
+        let taken = match store.focused() {
+            Some(target) => {
+                walk_chain(store, root, target, chain, |s, n, _| {
+                    key_dispatch(s, states, bindings, edits, n, &ev)
+                })
+                .stop
+            }
+            None => false,
         };
-        walk_chain(store, root, target, chain, |s, n, _| {
-            key_dispatch(s, states, bindings, edits, n, &ev)
-        })
-        .stop
+        // A press no focused node took is offered to the shortcuts.
+        if taken || !ev.pressed {
+            return taken;
+        }
+        store.shortcuts_for(root, ev.modifiers, chain);
+        for i in 0..chain.len() {
+            let shortcut = chain[i];
+            if key_dispatch(store, states, bindings, edits, shortcut, &ev).stop {
+                return true;
+            }
+        }
+        false
     }
 
     /// Route an IME event to the focused node's ancestry, same shape as

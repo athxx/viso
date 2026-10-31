@@ -63,6 +63,7 @@ impl Drive for Control {
         let change = match self.kind {
             ControlKind::Check | ControlKind::Switch => toggle(self, host, scope, cx),
             ControlKind::Chip => chip(self, host, scope, cx),
+            ControlKind::Shortcut => shortcut(self, host, scope, cx),
             ControlKind::Stepper => stepper(self, host, scope, cx),
             ControlKind::Disclosure => disclose(self, host, scope, cx),
             ControlKind::Button => click(cx),
@@ -284,6 +285,23 @@ fn stepper(
     let wrap = read(host, control.wrap, scope, cx).as_int().unwrap_or(0) != 0;
     let next = input.apply(value, step, min, max, wrap)?;
     Some((EventRoute::Changed, field(Value::Float(next))))
+}
+
+/// A key shortcut's response: a press that is its chord goes no further, and
+/// reports `triggered` unless the key is held repeating.
+fn shortcut(
+    control: &Control,
+    host: &mut ViewHost,
+    scope: &Scope,
+    cx: &mut EventCx<'_>,
+) -> Option<(EventRoute, Value)> {
+    let k = *cx.key().filter(|k| k.pressed)?;
+    let chord = read(host, control.chord, scope, cx);
+    if !crate::route::chord_hears(&chord, &k) {
+        return None;
+    }
+    cx.stop_propagation();
+    (!k.repeat).then_some((EventRoute::Triggered, Value::Nil))
 }
 
 /// A button's response: Space or Enter on it, or its access key, reports a

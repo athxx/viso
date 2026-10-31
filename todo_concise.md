@@ -200,7 +200,10 @@ the downsampled ladder, kept across frames while what lies behind holds still.
         theme's error color;
   - [x] `env` readable in a `computed` (and `theme`): it reads its instance's fields
         and is recomputed as they change;
-  - [ ] `KeyShortcut { chord: .. }` mounting;
+  - [x] `KeyShortcut { chord: .. }` mounting: a hidden node offered each key press
+        no focused node took — its parent's on the focus chain nearest first, then
+        the window's — that reports `triggered` on its chord; the web export
+        matches it on `keydown`;
   - [x] `VirtualList { estimated_extent }` reading a value: read as the list attaches
         its rows, then refined by the rows it measures;
   - [x] a task's `time::sleep` under the headless driver follows its clock, not the

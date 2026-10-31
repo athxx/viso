@@ -110,6 +110,11 @@ export component RecipeList {
             width: fill
             height: fill
             gap: 16dp
+            KeyShortcut {
+                chord: KeyChord { key: Key::char('n'), primary: true }
+                scope: ShortcutScope::window
+                on triggered { emit writing() }
+            }
             PageHeader {
                 title: tr("recipes.title")
                 subtitle: tr("recipes.count", count: shown.len())
@@ -277,6 +282,11 @@ export component RecipeDetail {
                     width: fill
                     gap: 8dp
                     align: Align::center
+                    KeyShortcut {
+                        chord: KeyChord { key: Key::escape }
+                        scope: ShortcutScope::window
+                        on triggered { emit closed() }
+                    }
                     Button(tr("recipe.back")) { on click { emit closed() } }
                     Row { width: fill }
                     Button(tr("recipe.plan")) { on click { emit planned(recipe.id) } }
