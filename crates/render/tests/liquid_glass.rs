@@ -218,3 +218,66 @@ fn the_bend_is_in_points_and_spans_twice_the_pixels_at_twice_the_scale() {
     assert!(one > 0 && one <= 12, "{one}");
     assert!(two > one && two <= 24, "{one} {two}");
 }
+
+/// The picture of a dark tinted surface over the stripes, set up by `make`.
+fn tinted(make: impl FnOnce(&mut FrostedMaterial)) -> Vec<u8> {
+    let mut surface = FrostedMaterial::new(Rect::new(16.0, 8.0, 64.0, 48.0), Corners::SHARP, 2.0);
+    surface.color = viso_render::ColorOp {
+        matrix: viso_render::ColorMatrix::tint([0.0, 0.0, 0.0], 0.8),
+        gamma: 1.0,
+    };
+    make(&mut surface);
+    picture(Some(Primitive::Frosted(Box::new(surface)))).0
+}
+
+#[test]
+fn a_press_glows_from_where_it_lands_and_fades_with_its_reach() {
+    let glow = viso_render::Glow {
+        at: viso_render::Point::new(30.0, 20.0),
+        radius: 20.0,
+        strength: 0.6,
+    };
+    let (dark, lit) = (tinted(|_| {}), tinted(|s| s.glow = Some(glow)));
+    let lift = |x, y| red(&lit, x, y) as i32 - red(&dark, x, y) as i32;
+    assert!(
+        lift(30, 20) > 80,
+        "brightest where it landed: {}",
+        lift(30, 20)
+    );
+    assert!(lift(30, 20) > lift(42, 20) + 20, "fainter out");
+    assert_eq!(lift(70, 50), 0, "nothing past its reach");
+}
+
+#[test]
+fn shapes_near_each_other_melt_into_one_and_far_ones_stay_apart() {
+    let shapes = |gap: f32| {
+        [
+            (Rect::new(12.0, 16.0, 24.0, 32.0), 6.0),
+            (Rect::new(36.0 + gap, 16.0, 24.0, 32.0), 6.0),
+        ]
+    };
+    let melted = |gap: f32, spacing: f32| {
+        tinted(|s| {
+            let union = viso_render::GlassUnion::of(&shapes(gap), spacing).unwrap();
+            s.rect = union.bounds();
+            s.merged = Some(union);
+        })
+    };
+    let (dark, plain) = (tinted(|_| {}), picture(None).0);
+    // Glass: nearer the dark glass than what lies behind it.
+    let glass = |px: &[u8], x, y| {
+        let v = red(px, x, y) as i32;
+        (v - red(&dark, x, y) as i32).abs() < (v - red(&plain, x, y) as i32).abs()
+    };
+    // Four points apart (over a white stripe), a blend of twelve fills the
+    // gap between them.
+    let near = melted(4.0, 12.0);
+    assert!(glass(&near, 38, 32), "the gap is glass");
+    // Without a blend, the gap shows what lies behind.
+    let apart = melted(4.0, 0.0);
+    assert_eq!(red(&apart, 38, 32), red(&plain, 38, 32), "the gap is clear");
+    assert!(
+        glass(&apart, 20, 32) && glass(&apart, 52, 32),
+        "both shapes are glass"
+    );
+}

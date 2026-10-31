@@ -8,9 +8,9 @@ mod devices;
 use devices::{Device, Draw, differing, on_devices};
 use viso_gpu::{CpuRaster, TextureDesc, TextureFormat};
 use viso_render::{
-    Blend, Border, Corners, ExtendMode, FrostedMaterial, Glint, Gradient, GradientKind,
-    GradientStop, InterpolationSpace, LayerClip, Lens, Luminosity, Point, Primitive, Quad, Rect,
-    Renderer, Rgba, RoundMask,
+    Blend, Border, Corners, ExtendMode, FrostedMaterial, GlassUnion, Glint, Glow, Gradient,
+    GradientKind, GradientStop, InterpolationSpace, LayerClip, Lens, Luminosity, Point, Primitive,
+    Quad, Rect, Renderer, Rgba, RoundMask,
 };
 
 const W: u32 = 128;
@@ -102,6 +102,28 @@ fn scene() -> Vec<Primitive> {
         luminance: 0.6,
     };
     out.push(Primitive::Frosted(Box::new(glass)));
+    // Two pills melting, a press glowing across both.
+    let union = GlassUnion::of(
+        &[
+            (Rect::new(70.0, 6.0, 24.0, 16.0), 4.0),
+            (Rect::new(98.0, 6.0, 24.0, 16.0), 4.0),
+        ],
+        10.0,
+    )
+    .unwrap();
+    let mut pills = FrostedMaterial::new(union.bounds(), Corners::uniform(0.0), 2.0);
+    pills.merged = Some(union);
+    pills.lens = Lens {
+        refraction: 4.0,
+        bevel: 6.0,
+        dispersion: 0.0,
+    };
+    pills.glow = Some(Glow {
+        at: Point::new(90.0, 14.0),
+        radius: 30.0,
+        strength: 0.5,
+    });
+    out.push(Primitive::Frosted(Box::new(pills)));
     out
 }
 

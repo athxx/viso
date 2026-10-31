@@ -830,6 +830,11 @@ pub struct FrostedMaterial {
     /// dark over a dark backdrop and light over a light one, laid over by
     /// its alpha after `color`. `None` for none.
     pub adaptive_tint: Option<Rgba>,
+    /// A press's light inside it; `None` for none.
+    pub glow: Option<Glow>,
+    /// The shapes it is, melted into one, in place of its own rounded
+    /// `rect`, which then is the box they lie in ([`GlassUnion::bounds`]).
+    pub merged: Option<GlassUnion>,
     /// Which realization draws the surface. [`MaterialLane::Gpu`] by default —
     /// the portable answer; [`MaterialLane::Native`] reserves the region for the
     /// platform's own material instead of capturing and blurring a backdrop.
@@ -852,6 +857,8 @@ impl FrostedMaterial {
             glint: Glint::NONE,
             luminosity: Luminosity::NONE,
             adaptive_tint: None,
+            glow: None,
+            merged: None,
             lane: MaterialLane::Gpu,
         }
     }
@@ -949,6 +956,75 @@ impl Glint {
 
     pub fn is_on(&self) -> bool {
         self.strength > 0.0 && self.width > 0.0
+    }
+}
+
+/// A press's light inside glass: brightest at `at`, fading out to
+/// `radius` from it, by `strength` in `0..1`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glow {
+    pub at: Point,
+    pub radius: f32,
+    pub strength: f32,
+}
+
+/// Glass shapes melted into one surface: up to [`GlassUnion::MAX`] rounded
+/// boxes whose outlines blend into one another where they come within
+/// `spacing` of each other — a smooth union of their distance fields, worked
+/// out in the one composite.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlassUnion {
+    /// Each shape and its corner radius (one for every corner).
+    pub shapes: [(Rect, f32); GlassUnion::MAX],
+    /// How many of `shapes` are in it, `1..=MAX`.
+    pub count: u8,
+    /// How near two shapes come before they blend, in points.
+    pub spacing: f32,
+}
+
+impl GlassUnion {
+    /// The most shapes one surface melts.
+    pub const MAX: usize = 4;
+
+    /// The union of `shapes`, at most [`MAX`](Self::MAX) of them; `None`
+    /// for none.
+    pub fn of(shapes: &[(Rect, f32)], spacing: f32) -> Option<GlassUnion> {
+        let count = shapes.len().min(Self::MAX);
+        if count == 0 {
+            return None;
+        }
+        let mut all = [(Rect::new(0.0, 0.0, 0.0, 0.0), 0.0); Self::MAX];
+        all[..count].copy_from_slice(&shapes[..count]);
+        Some(GlassUnion {
+            shapes: all,
+            count: count as u8,
+            spacing: spacing.max(0.0),
+        })
+    }
+
+    /// The box all its shapes lie in, the blend's swell included.
+    pub fn bounds(&self) -> Rect {
+        let shapes = &self.shapes[..self.count as usize];
+        let (mut x0, mut y0) = (f32::INFINITY, f32::INFINITY);
+        let (mut x1, mut y1) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for (r, _) in shapes {
+            x0 = x0.min(r.x);
+            y0 = y0.min(r.y);
+            x1 = x1.max(r.x + r.w);
+            y1 = y1.max(r.y + r.h);
+        }
+        // A smooth union swells by at most a quarter of its blend.
+        let swell = if self.count > 1 {
+            self.spacing * 0.25
+        } else {
+            0.0
+        };
+        Rect::new(
+            x0 - swell,
+            y0 - swell,
+            x1 - x0 + 2.0 * swell,
+            y1 - y0 + 2.0 * swell,
+        )
     }
 }
 
@@ -2615,6 +2691,18 @@ pub struct MaterialInstance {
     /// The adaptive tint: straight linear color and alpha, `0` alpha for
     /// none.
     pub adapt: [f32; 4],
+    /// The glow: where (in the instance's space), how far, how strong; `0`
+    /// strength for none.
+    pub glow: [f32; 4],
+    /// The melted shapes, each `x, y, w, h` in the instance's space.
+    pub shape0: [f32; 4],
+    pub shape1: [f32; 4],
+    pub shape2: [f32; 4],
+    pub shape3: [f32; 4],
+    /// Each melted shape's corner radius.
+    pub shape_radius: [f32; 4],
+    /// How many shapes melt (`0`: the rect alone), and how near they blend.
+    pub merge: [f32; 2],
     /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
     pub gamma: f32,
     /// Grain amplitude in `0..1`; `0.0` = no noise.

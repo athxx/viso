@@ -836,6 +836,13 @@ mod tests {
                 "glint",
                 "luminosity",
                 "adapt",
+                "glow",
+                "shape0",
+                "shape1",
+                "shape2",
+                "shape3",
+                "shape_radius",
+                "merge",
                 "gamma",
                 "noise",
                 "opacity"
@@ -845,12 +852,13 @@ mod tests {
 
         // The ColorTransform prefix (4*8 + 5*16 = 112) plus the mask radii
         // (16), the lens (12), the glint (16), the luminosity (8), the
-        // adaptive tint (16) and three bare F32 tail fields:
-        // 112 + 68 + 3*4 = 192 bytes, no padding.
+        // adaptive tint (16), the glow (16), four melted shapes and their radii
+        // (5*16), the merge (8) and three bare F32 tail fields:
+        // 112 + 172 + 3*4 = 296 bytes, no padding.
         let (expected, stride) = material_ir().expected_offsets();
         let schema = material_schema();
         assert_eq!(schema.attributes.len(), expected.len());
-        assert_eq!(stride, 192);
+        assert_eq!(stride, 296);
         assert_eq!(expected[0], ("rect_pos", 0));
         assert_eq!(expected[4], ("row0", 32));
         assert_eq!(expected[8], ("offset", 96));
@@ -859,9 +867,13 @@ mod tests {
         assert_eq!(expected[11], ("glint", 140));
         assert_eq!(expected[12], ("luminosity", 156));
         assert_eq!(expected[13], ("adapt", 164));
-        assert_eq!(expected[14], ("gamma", 180));
-        assert_eq!(expected[15], ("noise", 184));
-        assert_eq!(expected[16], ("opacity", 188));
+        assert_eq!(expected[14], ("glow", 180));
+        assert_eq!(expected[15], ("shape0", 196));
+        assert_eq!(expected[19], ("shape_radius", 260));
+        assert_eq!(expected[20], ("merge", 276));
+        assert_eq!(expected[21], ("gamma", 284));
+        assert_eq!(expected[22], ("noise", 288));
+        assert_eq!(expected[23], ("opacity", 292));
     }
 
     /// The grain must never read time, or a static frosted surface would redraw

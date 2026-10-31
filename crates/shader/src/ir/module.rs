@@ -595,6 +595,13 @@ pub fn material_ir() -> ShaderIr {
         IrField::new("glint", IrType::F32X4),
         IrField::new("luminosity", IrType::F32X2),
         IrField::new("adapt", IrType::F32X4),
+        IrField::new("glow", IrType::F32X4),
+        IrField::new("shape0", IrType::F32X4),
+        IrField::new("shape1", IrType::F32X4),
+        IrField::new("shape2", IrType::F32X4),
+        IrField::new("shape3", IrType::F32X4),
+        IrField::new("shape_radius", IrType::F32X4),
+        IrField::new("merge", IrType::F32X2),
         IrField::new("gamma", IrType::F32),
         IrField::new("noise", IrType::F32),
         IrField::new("opacity", IrType::F32),
@@ -621,6 +628,23 @@ pub fn material_ir() -> ShaderIr {
             IrType::F32X4,
             "",
             "adaptive tint, straight; a 0 = none",
+        ),
+        Varying::new("glow", IrType::F32X4, "", "press glow: at, reach, strength"),
+        Varying::new("shape0", IrType::F32X4, "", "melted shapes, x y w h"),
+        Varying::new("shape1", IrType::F32X4, "", ""),
+        Varying::new("shape2", IrType::F32X4, "", ""),
+        Varying::new("shape3", IrType::F32X4, "", ""),
+        Varying::new(
+            "shape_radius",
+            IrType::F32X4,
+            "",
+            "each melted shape's radius",
+        ),
+        Varying::new(
+            "merge",
+            IrType::F32X2,
+            "",
+            "melted count (0 = the rect), blend",
         ),
         Varying::new("uv_bounds", IrType::F32X4, "", "backdrop sub-rect (lo, hi)"),
         Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
@@ -2516,6 +2540,13 @@ out.lens = float3(inst.lens);
 out.glint = float4(inst.glint);
 out.luminosity = float2(inst.luminosity);
 out.adapt = float4(inst.adapt);
+out.glow = float4(inst.glow);
+out.shape0 = float4(inst.shape0);
+out.shape1 = float4(inst.shape1);
+out.shape2 = float4(inst.shape2);
+out.shape3 = float4(inst.shape3);
+out.shape_radius = float4(inst.shape_radius);
+out.merge = float2(inst.merge);
 out.row0 = float4(inst.row0);
 out.row1 = float4(inst.row1);
 out.row2 = float4(inst.row2);
@@ -2547,6 +2578,33 @@ static inline float aa_factor(float2 p) {
     return 1.0 / length(float2(length(dfdx(p)), length(dfdy(p))));
 }
 
+// The polynomial smooth minimum of `a` and `b`, blending within `k`.
+static inline float smooth_min(float a, float b, float k) {
+    float h = k > 0.0 ? max(k - abs(a - b), 0.0) / k : 0.0;
+    return min(a, b) - h * h * k * 0.25;
+}
+
+// Signed distance to the rounded box `s` (x, y, w, h) of corner radius `r`.
+static inline float shape_sdf(float2 p, float4 s, float r) {
+    float2 h = s.zw * 0.5;
+    return rrect_sdf(p, s.xy + h, h, float4(r));
+}
+
+// Signed distance to the glass: its melted shapes' smooth union, or its own
+// rounded rect when nothing melts.
+static inline float glass_sdf(float2 p, float2 center, float2 half_ext, float4 radii,
+                              float4 s0, float4 s1, float4 s2, float4 s3, float4 sr,
+                              float2 merge) {
+    if (merge.x < 0.5) {
+        return rrect_sdf(p, center, half_ext, radii);
+    }
+    float d = shape_sdf(p, s0, sr.x);
+    if (merge.x > 1.5) { d = smooth_min(d, shape_sdf(p, s1, sr.y), merge.y); }
+    if (merge.x > 2.5) { d = smooth_min(d, shape_sdf(p, s2, sr.z), merge.y); }
+    if (merge.x > 3.5) { d = smooth_min(d, shape_sdf(p, s3, sr.w), merge.y); }
+    return d;
+}
+
 // Grain in [-0.5, 0.5] from an integer-lattice hash of the device pixel.
 //
 // Integer mixing rather than a trigonometric hash: unsigned wraparound multiply and shift
@@ -2572,7 +2630,8 @@ const MATERIAL_FRAGMENT_BODY: &str = "\
 float2 half_texel = 0.5 / float2(float(tex.get_width()), float(tex.get_height()));
 float2 lo = in.uv_bounds.xy + half_texel;
 float2 hi = max(in.uv_bounds.zw - half_texel, lo);
-float d = rrect_sdf(in.local, in.center, in.half_size, in.radius);
+float d = glass_sdf(in.local, in.center, in.half_size, in.radius,
+                    in.shape0, in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge);
 float2 gx = dfdx(in.uv);
 float2 gy = dfdy(in.uv);
 
@@ -2582,10 +2641,16 @@ float2 gy = dfdy(in.uv);
 float inward = max(-d, 0.0);
 float2 n = float2(0.0);
 if (in.lens.x > 0.0 || in.glint.z > 0.0) {
-    n = float2(rrect_sdf(in.local + float2(0.5, 0.0), in.center, in.half_size, in.radius)
-                 - rrect_sdf(in.local - float2(0.5, 0.0), in.center, in.half_size, in.radius),
-               rrect_sdf(in.local + float2(0.0, 0.5), in.center, in.half_size, in.radius)
-                 - rrect_sdf(in.local - float2(0.0, 0.5), in.center, in.half_size, in.radius));
+    float2 ex = float2(0.5, 0.0);
+    float2 ey = float2(0.0, 0.5);
+    n = float2(glass_sdf(in.local + ex, in.center, in.half_size, in.radius, in.shape0,
+                         in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge)
+                 - glass_sdf(in.local - ex, in.center, in.half_size, in.radius, in.shape0,
+                             in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge),
+               glass_sdf(in.local + ey, in.center, in.half_size, in.radius, in.shape0,
+                         in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge)
+                 - glass_sdf(in.local - ey, in.center, in.half_size, in.radius, in.shape0,
+                             in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge));
     float nl = length(n);
     n = nl > 0.0 ? n / nl : float2(0.0);
 }
@@ -2654,6 +2719,14 @@ if (in.glint.z > 0.0 && in.glint.w > 0.0) {
     float y = dot(dst.rgb, float3(0.2126, 0.7152, 0.0722));
     float3 tone = clamp(float3(1.0) + (dst.rgb - y) * 2.85, 0.0, 1.0);
     dst.rgb = mix(dst.rgb, tone, g);
+    dst.a = max(dst.a, g);
+}
+// A press's glow: light from where it landed, fading out to its reach,
+// across every shape melted into this one.
+if (in.glow.w > 0.0) {
+    float t = clamp(1.0 - length(in.local - in.glow.xy) / in.glow.z, 0.0, 1.0);
+    float g = in.glow.w * t * t;
+    dst.rgb = dst.rgb + g * (1.0 - dst.rgb);
     dst.a = max(dst.a, g);
 }
 if (in.noise > 0.0) {

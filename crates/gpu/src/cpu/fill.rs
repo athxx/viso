@@ -17,7 +17,7 @@ use crate::{DrawCommand, TextureId};
 use AttrFormat::{Float1 as F1, Float2 as F2, Float3 as F3, Float4 as F4, Uint1 as U1};
 
 /// The most fields a built-in reads.
-pub(super) const MAX_FIELDS: usize = 20;
+pub(super) const MAX_FIELDS: usize = 24;
 
 /// The fields `builtin` reads, in the order its decoder indexes them.
 pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFormat)] {
@@ -126,6 +126,13 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("glint", F4),
             ("luminosity", F2),
             ("adapt", F4),
+            ("glow", F4),
+            ("shape0", F4),
+            ("shape1", F4),
+            ("shape2", F4),
+            ("shape3", F4),
+            ("shape_radius", F4),
+            ("merge", F2),
             ("gamma", F1),
             ("noise", F1),
             ("opacity", F1),
@@ -970,10 +977,12 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
         return;
     };
     let map = UvMap::of(i, 2, 3);
-    let matrix = Matrix::of(i, 4, 8, 14);
+    let matrix = Matrix::of(i, 4, 8, 21);
     let (radius, lens, glint, luminosity) = (i.f4(9), i.f3(10), i.f4(11), i.f2(12));
-    let adapt = i.f4(13);
-    let (noise, opacity) = (i.f1(15), i.f1(16));
+    let (adapt, glow) = (i.f4(13), i.f4(14));
+    let shapes = [i.f4(15), i.f4(16), i.f4(17), i.f4(18)];
+    let (shape_radius, merge) = (i.f4(19), i.f2(20));
+    let (noise, opacity) = (i.f1(22), i.f1(23));
     if map.size[0] <= 0.0 || map.size[1] <= 0.0 {
         return;
     }
@@ -984,9 +993,11 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let half = [map.size[0] * 0.5, map.size[1] * 0.5];
     let (lo, hi) = inset_window(map.uv_pos, map.uv_size, &tex);
     let ramp = cx.aa();
+    // The glass's distance: its melted shapes' smooth union, or its rect.
+    let sdf = |p: [f32; 2]| glass_sdf(p, center, half, radius, &shapes, shape_radius, merge);
     shade(cx, out, clip, |p| {
         // The AA ramp is the shader's `aa_factor`.
-        let d = rrect_sdf(p, center, half, radius);
+        let d = sdf(p);
         let cov = (-d * ramp).clamp(0.0, 1.0);
         if cov <= 0.0 {
             return [0.0; 4];
@@ -997,7 +1008,7 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
         let inward = (-d).max(0.0);
         let mut n = [0.0f32; 2];
         if lens[0] > 0.0 || glint[2] > 0.0 {
-            let at = |dx: f32, dy: f32| rrect_sdf([p[0] + dx, p[1] + dy], center, half, radius);
+            let at = |dx: f32, dy: f32| sdf([p[0] + dx, p[1] + dy]);
             let g = [at(0.5, 0.0) - at(-0.5, 0.0), at(0.0, 0.5) - at(0.0, -0.5)];
             let len = (g[0] * g[0] + g[1] * g[1]).sqrt();
             if len > 0.0 {
@@ -1078,6 +1089,16 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
             for channel in dst.iter_mut().take(3) {
                 let tone = (1.0 + (*channel - y) * 2.85).clamp(0.0, 1.0);
                 *channel += (tone - *channel) * g;
+            }
+            dst[3] = dst[3].max(g);
+        }
+        // A press's glow, across every shape melted into this one.
+        if glow[3] > 0.0 {
+            let reach = ((p[0] - glow[0]).powi(2) + (p[1] - glow[1]).powi(2)).sqrt();
+            let t = (1.0 - reach / glow[2]).clamp(0.0, 1.0);
+            let g = glow[3] * t * t;
+            for channel in dst.iter_mut().take(3) {
+                *channel += g * (1.0 - *channel);
             }
             dst[3] = dst[3].max(g);
         }
@@ -1332,6 +1353,39 @@ fn rrect_sdf(p: [f32; 2], center: [f32; 2], half: [f32; 2], radii: [f32; 4]) -> 
         radii[2]
     };
     box_sdf(p, center, half, (2.0 * r).min(half[0].min(half[1])))
+}
+
+/// The polynomial smooth minimum of `a` and `b`, blending within `k`.
+fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
+    let h = if k > 0.0 {
+        (k - (a - b).abs()).max(0.0) / k
+    } else {
+        0.0
+    };
+    a.min(b) - h * h * k * 0.25
+}
+
+/// Signed distance to the glass: the smooth union of its `merge[0]` melted
+/// shapes, or its own rounded rect when none melt.
+fn glass_sdf(
+    p: [f32; 2],
+    center: [f32; 2],
+    half: [f32; 2],
+    radii: [f32; 4],
+    shapes: &[[f32; 4]; 4],
+    shape_radius: [f32; 4],
+    merge: [f32; 2],
+) -> f32 {
+    let count = merge[0].round() as usize;
+    if count == 0 {
+        return rrect_sdf(p, center, half, radii);
+    }
+    let shape = |k: usize| {
+        let [x, y, w, h] = shapes[k];
+        let half = [w * 0.5, h * 0.5];
+        rrect_sdf(p, [x + half[0], y + half[1]], half, [shape_radius[k]; 4])
+    };
+    (1..count.min(4)).fold(shape(0), |d, k| smooth_min(d, shape(k), merge[1]))
 }
 
 /// Grain in `[-0.5, 0.5]` from an integer hash of the pixel: wrapping

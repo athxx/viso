@@ -1746,6 +1746,8 @@ struct MaterialRecord {
     glint: crate::primitive::Glint,
     luminosity: crate::primitive::Luminosity,
     adaptive_tint: Option<crate::primitive::Rgba>,
+    glow: Option<crate::primitive::Glow>,
+    merged: Option<crate::primitive::GlassUnion>,
 }
 
 /// Lay a [`MaterialRecord`] out as GPU instance data over `rect` (target space)
@@ -1771,6 +1773,15 @@ fn material_instance(
     let refraction = lens.refraction.max(0.0).min(half_minor);
     let glint = record.glint;
     let (sin, cos) = glint.light.sin_cos();
+    // From the surface's space to the instance's.
+    let shift = [rect_pos[0] - record.rect.x, rect_pos[1] - record.rect.y];
+    let shape = |i: usize| match record.merged {
+        Some(m) if i < usize::from(m.count) => {
+            let r = m.shapes[i].0;
+            [r.x + shift[0], r.y + shift[1], r.w, r.h]
+        }
+        _ => [0.0; 4],
+    };
     MaterialInstance {
         rect_pos,
         rect_size,
@@ -1796,6 +1807,24 @@ fn material_instance(
         adapt: record
             .adaptive_tint
             .map_or([0.0; 4], |t| [t.r, t.g, t.b, t.a.clamp(0.0, 1.0)]),
+        glow: record.glow.map_or([0.0; 4], |g| {
+            [
+                g.at.x + shift[0],
+                g.at.y + shift[1],
+                g.radius.max(1.0),
+                g.strength.clamp(0.0, 1.0),
+            ]
+        }),
+        shape0: shape(0),
+        shape1: shape(1),
+        shape2: shape(2),
+        shape3: shape(3),
+        shape_radius: std::array::from_fn(|i| {
+            record.merged.map_or(0.0, |m| m.shapes[i].1.max(0.0))
+        }),
+        merge: record
+            .merged
+            .map_or([0.0; 2], |m| [f32::from(m.count), m.spacing]),
         gamma: record.op.gamma,
         noise: record.noise,
         opacity: record.opacity,
@@ -2975,6 +3004,8 @@ impl Renderer {
                             glint: material.glint,
                             luminosity: material.luminosity,
                             adaptive_tint: material.adaptive_tint,
+                            glow: material.glow,
+                            merged: material.merged,
                         });
                         let bounds =
                             crate::scene::bounds::Bounds::from_world(material.rect, 0.0, 0.0);
