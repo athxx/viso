@@ -170,9 +170,10 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 - [x] Captures over other glass: a capture's revision folds, for each composite
       under it, what it draws by and the revision of what it samples (an earlier
       capture, an offscreen pass's entries), so glass over still glass is clean.
-- [ ] A clean capture keeps last frame's blurred texture instead of rendering
-      and blurring again (today only the stats see it clean; a frame where
-      nothing changed skips the encode whole).
+- [x] A clean capture keeps last frame's blurred texture instead of rendering
+      and blurring again: its last rung is pinned to one pooled texture across
+      frames and the encode skips its pass and ladder while what lies behind
+      it keys the same (clock and texture rewrites reach it without an upload).
 
 ## C8 — Real-scale app
 

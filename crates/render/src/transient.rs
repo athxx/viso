@@ -191,6 +191,10 @@ struct VirtualTarget {
     texture: Option<TextureId>,
     /// The sampling bind group of `texture`.
     bind_group: Option<BindGroupId>,
+    /// The owner whose physical this target keeps across frames, if any.
+    pin: Option<u32>,
+    /// Whether `assign` gave it back the physical it held last frame.
+    kept: bool,
 }
 
 /// A pooled device texture that virtual targets are assigned onto. Persists
@@ -209,6 +213,9 @@ struct PhysicalTarget {
     claimed: bool,
     /// Consecutive frames it went unclaimed.
     idle_frames: u32,
+    /// The owner of the pinned target it holds, kept from one frame to the
+    /// next and shared with no other target.
+    pin: Option<u32>,
 }
 
 /// Per-frame accounting for the transient pool, surfaced through `FrameStats`
@@ -300,6 +307,8 @@ impl TransientTargets {
             last_read: first_write,
             texture: None,
             bind_group: None,
+            pin: None,
+            kept: false,
         });
         // The label only matters when `assign` has to mint a texture; keeping it
         // on the virtual would grow the hot struct for a cold-path string, so the
@@ -313,6 +322,20 @@ impl TransientTargets {
     pub fn read_at(&mut self, id: TargetId, slot: u32) {
         let v = &mut self.virtuals[id.0 as usize];
         v.last_read = v.last_read.max(slot);
+    }
+
+    /// Keep `id` on one physical of its own from frame to frame while `owner`
+    /// declares it at the same size class: no other target shares it, so
+    /// what was drawn into it last frame is still there — see
+    /// [`kept`](Self::kept).
+    pub fn pin(&mut self, id: TargetId, owner: u32) {
+        self.virtuals[id.0 as usize].pin = Some(owner);
+    }
+
+    /// Whether pinned `id` holds the physical its owner held last frame, with
+    /// what was drawn into it then.
+    pub fn kept(&self, id: TargetId) -> bool {
+        self.virtuals[id.0 as usize].kept
     }
 
     /// Bind every declared virtual onto a physical texture, creating physicals
@@ -335,8 +358,37 @@ impl TransientTargets {
             p.claimed = false;
         }
 
+        // A pinned target takes back its own physical first, held the whole
+        // frame; one no owner took back is anyone's again.
+        for v in &mut self.virtuals {
+            let Some(owner) = v.pin else {
+                continue;
+            };
+            let Some(p) = self
+                .physicals
+                .iter_mut()
+                .find(|p| p.pin == Some(owner) && p.key == v.key && !p.claimed)
+            else {
+                continue;
+            };
+            p.free_at = u32::MAX;
+            p.claimed = true;
+            p.idle_frames = 0;
+            v.texture = Some(p.texture);
+            v.bind_group = Some(p.bind_group);
+            v.kept = true;
+        }
+        for p in &mut self.physicals {
+            if !p.claimed {
+                p.pin = None;
+            }
+        }
+
         let mut allocations = 0u32;
         for i in 0..self.virtuals.len() {
+            if self.virtuals[i].kept {
+                continue;
+            }
             let key = self.virtuals[i].key;
             let first_write = self.virtuals[i].first_write;
             let last_read = self.resolved_last_read(i, surface);
@@ -344,11 +396,17 @@ impl TransientTargets {
             // Reuse the first compatible physical whose resident died strictly
             // before this target is written; `free_at` is one past that death, so
             // `free_at <= first_write` is exactly "no overlap".
-            let slot = match self
-                .physicals
-                .iter()
-                .position(|p| p.key == key && p.free_at <= first_write)
-            {
+            // A pinned target holds its physical the whole frame from the next
+            // on, so it takes one nothing else uses this frame either.
+            let pinned = self.virtuals[i].pin.is_some();
+            let slot = match self.physicals.iter().position(|p| {
+                p.key == key
+                    && if pinned {
+                        !p.claimed
+                    } else {
+                        p.free_at <= first_write
+                    }
+            }) {
                 Some(slot) => slot,
                 None => {
                     let texture = backend.create_texture(&TextureDesc {
@@ -370,13 +428,18 @@ impl TransientTargets {
                         free_at: 0,
                         claimed: false,
                         idle_frames: 0,
+                        pin: None,
                     });
                     self.physicals.len() - 1
                 }
             };
 
             let p = &mut self.physicals[slot];
-            p.free_at = last_read.saturating_add(1);
+            p.pin = self.virtuals[i].pin;
+            p.free_at = match p.pin {
+                Some(_) => u32::MAX,
+                None => last_read.saturating_add(1),
+            };
             p.claimed = true;
             p.idle_frames = 0;
             let (texture, bind_group) = (p.texture, p.bind_group);
@@ -703,6 +766,44 @@ mod tests {
                 "only the first frame mints textures"
             );
         }
+    }
+
+    /// A pinned target gets its own physical back the next frame, which no
+    /// other target shares even where lifetimes would let it; a new size
+    /// class starts it afresh and lets the old one go to anyone.
+    #[test]
+    fn a_pinned_target_keeps_its_physical_to_itself() {
+        let (mut gpu, sampler, mut pool) = pool();
+        pool.begin_frame();
+        let pinned = pool.declare(desc(40, 40), 0);
+        pool.pin(pinned, 7);
+        pool.assign(&mut gpu, sampler, 2);
+        assert!(!pool.kept(pinned), "nothing drawn into it yet");
+        let texture = pool.texture(pinned);
+
+        pool.begin_frame();
+        let before = pool.declare(desc(40, 40), 0);
+        let pinned = pool.declare(desc(40, 40), 1);
+        pool.pin(pinned, 7);
+        let after = pool.declare(desc(40, 40), 2);
+        pool.assign(&mut gpu, sampler, 3);
+        assert!(pool.kept(pinned));
+        assert_eq!(pool.texture(pinned), texture);
+        assert_ne!(pool.texture(before), texture, "held before its write too");
+        assert_ne!(pool.texture(after), texture, "and after its last read");
+        assert_eq!(pool.texture(before), pool.texture(after));
+
+        pool.begin_frame();
+        let pinned = pool.declare(desc(100, 40), 0);
+        pool.pin(pinned, 7);
+        let a = pool.declare(desc(40, 40), 1);
+        let b = pool.declare(desc(40, 40), 1);
+        pool.read_at(a, SURFACE_SLOT);
+        pool.read_at(b, SURFACE_SLOT);
+        pool.assign(&mut gpu, sampler, 2);
+        assert!(!pool.kept(pinned), "a new size class is drawn afresh");
+        assert_eq!(pool.stats().allocations, 1, "the old one serves `a` or `b`");
+        assert!(pool.texture(a) == texture || pool.texture(b) == texture);
     }
 
     /// A memory warning drops the idle physicals at once but keeps every one the

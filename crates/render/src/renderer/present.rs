@@ -80,6 +80,9 @@ pub struct DamageStats {
     pub damage_px: u64,
     /// Rects the last submitted frame redrew; `0` for a whole frame.
     pub damage_rects: u32,
+    /// Backdrop captures encoded from the texture they were last drawn
+    /// into, what lies behind them unchanged: neither drawn nor blurred.
+    pub captures_kept: u64,
 }
 
 /// What a presenter keys a frame by, for comparing two: entry keys and
@@ -137,7 +140,7 @@ pub(super) struct Presenter {
     region: Region,
     partial: bool,
     clear_buffer: Option<BufferId>,
-    stats: DamageStats,
+    pub(super) stats: DamageStats,
     /// How many times each [`Atlas`] was written: part of the key of every
     /// entry sampling it, so a write damages them.
     atlas_writes: [u64; 2],
@@ -451,15 +454,16 @@ impl Renderer {
     /// composite its change reaches up to the surface draw. When the last
     /// presented frame was placed as things stand, the surface draw's new key
     /// is staged against it, so the next frame's damage is the rewritten draws
-    /// alone.
+    /// alone. A surface draw a backdrop captures re-keys the composites
+    /// reading that capture in turn.
     pub(super) fn rekey(&mut self, index: usize) {
         let (keying, p) = self.keying();
         let mut i = index;
-        loop {
+        let surfaced = loop {
             let old = p.keys[i];
             let new = keying.draw_key(p, i);
             if new == old {
-                break;
+                break None;
             }
             p.keys[i] = new;
             if let Some(pass) = keying.scene.paint_order[i].context.offscreen {
@@ -470,7 +474,7 @@ impl Renderer {
                     .wrapping_sub(pass_term(old, place))
                     .wrapping_add(pass_term(new, place));
                 match p.composite_of[pass] {
-                    NONE => break,
+                    NONE => break None,
                     composite => i = composite as usize,
                 }
                 continue;
@@ -486,7 +490,34 @@ impl Renderer {
                     }
                 }
             }
-            break;
+            break Some(i);
+        };
+        if let Some(i) = surfaced {
+            self.recapture(i);
+        }
+    }
+
+    /// Re-key the composites of every capture surface entry `i` lies
+    /// behind and reaches.
+    fn recapture(&mut self, i: usize) {
+        for capture in 0..self.backdrop_captures.len() {
+            let cap = &self.backdrop_captures[capture];
+            let paint = self.scene.paint_order[i].bounds.paint;
+            let behind = i < cap.under && (!paint.has_area() || paint.intersects(cap.roi));
+            let keyed = self.present.capture_keys.get(capture).copied().flatten();
+            if !behind || keyed.is_none() {
+                continue;
+            }
+            self.present.capture_keys[capture] = None;
+            for j in cap.under..self.scene.paint_order.len() {
+                if let StoreRef::BackdropComposite { capture: c, .. }
+                | StoreRef::MaterialComposite { capture: c, .. } =
+                    self.scene.paint_order[j].store
+                    && c as usize == capture
+                {
+                    self.rekey(j);
+                }
+            }
         }
     }
 }
@@ -661,6 +692,17 @@ impl Renderer {
         p.staged.iter().for_each(|&r| merger.add(r));
         diff(&p.presented, &p.drawn, |r| merger.add(r));
         merger.finish()
+    }
+
+    /// What backdrop capture `capture` draws: what lies behind it and how
+    /// it is blurred.
+    pub(super) fn capture_content(&mut self, capture: usize) -> u64 {
+        let scale = self.scale;
+        let (keying, p) = self.keying();
+        let sigma = keying.backdrop_captures[capture].sigma;
+        Key::new(keying.capture_key(p, capture))
+            .f32s(&[sigma, scale])
+            .finish()
     }
 
     /// The clock moved on, so every draw of a program reading it is drawn

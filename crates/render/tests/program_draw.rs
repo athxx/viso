@@ -838,3 +838,43 @@ fn a_brush_samples_through_the_state_its_sampler_declares() {
     );
     assert_eq!(f.pixel(24, 6), bgra(BLUE), "nearest takes one texel");
 }
+
+/// Glass over a brush reading the clock blurs it again as it moves, with
+/// nothing uploaded: the frame is the one a fresh renderer draws then.
+#[test]
+fn glass_over_the_clock_blurs_it_again_as_it_moves() {
+    let scene = |f: &mut Frame| {
+        let clocked = f.install(0, &clock("Clock"));
+        vec![
+            shaded(&clocked, 0, rect(4.0, 4.0, 24.0, 24.0), RED),
+            Primitive::Layer(LayerClip {
+                clip: rect(8.0, 8.0, 16.0, 16.0),
+                opacity: 1.0,
+                blur_sigma: 0.0,
+                backdrop_sigma: 2.0,
+            }),
+            Primitive::LayerEnd,
+        ]
+    };
+    let mut f = Frame::new();
+    let prims = scene(&mut f);
+    f.renderer.set_time(0.25);
+    f.draw(&prims);
+    let before = f.pixel(16, 16);
+
+    f.renderer.set_time(0.75);
+    f.renderer
+        .submit(&mut f.gpu, f.surface, WHITE, [W as f32, H as f32]);
+    assert_eq!(f.renderer.damage_stats().captures_kept, 0);
+    let mut fresh = Frame::new();
+    let prims = scene(&mut fresh);
+    fresh.renderer.set_time(0.75);
+    fresh.draw(&prims);
+    assert_ne!(f.pixel(16, 16), before, "the blur moved with the clock");
+    assert_eq!(f.pixel(16, 16), fresh.pixel(16, 16));
+
+    // Held still, the glass keeps what it blurred.
+    f.renderer
+        .submit(&mut f.gpu, f.surface, WHITE, [W as f32, H as f32]);
+    assert_eq!(f.pixel(16, 16), fresh.pixel(16, 16));
+}

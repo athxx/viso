@@ -1009,3 +1009,51 @@ fn no_backdrop_means_no_dependency() {
     assert_eq!(stats.backdrop_dirty_rois, 0);
     assert!(r.backdrop_dependencies().is_empty());
 }
+
+/// A capture whose content held still samples the texture it was last drawn
+/// into: another quad changing elsewhere draws and blurs nothing behind the
+/// glass, and the frame is the one a fresh renderer draws.
+#[test]
+fn a_still_backdrop_keeps_its_blurred_texture() {
+    let scene = |behind: Rgba, apart: Rgba| {
+        let mut scene = vec![
+            background(),
+            tinted(rect(14.0, 14.0, 40.0, 40.0), behind),
+            tinted(rect(150.0, 90.0, 24.0, 24.0), apart),
+        ];
+        scene.extend(panel(rect(22.0, 22.0, 40.0, 40.0), 2.0));
+        scene
+    };
+    let warm = Rgba::new(0.75, 0.4, 0.25, 1.0);
+    let green = Rgba::new(0.05, 0.9, 0.35, 1.0);
+    let (mut gpu, surface, mut r) = renderer(W, H);
+    let mut draw = |primitives: &[Primitive]| {
+        r.upload(&mut gpu, primitives);
+        r.submit(
+            &mut gpu,
+            surface,
+            [0.0, 0.0, 0.0, 1.0],
+            [W as f32, H as f32],
+        );
+        (
+            r.damage_stats().captures_kept,
+            gpu.read_pixels_bgra8(surface),
+        )
+    };
+
+    let (kept, _) = draw(&scene(warm, warm));
+    assert_eq!(kept, 0, "a first frame draws its capture");
+
+    let elsewhere = scene(warm, green);
+    let (kept, pixels) = draw(&elsewhere);
+    assert_eq!(kept, 1, "nothing behind the glass changed");
+    assert!(
+        pixels == surface_pixels(&elsewhere),
+        "the kept blur is the drawn one"
+    );
+
+    let behind = scene(green, green);
+    let (kept, pixels) = draw(&behind);
+    assert_eq!(kept, 1, "what lies behind changed: drawn again");
+    assert!(pixels == surface_pixels(&behind));
+}

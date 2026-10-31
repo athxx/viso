@@ -688,6 +688,8 @@ struct BackdropCapture {
     /// The extent this pass actually draws, at the target's top-left: the ceil of
     /// `roi`, before size-class rounding.
     used: [u32; 2],
+    /// The blur passes of its ladder, `[first, end)`.
+    blurs: [u32; 2],
 }
 
 /// An entry on the layer stack while lowering the flat primitive stream.
@@ -1290,6 +1292,13 @@ pub struct Renderer {
     /// Scratch for each offscreen pass's revision while the captures are
     /// realized.
     pass_revisions: Vec<Key>,
+    /// What each backdrop capture's pinned texture was last drawn from, kept
+    /// while the pool hands that texture back: a capture whose content key
+    /// still matches samples it as it is, without drawing or blurring again.
+    captures_drawn: Vec<Option<u64>>,
+    /// Each capture's content key this encode, and whether its texture
+    /// already holds it.
+    capture_reuse: Vec<(u64, bool)>,
     /// Scratch quad instance data, reused each frame.
     quad_scratch: Vec<QuadInstance>,
     /// Scratch analytic rounded-rectangle instance data, reused each frame.
@@ -2210,6 +2219,8 @@ impl Renderer {
             backdrop_dirty_rois: 0,
             backdrop_dependencies: Vec::new(),
             pass_revisions: Vec::new(),
+            captures_drawn: Vec::new(),
+            capture_reuse: Vec::new(),
             quad_scratch: Vec::with_capacity(256),
             analytic_rrect_scratch: Vec::with_capacity(256),
             analytic_ellipse_scratch: Vec::with_capacity(256),
@@ -3417,6 +3428,14 @@ impl Renderer {
         self.graph.apply_lifetimes(&mut self.transient);
         self.transient
             .assign(backend, self.sampler, self.graph.surface_slot());
+        // A capture given a texture other than last frame's draws again.
+        self.captures_drawn
+            .resize(self.backdrop_captures.len(), None);
+        for (cap, drawn) in self.backdrop_captures.iter().zip(&mut self.captures_drawn) {
+            if !cap.sample.is_some_and(|s| self.transient.kept(s)) {
+                *drawn = None;
+            }
+        }
 
         // Derive the frame's scratch + segments from the retained scene.
         self.lower_from_scene(backend);
@@ -5002,6 +5021,7 @@ impl Renderer {
             sample: None,
             viewport: [0.0, 0.0],
             used: [0, 0],
+            blurs: [0, 0],
         });
         idx
     }
@@ -5140,8 +5160,12 @@ impl Renderer {
                 cap.used = [width, height];
                 cap.sigma
             };
+            let first = self.blur_passes.len() as u32;
             let sample = self.build_blur_chain(base, [width, height], sigma);
-            self.backdrop_captures[i].sample = Some(sample);
+            self.transient.pin(sample, i as u32);
+            let cap = &mut self.backdrop_captures[i];
+            cap.sample = Some(sample);
+            cap.blurs = [first, self.blur_passes.len() as u32];
 
             // Diff against this capture slot's value from the previous frame. A
             // slot that did not exist then is new work, so it counts as dirty; the
@@ -5683,8 +5707,34 @@ impl Renderer {
         // that composite their targets.
         self.scene3d.encode(&mut commands, &mut passes);
 
+        // A capture whose texture still holds what lies behind it now skips
+        // its pass and its blur ladder.
+        let mut reuse = std::mem::take(&mut self.capture_reuse);
+        reuse.clear();
+        for i in 0..self.backdrop_captures.len() {
+            let key = self.capture_content(i);
+            reuse.push((key, self.captures_drawn.get(i) == Some(&Some(key))));
+        }
+        let captures = &self.backdrop_captures;
+        let kept = |work: &PassWork| match *work {
+            PassWork::BackdropCapture(i) => reuse[i as usize].1,
+            PassWork::Blur(j) => captures
+                .iter()
+                .zip(&reuse)
+                .any(|(c, &(_, kept))| kept && (c.blurs[0]..c.blurs[1]).contains(&j)),
+            _ => false,
+        };
+        let mut skipped = 0;
+
         for pass in self.graph.passes() {
             let works = self.graph.works(pass);
+            if works.iter().all(kept) {
+                skipped += works
+                    .iter()
+                    .filter(|w| matches!(w, PassWork::BackdropCapture(_)))
+                    .count() as u64;
+                continue;
+            }
             // Every work in a merged pass writes the same attachment, hence shares
             // its pooled extent, so one viewport uniform covers the whole pass. Its
             // bytes are copied by value into each command.
@@ -5807,6 +5857,13 @@ impl Renderer {
             commands: &commands,
             passes: &passes,
         });
+        self.present.stats.captures_kept += skipped;
+        // Every capture the graph holds was drawn or kept: the surface reads
+        // them all.
+        for (drawn, &(key, _)) in self.captures_drawn.iter_mut().zip(&reuse) {
+            *drawn = Some(key);
+        }
+        self.capture_reuse = reuse;
 
         // Return the buffers so their capacity is reused next frame.
         self.commands = commands;
