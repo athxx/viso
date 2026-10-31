@@ -530,6 +530,7 @@ impl ControlKind {
             (ControlKind::TextInput, "multiline") => ControlInput::Multiline,
             (ControlKind::TextInput, "input") => ControlInput::InputKind,
             (ControlKind::TextInput, "max_length") => ControlInput::MaxLength,
+            (ControlKind::TextInput, "invalid") => ControlInput::Invalid,
             (ControlKind::Progress | ControlKind::Ring, "value") => ControlInput::Value,
             (ControlKind::Progress | ControlKind::Ring, "min") => ControlInput::Min,
             (ControlKind::Progress | ControlKind::Ring, "max") => ControlInput::Max,
@@ -1209,6 +1210,8 @@ pub enum ControlInput {
     /// A camera view's `mirror`: whether its picture shows flipped left to
     /// right.
     Mirror,
+    /// A text field's `invalid`: whether the value it holds is refused.
+    Invalid,
     /// The node's `backdrop`: how its box treats what lies behind it.
     Backdrop,
     /// The node's `ripple`: whether a press spreads ink over its box.
@@ -1299,6 +1302,8 @@ pub struct Control {
     pub fullscreen: Option<u32>,
     /// The entry of whether a camera view's picture shows mirrored.
     pub mirror: Option<u32>,
+    /// The entry of whether a text field's value is refused.
+    pub invalid: Option<u32>,
     /// The shader a shader view paints with, by its index in the view's
     /// shader table; its value gives the shader's parameters.
     pub shader: Option<u32>,
@@ -1505,7 +1510,7 @@ pub enum Switched {
 
 impl ControlInput {
     /// Every input, by wire tag.
-    pub const ALL: [ControlInput; 90] = [
+    pub const ALL: [ControlInput; 91] = [
         ControlInput::Value,
         ControlInput::Min,
         ControlInput::Max,
@@ -1596,6 +1601,7 @@ impl ControlInput {
         ControlInput::Ripple,
         ControlInput::TextShadow,
         ControlInput::GlassMerge,
+        ControlInput::Invalid,
     ];
 
     /// Its wire tag: its place in [`ControlInput::ALL`].
@@ -1718,6 +1724,7 @@ impl Control {
             controls: None,
             fullscreen: None,
             mirror: None,
+            invalid: None,
             shader: None,
             look: Look::default(),
             arms: Box::new([]),
@@ -1827,6 +1834,7 @@ impl Control {
             ControlInput::Controls => self.controls,
             ControlInput::Fullscreen => self.fullscreen,
             ControlInput::Mirror => self.mirror,
+            ControlInput::Invalid => self.invalid,
         }
     }
 
@@ -1933,6 +1941,7 @@ impl Control {
             ControlInput::Controls => &mut self.controls,
             ControlInput::Fullscreen => &mut self.fullscreen,
             ControlInput::Mirror => &mut self.mirror,
+            ControlInput::Invalid => &mut self.invalid,
         };
         *slot = Some(entry);
     }
@@ -1982,6 +1991,7 @@ impl Encode for Control {
             self.controls,
             self.fullscreen,
             self.mirror,
+            self.invalid,
             self.shader,
             look.background,
             look.opacity,
@@ -2148,6 +2158,7 @@ impl Decode for Control {
             controls: entry()?,
             fullscreen: entry()?,
             mirror: entry()?,
+            invalid: entry()?,
             shader: entry()?,
             look: Look {
                 background: entry()?,
@@ -2490,6 +2501,7 @@ mod tests {
             controls: Some(53),
             fullscreen: Some(54),
             mirror: Some(55),
+            invalid: Some(56),
             shader: Some(2),
             look: Look {
                 background: Some(3),

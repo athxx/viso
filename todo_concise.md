@@ -194,8 +194,10 @@ the downsampled ladder, kept across frames while what lies behind holds still.
   - [x] no index in `for` / no `enumerate`: numbering rows takes a helper;
         `list.enumerate()` pairs each element with its index,
         `for (i, step) in steps.enumerate() key step.key`;
-  - [ ] `TextInput { invalid: x }` reaching the node (semantics and a default look)
-        without a style selector reading it;
+  - [x] `TextInput { invalid: x }` reaching the node (semantics and a default look)
+        without a style selector reading it: the field is refused in its semantics
+        (`aria-invalid` on the web) and, with no border of its own, draws one in the
+        theme's error color;
   - [ ] `env` readable in a `computed`;
   - [ ] `KeyShortcut { chord: .. }` mounting;
   - [ ] `VirtualList { estimated_extent }` reading a value;

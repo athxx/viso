@@ -66,6 +66,7 @@ component AddItem {
                         width: fill
                         placeholder: tr("shopping.name")
                         semantics.label: tr("shopping.name")
+                        invalid: touched && !valid
                         bind value <=> name
                         on changed({ value }) { touched = value != "" }
                         on submitted { submit() }

@@ -191,6 +191,8 @@ pub(super) enum Prop {
     InputKind,
     /// A text field's `maxlength`.
     MaxLength,
+    /// Whether a text field's value is refused: its `aria-invalid`.
+    Invalid,
     /// A number field's number, kept while its text reads as it.
     Number,
     Selected {
@@ -2144,6 +2146,12 @@ impl<'v, 'e, 'a> Lower<'v, 'e, 'a> {
                     && let Some(max) = fixed.int()
                 {
                     el.attr("maxlength", &max.to_string());
+                }
+                if let Some(fixed) =
+                    self.bind(wires, control.invalid, Prop::Invalid, "its validity", at)
+                    && fixed.truth()
+                {
+                    el.attr("aria-invalid", "true");
                 }
             }
             ControlKind::Check | ControlKind::Switch => {

@@ -722,6 +722,9 @@ impl Jsx<'_> {
                             attrs.push(format!("pattern={{show.pattern({v})}}"));
                         }
                         Prop::MaxLength => attrs.push(format!("maxlength={{show.num({v})}}")),
+                        Prop::Invalid => attrs.push(format!(
+                            "aria-invalid={{show.truth({v}) ? \"true\" : undefined}}"
+                        )),
                         Prop::Number => {
                             refs.push(format!("st.effect(() => show.number(el, {v}));"))
                         }

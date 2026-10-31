@@ -3422,11 +3422,12 @@ impl NodeStore {
     }
 
     /// Say what checking form control `id`'s value says of it, marking it
-    /// SEMANTICS-dirty when that changed. A stale handle is a no-op.
+    /// SEMANTICS- and PAINT-dirty when that changed: a refused text field
+    /// with no border of its own draws one. A stale handle is a no-op.
     pub fn set_validity(&mut self, id: NodeId, validity: crate::semantics::Validity) {
         let value = (validity != crate::semantics::Validity::default()).then_some(validity);
         if self.arena.is_live(id) && self.validities.set(id.index(), value) {
-            self.mark_dirty(id, DirtyClass::SEMANTICS);
+            self.mark_dirty(id, DirtyClass::SEMANTICS | DirtyClass::PAINT);
         }
     }
 

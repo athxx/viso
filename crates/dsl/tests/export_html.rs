@@ -1101,6 +1101,35 @@ fn what_a_field_holds_exports_as_its_keyboard_and_pattern() {
     );
 }
 
+#[test]
+fn a_refused_field_exports_as_aria_invalid() {
+    let page = export(
+        r#"
+export component Refused {
+    state bad = false
+    view {
+        Column {
+            TextInput { width: 100dp; height: 20dp; invalid: true }
+            TextInput { width: 100dp; height: 20dp; invalid: bad }
+        }
+    }
+}
+"#,
+        false,
+    )
+    .unwrap();
+    assert!(
+        page.index.contains(r#"aria-invalid="true""#),
+        "{}",
+        page.index
+    );
+    let script = page.script.as_deref().unwrap();
+    assert!(
+        script.contains("P.invalid("),
+        "a changing one is kept current"
+    );
+}
+
 const VOLUME: &str = r#"
 export component Volume {
     state volume: F64 = 2.5;

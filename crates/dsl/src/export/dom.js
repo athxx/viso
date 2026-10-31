@@ -731,6 +731,7 @@ const P = {
     attr(el, "pattern", pattern);
   },
   maxlength: (el, v) => attr(el, "maxlength", v),
+  invalid: (el, v) => attr(el, "aria-invalid", truth(v) ? "true" : null),
   // A number field keeps its text while it reads as the number.
   number(el, v) {
     if (v === null) return;

@@ -29,6 +29,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 use viso_ui::ColorToken;
+use viso_ui::semantics::Validity;
 
 use viso_behavior::{Fault, FaultKind, Value};
 use viso_schema::view::route::EventRoute;
@@ -296,6 +297,7 @@ pub(crate) fn control_cells(
         control.controls,
         control.fullscreen,
         control.mirror,
+        control.invalid,
     ])
     .flatten()
     .chain(arms)
@@ -330,8 +332,8 @@ pub(crate) fn control_cells(
 /// are its `options` — a search field's `debounce`, an image's `animate`,
 /// a video's `playing`, `looping`, `muted`, `volume`, `rate`, `controls`
 /// and `fullscreen`, a camera view's `mirror`, its `backdrop` and
-/// `ripple`, and its text's `text_shadow`.
-const SHOWN: usize = 81;
+/// `ripple`, its text's `text_shadow`, and a field's `invalid`.
+const SHOWN: usize = 82;
 
 /// The input of each value a node shows, in order.
 const SHOWN_INPUTS: [ControlInput; SHOWN] = [
@@ -416,6 +418,7 @@ const SHOWN_INPUTS: [ControlInput; SHOWN] = [
     ControlInput::Ripple,
     ControlInput::TextShadow,
     ControlInput::GlassMerge,
+    ControlInput::Invalid,
 ];
 
 /// Where `input`'s value sits among the values a node shows.
@@ -1534,6 +1537,7 @@ pub(crate) fn text_input(d: &mut Delivery<'_, '_>) {
         multiline,
         input_kind,
         max_length,
+        invalid,
     ] = shown!(
         s,
         Value,
@@ -1541,7 +1545,8 @@ pub(crate) fn text_input(d: &mut Delivery<'_, '_>) {
         Secure,
         Multiline,
         InputKind,
-        MaxLength
+        MaxLength,
+        Invalid
     );
     let seed = FieldSeed {
         request: s.text(value),
@@ -1557,7 +1562,16 @@ pub(crate) fn text_input(d: &mut Delivery<'_, '_>) {
             read_only: false,
         },
     };
-    d.cx.store.seed_text(d.node, seed);
+    let store = &mut *d.cx.store;
+    store.seed_text(d.node, seed);
+    let validity = store.validity(d.node);
+    store.set_validity(
+        d.node,
+        Validity {
+            invalid: truth(invalid, false),
+            ..validity
+        },
+    );
 }
 
 pub(crate) fn number(d: &mut Delivery<'_, '_>) {

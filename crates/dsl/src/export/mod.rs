@@ -494,6 +494,7 @@ details[open] > .vx-chevron:dir(rtl)::before { transform: rotate(-225deg); }
 .vx-text.vx-selectable { user-select: text; -webkit-user-select: text; cursor: text; }
 .vx-button { font: inherit; color: inherit; background: none; border: 0; border-radius: 0; padding: 0; margin: 0; text-align: start; white-space: pre; cursor: pointer; }
 .vx-input { font: inherit; color: inherit; background: transparent; border: 0; padding: 0; margin: 0; }
+.vx-input[aria-invalid=\"true\"] { box-shadow: inset 0 0 0 1.5px var(--colors-error, #d93a3a); }
 .vx-check, .vx-range { margin: 0; accent-color: var(--vx-ink, var(--colors-primary)); }
 .vx-vertical { writing-mode: vertical-lr; direction: rtl; }
 .vx-knob { appearance: none; -webkit-appearance: none; width: 40px; height: 40px; border-radius: 50%; cursor: grab; background: radial-gradient(circle, #fff 0 52%, transparent 53%), conic-gradient(from 225deg, var(--vx-ink, var(--colors-primary)) calc(var(--vx-at, 0) * 270deg), color-mix(in srgb, currentColor 25%, transparent) 0 270deg, transparent 0); }

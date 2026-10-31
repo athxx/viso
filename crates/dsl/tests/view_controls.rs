@@ -1788,3 +1788,27 @@ export component Board {
         assert!(!rt.faulted());
     }
 }
+
+#[test]
+fn a_text_fields_invalid_reaches_its_semantics_without_a_style() {
+    const FIELD: &str = r#"
+export component Field {
+    state refused = true
+    view {
+        Column {
+            TextInput { width: 100dp; height: 20dp; invalid: refused }
+            Button("Fix") { width: 100dp; height: 20dp; on click { refused = false } }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(FIELD), Rt::packaged(FIELD)] {
+        let [field, fix] = rt.children_of_root()[..] else {
+            panic!("a field and a button");
+        };
+        assert!(rt.store.validity(field).invalid, "refused at first");
+        let at = rt.store.world(fix);
+        rt.click(at.x + 2.0, at.y + 2.0);
+        assert!(!rt.store.validity(field).invalid, "it follows its binding");
+    }
+}

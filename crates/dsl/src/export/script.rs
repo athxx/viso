@@ -434,6 +434,7 @@ fn mount(
                         Prop::Secure => format!("P.secure({el}, {value})"),
                         Prop::InputKind => format!("P.kind({el}, {value})"),
                         Prop::MaxLength => format!("P.maxlength({el}, {value})"),
+                        Prop::Invalid => format!("P.invalid({el}, {value})"),
                         Prop::Number => format!("P.number({el}, {value})"),
                         Prop::Selected { radio } => format!("P.selected({el}, {value}, {radio})"),
                         Prop::Page => format!("P.page({el}, {value})"),

@@ -520,10 +520,24 @@ pub(crate) fn clip_corners(store: &NodeStore, node: NodeId, world: Rect) -> Opti
     (radius > 0.0).then_some(Corners::uniform(radius))
 }
 
+/// The width of the border a refused text field draws when it has none.
+const REFUSED_BORDER: f32 = 1.5;
+
 /// A node's own drawables at `world`: its box, then its content over it.
 #[inline(always)]
 fn paint_own(store: &NodeStore, node: NodeId, world: Rect, out: &mut Vec<Primitive>) {
-    let style = store.style(node);
+    let mut style = store.style(node);
+    // A refused text field with no border of its own draws one in the
+    // theme's error color.
+    if style.border.width <= 0.0
+        && store.field_marks(node).is_some()
+        && store.validity(node).invalid
+    {
+        style.border = Border {
+            width: REFUSED_BORDER,
+            color: store.palette().get(crate::theme::ColorToken::Error),
+        };
+    }
     let radius = corner_radius(&style, world);
     let shadows = store.shadows(node);
     for &shadow in shadows.iter().filter(|s| !s.inset) {
@@ -1383,6 +1397,77 @@ mod tests {
         assert_eq!(cw.y, store.bounds(content.unwrap()).y - 40.0);
         assert!(matches!(out[4], Primitive::TransformEnd));
         assert!(matches!(out[5], Primitive::LayerEnd));
+    }
+
+    #[test]
+    fn a_refused_field_without_a_border_draws_one_in_the_error_color() {
+        use crate::layout::Length;
+        use crate::semantics::Validity;
+        use crate::theme::ColorToken;
+
+        let mut store = NodeStore::new();
+        let mut fields = Vec::new();
+        let root = {
+            let mut cx = BuildCx::new(&mut store);
+            cx.flex(FlexStyle::default(), |cx| {
+                let size = Sizing {
+                    width: Length::Fixed(50.0),
+                    height: Length::Fixed(20.0),
+                };
+                for border in [
+                    Border::NONE,
+                    Border {
+                        width: 1.0,
+                        color: RED,
+                    },
+                ] {
+                    let style = BoxStyle {
+                        border,
+                        ..BoxStyle::NONE
+                    };
+                    fields.push(cx.leaf(LeafStyle { size, style }).id());
+                }
+            });
+            cx.root().unwrap()
+        };
+        for &field in &fields {
+            store.make_field(field);
+        }
+        store.layout(root, Rect::new(0.0, 0.0, 200.0, 100.0), &mut Vec::new());
+        let error = store.palette().get(ColorToken::Error);
+        let borders = |store: &NodeStore| {
+            let mut out = Vec::new();
+            paint_tree(store, root, &mut out);
+            fields
+                .iter()
+                .map(|&f| {
+                    let world = store.world(f);
+                    out.iter().find_map(|p| match p {
+                        Primitive::Quad(q) if q.rect == world => Some(q.border),
+                        _ => None,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(borders(&store)[0], None, "an accepted field draws no box");
+        let refused = Validity {
+            invalid: true,
+            ..Validity::default()
+        };
+        for &field in &fields {
+            store.set_validity(field, refused);
+        }
+        let [plain, own] = borders(&store)[..] else {
+            panic!("two fields");
+        };
+        assert_eq!(
+            plain,
+            Some(Border {
+                width: REFUSED_BORDER,
+                color: error
+            })
+        );
+        assert_eq!(own.map(|b| b.color), Some(RED), "its own border stays");
     }
 
     #[test]
