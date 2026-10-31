@@ -402,6 +402,37 @@ impl Checked {
         SourceTable { files }
     }
 
+    /// Per file, what does not mount where a `view!` of it mounts it; none
+    /// for a file whose sources already reported an error.
+    pub fn mount_diagnostics(&self) -> Vec<Vec<Diagnostic>> {
+        let profile = self.view_profile();
+        self.package
+            .files
+            .iter()
+            .map(|file| {
+                if file
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == viso_dsl::Severity::Error)
+                {
+                    return Vec::new();
+                }
+                let origin = Origin {
+                    package: self.name.clone(),
+                    module: file.module.clone(),
+                    language: self.language(),
+                    siblings: self.package.siblings(),
+                };
+                let compiled =
+                    compile_file_for(&file.source, &origin, self.natives(), profile.clone());
+                if compiled.has_errors() {
+                    return Vec::new();
+                }
+                plan_compiled(compiled).err().unwrap_or_default()
+            })
+            .collect()
+    }
+
     /// The exit code of the check: a source that could not be read leaves it
     /// incomplete, an environment failure whatever the rest of the package
     /// says.
@@ -414,6 +445,19 @@ impl Checked {
             SUCCESS
         }
     }
+}
+
+/// Every file of `checked` as a source a diagnostic can point into.
+fn sources_of(checked: &Checked) -> Vec<Source<'_>> {
+    checked
+        .package
+        .files
+        .iter()
+        .map(|file| {
+            Source::new(&file.path, &checked.project.root, &file.source)
+                .of_module(file.module.join("::"))
+        })
+        .collect()
 }
 
 /// Locates the project, reads its manifest and loads its package, reporting
@@ -560,6 +604,16 @@ pub(super) fn package_for(
         profile,
         page: None,
     };
+    // What compiles can still fail to mount as a `view!` of its file: a
+    // handler, a property or a region the runtime does not run yet.
+    let mounted = checked.mount_diagnostics();
+    for (file, diagnostics) in checked.package.files.iter().zip(&mounted) {
+        let source = Source::new(&file.path, &checked.project.root, &file.source)
+            .of_module(file.module.join("::"));
+        for diagnostic in diagnostics {
+            out.source(Some(&source), &sources_of(&checked), diagnostic);
+        }
+    }
     if let Some(target @ (Target::WebDom | Target::WebHybrid)) = options.target {
         checked.page = checked.dom_page(target == Target::WebHybrid, out);
     }
