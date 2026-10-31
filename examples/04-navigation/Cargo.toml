@@ -12,6 +12,11 @@ publish = false
 [dependencies]
 viso = { workspace = true }
 
+# The tests draw headless: a fixed surface and the app's own fonts, shaped on
+# the frame that asks.
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }
+
 [package.metadata.viso.natives]
 schema = "natives.json"
 library = "NATIVES"

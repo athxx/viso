@@ -272,9 +272,12 @@ mod tests {
         // Past the fade the box is black.
         assert_eq!(pixel(&picture, 4, 4), [0, 0, 0, 255]);
 
-        // The slider spans x 0..288 at y 304..328: a click three quarters of
-        // the way across sets three quarters of its 1..16 range.
-        card.click(288.0 * 0.75, 316.0);
+        // The slider spans x 0..288 below the gap, its 20dp thumb travelling
+        // 10..278: a click three quarters of the way along sets three quarters
+        // of its 1..16 range.
+        let slider = card.store.world(card.child(1));
+        assert_eq!((slider.x, slider.w), (0.0, 288.0));
+        card.click(10.0 + 268.0 * 0.75, slider.y + slider.h * 0.5);
         assert_eq!(card.param("rings"), 1.0 + 15.0 * 0.75);
         assert_ne!(card.headless(0.0), picture, "the rings moved");
     }

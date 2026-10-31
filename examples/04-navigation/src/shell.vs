@@ -16,31 +16,20 @@ component Shell {
 
     view {
         Column {
-            width: 100%
-            height: 100%
             Row {
-                height: 48dp
+                width: fill
                 padding: 8dp
                 gap: 8dp
+                align: center
                 Button("Back") {
-                    width: 80dp
-                    height: 32dp
                     visible: nav.can_pop()
                     on click { let _ = nav.pop() }
                 }
-                Text(title) { width: 160dp; height: 24dp }
-                Button("Message 5") {
-                    width: 120dp
-                    height: 32dp
-                    on click { nav.push(Route::message { id: 5 }) }
-                }
-                Button("Settings") {
-                    width: 120dp
-                    height: 32dp
-                    on click { nav.replace(Route::settings) }
-                }
+                Text(title)
+                Button("Message 5") { on click { nav.push(Route::message { id: 5 }) } }
+                Button("Settings") { on click { nav.replace(Route::settings) } }
                 Toggle("Editing") { bind checked <=> editing }
-                Text("{kept} kept") { width: 120dp; height: 24dp }
+                Text("{kept} kept")
             }
             RouterView {
                 navigator: nav

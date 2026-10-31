@@ -39,15 +39,11 @@ mod tests {
             state taps = 0
             view {
                 Column {
-                    width: 300dp
-                    height: 80dp
-                    Text("{count} in all, {taps} this run") {
-                        width: 300dp
-                        height: 40dp
-                    }
+                    padding: 16dp
+                    gap: 8dp
+                    Text("{count} in all, {taps} this run")
                     Button("Count") {
-                        width: 300dp
-                        height: 40dp
+                        min_width: 96dp; min_height: 32dp
                         on click { count += 1; taps += 1 }
                     }
                 }
@@ -119,9 +115,11 @@ mod tests {
         fn click(&mut self) {
             let mut chain = Vec::new();
             for phase in [PointerPhase::Down, PointerPhase::Up] {
+                // Inside the button's least size, under the label: the test measures no
+                // text.
                 let event = PointerEvent {
-                    x: 10.0,
-                    y: 60.0,
+                    x: 24.0,
+                    y: 40.0,
                     phase,
                     buttons: PointerButtons::PRIMARY,
                     modifiers: Default::default(),

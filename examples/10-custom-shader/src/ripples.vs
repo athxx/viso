@@ -38,8 +38,6 @@ component Ripples {
     state rings: F32 = 6.0
     view {
         Column {
-            width: 288dp
-            height: 440dp
             gap: 16dp
             ShaderView {
                 shader: Ripple { tint: #3366ff, rings: rings, center: Vec2F32::new(0.5, 0.5) }
@@ -51,7 +49,6 @@ component Ripples {
                 max: 16.0
                 bind value <=> rings
                 width: 288dp
-                height: 24dp
             }
             ShaderView {
                 shader: Lens { tiles: 2.0, image: asset("images/checker.png") }

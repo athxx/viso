@@ -5,15 +5,11 @@ export component Tally {
 
     view {
         Column {
-            width: 300dp
-            height: 80dp
-            Text("{count} in all, {taps} this run") {
-                width: 300dp
-                height: 40dp
-            }
+            padding: 16dp
+            gap: 8dp
+            Text("{count} in all, {taps} this run")
             Button("Count") {
-                width: 300dp
-                height: 40dp
+                min_width: 96dp; min_height: 32dp
                 on click { count += 1; taps += 1 }
             }
         }

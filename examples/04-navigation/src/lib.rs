@@ -50,7 +50,10 @@ pub struct Mail {
 }
 
 impl Application for Mail {
-    fn new(_cx: &mut AppCx) -> Self {
+    fn new(cx: &mut AppCx) -> Self {
+        // A face of its own, so its text measures and draws the same on every
+        // host, headless included.
+        cx.use_packaged_fonts(viso::packaged_fonts!());
         Mail { nav: None }
     }
 

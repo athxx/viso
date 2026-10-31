@@ -5,7 +5,7 @@ component Message {
     view {
         Column {
             padding: 16dp
-            Text("Message #{id}") { width: 200dp; height: 24dp }
+            Text("Message #{id}")
         }
     }
 }

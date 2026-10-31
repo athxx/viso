@@ -5,15 +5,11 @@ export component Inbox {
 
     view {
         Column {
-            width: 400dp
-            height: 120dp
-            Text(tr("inbox.title")) { width: 400dp; height: 40dp }
-            Text(tr("inbox.unread", count: unread)) { width: 400dp; height: 40dp }
-            Button(tr("inbox.mark")) {
-                width: 400dp
-                height: 40dp
-                on click { if unread > 0 { unread -= 1 } }
-            }
+            padding: 16dp
+            gap: 8dp
+            Text(tr("inbox.title"))
+            Text(tr("inbox.unread", count: unread))
+            Button(tr("inbox.mark")) { on click { if unread > 0 { unread -= 1 } } }
         }
     }
 }

@@ -255,6 +255,8 @@ pub fn lower_component_view(
 ) -> LoweredView {
     let mut lowering = Lowering::new(natives, library, Some(root));
     lowering.rust_scope = rust_scope;
+    // A view's root fills what holds it; a `ui!` fragment's sizes as any node.
+    lowering.root = !rust_scope;
     let out = lowering.items(block.items());
     lowering.finish(out)
 }
@@ -284,6 +286,9 @@ struct Lowering<'a, 'l> {
     /// The `NodeRef` key of the named node being lowered, which the first
     /// retained node it lowers to takes.
     naming: Option<u32>,
+    /// Whether the next widget node lowered is the view's root, which fills
+    /// on each axis it does not size.
+    root: bool,
 }
 
 /// One component view being lowered.
@@ -329,6 +334,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
             ordinals: HashMap::new(),
             rust_scope: false,
             naming: None,
+            root: false,
         }
     }
 
@@ -607,6 +613,7 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if type_name == "Sheet" {
             style.sheet = Some(viso_schema::aot::AotSheet::default());
         }
+        let root = std::mem::take(&mut self.root);
         let node_ref = self.naming.take();
         let instance = self.instance();
         let control = if widget.is_rust() {
@@ -814,30 +821,43 @@ impl<'a, 'l> Lowering<'a, 'l> {
         if type_name == "SegmentedControl" {
             share_track(&mut children);
         }
-        // A scene has no intrinsic size: a viewport fills what it is given
-        // on each axis it does not size.
-        // A progress indicator or spinner measures to its natural size on
-        // each axis it does not size.
-        // A badge measures to its count's pill, an avatar is a 40dp circle.
-        // A chip measures to its caption with the room round it, a stepper
-        // to its 96 by 32 pill, a colour picker, combo box or search field to
-        // its parts.
-        let default = match type_name.as_str() {
-            "GameViewport" => Some(LengthIr::Fill { weight: 1.0 }),
+        // Each axis a node does not size takes its type's default: the view's
+        // root fills what holds it; a flex row, column or stack fits its
+        // content; a wrap fills the width and fits the height; a grid,
+        // absolute container, scroll view or list fills. A scene or a routed
+        // page has no intrinsic size: a game viewport or router view fills. A progress indicator or spinner
+        // measures to its natural size, a badge to its count's pill, a chip
+        // to its caption with the room round it, a stepper to its 96 by 32
+        // pill, a colour picker, combo box or search field to its parts; an
+        // avatar is a 40dp circle. Any other leaf fits its content.
+        let fill = LengthIr::Fill { weight: 1.0 };
+        let (width, height) = match type_name.as_str() {
+            _ if root => (Some(fill), Some(fill)),
+            "GameViewport" | "RouterView" => (Some(fill), Some(fill)),
             "ProgressBar" | "ProgressRing" | "Spinner" | "Badge" | "Chip" | "Stepper"
-            | "ColorPicker" | "ComboBox" | "SearchField" => Some(LengthIr::Fit),
-            "Avatar" => Some(LengthIr::Fixed(AVATAR_SIDE)),
-            _ => None,
+            | "ColorPicker" | "ComboBox" | "SearchField" => {
+                (Some(LengthIr::Fit), Some(LengthIr::Fit))
+            }
+            "Avatar" => (
+                Some(LengthIr::Fixed(AVATAR_SIDE)),
+                Some(LengthIr::Fixed(AVATAR_SIDE)),
+            ),
+            _ => match kind {
+                NodeKind::Flex | NodeKind::Stack => (Some(LengthIr::Fit), Some(LengthIr::Fit)),
+                NodeKind::Flow => (Some(fill), Some(LengthIr::Fit)),
+                NodeKind::Grid | NodeKind::Absolute | NodeKind::Scroll | NodeKind::VirtualList => {
+                    (Some(fill), Some(fill))
+                }
+                NodeKind::Leaf | NodeKind::Component => (None, None),
+            },
         };
-        if let Some(default) = default {
-            let lengths = style.lengths.as_deref();
-            if style.width.is_none() && lengths.is_none_or(|l| l.width.is_none()) {
-                style.width = Some(default);
-            }
-            let lengths = style.lengths.as_deref();
-            if style.height.is_none() && lengths.is_none_or(|l| l.height.is_none()) {
-                style.height = Some(default);
-            }
+        let lengths = style.lengths.as_deref();
+        if style.width.is_none() && lengths.is_none_or(|l| l.width.is_none()) {
+            style.width = width;
+        }
+        let lengths = style.lengths.as_deref();
+        if style.height.is_none() && lengths.is_none_or(|l| l.height.is_none()) {
+            style.height = height;
         }
         // A segmented control's track keeps a little room round its
         // segments, which stretch to its height.

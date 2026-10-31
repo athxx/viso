@@ -518,7 +518,7 @@ export style SelectedChip for Chip {
 | `Scroll`   | 单子节点视口（ADR 0007）                       | `fill` / `fill`         |
 | `Fragment` | 零节点分组：子节点直接拼接进父节点 Slot，不接受 Property，不产生 NodeId | — |
 
-叶节点 Widget（`Text`、`Button`、`Image`、`Toggle` 等）未写 `width`/`height` 的轴为 `fit`，按其内容（文字、图片、勾选标记）测量，没有内容时为 `0`；Widget 另有默认的除外（如 `GameViewport` 为 `fill`，`Avatar` 为 40dp，`SegmentedControl` 的文字段宽为 `fill`）。`ui!`/`component!`/`view!`、Hot Reload 与 Release 包按同一规则构建。
+叶节点 Widget（`Text`、`Button`、`Image`、`Toggle` 等）未写 `width`/`height` 的轴为 `fit`，按其内容（文字、图片、勾选标记）测量，没有内容时为 `0`；Widget 另有默认的除外（如 `GameViewport` 与 `RouterView` 为 `fill`，`Avatar` 为 40dp，`SegmentedControl` 的文字段宽为 `fill`）。`ui!`/`component!`/`view!`、Hot Reload 与 Release 包按同一规则构建。
 
 View 的根节点（窗口内容）未写 `width`/`height` 的轴为 `fill`，占满窗口；其余容器未写的轴取上表的默认值。因此只有在设计需要固定尺寸、或要求子节点占满父节点（`width: fill`）时才写尺寸，示例不写死叶节点的宽高。
 

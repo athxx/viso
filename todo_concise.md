@@ -105,9 +105,19 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 
 ## C7 — Sizing defaults (U3.1)
 
-- [ ] Containers default to `fit` as in U3.1; the view root fills the window.
-- [ ] Headless layout checks for root fill and container fit.
-- [ ] Remove hard-coded sizes from examples; screenshot each example.
+- [x] Containers default to `fit` as in U3.1; the view root fills the window.
+- [x] Headless layout checks for root fill and container fit.
+- [x] Remove hard-coded sizes from examples; screenshot each example.
+
+## C7a — Box and text look (U3.3)
+
+- [ ] `background: List<Fill>`: colors, linear and radial gradients, images (`fit`,
+      `opacity`), painted in order; a single value stays valid.
+- [ ] `shadow: List<Shadow>`: outer and `inset` shadows on one box.
+- [ ] `padding` on `Button` and `TextInput` insets their label or field (today E3711).
+- [ ] `text_shadow: List<TextShadow>` on `Text`, `Button`, `TextInput`.
+- [ ] Renderer on every backend and the CPU raster; Style `when`, transitions, hot
+      reload, AOT, macros, Web export; headless pictures.
 
 ## C8 — Real-scale app
 
