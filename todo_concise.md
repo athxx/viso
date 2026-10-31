@@ -138,9 +138,11 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       macOS, iOS, Windows and the web) makes every backdrop frostier and its tint
       denser, without bend, glint or luminosity. Increased contrast
       (`env.high_contrast`): near black or white with a contrasting rim.
-- [ ] A device without the capability (battery saver, a GPU too weak) draws every
-      backdrop as its solid `fallback`, opening no capture; reduced motion: no
-      elastic morph (with the motion item).
+- [x] No glass: Windows's energy saver, Android's battery saver and an
+      embedded-cpu build draw every backdrop as its solid `fallback` (its tint all
+      but opaque without one), opening no capture. Apple's low power mode keeps its
+      materials, so it keeps glass. Reduced motion's no elastic morph is with the
+      motion item.
 - [x] Liquid glass, adaptive: `Backdrop::regular()` and `Backdrop::clear()`.
       Regular reads the backdrop's mean light from five fixed taps of its blurred
       capture every pixel shares (no readback, no pass): its tint's tone goes dark

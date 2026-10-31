@@ -1760,7 +1760,6 @@ fn material_instance(
     rect_size: [f32; 2],
     uv_pos: [f32; 2],
     uv_size: [f32; 2],
-    scale: f32,
 ) -> MaterialInstance {
     let r = record.op.matrix.rows;
     let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][3]];
@@ -1784,15 +1783,15 @@ fn material_instance(
         offset: [r[0][4], r[1][4], r[2][4], r[3][4]],
         radius: record.radius,
         lens: [
-            refraction * scale,
-            bevel * scale,
+            refraction,
+            bevel,
             lens.dispersion.clamp(0.0, 1.0),
         ],
         glint: [
             sin,
             -cos,
             glint.strength.clamp(0.0, 1.0),
-            glint.width.max(0.0) * scale,
+            glint.width.max(0.0),
         ],
         luminosity: [
             record.luminosity.amount.clamp(0.0, 1.0),
@@ -4102,7 +4101,6 @@ impl Renderer {
                         (rect.y - roi.y) / bh * cover[1],
                     ],
                     [rect.w / bw * cover[0], rect.h / bh * cover[1]],
-                    self.scale,
                 );
                 let start = self.material_scratch.len() as u32;
                 self.material_scratch.push(instance);

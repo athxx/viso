@@ -473,6 +473,7 @@ fn appearance_of(bits: i32, font_scale: f32) -> Appearance {
         reduce_motion: bits & 4 != 0,
         // Android has no transparency setting.
         reduce_transparency: false,
+        low_power: bits & 8 != 0,
         text_scale: if font_scale.is_finite() && font_scale > 0.0 {
             font_scale
         } else {

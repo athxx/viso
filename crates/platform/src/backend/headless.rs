@@ -1018,6 +1018,7 @@ mod tests {
             high_contrast: true,
             reduce_motion: false,
             reduce_transparency: true,
+            low_power: true,
             text_scale: 1.5,
             overlay_scroll_bars: false,
             accent: Some([1.0, 0.5, 0.0]),

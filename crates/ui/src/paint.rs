@@ -353,12 +353,7 @@ fn paint_subtree<S: PaintSpans>(
     // its fade, which would drop the blur: it fades by its own opacity.
     if let Some(backdrop) = store.backdrop(root) {
         let radius = corner_radius(&store.style(root), world);
-        out.push(Primitive::Frosted(Box::new(backdrop.surface(
-            world,
-            radius,
-            opacity,
-            store.backdrops.access,
-        ))));
+        out.push(backdrop.paint(world, radius, opacity, store.backdrops.access));
     }
     // A translucent node composites itself and its subtree as one layer over
     // all its subtree draws: its reach.

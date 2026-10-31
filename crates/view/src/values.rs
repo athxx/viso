@@ -2747,6 +2747,7 @@ fn frost(value: &Value) -> Option<Backdrop> {
             highlight,
             light,
             adaptive,
+            fallback,
         ] => Some(Backdrop {
             blur: dp(blur).max(0.0),
             saturation: float(saturation, 1.0),
@@ -2759,6 +2760,10 @@ fn frost(value: &Value) -> Option<Backdrop> {
             highlight: float(highlight, 0.0),
             light: float(light, 315.0).to_radians(),
             adaptive: truth(adaptive, false),
+            fallback: match fallback {
+                Value::Nil => None,
+                given => Some(color(given)),
+            },
         }),
         _ => None,
     }

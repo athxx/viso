@@ -607,13 +607,13 @@ pub fn material_ir() -> ShaderIr {
             "lens",
             IrType::F32X3,
             "",
-            "refraction px, bevel px, dispersion",
+            "refraction pt, bevel pt, dispersion",
         ),
         Varying::new(
             "glint",
             IrType::F32X4,
             "",
-            "light direction, strength, line width px",
+            "light direction, strength, line width pt",
         ),
         Varying::new("luminosity", IrType::F32X2, "", "amount, its luminance"),
         Varying::new(

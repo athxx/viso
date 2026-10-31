@@ -353,6 +353,7 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
                 reduce_motion: true,
                 reduce_transparency: true,
                 high_contrast: true,
+                low_power: true,
                 text_scale: 1.5,
                 ..Appearance::default()
             }),
@@ -379,6 +380,8 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
     assert!(env.reduced_motion);
     assert!(app.store().reduced_motion(), "the store's motion follows");
     assert!(env.reduced_transparency && env.high_contrast);
+    let glass = app.store().glass_access();
+    assert!(glass.reduced_transparency && glass.high_contrast && glass.solid);
     assert_eq!(env.text_scale, 1.5);
     assert_eq!(
         app.store().length_env().text_scale,

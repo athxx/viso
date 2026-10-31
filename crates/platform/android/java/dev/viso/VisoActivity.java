@@ -3,11 +3,13 @@ package dev.viso;
 import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.app.UiModeManager;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -17,6 +19,7 @@ import android.net.Uri;
 import android.hardware.input.InputManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.os.CombinedVibration;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -55,6 +58,7 @@ public class VisoActivity extends Activity
     private static final int APPEARANCE_DARK = 1;
     private static final int APPEARANCE_HIGH_CONTRAST = 2;
     private static final int APPEARANCE_REDUCE_MOTION = 4;
+    private static final int APPEARANCE_LOW_POWER = 8;
 
     /**
      * Receives the results of the activities and permission requests others
@@ -132,6 +136,8 @@ public class VisoActivity extends Activity
         if (gamepads) {
             watchGamepads();
         }
+        // Battery saver turns on and off without the activity pausing.
+        registerReceiver(powerSaver, new IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED));
         // A recreated activity carries the intent it was first started with,
         // whose link was opened then.
         if (state == null) {
@@ -209,6 +215,10 @@ public class VisoActivity extends Activity
         }
         if (!ValueAnimator.areAnimatorsEnabled()) {
             bits |= APPEARANCE_REDUCE_MOTION;
+        }
+        PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (power != null && power.isPowerSaveMode()) {
+            bits |= APPEARANCE_LOW_POWER;
         }
         return bits;
     }
@@ -348,9 +358,18 @@ public class VisoActivity extends Activity
         nativeLowMemory();
     }
 
+    /** Hears battery saver turn on and off. */
+    private final BroadcastReceiver powerSaver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            reportConfig(getResources().getConfiguration());
+        }
+    };
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        unregisterReceiver(powerSaver);
         if (gamepads) {
             getSystemService(InputManager.class).unregisterInputDeviceListener(this);
         }

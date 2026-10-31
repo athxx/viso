@@ -313,6 +313,7 @@ pub(crate) fn portal_appearance(
         reduce_motion: animations == Some(false),
         // The desktop settings portal carries no transparency preference.
         reduce_transparency: false,
+        low_power: false,
         text_scale: text_scaling
             .filter(|f| f.is_finite() && *f > 0.0)
             .map_or(1.0, |f| f as f32),

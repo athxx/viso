@@ -2604,11 +2604,11 @@ pub struct MaterialInstance {
     /// Mask radii in points, ordered left-top, right-top, right-bottom,
     /// left-bottom — already normalized against the rect.
     pub radius: [f32; 4],
-    /// The lens: refraction and bevel depth in device pixels, already held
-    /// within the surface, and dispersion.
+    /// The lens: refraction and bevel depth in points, already held within
+    /// the surface, and dispersion.
     pub lens: [f32; 3],
     /// The glint: the light's direction (a unit vector), strength, and line
-    /// width in device pixels.
+    /// width in points.
     pub glint: [f32; 4],
     /// The luminosity layer: amount and the luminance it gives way to.
     pub luminosity: [f32; 2],

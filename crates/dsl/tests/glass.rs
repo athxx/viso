@@ -99,6 +99,7 @@ export component Liquid {
                 dispersion: 0.2,
                 highlight: 0.8,
                 light: 0deg,
+                fallback: Option::Some(#336699),
             });
         }
     }
@@ -118,6 +119,7 @@ fn liquid_glass_bends_glints_and_evens_its_light_in_every_target() {
         );
         assert_eq!((glass.highlight, glass.light), (0.8, 0.0));
         assert_eq!(glass.luminosity, 0.5);
+        assert_eq!(glass.fallback, Some(rgba(0x3366_99ff)));
 
         let mut out = Vec::new();
         viso_ui::paint::paint_tree(&rt.store, root, &mut out);

@@ -209,7 +209,7 @@ pub use asset::{
     Asset, AssetBytes, AssetDraw, AssetFit, AssetOrigin, AssetPayload, AssetSource, AssetState,
     AssetTable,
 };
-pub use backdrop::Backdrop;
+pub use backdrop::{Backdrop, GlassAccess};
 pub use cursor::{CursorError, CursorIcon, CursorImage, CustomCursor};
 pub use feedback::Haptic;
 pub use field_input::{FieldEvent, FieldKey, field_input, field_key, number_input};

@@ -12,6 +12,7 @@ use ::windows::Win32::Graphics::Gdi::{
     CreateBitmap, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
     MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
+use ::windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use ::windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use ::windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
@@ -157,6 +158,13 @@ fn read_parameter<T: Default>(
     Some(out)
 }
 
+/// Whether the energy saver (battery saver before Windows 11) is on.
+fn energy_saver() -> bool {
+    let mut status = SYSTEM_POWER_STATUS::default();
+    // SAFETY: `status` is a writable `SYSTEM_POWER_STATUS`.
+    unsafe { GetSystemPowerStatus(&mut status) }.is_ok() && status.SystemStatusFlag & 1 != 0
+}
+
 pub(super) fn read_appearance() -> Appearance {
     let light = read_dword(
         w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
@@ -191,6 +199,7 @@ pub(super) fn read_appearance() -> Appearance {
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
             w!("EnableTransparency"),
         ) == Some(0),
+        low_power: energy_saver(),
         text_scale: read_text_scale(),
         // Settings > Accessibility > Visual effects > Always show scrollbars.
         overlay_scroll_bars: read_dword(

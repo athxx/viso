@@ -689,6 +689,10 @@ pub struct Appearance {
     pub reduce_motion: bool,
     /// The user asked for less transparency: glass frostier and denser.
     pub reduce_transparency: bool,
+    /// The system is saving power and spares its own effects: Windows's
+    /// energy saver, Android's battery saver. Apple's low power mode keeps
+    /// its materials, so it is not this.
+    pub low_power: bool,
     /// The user's preferred text size relative to the platform's default
     /// size: `1.0` where the platform has no such setting.
     pub text_scale: f32,
@@ -710,6 +714,7 @@ impl Default for Appearance {
             high_contrast: false,
             reduce_motion: false,
             reduce_transparency: false,
+            low_power: false,
             text_scale: 1.0,
             overlay_scroll_bars: true,
             accent: None,

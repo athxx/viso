@@ -278,6 +278,7 @@ fn appearance_of(traits: &UITraitCollection) -> Appearance {
             || UIAccessibilityDarkerSystemColorsEnabled(),
         reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
         reduce_transparency: UIAccessibilityIsReduceTransparencyEnabled(),
+        low_power: false,
         // SAFETY: as above.
         text_scale: text_scale_of(&*unsafe { traits.preferredContentSizeCategory() }),
         overlay_scroll_bars: true,

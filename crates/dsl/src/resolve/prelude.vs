@@ -320,7 +320,9 @@ export record TextShadow {
 // bend's colors by `dispersion` (0..1), and catches a thin `highlight`
 // (0..1) on the walls along the `light` angle. `adaptive` glass follows what
 // lies behind it — its tint's tone dark over dark content and light over
-// light — and thickens with its size.
+// light — and thickens with its size. Where no glass is drawn (the system
+// saving power, a device drawing on the CPU) it is `fallback`, solid, or
+// its tint made all but opaque.
 export record Backdrop {
     blur: Dp = 30dp
     saturation: F32 = 1.8
@@ -333,6 +335,7 @@ export record Backdrop {
     highlight: F32 = 0.0
     light: Angle = 315deg
     adaptive: Bool = false
+    fallback: Option<Color> = Option::None
 }
 impl Backdrop {
     // Liquid glass that follows what lies behind it: the one to reach for.

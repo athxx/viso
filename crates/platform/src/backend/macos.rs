@@ -450,6 +450,7 @@ fn current_appearance(app: &NSApplication) -> Appearance {
         high_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
         reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
         reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
+        low_power: false,
         // macOS has no system text size an app can read.
         text_scale: 1.0,
         overlay_scroll_bars: NSScroller::preferredScrollerStyle(MainThreadMarker::from(app))

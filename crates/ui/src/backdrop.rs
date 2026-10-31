@@ -3,7 +3,9 @@
 //!
 //! A backdrop follows the user's settings: with less transparency asked
 //! for it frosts denser and drops its bend and glint; with more contrast
-//! it goes near black or white with a contrasting rim.
+//! it goes near black or white with a contrasting rim; where the system
+//! saves power, or the device draws on the CPU, it is its solid fallback
+//! and reads nothing behind it.
 //!
 //! A backdrop is drawn as the node's frosted surface under its own fill,
 //! outside the layer a translucent node fades through, so the glass fades
@@ -16,7 +18,8 @@
 use crate::component::NodeStore;
 use crate::node::NodeId;
 use viso_render::{
-    ColorMatrix, ColorOp, Corners, FrostedMaterial, Glint, Lens, Luminosity, Rect, Rgba,
+    Border, ColorMatrix, ColorOp, Corners, FrostedMaterial, Glint, Lens, Luminosity, Primitive,
+    Quad, Rect, Rgba,
 };
 
 /// What a box does to the content behind it.
@@ -52,6 +55,9 @@ pub struct Backdrop {
     /// tone dark over dark content and light over light, its hue kept; its
     /// bend, bevel and blur deeper the larger it is.
     pub adaptive: bool,
+    /// What it is where no glass is drawn, solid; `None` for its tint made
+    /// all but opaque.
+    pub fallback: Option<Rgba>,
 }
 
 /// The glint's width in dp; a faint bleed reaches four times as deep.
@@ -61,14 +67,21 @@ const GLINT_WIDTH: f32 = 1.0;
 /// values say: a toolbar button's.
 const THIN: f32 = 44.0;
 
-/// The user's settings every backdrop follows.
+/// The settings every backdrop follows: the user's and the device's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct GlassAccess {
+pub struct GlassAccess {
     /// Less transparency: a denser frost, no bend, glint or luminosity.
-    pub(crate) reduced_transparency: bool,
+    pub reduced_transparency: bool,
     /// More contrast: near black or white, with a contrasting rim.
-    pub(crate) high_contrast: bool,
+    pub high_contrast: bool,
+    /// No glass at all: each backdrop its solid fallback, no capture —
+    /// where the system saves power or the device cannot afford one.
+    pub solid: bool,
 }
+
+/// How much of what lies behind a solid fallback made from the tint still
+/// shows: next to none.
+const SOLID: f32 = 0.9;
 
 /// How much of what lies behind a denser frost still shows: its tint
 /// covers this much more of the rest.
@@ -98,6 +111,7 @@ impl Backdrop {
         // `315deg`, from the upper left, as `to_radians` makes it.
         light: 315.0 * (core::f32::consts::PI / 180.0),
         adaptive: false,
+        fallback: None,
     };
 
     /// Liquid glass that follows what lies behind it and thickens with its
@@ -139,9 +153,38 @@ impl Backdrop {
         ..Backdrop::GLASS
     };
 
+    /// What it draws over a box of `rect` rounded by `radius`, faded to
+    /// `opacity`: its frosted surface, or its solid fallback.
+    pub(crate) fn paint(
+        self,
+        rect: Rect,
+        radius: f32,
+        opacity: f32,
+        access: GlassAccess,
+    ) -> Primitive {
+        if !access.solid {
+            return Primitive::Frosted(Box::new(self.surface(rect, radius, opacity, access)));
+        }
+        // Its fallback, or its tint made all but opaque.
+        let tint = self.followed(access).tint;
+        let color = self.fallback.unwrap_or(Rgba {
+            a: tint.a + (1.0 - tint.a) * SOLID,
+            ..tint
+        });
+        Primitive::Quad(Quad {
+            rect,
+            color: Rgba {
+                a: color.a * opacity,
+                ..color
+            },
+            radius,
+            border: Border::NONE,
+        })
+    }
+
     /// The frosted surface it draws over a box of `rect` rounded by
     /// `radius`, faded to `opacity`.
-    pub(crate) fn surface(
+    fn surface(
         self,
         rect: Rect,
         radius: f32,
@@ -154,7 +197,7 @@ impl Backdrop {
             // The rim the opposite of the face.
             let dark = glass.tint.r + glass.tint.g + glass.tint.b < 1.5;
             let rim = if dark { 1.0 } else { 0.0 };
-            surface.border = viso_render::Border {
+            surface.border = Border {
                 width: 1.0,
                 color: Rgba {
                     r: rim,
@@ -271,14 +314,16 @@ impl Backdrops {
 }
 
 impl NodeStore {
-    /// Makes every backdrop follow the user's settings: denser and flat
-    /// with `reduced_transparency`, near black or white with a contrasting
-    /// rim with `high_contrast`. A change repaints every glass box.
-    pub fn set_glass_access(&mut self, reduced_transparency: bool, high_contrast: bool) {
-        let access = GlassAccess {
-            reduced_transparency,
-            high_contrast,
-        };
+    /// The settings every backdrop follows.
+    pub fn glass_access(&self) -> GlassAccess {
+        self.backdrops.access
+    }
+
+    /// Makes every backdrop follow `access`: denser and flat with less
+    /// transparency, near black or white with a contrasting rim with more
+    /// contrast, its solid fallback where there is no glass. A change
+    /// repaints every glass box.
+    pub fn set_glass_access(&mut self, access: GlassAccess) {
         if self.backdrops.access == access {
             return;
         }
@@ -408,7 +453,10 @@ mod tests {
         assert!(clear.lens.is_on() && clear.glint.is_on());
 
         store.clear_dirty();
-        store.set_glass_access(true, false);
+        store.set_glass_access(GlassAccess {
+            reduced_transparency: true,
+            ..GlassAccess::default()
+        });
         assert!(store.dirty(panel).contains(crate::dirty::DirtyClass::PAINT));
         let dense = surface_of(&store, panel);
         assert!(dense.backdrop_sigma > clear.backdrop_sigma, "frostier");
@@ -420,7 +468,10 @@ mod tests {
     fn more_contrast_turns_the_glass_white_or_black_with_the_opposite_rim() {
         let mut store = NodeStore::new();
         let panel = panel(&mut store, 1.0);
-        store.set_glass_access(false, true);
+        store.set_glass_access(GlassAccess {
+            high_contrast: true,
+            ..GlassAccess::default()
+        });
         // The standard glass's white tint: a white face, a black rim.
         let light = surface_of(&store, panel);
         assert_eq!(light.border.width, 1.0);
@@ -462,5 +513,42 @@ mod tests {
             Backdrop::CLEAR.refraction,
             "clear stays as said"
         );
+    }
+
+    #[test]
+    fn with_no_glass_a_backdrop_is_its_solid_fallback_and_reads_nothing() {
+        let mut store = NodeStore::new();
+        let panel = panel(&mut store, 0.5);
+        store.set_glass_access(GlassAccess {
+            solid: true,
+            ..GlassAccess::default()
+        });
+        let out = paint(&store, panel);
+        assert!(!out.iter().any(|p| matches!(p, Primitive::Frosted(_))));
+        let Primitive::Quad(solid) = &out[0] else {
+            panic!("the solid glass first: {out:?}");
+        };
+        // The standard glass's white tint all but opaque, faded by the node.
+        assert_eq!((solid.color.r, solid.radius), (1.0, 12.0));
+        let a = (64.0 / 255.0 + (1.0 - 64.0 / 255.0) * SOLID) * 0.5;
+        assert!((solid.color.a - a).abs() < 1e-5, "{}", solid.color.a);
+
+        let given = Rgba {
+            r: 0.2,
+            g: 0.3,
+            b: 0.4,
+            a: 1.0,
+        };
+        store.set_backdrop(
+            panel,
+            Some(Backdrop {
+                fallback: Some(given),
+                ..Backdrop::GLASS
+            }),
+        );
+        let Primitive::Quad(solid) = &paint(&store, panel)[0] else {
+            panic!("solid");
+        };
+        assert_eq!((solid.color.r, solid.color.a), (0.2, 0.5), "its fallback");
     }
 }
