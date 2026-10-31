@@ -1097,7 +1097,8 @@ action reset() { limit = 0; }
         title: "Context Read Outside Its Scope",
         explanation: "`env` and `theme` are context bindings of the view execution scope: they are read \
             in view items, property bindings, view conditions, view handlers and the arguments \
-            of pure calls made there. `tr` reads `env.locale` and so is used only within a \
+            of pure calls made there, and in a `computed`, which reads them per instance and \
+            again as they change. `tr` reads `env.locale` and so is used only within a \
             component instance (its view, styles, computeds, actions and effects). State and \
             input initializers, member functions, tasks, constants, themes and module-level \
             declarations cannot read them implicitly; pass the needed value in as a parameter.",
@@ -1108,8 +1109,8 @@ action reset() { limit = 0; }
 }
 "#,
         ),
-        fix: "Read the context value inside the view, or pass it as an argument to the function \
-            that needs it.",
+        fix: "Read the context value inside the view or a `computed`, or pass it as an argument \
+            to the function that needs it.",
         fixed: Some(
             r#"fn scaled(scale: F32) -> F32 { scale * 2.0 }
 view { Text("{scaled(env.text_scale)}") }

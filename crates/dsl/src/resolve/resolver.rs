@@ -248,6 +248,7 @@ pub(crate) fn resolve_in(
             // user type is a real error here.
             defer_unresolved_types: false,
             in_view: false,
+            in_computed: false,
             theme_base: None,
             owner_nodes: Vec::new(),
             node_refs: false,
@@ -314,6 +315,7 @@ pub(super) fn resolve_standalone(
         scopes: ScopeStack::new(),
         defer_unresolved_types: false,
         in_view: false,
+        in_computed: false,
         theme_base: None,
         owner_nodes: Vec::new(),
         node_refs: false,
@@ -1258,6 +1260,9 @@ struct ModulePass<'a> {
     defer_unresolved_types: bool,
     /// Whether the walk is inside a view, the execution domain `env` is bound in.
     in_view: bool,
+    /// Whether the walk is inside a `computed`, which reads `env` and `theme`
+    /// as it reads a state: per instance, and again when they change.
+    in_computed: bool,
     /// Inside a theme's items, what `theme` reads there: its base's value,
     /// `None` for a theme without one.
     theme_base: Option<Option<Resolution>>,
@@ -1671,7 +1676,9 @@ impl<'a> ModulePass<'a> {
                     self.resolve_type_path(&ty);
                 }
                 if let Some(body) = c.body() {
+                    self.in_computed = true;
                     self.resolve_expr(&body);
+                    self.in_computed = false;
                 }
             }
             Member::State(s) => {
@@ -2470,12 +2477,13 @@ impl<'a> ModulePass<'a> {
         } else if let Some(sym) = self.standard(name, Namespace::Value) {
             Resolution::Symbol(sym)
         } else if head.text() == ENV {
-            if !self.in_view {
+            if !self.in_view && !self.in_computed {
                 self.errors.push(Diagnostic::error(
                     ENV_OUTSIDE_VIEW,
                     head.text_range(),
-                    "`env` is read only in a view: its items, property bindings, \
-                     conditions and handlers; pass the value a state or function needs"
+                    "`env` is read only in a view and a `computed`: a view's items, \
+                     property bindings, conditions and handlers; pass the value a state \
+                     or function needs"
                         .to_string(),
                 ));
             }
@@ -2497,12 +2505,12 @@ impl<'a> ModulePass<'a> {
                 }
             }
         } else if head.text() == THEME {
-            if !self.in_view {
+            if !self.in_view && !self.in_computed {
                 self.errors.push(Diagnostic::error(
                     ENV_OUTSIDE_VIEW,
                     head.text_range(),
-                    "`theme` is read only in a view and a style; pass the value a state or \
-                     function needs"
+                    "`theme` is read only in a view, a style and a `computed`; pass the value \
+                     a state or function needs"
                         .to_string(),
                 ));
             }

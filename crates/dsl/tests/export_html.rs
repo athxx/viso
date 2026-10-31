@@ -2578,3 +2578,23 @@ export component Tags {
         "a fill takes a line: {css}"
     );
 }
+
+#[test]
+fn a_computed_reading_env_exports_into_the_environment() {
+    let page = export(
+        r#"
+export component Roomy {
+    computed roomy: Bool = env.size_class != SizeClass::Compact
+    view {
+        Column {
+            if roomy { Text("roomy") } else { Text("tight") }
+        }
+    }
+}
+"#,
+        false,
+    )
+    .unwrap();
+    let script = page.script.as_deref().expect("a script");
+    assert!(script.contains("const env = new Env(["), "{script}");
+}

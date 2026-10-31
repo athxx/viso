@@ -198,7 +198,8 @@ the downsampled ladder, kept across frames while what lies behind holds still.
         without a style selector reading it: the field is refused in its semantics
         (`aria-invalid` on the web) and, with no border of its own, draws one in the
         theme's error color;
-  - [ ] `env` readable in a `computed`;
+  - [x] `env` readable in a `computed` (and `theme`): it reads its instance's fields
+        and is recomputed as they change;
   - [ ] `KeyShortcut { chord: .. }` mounting;
   - [ ] `VirtualList { estimated_extent }` reading a value;
   - [ ] a task's `time::sleep` under the headless driver follows its clock, not the

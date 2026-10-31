@@ -49,7 +49,7 @@ env.reduced_transparency : Bool
 env.high_contrast     : Bool
 ```
 
-这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件、View Handler 和调用的纯函数参数中使用；Component 的普通 `state` / `computed` 初始化器与成员 Callable 不能隐式读取局部 Layout Environment，否则报 `E2111`，需要它的值经参数传入。
+这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件、View Handler、调用的纯函数参数与 `computed` 中使用：`computed` 按所在实例读取，读到的字段变化时与 State 一样重新求值（`computed roomy: Bool = env.size_class != SizeClass::Compact`），`theme` 同样可读；Component 的 `state` 初始化器与成员 Callable 不能隐式读取局部 Layout Environment，否则报 `E2111`，需要它的值经参数传入。
 
 `env` 整体类型为 Prelude 的 `Environment` 记录，字段顺序即上表顺序；`env.<field>` 的类型即该字段类型。`env` 只读：以 `env` 为根的赋值报 `E2110`。同名局部绑定（参数、`let`、Pattern）遮蔽 `env`。`display_features` 与 `env` 的其余部分一样只读，因而用普通 `List`。
 

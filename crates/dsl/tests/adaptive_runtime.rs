@@ -977,3 +977,59 @@ fn one_view_adapts_to_every_device_and_system_state() {
         }
     }
 }
+
+const COMPUTED: &str = r#"
+component Panel {
+    computed roomy: Bool = env.size_class != SizeClass::Compact
+    view {
+        Row {
+            width: 100dp
+            height: 20dp
+            if roomy {
+                Text { width: 10dp; height: 10dp }
+                Text { width: 10dp; height: 10dp }
+            } else {
+                Text { width: 10dp; height: 10dp }
+            }
+        }
+    }
+}
+
+export component Host {
+    computed roomy: Bool = env.size_class != SizeClass::Compact
+    computed ink: Color = theme.colors.error
+    view {
+        Column {
+            width: 400dp
+            height: 300dp
+            Row {
+                width: 400dp
+                height: 20dp
+                if roomy {
+                    Text { width: 10dp; height: 10dp; color: ink }
+                    Text { width: 10dp; height: 10dp }
+                } else {
+                    Text { width: 10dp; height: 10dp }
+                }
+            }
+            Panel {}
+        }
+    }
+}
+"#;
+
+#[test]
+fn a_computed_reads_env_as_it_changes() {
+    for mut rt in [Rt::reloaded(COMPUTED), Rt::packaged(COMPUTED)] {
+        let counts = |rt: &Rt| [rt.region(0).len(), rt.region(1).len()];
+        assert_eq!(counts(&rt), [1, 1], "a zero-width window is compact");
+        rt.update_env(|e| e.window.width = 1000.0);
+        assert_eq!(
+            counts(&rt),
+            [2, 2],
+            "expanded, in the view and in its component"
+        );
+        rt.update_env(|e| e.window.width = 320.0);
+        assert_eq!(counts(&rt), [1, 1], "compact again");
+    }
+}
