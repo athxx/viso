@@ -191,7 +191,9 @@ the downsampled ladder, kept across frames while what lies behind holds still.
   - [x] a one-parameter event payload is still a record (`on opened(e) { e.id }`):
         a record pattern without a path destructures it, `on opened({ id }) { open(id) }`
         (also in `let`, `for`, closures and `match`);
-  - [ ] no index in `for` / no `enumerate`: numbering rows takes a helper;
+  - [x] no index in `for` / no `enumerate`: numbering rows takes a helper;
+        `list.enumerate()` pairs each element with its index,
+        `for (i, step) in steps.enumerate() key step.key`;
   - [ ] `TextInput { invalid: x }` reaching the node (semantics and a default look)
         without a style selector reading it;
   - [ ] `env` readable in a `computed`;

@@ -1044,6 +1044,7 @@ NodeRef<T>
 | `get(i: I64)` | `Option<T>` | 越界为 `None` |
 | `first()` / `last()` | `Option<T>` | 空为 `None` |
 | `contains(x: T)` | `Bool` | `T` 必须可比较 |
+| `enumerate()` | `List<(I64, T)>` | 每个元素与其下标，从 `0` 起：`for (i, row) in rows.enumerate() key row.id { .. }` |
 | `push(x: T)` | `()` | 追加到末尾 |
 | `insert(i: I64, x: T)` | `()` | 插入到 `i`，`i` 越界为 Runtime Fault |
 | `remove(i: I64)` | `T` | 移除并返回第 `i` 个，越界为 Runtime Fault |

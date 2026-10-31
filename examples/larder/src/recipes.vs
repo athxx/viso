@@ -214,6 +214,7 @@ component IngredientRow {
 // timed.
 component StepRow {
     input step: Step
+    input number: I64
     event timed(label: String, minutes: I64)
 
     view {
@@ -226,7 +227,7 @@ component StepRow {
                 corner_radius: 14dp
                 background: theme.colors.primary
                 content_align: Alignment2D::center
-                Text("{step.index + 1}") { color: theme.colors.on_primary; font_size: 13sp }
+                Text("{number}") { color: theme.colors.on_primary; font_size: 13sp }
             }
             Column {
                 width: fill
@@ -419,17 +420,6 @@ fn scaled_all(items: List<Ingredient>, base: I64, serves: I64) -> List<Ingredien
     out
 }
 
-// The steps, each told its place.
-fn numbered(steps: List<Step>) -> List<Step> {
-    let mut out: List<Step> = []
-    let mut i = 0
-    for step in steps {
-        out.push(Step { index: i, ..step })
-        i += 1
-    }
-    out
-}
-
 // The method, a step at a time.
 component Method {
     input recipe: Recipe
@@ -440,9 +430,10 @@ component Method {
             Section {
                 title: tr("recipe.steps")
                 caption: tr("recipe.step_count", count: recipe.steps.len())
-                for step in numbered(recipe.steps) key step.index {
+                for (i, step) in recipe.steps.enumerate() key i {
                     StepRow {
                         step: step
+                        number: i + 1
                         on timed({ label, minutes }) { emit timer(label, minutes) }
                     }
                 }

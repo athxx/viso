@@ -39,8 +39,6 @@ export record Ingredient {
 }
 
 export record Step {
-    // Its place in the method, from zero.
-    index: I64 = 0
     text: String
     // Minutes a timer for this step runs; zero when it needs none.
     minutes: I64 = 0

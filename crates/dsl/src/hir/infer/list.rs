@@ -1,5 +1,5 @@
-//! The methods of `List<T>`: `len`, `is_empty`, `get`, `first`, `last` and
-//! `contains` read any list; `push`, `insert`, `remove`, `pop`, `clear` and
+//! The methods of `List<T>`: `len`, `is_empty`, `get`, `first`, `last`,
+//! `contains` and `enumerate` read any list; `push`, `insert`, `remove`, `pop`, `clear` and
 //! `retain` edit the list a writable place holds — a `state`, a mutable local,
 //! or a field or element of one — as an assignment to it does.
 
@@ -11,9 +11,20 @@ use crate::resolve::suggest::{Candidate, attach, nearest};
 use crate::syntax::{SyntaxNode, SyntaxToken};
 
 /// Every method a list has.
-pub(crate) const LIST_METHODS: [&str; 12] = [
-    "len", "is_empty", "get", "first", "last", "contains", "push", "insert", "remove", "pop",
-    "clear", "retain",
+pub(crate) const LIST_METHODS: [&str; 13] = [
+    "len",
+    "is_empty",
+    "get",
+    "first",
+    "last",
+    "contains",
+    "enumerate",
+    "push",
+    "insert",
+    "remove",
+    "pop",
+    "clear",
+    "retain",
 ];
 
 /// Whether list method `name` edits its receiver in place.
@@ -47,6 +58,10 @@ impl InferCx<'_> {
                 self.check_comparable(&elem, name.text_range());
                 (vec![elem.clone()], Ty::Bool)
             }
+            "enumerate" => (
+                vec![],
+                Ty::List(Box::new(Ty::Tuple(vec![Ty::I64, elem.clone()]))),
+            ),
             "push" => (vec![elem.clone()], Ty::Unit),
             "insert" => (vec![Ty::I64, elem.clone()], Ty::Unit),
             "remove" => (vec![Ty::I64], elem.clone()),

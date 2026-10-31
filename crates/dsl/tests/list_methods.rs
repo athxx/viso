@@ -1,4 +1,5 @@
-//! The methods of `List<T>` from source to the VM: the readers on any list,
+//! The methods of `List<T>` from source to the VM: the readers on any list
+//! (`enumerate` pairing each element with its index),
 //! the editors on a writable place — a `state`, a mutable local, a field or
 //! element of one — written back as an assignment is, copy on write so a list
 //! another value shares is left as it was; out-of-bounds edits fault and roll
@@ -84,6 +85,13 @@ export component Lists {
         }
     }
 
+    action numbered() {
+        out = [];
+        for (i, x) in xs.enumerate() {
+            out.push(i * 10 + x);
+        }
+    }
+
     action bad() {
         xs.push(8);
         xs.remove(99);
@@ -127,6 +135,13 @@ fn readers_answer_from_any_list() {
     run(&mut vm, &mut lists, "read").expect("reads");
     assert_eq!(state(&vm, &lists, "out"), ints(&[3, 0, 1, -1, 3, 2]));
     assert_eq!(state(&vm, &lists, "found"), Value::bool(true));
+}
+
+#[test]
+fn enumerate_pairs_each_element_with_its_index() {
+    let (mut vm, mut lists) = lists();
+    run(&mut vm, &mut lists, "numbered").expect("numbers");
+    assert_eq!(state(&vm, &lists, "out"), ints(&[3, 11, 22]));
 }
 
 #[test]

@@ -484,7 +484,7 @@ impl Lowerer<'_, '_> {
                     dst: kept,
                     items: Vec::new(),
                 });
-                self.each(list, |this, item| {
+                self.each(list, |this, item, _| {
                     let yes = this.reg();
                     this.emit(Inst::CallValue {
                         dst: yes,
@@ -589,7 +589,7 @@ impl Lowerer<'_, '_> {
             }
             ("contains", &[wanted]) => {
                 let found = self.constant(Const::Bool(false));
-                self.each(list, |this, item| {
+                self.each(list, |this, item, _| {
                     let same = this.reg();
                     this.emit(Inst::Binary {
                         dst: same,
@@ -606,6 +606,26 @@ impl Lowerer<'_, '_> {
                     this.patch_here(&[skip]);
                 });
                 found
+            }
+            ("enumerate", []) => {
+                let pairs = self.reg();
+                self.emit(Inst::List {
+                    dst: pairs,
+                    items: Vec::new(),
+                });
+                self.each(list, |this, item, index| {
+                    let pair = this.reg();
+                    this.emit(Inst::Make {
+                        dst: pair,
+                        tag: 0,
+                        fields: vec![index, item],
+                    });
+                    this.emit(Inst::Push {
+                        list: pairs,
+                        item: pair,
+                    });
+                });
+                pairs
             }
             _ => return self.bail(format!("`{name}` with these arguments")),
         })
@@ -636,8 +656,9 @@ impl Lowerer<'_, '_> {
         dst
     }
 
-    /// Runs `body` with each element of `list` in turn, in a fresh register.
-    fn each(&mut self, list: Reg, mut body: impl FnMut(&mut Self, Reg)) {
+    /// Runs `body` with each element of `list` in turn, in a fresh register,
+    /// and the register counting its index.
+    fn each(&mut self, list: Reg, mut body: impl FnMut(&mut Self, Reg, Reg)) {
         let len = self.reg();
         self.emit(Inst::Len {
             dst: len,
@@ -659,7 +680,7 @@ impl Lowerer<'_, '_> {
             list,
             index: i,
         });
-        body(self, item);
+        body(self, item, i);
         self.increment(i, Num::I64);
         self.emit(Inst::Jump { target: top });
         self.patch_here(&[exit]);

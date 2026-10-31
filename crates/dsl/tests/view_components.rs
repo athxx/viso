@@ -715,3 +715,27 @@ export component App {
         "no field `x` in the payload"
     );
 }
+
+#[test]
+fn a_view_for_numbers_its_rows_by_enumerate() {
+    let source = r#"
+export component App {
+    state items = [5, 6, 7]
+    state picked = -1
+    view {
+        Column {
+            width: 400dp
+            height: 300dp
+            for (i, n) in items.enumerate() key n {
+                Text { width: 20dp; height: 20dp; on click { picked = i * 100 + n } }
+            }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(source), Rt::packaged(source)] {
+        rt.click(5.0, 45.0);
+        assert_eq!(rt.state("picked"), Some(Value::Int(207)));
+        assert!(!rt.faulted());
+    }
+}

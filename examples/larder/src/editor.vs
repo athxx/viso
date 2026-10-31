@@ -285,20 +285,6 @@ component StepEditor {
     }
 }
 
-// The steps as the form shows them, each told its number.
-record NumberedStep {
-    number: I64
-    draft: StepDraft
-}
-
-fn numbered(steps: List<StepDraft>) -> List<NumberedStep> {
-    let mut out: List<NumberedStep> = []
-    for draft in steps {
-        out.push(NumberedStep { number: out.len() + 1, draft: draft })
-    }
-    out
-}
-
 // The form making a recipe of one's own.
 export component RecipeEditor {
     // The id the recipe it makes takes.
@@ -460,10 +446,10 @@ export component RecipeEditor {
                         actions {
                             Button(tr("editor.add_step")) { on click { add_step() } }
                         }
-                        for step in numbered(steps) key step.draft.key {
+                        for (i, step) in steps.enumerate() key step.key {
                             StepEditor {
-                                draft: step.draft
-                                number: step.number
+                                draft: step
+                                number: i + 1
                                 removable: steps.len() > 1
                                 on edited({ draft }) { steps = replaced_step(steps, draft) }
                                 on removed(e) { steps.retain(|d| d.key != e.key) }
