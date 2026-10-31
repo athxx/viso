@@ -116,9 +116,11 @@ green. Rules of the design are in `Viso_DSL_Rationale.md` §1.2.
 - [x] `shadow: List<Shadow>`: outer and `inset` shadows on one box.
 - [x] `padding` on `Button` and `TextInput` insets their label or field (today E3711).
 - [x] `text_shadow: List<TextShadow>` on `Text`, `Button`, `TextInput`.
-- [ ] Renderer on every backend and the CPU raster; Style `when`, transitions, hot
-      reload, AOT, macros, Web export; headless pictures. (Done but for building the
-      Vulkan, D3D12, WebGPU and GLES paths, not built on this host.)
+- [x] Renderer on every backend and the CPU raster; Style `when`, transitions, hot
+      reload, AOT, macros, Web export; headless pictures. The material composite
+      fits GLES and WebGPU's floors (fourteen attributes, fourteen varyings):
+      Metal, Vulkan (MoltenVK), GLES (Linux) and WebGPU draw the looks as the CPU
+      raster does; D3D12 cross-checked, not run on this host.
 
 ## C7b — Materials (U3.3)
 
@@ -165,8 +167,12 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 - [x] `examples/materials`: the six side by side over a moving `.vs` brush, a
       sidebar over the window material; golden picture, composites and capture
       pixels asserted, a still picture and a held glow draw nothing.
-- [ ] Captures over other glass: a synthesized composite is never diffed, so a
-      capture sampling another glass counts dirty every frame.
+- [x] Captures over other glass: a capture's revision folds, for each composite
+      under it, what it draws by and the revision of what it samples (an earlier
+      capture, an offscreen pass's entries), so glass over still glass is clean.
+- [ ] A clean capture keeps last frame's blurred texture instead of rendering
+      and blurring again (today only the stats see it clean; a frame where
+      nothing changed skips the encode whole).
 
 ## C8 — Real-scale app
 

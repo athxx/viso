@@ -568,97 +568,94 @@ pub fn advanced_blend_ir() -> ShaderIr {
 /// into this single fragment, so a panel adds no pass, no target and no capture
 /// beyond what a plain blurred-backdrop layer already needed:
 ///
-/// - the tint is the same affine 4×5 color matrix (`row0..row3` + `offset`) plus
-///   `gamma` the fused color built-in uses, so saturation/tint/brightness cost
-///   nothing extra here;
-/// - `noise` is a grain amplitude over a hash of the *integer device pixel*, so a
-///   static screen renders byte-identically every frame (no time input);
+/// - the tint is the color rows (`red`, `green`, `blue`: coefficients over the
+///   straight color plus a constant) and gamma of the fused color op, so
+///   saturation/tint/brightness cost nothing extra here; it leaves alpha alone;
+/// - the noise is a grain amplitude over a hash of the *integer device pixel*, so
+///   a static screen renders byte-identically every frame (no time input);
 /// - `radius` is the panel's per-corner mask, evaluated as a signed distance like
 ///   every other analytic shape, so the glass has real antialiased corners
-///   instead of a rectangular cut;
-/// - `opacity` scales the whole result last.
+///   instead of a rectangular cut — or, when shapes melt, each shape's radius;
+/// - the melted shapes ride as 16-bit fractions of the rect, two to a `uint4`;
+/// - the opacity scales the whole result last.
 ///
+/// Fourteen attributes and fourteen varyings, inside every backend's floor
+/// (GLES and WebGPU: sixteen attributes, fifteen varyings of sixty floats).
 /// Per-instance data, uniforms at buffer 0, one texture (the blurred backdrop).
 pub fn material_ir() -> ShaderIr {
     static ATTRS: &[IrField] = &[
-        IrField::new("rect_pos", IrType::F32X2),
-        IrField::new("rect_size", IrType::F32X2),
-        IrField::new("uv_pos", IrType::F32X2),
-        IrField::new("uv_size", IrType::F32X2),
-        IrField::new("row0", IrType::F32X4),
-        IrField::new("row1", IrType::F32X4),
-        IrField::new("row2", IrType::F32X4),
-        IrField::new("row3", IrType::F32X4),
-        IrField::new("offset", IrType::F32X4),
+        IrField::new("rect", IrType::F32X4),
+        IrField::new("uv", IrType::F32X4),
+        IrField::new("red", IrType::F32X4),
+        IrField::new("green", IrType::F32X4),
+        IrField::new("blue", IrType::F32X4),
         IrField::new("radius", IrType::F32X4),
-        IrField::new("lens", IrType::F32X3),
+        IrField::new("lens", IrType::F32X4),
         IrField::new("glint", IrType::F32X4),
-        IrField::new("luminosity", IrType::F32X2),
+        IrField::new("tone", IrType::F32X4),
         IrField::new("adapt", IrType::F32X4),
         IrField::new("glow", IrType::F32X4),
-        IrField::new("shape0", IrType::F32X4),
-        IrField::new("shape1", IrType::F32X4),
-        IrField::new("shape2", IrType::F32X4),
-        IrField::new("shape3", IrType::F32X4),
-        IrField::new("shape_radius", IrType::F32X4),
+        IrField::new("shapes01", IrType::U32X4),
+        IrField::new("shapes23", IrType::U32X4),
         IrField::new("merge", IrType::F32X2),
-        IrField::new("gamma", IrType::F32),
-        IrField::new("noise", IrType::F32),
-        IrField::new("opacity", IrType::F32),
     ];
     static UNIFORMS: &[IrField] = VIEW_UNIFORMS;
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
-        Varying::new("uv", IrType::F32X2, "", "backdrop uv"),
+        Varying::new(
+            "at",
+            IrType::F32X4,
+            "",
+            "from the center, then in the instance's space",
+        ),
+        Varying::new(
+            "uv_map",
+            IrType::F32X4,
+            " [[flat]]",
+            "backdrop uv at the center, per point",
+        ),
+        Varying::new(
+            "frame",
+            IrType::F32X4,
+            " [[flat]]",
+            "half extents, melted count, blend",
+        ),
+        Varying::new("radius", IrType::F32X4, " [[flat]]", "lt, rt, rb, lb"),
+        Varying::new("red", IrType::F32X4, " [[flat]]", "over straight rgb, +"),
+        Varying::new("green", IrType::F32X4, " [[flat]]", ""),
+        Varying::new("blue", IrType::F32X4, " [[flat]]", ""),
         Varying::new(
             "lens",
-            IrType::F32X3,
-            "",
-            "refraction pt, bevel pt, dispersion",
+            IrType::F32X4,
+            " [[flat]]",
+            "refraction pt, bevel pt, dispersion, gamma",
         ),
         Varying::new(
             "glint",
             IrType::F32X4,
-            "",
+            " [[flat]]",
             "light direction, strength, line width pt",
         ),
-        Varying::new("luminosity", IrType::F32X2, "", "amount, its luminance"),
+        Varying::new(
+            "tone",
+            IrType::F32X4,
+            " [[flat]]",
+            "luminosity, its luminance, noise, opacity",
+        ),
         Varying::new(
             "adapt",
             IrType::F32X4,
-            "",
+            " [[flat]]",
             "adaptive tint, straight; a 0 = none",
         ),
-        Varying::new("glow", IrType::F32X4, "", "press glow: at, reach, strength"),
-        Varying::new("shape0", IrType::F32X4, "", "melted shapes, x y w h"),
-        Varying::new("shape1", IrType::F32X4, "", ""),
-        Varying::new("shape2", IrType::F32X4, "", ""),
-        Varying::new("shape3", IrType::F32X4, "", ""),
         Varying::new(
-            "shape_radius",
+            "glow",
             IrType::F32X4,
-            "",
-            "each melted shape's radius",
+            " [[flat]]",
+            "press glow: at (from the center), reach, strength",
         ),
-        Varying::new(
-            "merge",
-            IrType::F32X2,
-            "",
-            "melted count (0 = the rect), blend",
-        ),
-        Varying::new("uv_bounds", IrType::F32X4, "", "backdrop sub-rect (lo, hi)"),
-        Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
-        Varying::new("half_size", IrType::F32X2, "", ""),
-        Varying::new("center", IrType::F32X2, "", ""),
-        Varying::new("radius", IrType::F32X4, "", "mask radii lt, rt, rb, lb"),
-        Varying::new("row0", IrType::F32X4, "", "red row over (r, g, b, a)"),
-        Varying::new("row1", IrType::F32X4, "", "green row"),
-        Varying::new("row2", IrType::F32X4, "", "blue row"),
-        Varying::new("row3", IrType::F32X4, "", "alpha row"),
-        Varying::new("offset", IrType::F32X4, "", "constant column per channel"),
-        Varying::new("gamma", IrType::F32, "", "post-matrix RGB exponent"),
-        Varying::new("noise", IrType::F32, "", "grain amplitude, 0 = none"),
-        Varying::new("opacity", IrType::F32, "", ""),
+        Varying::new("shapes01", IrType::U32X4, " [[flat]]", "melted shapes"),
+        Varying::new("shapes23", IrType::U32X4, " [[flat]]", ""),
     ];
     ShaderIr {
         kind: PrimitiveKind::Material,
@@ -2517,8 +2514,9 @@ switch (vid) {
     default: corner = float2(0.0, 1.0); break;
 }
 
-float2 pos = float2(inst.rect_pos);
-float2 size = float2(inst.rect_size);
+float4 rect = float4(inst.rect);
+float2 pos = rect.xy;
+float2 size = rect.zw;
 float2 pad = float2(1.0, 1.0);
 float2 pixel = pos - pad + corner * (size + 2.0 * pad);
 
@@ -2527,37 +2525,28 @@ float2 at = float2(u.axis_x) * pixel.x + float2(u.axis_y) * pixel.y + float2(u.s
 float2 ndc = float2(at.x / vp.x * 2.0 - 1.0,
                     1.0 - at.y / vp.y * 2.0);
 
-float2 uv_lo = float2(inst.uv_pos);
-float2 uv_hi = uv_lo + float2(inst.uv_size);
-float2 uv_pad = float2(inst.uv_size) / max(size, float2(1.0, 1.0));
+float2 half_ext = size * 0.5;
+float2 center = pos + half_ext;
+float4 uv = float4(inst.uv);
+float2 merge = float2(inst.merge);
+float4 glow = float4(inst.glow);
 
 VOut out;
 out.position = float4(ndc, 0.0, 1.0);
-out.uv = uv_lo - uv_pad + corner * (float2(inst.uv_size) + 2.0 * uv_pad);
-out.uv_bounds = float4(uv_lo, uv_hi);
-out.local = pixel;
-out.half_size = size * 0.5;
-out.center = pos + size * 0.5;
+out.at = float4(pixel - center, pixel);
+out.uv_map = float4(uv.xy + uv.zw * 0.5, uv.zw / max(size, float2(1.0, 1.0)));
+out.frame = float4(half_ext, merge);
 out.radius = float4(inst.radius);
-out.lens = float3(inst.lens);
+out.red = float4(inst.red);
+out.green = float4(inst.green);
+out.blue = float4(inst.blue);
+out.lens = float4(inst.lens);
 out.glint = float4(inst.glint);
-out.luminosity = float2(inst.luminosity);
+out.tone = float4(inst.tone);
 out.adapt = float4(inst.adapt);
-out.glow = float4(inst.glow);
-out.shape0 = float4(inst.shape0);
-out.shape1 = float4(inst.shape1);
-out.shape2 = float4(inst.shape2);
-out.shape3 = float4(inst.shape3);
-out.shape_radius = float4(inst.shape_radius);
-out.merge = float2(inst.merge);
-out.row0 = float4(inst.row0);
-out.row1 = float4(inst.row1);
-out.row2 = float4(inst.row2);
-out.row3 = float4(inst.row3);
-out.offset = float4(inst.offset);
-out.gamma = float(inst.gamma);
-out.noise = float(inst.noise);
-out.opacity = float(inst.opacity);
+out.glow = float4(glow.xy - center, glow.zw);
+out.shapes01 = uint4(inst.shapes01);
+out.shapes23 = uint4(inst.shapes23);
 return out;";
 
 const MATERIAL_HELPERS: &str = "\
@@ -2587,24 +2576,34 @@ static inline float smooth_min(float a, float b, float k) {
     return min(a, b) - h * h * k * 0.25;
 }
 
+// A melted shape (x, y, w, h) from the center of a glass of half extents
+// `half_ext`: its origin and extent, 16-bit fractions of the glass, two to a
+// word.
+static inline float4 melted(uint2 s, float2 half_ext) {
+    float2 size = 2.0 * half_ext;
+    float2 origin = float2(float(s.x & 0xFFFFu), float(s.x >> 16u)) / 65535.0 * size - half_ext;
+    float2 ext = float2(float(s.y & 0xFFFFu), float(s.y >> 16u)) / 65535.0 * size;
+    return float4(origin, ext);
+}
+
 // Signed distance to the rounded box `s` (x, y, w, h) of corner radius `r`.
 static inline float shape_sdf(float2 p, float4 s, float r) {
     float2 h = s.zw * 0.5;
     return rrect_sdf(p, s.xy + h, h, float4(r));
 }
 
-// Signed distance to the glass: its melted shapes' smooth union, or its own
-// rounded rect when nothing melts.
-static inline float glass_sdf(float2 p, float2 center, float2 half_ext, float4 radii,
-                              float4 s0, float4 s1, float4 s2, float4 s3, float4 sr,
-                              float2 merge) {
+// Signed distance to the glass from its center: its melted shapes' smooth
+// union, each of the radius `radii` gives it, or its own rounded rect when
+// nothing melts.
+static inline float glass_sdf(float2 p, float2 half_ext, float4 radii,
+                              float4 s0, float4 s1, float4 s2, float4 s3, float2 merge) {
     if (merge.x < 0.5) {
-        return rrect_sdf(p, center, half_ext, radii);
+        return rrect_sdf(p, float2(0.0), half_ext, radii);
     }
-    float d = shape_sdf(p, s0, sr.x);
-    if (merge.x > 1.5) { d = smooth_min(d, shape_sdf(p, s1, sr.y), merge.y); }
-    if (merge.x > 2.5) { d = smooth_min(d, shape_sdf(p, s2, sr.z), merge.y); }
-    if (merge.x > 3.5) { d = smooth_min(d, shape_sdf(p, s3, sr.w), merge.y); }
+    float d = shape_sdf(p, s0, radii.x);
+    if (merge.x > 1.5) { d = smooth_min(d, shape_sdf(p, s1, radii.y), merge.y); }
+    if (merge.x > 2.5) { d = smooth_min(d, shape_sdf(p, s2, radii.z), merge.y); }
+    if (merge.x > 3.5) { d = smooth_min(d, shape_sdf(p, s3, radii.w), merge.y); }
     return d;
 }
 
@@ -2627,16 +2626,27 @@ static inline float grain(float2 p) {
 }";
 
 const MATERIAL_FRAGMENT_BODY: &str = "\
+// Where the pixel is from the glass's center, and the backdrop under it.
+float2 p = in.at.xy;
+float2 half_ext = in.frame.xy;
+float2 merge = in.frame.zw;
+float2 per_px = in.uv_map.zw;
+float2 uv = in.uv_map.xy + p * per_px;
+float2 uv_lo = in.uv_map.xy - half_ext * per_px;
+float2 uv_span = 2.0 * half_ext * per_px;
 // Taps are clamped to the backdrop's sub-rect, inset by half a texel: a pooled
 // render target is larger than the region written into it, so the sampler's own
 // clamp-to-edge would hold cleared padding rather than the content edge.
 float2 half_texel = 0.5 / float2(float(tex.get_width()), float(tex.get_height()));
-float2 lo = in.uv_bounds.xy + half_texel;
-float2 hi = max(in.uv_bounds.zw - half_texel, lo);
-float d = glass_sdf(in.local, in.center, in.half_size, in.radius,
-                    in.shape0, in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge);
-float2 gx = dfdx(in.uv);
-float2 gy = dfdy(in.uv);
+float2 lo = uv_lo + half_texel;
+float2 hi = max(uv_lo + uv_span - half_texel, lo);
+float4 s0 = melted(in.shapes01.xy, half_ext);
+float4 s1 = melted(in.shapes01.zw, half_ext);
+float4 s2 = melted(in.shapes23.xy, half_ext);
+float4 s3 = melted(in.shapes23.zw, half_ext);
+float d = glass_sdf(p, half_ext, in.radius, s0, s1, s2, s3, merge);
+float2 gx = dfdx(uv);
+float2 gy = dfdy(uv);
 
 // Liquid glass: the surface is flat across the middle with a quarter-circle
 // bevel at the rim; the backdrop seen through the bevel shifts inward along
@@ -2646,14 +2656,10 @@ float2 n = float2(0.0);
 if (in.lens.x > 0.0 || in.glint.z > 0.0) {
     float2 ex = float2(0.5, 0.0);
     float2 ey = float2(0.0, 0.5);
-    n = float2(glass_sdf(in.local + ex, in.center, in.half_size, in.radius, in.shape0,
-                         in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge)
-                 - glass_sdf(in.local - ex, in.center, in.half_size, in.radius, in.shape0,
-                             in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge),
-               glass_sdf(in.local + ey, in.center, in.half_size, in.radius, in.shape0,
-                         in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge)
-                 - glass_sdf(in.local - ey, in.center, in.half_size, in.radius, in.shape0,
-                             in.shape1, in.shape2, in.shape3, in.shape_radius, in.merge));
+    n = float2(glass_sdf(p + ex, half_ext, in.radius, s0, s1, s2, s3, merge)
+                 - glass_sdf(p - ex, half_ext, in.radius, s0, s1, s2, s3, merge),
+               glass_sdf(p + ey, half_ext, in.radius, s0, s1, s2, s3, merge)
+                 - glass_sdf(p - ey, half_ext, in.radius, s0, s1, s2, s3, merge));
     float nl = length(n);
     n = nl > 0.0 ? n / nl : float2(0.0);
 }
@@ -2662,37 +2668,35 @@ if (in.lens.x > 0.0 && in.lens.y > 0.0) {
     float x = 1.0 - clamp(inward / in.lens.y, 0.0, 1.0);
     shift = in.lens.x * (1.0 - sqrt(max(1.0 - x * x, 0.0)));
 }
-float2 per_px = (in.uv_bounds.zw - in.uv_bounds.xy) / max(2.0 * in.half_size, float2(1.0));
 float2 bend = n * shift * per_px;
-float4 texel = tex.sample(samp, clamp(in.uv - bend, lo, hi), gradient2d(gx, gy));
+float4 texel = tex.sample(samp, clamp(uv - bend, lo, hi), gradient2d(gx, gy));
 if (in.lens.z > 0.0 && shift > 0.0) {
-    float4 r = tex.sample(samp, clamp(in.uv - bend * (1.0 + in.lens.z), lo, hi), gradient2d(gx, gy));
-    float4 b = tex.sample(samp, clamp(in.uv - bend * (1.0 - in.lens.z), lo, hi), gradient2d(gx, gy));
+    float4 r = tex.sample(samp, clamp(uv - bend * (1.0 + in.lens.z), lo, hi), gradient2d(gx, gy));
+    float4 b = tex.sample(samp, clamp(uv - bend * (1.0 - in.lens.z), lo, hi), gradient2d(gx, gy));
     texel = float4(r.r, texel.g, b.b, texel.a);
 }
 
-// Tint: the same straight-alpha affine matrix the fused color built-in applies,
-// so brightness never depends on coverage.
+// Tint: the fused color op's rows over the straight color, so brightness never
+// depends on coverage; alpha passes through.
 float a = texel.a;
-float4 src = (a > 0.0) ? float4(texel.rgb / a, a) : float4(0.0);
-float4 dst = float4(dot(in.row0, src) + in.offset.r,
-                    dot(in.row1, src) + in.offset.g,
-                    dot(in.row2, src) + in.offset.b,
-                    dot(in.row3, src) + in.offset.a);
+float3 src = (a > 0.0) ? texel.rgb / a : float3(0.0);
+float4 dst = float4(dot(in.red.xyz, src) + in.red.w,
+                    dot(in.green.xyz, src) + in.green.w,
+                    dot(in.blue.xyz, src) + in.blue.w,
+                    a);
 dst = clamp(dst, 0.0, 1.0);
-if (in.gamma != 1.0) {
-    dst.rgb = pow(dst.rgb, float3(in.gamma));
+if (in.lens.w != 1.0) {
+    dst.rgb = pow(dst.rgb, float3(in.lens.w));
 }
 // The adaptive tint: the backdrop's mean light, from five fixed taps every
 // pixel of the surface shares, sets the tint's tone, its hue kept: dark over
 // dark content, light over light.
 if (in.adapt.w > 0.0) {
-    float2 span = in.uv_bounds.zw - in.uv_bounds.xy;
     float m = 0.0;
     for (int k = 0; k < 5; ++k) {
-        float2 at = k == 0 ? float2(0.5, 0.5)
-                  : float2(k == 1 || k == 3 ? 0.25 : 0.75, k < 3 ? 0.25 : 0.75);
-        float4 t = tex.sample(samp, clamp(in.uv_bounds.xy + span * at, lo, hi), gradient2d(float2(0.0), float2(0.0)));
+        float2 tap = k == 0 ? float2(0.5, 0.5)
+                   : float2(k == 1 || k == 3 ? 0.25 : 0.75, k < 3 ? 0.25 : 0.75);
+        float4 t = tex.sample(samp, clamp(uv_lo + uv_span * tap, lo, hi), gradient2d(float2(0.0), float2(0.0)));
         float3 c = t.a > 0.0 ? t.rgb / t.a : float3(0.0);
         m = m + dot(c, float3(0.2126, 0.7152, 0.0722)) * 0.2;
     }
@@ -2704,10 +2708,10 @@ if (in.adapt.w > 0.0) {
 }
 // Acrylic's luminosity layer: the backdrop's light gives way to a fixed one,
 // so what lies on the glass reads whatever is behind it.
-if (in.luminosity.x > 0.0) {
+if (in.tone.x > 0.0) {
     float l = dot(dst.rgb, float3(0.2126, 0.7152, 0.0722));
-    float3 lit = clamp(dst.rgb + (in.luminosity.y - l), 0.0, 1.0);
-    dst.rgb = mix(dst.rgb, lit, in.luminosity.x);
+    float3 lit = clamp(dst.rgb + (in.tone.y - l), 0.0, 1.0);
+    dst.rgb = mix(dst.rgb, lit, in.tone.x);
 }
 // The glint: a thin line at the edge with a faint bleed inside it, on the two
 // walls along the light's axis, fainter on the one facing away. It pulls the
@@ -2720,26 +2724,26 @@ if (in.glint.z > 0.0 && in.glint.w > 0.0) {
     float toward = dot(n, l) >= 0.0 ? 1.0 : 0.35;
     float g = clamp(in.glint.z * 0.6 * lobe * toward * rim, 0.0, 1.0);
     float y = dot(dst.rgb, float3(0.2126, 0.7152, 0.0722));
-    float3 tone = clamp(float3(1.0) + (dst.rgb - y) * 2.85, 0.0, 1.0);
-    dst.rgb = mix(dst.rgb, tone, g);
+    float3 bright = clamp(float3(1.0) + (dst.rgb - y) * 2.85, 0.0, 1.0);
+    dst.rgb = mix(dst.rgb, bright, g);
     dst.a = max(dst.a, g);
 }
 // A press's glow: light from where it landed, fading out to its reach,
 // across every shape melted into this one.
 if (in.glow.w > 0.0) {
-    float t = clamp(1.0 - length(in.local - in.glow.xy) / in.glow.z, 0.0, 1.0);
+    float t = clamp(1.0 - length(p - in.glow.xy) / in.glow.z, 0.0, 1.0);
     float g = in.glow.w * t * t;
     dst.rgb = dst.rgb + g * (1.0 - dst.rgb);
     dst.a = max(dst.a, g);
 }
-if (in.noise > 0.0) {
-    dst.rgb = clamp(dst.rgb + in.noise * grain(in.local), 0.0, 1.0);
+if (in.tone.z > 0.0) {
+    dst.rgb = clamp(dst.rgb + in.tone.z * grain(in.at.zw), 0.0, 1.0);
 }
 
 // Material mask: the panel's own rounded rect, antialiased over one device pixel.
-float cov = clamp(-d * aa_factor(in.local), 0.0, 1.0);
+float cov = clamp(-d * aa_factor(p), 0.0, 1.0);
 
-float oa = dst.a * cov * in.opacity;
+float oa = dst.a * cov * in.tone.w;
 return float4(dst.rgb * oa, oa);";
 
 const ADVANCED_BLEND_VERTEX_BODY: &str = "\

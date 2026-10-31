@@ -64,7 +64,7 @@ mod present;
 #[cfg(test)]
 mod testing;
 
-use crate::damage::Region;
+use crate::damage::{Key, Region};
 use present::Atlas;
 pub use present::{DamageStats, TopImage};
 
@@ -1287,6 +1287,9 @@ pub struct Renderer {
     /// it is the previous frame's value each capture's new revision is compared
     /// against, rewritten in place once the comparison is made.
     backdrop_dependencies: Vec<BackdropDependency>,
+    /// Scratch for each offscreen pass's revision while the captures are
+    /// realized.
+    pass_revisions: Vec<Key>,
     /// Scratch quad instance data, reused each frame.
     quad_scratch: Vec<QuadInstance>,
     /// Scratch analytic rounded-rectangle instance data, reused each frame.
@@ -1750,12 +1753,48 @@ struct MaterialRecord {
     merged: Option<crate::primitive::GlassUnion>,
 }
 
+impl MaterialRecord {
+    /// Folds into `key` everything the surface draws by beyond its backdrop.
+    fn key(&self, key: crate::damage::Key) -> crate::damage::Key {
+        let mut key =
+            key.rect(self.rect)
+                .f32s(&self.radius)
+                .f32s(&[self.op.gamma, self.noise, self.opacity]);
+        for row in &self.op.matrix.rows {
+            key = key.f32s(row);
+        }
+        let (lens, glint, lum) = (self.lens, self.glint, self.luminosity);
+        key = key.f32s(&[
+            lens.refraction,
+            lens.bevel,
+            lens.dispersion,
+            glint.strength,
+            glint.light,
+            glint.width,
+            lum.amount,
+            lum.luminance,
+        ]);
+        if let Some(t) = self.adaptive_tint {
+            key = key.f32s(&[t.r, t.g, t.b, t.a]);
+        }
+        if let Some(g) = self.glow {
+            key = key.f32s(&[g.at.x, g.at.y, g.radius, g.strength]);
+        }
+        if let Some(m) = self.merged {
+            key = key.word(u64::from(m.count)).f32s(&[m.spacing]);
+            for (rect, radius) in &m.shapes[..usize::from(m.count)] {
+                key = key.rect(*rect).f32s(&[*radius]);
+            }
+        }
+        key
+    }
+}
+
 /// Lay a [`MaterialRecord`] out as GPU instance data over `rect` (target space)
 /// sampling `uv` (normalized against the capture's physical extent).
 ///
-/// The fused op's 4×5 matrix splits into row vectors plus the offset column, the
-/// same shape [`color_transform_instance`] produces — the material pipeline runs
-/// the color stage inline rather than in a pass of its own.
+/// The fused op's color rows ride as they are; its alpha row, the identity
+/// every color effect keeps, gives only its scale, folded into the opacity.
 fn material_instance(
     record: MaterialRecord,
     rect_pos: [f32; 2],
@@ -1764,7 +1803,7 @@ fn material_instance(
     uv_size: [f32; 2],
 ) -> MaterialInstance {
     let r = record.op.matrix.rows;
-    let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][3]];
+    let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][4]];
     // The bevel reaches at most a quarter of the shorter side in, and the
     // edge's shift never passes the middle.
     let half_minor = rect_size[0].min(rect_size[1]) * 0.5;
@@ -1775,34 +1814,49 @@ fn material_instance(
     let (sin, cos) = glint.light.sin_cos();
     // From the surface's space to the instance's.
     let shift = [rect_pos[0] - record.rect.x, rect_pos[1] - record.rect.y];
+    // A melted shape as 16-bit fractions of the rect, two to a word.
+    let unit = |v: f32, of: f32| match of > 0.0 {
+        true => ((v / of).clamp(0.0, 1.0) * 65535.0).round() as u32,
+        false => 0,
+    };
+    let pair = |a: f32, b: f32, of: [f32; 2]| unit(a, of[0]) | unit(b, of[1]) << 16;
     let shape = |i: usize| match record.merged {
         Some(m) if i < usize::from(m.count) => {
-            let r = m.shapes[i].0;
-            [r.x + shift[0], r.y + shift[1], r.w, r.h]
+            let s = m.shapes[i].0;
+            let at = [s.x + shift[0] - rect_pos[0], s.y + shift[1] - rect_pos[1]];
+            [pair(at[0], at[1], rect_size), pair(s.w, s.h, rect_size)]
         }
-        _ => [0.0; 4],
+        _ => [0; 2],
+    };
+    let [s0, s1, s2, s3] = std::array::from_fn(shape);
+    let radius = match record.merged {
+        Some(m) => std::array::from_fn(|i| m.shapes[i].1.max(0.0)),
+        None => record.radius,
     };
     MaterialInstance {
-        rect_pos,
-        rect_size,
-        uv_pos,
-        uv_size,
-        row0: row(0),
-        row1: row(1),
-        row2: row(2),
-        row3: row(3),
-        offset: [r[0][4], r[1][4], r[2][4], r[3][4]],
-        radius: record.radius,
-        lens: [refraction, bevel, lens.dispersion.clamp(0.0, 1.0)],
+        rect: [rect_pos[0], rect_pos[1], rect_size[0], rect_size[1]],
+        uv: [uv_pos[0], uv_pos[1], uv_size[0], uv_size[1]],
+        red: row(0),
+        green: row(1),
+        blue: row(2),
+        radius,
+        lens: [
+            refraction,
+            bevel,
+            lens.dispersion.clamp(0.0, 1.0),
+            record.op.gamma,
+        ],
         glint: [
             sin,
             -cos,
             glint.strength.clamp(0.0, 1.0),
             glint.width.max(0.0),
         ],
-        luminosity: [
+        tone: [
             record.luminosity.amount.clamp(0.0, 1.0),
             record.luminosity.luminance.clamp(0.0, 1.0),
+            record.noise,
+            record.opacity * r[3][3],
         ],
         adapt: record
             .adaptive_tint
@@ -1815,19 +1869,11 @@ fn material_instance(
                 g.strength.clamp(0.0, 1.0),
             ]
         }),
-        shape0: shape(0),
-        shape1: shape(1),
-        shape2: shape(2),
-        shape3: shape(3),
-        shape_radius: std::array::from_fn(|i| {
-            record.merged.map_or(0.0, |m| m.shapes[i].1.max(0.0))
-        }),
+        shapes01: [s0[0], s0[1], s1[0], s1[1]],
+        shapes23: [s2[0], s2[1], s3[0], s3[1]],
         merge: record
             .merged
             .map_or([0.0; 2], |m| [f32::from(m.count), m.spacing]),
-        gamma: record.op.gamma,
-        noise: record.noise,
-        opacity: record.opacity,
     }
 }
 
@@ -2163,6 +2209,7 @@ impl Renderer {
             opacity_folds: 0,
             backdrop_dirty_rois: 0,
             backdrop_dependencies: Vec::new(),
+            pass_revisions: Vec::new(),
             quad_scratch: Vec::with_capacity(256),
             analytic_rrect_scratch: Vec::with_capacity(256),
             analytic_ellipse_scratch: Vec::with_capacity(256),
@@ -5011,6 +5058,17 @@ impl Renderer {
         // allocation round-trips untouched.
         let record = std::mem::take(&mut self.scene.paint_order);
         let mut reads = std::mem::take(&mut self.backdrop_reads);
+        // What each offscreen pass draws, from its entries: inner passes
+        // close before the entries that composite them.
+        let mut passes = std::mem::take(&mut self.pass_revisions);
+        passes.clear();
+        passes.resize(self.offscreen_passes.len(), Key::new(0));
+        for (slot, entry) in record.iter().enumerate() {
+            if let Some(pass) = entry.context.offscreen {
+                let folded = self.entry_revision(&passes, slot, entry.store, passes[pass as usize]);
+                passes[pass as usize] = folded;
+            }
+        }
         for i in 0..self.backdrop_captures.len() {
             let (roi, under) = {
                 let cap = &mut self.backdrop_captures[i];
@@ -5038,12 +5096,12 @@ impl Renderer {
             // The graph does not deduplicate reads, and one offscreen layer can
             // contribute many entries to a capture, so fold the sources here.
             reads.clear();
-            // The ROI-scoped dependency revision, accumulated over exactly
-            // the entries this capture samples: the newest content stamp among
-            // them, plus how many there were. The count is what catches a removal
-            // at the tail, where no surviving slot's stamp moves.
-            let mut dependency = 0u64;
-            let mut members = 0u64;
+            // The ROI-scoped dependency revision, a hash over exactly the
+            // entries this capture samples: each one's slot and content stamp,
+            // or, for a composite, what it draws by and what it samples — an
+            // earlier capture's revision, a pass's entries. The slots catch a
+            // removal at the tail, where no surviving stamp moves.
+            let mut revision = Key::new(i as u64).rect(roi);
             for (slot, entry) in record[..under].iter().enumerate() {
                 if entry.context.offscreen.is_some() {
                     continue;
@@ -5055,8 +5113,7 @@ impl Renderer {
                         continue;
                     }
                 }
-                dependency = dependency.max(self.scene.content_stamp(slot));
-                members += 1;
+                revision = self.entry_revision(&passes, slot, entry.store, revision);
                 let source = match entry.store {
                     StoreRef::Composite { pass, .. } => self.offscreen_passes[pass as usize].sample,
                     // Always an earlier capture: a group's members are recorded
@@ -5090,7 +5147,7 @@ impl Renderer {
             // slot that did not exist then is new work, so it counts as dirty; the
             // vector is rewritten in place, in capture order, so slot `i` still
             // holds last frame's value when it is read here.
-            let revision = dependency.wrapping_add(members);
+            let revision = revision.finish();
             let previous = self.backdrop_dependencies.get(i).map(|d| d.revision);
             let dirty = previous != Some(revision);
             if dirty {
@@ -5109,7 +5166,55 @@ impl Renderer {
         self.backdrop_dependencies
             .truncate(self.backdrop_captures.len());
         self.backdrop_reads = reads;
+        self.pass_revisions = passes;
         self.scene.paint_order = record;
+    }
+
+    /// `key` with paint-order entry `slot` over `store` folded in: its slot
+    /// and content stamp, or for a composite, which no store diffs, what it
+    /// draws by and the revision of what it samples — the pass's in `passes`,
+    /// or an earlier capture's this frame.
+    fn entry_revision(&self, passes: &[Key], slot: usize, store: StoreRef, key: Key) -> Key {
+        let key = key.word(slot as u64);
+        match store {
+            StoreRef::Composite { pass, slot } => {
+                let mut key = key.word(passes[pass as usize].finish());
+                if let Some(p) = self.offscreen_passes.get(pass as usize) {
+                    key = key.word(p.key);
+                }
+                match self.scene.composites.get(slot as usize) {
+                    Some(c) => key
+                        .f32s(&c.rect_pos)
+                        .f32s(&c.rect_size)
+                        .f32s(&c.uv_pos)
+                        .f32s(&c.uv_size)
+                        .f32s(&c.color),
+                    None => key,
+                }
+            }
+            StoreRef::BackdropComposite { capture, slot } => {
+                let key = key.word(self.capture_revision(capture));
+                match self.scene.backdrops.get(slot as usize) {
+                    Some(&(rect, opacity)) => key.rect(rect).f32s(&[opacity]),
+                    None => key,
+                }
+            }
+            StoreRef::MaterialComposite { capture, material } => {
+                let key = key.word(self.capture_revision(capture));
+                match self.material_records.get(material as usize) {
+                    Some(m) => m.key(key),
+                    None => key,
+                }
+            }
+            _ => key.word(self.scene.content_stamp(slot)),
+        }
+    }
+
+    /// This frame's revision of capture `capture`, already realized.
+    fn capture_revision(&self, capture: u32) -> u64 {
+        self.backdrop_dependencies
+            .get(capture as usize)
+            .map_or(0, |d| d.revision)
     }
 
     /// Open an offscreen pass for a translucent layer whose world-space clip is

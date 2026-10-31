@@ -822,58 +822,29 @@ mod tests {
         assert_eq!(
             ir_names,
             [
-                "rect_pos",
-                "rect_size",
-                "uv_pos",
-                "uv_size",
-                "row0",
-                "row1",
-                "row2",
-                "row3",
-                "offset",
-                "radius",
-                "lens",
-                "glint",
-                "luminosity",
-                "adapt",
-                "glow",
-                "shape0",
-                "shape1",
-                "shape2",
-                "shape3",
-                "shape_radius",
-                "merge",
-                "gamma",
-                "noise",
-                "opacity"
+                "rect", "uv", "red", "green", "blue", "radius", "lens", "glint", "tone", "adapt",
+                "glow", "shapes01", "shapes23", "merge"
             ]
         );
         assert_three_legs_agree(MATERIAL_MSL(), &material_schema(), &ir_names);
 
-        // The ColorTransform prefix (4*8 + 5*16 = 112) plus the mask radii
-        // (16), the lens (12), the glint (16), the luminosity (8), the
-        // adaptive tint (16), the glow (16), four melted shapes and their radii
-        // (5*16), the merge (8) and three bare F32 tail fields:
-        // 112 + 172 + 3*4 = 296 bytes, no padding.
+        // Eleven `float4`s, the two `uint4`s of melted shapes and the merge:
+        // 11*16 + 2*16 + 8 = 216 bytes, no padding, and no more attributes
+        // or varyings than GLES and WebGPU promise.
         let (expected, stride) = material_ir().expected_offsets();
         let schema = material_schema();
         assert_eq!(schema.attributes.len(), expected.len());
-        assert_eq!(stride, 296);
-        assert_eq!(expected[0], ("rect_pos", 0));
-        assert_eq!(expected[4], ("row0", 32));
-        assert_eq!(expected[8], ("offset", 96));
-        assert_eq!(expected[9], ("radius", 112));
-        assert_eq!(expected[10], ("lens", 128));
-        assert_eq!(expected[11], ("glint", 140));
-        assert_eq!(expected[12], ("luminosity", 156));
-        assert_eq!(expected[13], ("adapt", 164));
-        assert_eq!(expected[14], ("glow", 180));
-        assert_eq!(expected[15], ("shape0", 196));
-        assert_eq!(expected[19], ("shape_radius", 260));
-        assert_eq!(expected[20], ("merge", 276));
-        assert_eq!(expected[21], ("gamma", 284));
-        assert_eq!(expected[22], ("noise", 288));
-        assert_eq!(expected[23], ("opacity", 292));
+        assert_eq!(stride, 216);
+        assert_eq!(expected[0], ("rect", 0));
+        assert_eq!(expected[2], ("red", 32));
+        assert_eq!(expected[8], ("tone", 128));
+        assert_eq!(expected[11], ("shapes01", 176));
+        assert_eq!(expected[13], ("merge", 208));
+        assert!(material_ir().attributes.len() <= 16);
+        let varyings = &material_ir().varyings[1..];
+        assert!(varyings.len() <= 15);
+        let floats: usize = varyings.iter().map(|v| v.ty.packed_size() / 4).sum();
+        assert!(floats <= 60, "{floats} varying components");
     }
 
     /// The grain must never read time, or a static frosted surface would redraw
@@ -884,8 +855,8 @@ mod tests {
     fn material_grain_is_a_pure_function_of_the_pixel() {
         let msl = MATERIAL_MSL();
         assert!(msl.contains("float grain(float2 p)"));
-        assert!(msl.contains("grain(in.local)"));
-        // `in.local` is the pixel position and the instance fields are the only
+        assert!(msl.contains("grain(in.at.zw)"));
+        // `in.at.zw` is the pixel position and the instance fields are the only
         // other inputs: the IR declares no clock/frame uniform to read.
         let uniforms: Vec<&str> = material_ir().uniforms.iter().map(|f| f.name).collect();
         assert_eq!(uniforms, ["viewport", "shift", "axis_x", "axis_y"]);

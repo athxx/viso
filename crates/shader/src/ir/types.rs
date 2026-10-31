@@ -74,6 +74,11 @@ impl IrType {
     pub const F32: IrType = IrType::Scalar(ScalarType::F32);
     /// A single unsigned int (`u32` ⇒ `uint`).
     pub const U32: IrType = IrType::Scalar(ScalarType::U32);
+    /// A 4-lane unsigned vector (`[u32; 4]` ⇒ `packed_uint4`).
+    pub const U32X4: IrType = IrType::Vector {
+        scalar: ScalarType::U32,
+        lanes: 4,
+    };
 
     /// The MSL type spelling for a field of this type inside an instance/vertex
     /// `struct`. Vectors use

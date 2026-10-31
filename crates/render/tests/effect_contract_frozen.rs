@@ -891,6 +891,36 @@ fn damage_is_scoped_to_the_roi_that_changed() {
     );
 }
 
+/// A backdrop over another glass samples that glass's composite, which no store
+/// diffs: it is clean while what the glass draws by and samples holds still,
+/// and dirty once the glass under it changes how it draws.
+#[test]
+fn a_backdrop_over_glass_is_dirty_only_when_that_glass_changes() {
+    let (mut gpu, _s, mut r) = renderer(W, H);
+    let under = vec![background(), quad(rect(14.0, 14.0, 40.0, 40.0))];
+    let scene = |opacity: f32| {
+        let mut scene = under.clone();
+        let mut lower = panel(rect(22.0, 22.0, 40.0, 40.0), 2.0);
+        if let Primitive::Layer(layer) = &mut lower[0] {
+            layer.opacity = opacity;
+        }
+        scene.extend(lower);
+        scene.extend(panel(rect(40.0, 40.0, 40.0, 40.0), 4.0));
+        scene
+    };
+    let first = frame(&mut gpu, &mut r, &scene(1.0));
+    assert_eq!(first.backdrop_captures, 2, "two sigmas, two captures");
+
+    let still = frame(&mut gpu, &mut r, &scene(1.0));
+    assert_eq!(still.backdrop_dirty_rois, 0, "nothing under either moved");
+
+    let faded = frame(&mut gpu, &mut r, &scene(0.5));
+    let deps = r.backdrop_dependencies();
+    assert_eq!(faded.backdrop_dirty_rois, 1);
+    assert!(!deps[0].dirty, "what lies under the lower glass held still");
+    assert!(deps[1].dirty, "the upper one sees the lower glass fade");
+}
+
 /// The dependency is on *content*, not on one revision plane: a quad that only
 /// moved dirties the backdrop above it exactly as a recolored one does. A
 /// backdrop samples pixels, and a moved quad changes pixels.

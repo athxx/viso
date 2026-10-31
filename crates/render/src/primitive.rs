@@ -2646,69 +2646,57 @@ pub struct ColorTransformInstance {
 /// GPU instance for the Material built-in shader.
 ///
 /// Field names/formats match [`material_schema`] and the headless `fill_material`
-/// reader. It is a [`ColorTransformInstance`] plus the material's own mask: the
-/// quad samples the shared blurred backdrop through `uv_pos`/`uv_size`, tints it
-/// with the same fused affine matrix (`row0..row3` + `offset`) and `gamma`, adds
-/// `noise` × a grain hashed from the integer device pixel, multiplies by the
-/// rounded-rect coverage of `radius`, and scales by `opacity`.
+/// reader. The quad samples the shared blurred backdrop through `uv`, tints it
+/// with the color rows of the fused color op and its gamma, adds the noise × a
+/// grain hashed from the integer device pixel, multiplies by the coverage of the
+/// glass's distance, and scales by the opacity.
 ///
 /// One instance is therefore a whole frosted surface — no extra pass, target or
-/// capture beyond the blurred-backdrop layer it replaces. `#[repr(C)]` with only
-/// 4-byte-aligned scalars/vectors, so the derive's `offset_of!`-based layout has no
-/// padding — stride 140.
+/// capture beyond the blurred-backdrop layer it replaces. Fourteen fields, so it
+/// fits the sixteen vertex attributes GLES and WebGPU promise. `#[repr(C)]` with
+/// only 4-byte-aligned scalars/vectors, so the derive's `offset_of!`-based layout
+/// has no padding — stride 216.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, GpuPod)]
 pub struct MaterialInstance {
-    /// Destination top-left in points.
-    pub rect_pos: [f32; 2],
-    /// Destination width/height in points.
-    pub rect_size: [f32; 2],
-    /// Backdrop sub-rect origin in normalized texture coords.
-    pub uv_pos: [f32; 2],
-    /// Backdrop sub-rect size in normalized texture coords.
-    pub uv_size: [f32; 2],
-    /// Red output row: coefficients over `(r, g, b, a)`.
-    pub row0: [f32; 4],
-    /// Green output row.
-    pub row1: [f32; 4],
-    /// Blue output row.
-    pub row2: [f32; 4],
-    /// Alpha output row.
-    pub row3: [f32; 4],
-    /// Constant term per output channel (the matrix's fifth column).
-    pub offset: [f32; 4],
+    /// Destination top-left and size in points.
+    pub rect: [f32; 4],
+    /// Backdrop sub-rect origin and size in normalized texture coords.
+    pub uv: [f32; 4],
+    /// The red output: coefficients over the straight `(r, g, b)`, then the
+    /// constant.
+    pub red: [f32; 4],
+    /// The green output.
+    pub green: [f32; 4],
+    /// The blue output.
+    pub blue: [f32; 4],
     /// Mask radii in points, ordered left-top, right-top, right-bottom,
-    /// left-bottom — already normalized against the rect.
+    /// left-bottom — already normalized against the rect; when shapes melt,
+    /// each shape's radius.
     pub radius: [f32; 4],
     /// The lens: refraction and bevel depth in points, already held within
-    /// the surface, and dispersion.
-    pub lens: [f32; 3],
+    /// the surface, and dispersion; then the RGB exponent applied after the
+    /// color rows (`1.0` = none).
+    pub lens: [f32; 4],
     /// The glint: the light's direction (a unit vector), strength, and line
     /// width in points.
     pub glint: [f32; 4],
-    /// The luminosity layer: amount and the luminance it gives way to.
-    pub luminosity: [f32; 2],
+    /// The luminosity layer's amount and the luminance it gives way to, the
+    /// grain amplitude (`0` = none) and the surface opacity, applied last.
+    pub tone: [f32; 4],
     /// The adaptive tint: straight linear color and alpha, `0` alpha for
     /// none.
     pub adapt: [f32; 4],
     /// The glow: where (in the instance's space), how far, how strong; `0`
     /// strength for none.
     pub glow: [f32; 4],
-    /// The melted shapes, each `x, y, w, h` in the instance's space.
-    pub shape0: [f32; 4],
-    pub shape1: [f32; 4],
-    pub shape2: [f32; 4],
-    pub shape3: [f32; 4],
-    /// Each melted shape's corner radius.
-    pub shape_radius: [f32; 4],
+    /// The first two melted shapes, each `x | y << 16, w | h << 16` in
+    /// 16-bit fractions of the rect.
+    pub shapes01: [u32; 4],
+    /// The last two.
+    pub shapes23: [u32; 4],
     /// How many shapes melt (`0`: the rect alone), and how near they blend.
     pub merge: [f32; 2],
-    /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
-    pub gamma: f32,
-    /// Grain amplitude in `0..1`; `0.0` = no noise.
-    pub noise: f32,
-    /// Surface opacity, applied last.
-    pub opacity: f32,
 }
 
 /// GPU instance for the AdvancedBlend built-in shader.

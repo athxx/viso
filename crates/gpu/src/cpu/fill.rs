@@ -14,7 +14,7 @@ use crate::instance::AttrFormat;
 use crate::resource::{BuiltinShader, SamplerDesc};
 use crate::{DrawCommand, TextureId};
 
-use AttrFormat::{Float1 as F1, Float2 as F2, Float3 as F3, Float4 as F4, Uint1 as U1};
+use AttrFormat::{Float1 as F1, Float2 as F2, Float4 as F4, Uint1 as U1, Uint4 as U4};
 
 /// The most fields a built-in reads.
 pub(super) const MAX_FIELDS: usize = 24;
@@ -112,30 +112,20 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("dither", F1),
         ],
         BuiltinShader::Material => &[
-            RECT[0],
-            RECT[1],
-            ("uv_pos", F2),
-            ("uv_size", F2),
-            ("row0", F4),
-            ("row1", F4),
-            ("row2", F4),
-            ("row3", F4),
-            ("offset", F4),
+            ("rect", F4),
+            ("uv", F4),
+            ("red", F4),
+            ("green", F4),
+            ("blue", F4),
             ("radius", F4),
-            ("lens", F3),
+            ("lens", F4),
             ("glint", F4),
-            ("luminosity", F2),
+            ("tone", F4),
             ("adapt", F4),
             ("glow", F4),
-            ("shape0", F4),
-            ("shape1", F4),
-            ("shape2", F4),
-            ("shape3", F4),
-            ("shape_radius", F4),
+            ("shapes01", U4),
+            ("shapes23", U4),
             ("merge", F2),
-            ("gamma", F1),
-            ("noise", F1),
-            ("opacity", F1),
         ],
         BuiltinShader::AdvancedBlend => &[
             RECT[0],
@@ -200,13 +190,13 @@ impl Inst<'_> {
     }
 
     #[inline]
-    pub(super) fn f3(&self, field: usize) -> [f32; 3] {
+    pub(super) fn f4(&self, field: usize) -> [f32; 4] {
         std::array::from_fn(|i| f32::from_le_bytes(self.word(field, i)))
     }
 
     #[inline]
-    pub(super) fn f4(&self, field: usize) -> [f32; 4] {
-        std::array::from_fn(|i| f32::from_le_bytes(self.word(field, i)))
+    pub(super) fn u4(&self, field: usize) -> [u32; 4] {
+        std::array::from_fn(|i| u32::from_le_bytes(self.word(field, i)))
     }
 }
 
@@ -437,10 +427,13 @@ pub(super) fn bounds(
         | BuiltinShader::AnalyticRRect
         | BuiltinShader::AnalyticEllipse
         | BuiltinShader::AnalyticCapsule
-        | BuiltinShader::Gradient
-        | BuiltinShader::Material => {
+        | BuiltinShader::Gradient => {
             let (min, max, _) = rect(i);
             padded(min, max, [0.0, 0.0], place, scale)
+        }
+        BuiltinShader::Material => {
+            let [x, y, w, h] = i.f4(0);
+            padded([x, y], [x + w, y + h], [0.0, 0.0], place, scale)
         }
         BuiltinShader::AnalyticLine => {
             let (p0, p1, hw, cap) = (i.f2(0), i.f2(1), i.f1(2) * 0.5, i.u1(4));
@@ -987,33 +980,45 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let Some((tex, samp)) = texture_bindings(cx, 0) else {
         return;
     };
-    let map = UvMap::of(i, 2, 3);
-    let matrix = Matrix::of(i, 4, 8, 21);
-    let (radius, lens, glint, luminosity) = (i.f4(9), i.f3(10), i.f4(11), i.f2(12));
-    let (adapt, glow) = (i.f4(13), i.f4(14));
-    let shapes = [i.f4(15), i.f4(16), i.f4(17), i.f4(18)];
-    let (shape_radius, merge) = (i.f4(19), i.f2(20));
-    let (noise, opacity) = (i.f1(22), i.f1(23));
-    if map.size[0] <= 0.0 || map.size[1] <= 0.0 {
+    let (rect, uv) = (i.f4(0), i.f4(1));
+    let rows = [i.f4(2), i.f4(3), i.f4(4)];
+    let (radius, lens, glint, tone) = (i.f4(5), i.f4(6), i.f4(7), i.f4(8));
+    let (adapt, glow) = (i.f4(9), i.f4(10));
+    let (s01, s23, merge) = (i.u4(11), i.u4(12), i.f2(13));
+    let (luminosity, noise, opacity, gamma) = ([tone[0], tone[1]], tone[2], tone[3], lens[3]);
+    if rect[2] <= 0.0 || rect[3] <= 0.0 {
         return;
     }
-    let center = [
-        map.pos[0] + map.size[0] * 0.5,
-        map.pos[1] + map.size[1] * 0.5,
+    // Everything from the glass's center, as the shader has it.
+    let half = [rect[2] * 0.5, rect[3] * 0.5];
+    let center = [rect[0] + half[0], rect[1] + half[1]];
+    let per = [uv[2] / rect[2].max(1.0), uv[3] / rect[3].max(1.0)];
+    let uv_center = [uv[0] + uv[2] * 0.5, uv[1] + uv[3] * 0.5];
+    let uv_lo = [
+        uv_center[0] - half[0] * per[0],
+        uv_center[1] - half[1] * per[1],
     ];
-    let half = [map.size[0] * 0.5, map.size[1] * 0.5];
-    let (lo, hi) = inset_window(map.uv_pos, map.uv_size, &tex);
+    let uv_span = [2.0 * half[0] * per[0], 2.0 * half[1] * per[1]];
+    let (lo, hi) = inset_window(uv_lo, uv_span, &tex);
+    let shapes = [
+        melted([s01[0], s01[1]], half),
+        melted([s01[2], s01[3]], half),
+        melted([s23[0], s23[1]], half),
+        melted([s23[2], s23[3]], half),
+    ];
+    let glow = [glow[0] - center[0], glow[1] - center[1], glow[2], glow[3]];
     let ramp = cx.aa();
     // The glass's distance: its melted shapes' smooth union, or its rect.
-    let sdf = |p: [f32; 2]| glass_sdf(p, center, half, radius, &shapes, shape_radius, merge);
-    shade(cx, out, clip, |p| {
+    let sdf = |q: [f32; 2]| glass_sdf(q, half, radius, &shapes, merge);
+    shade(cx, out, clip, |at| {
+        let p = [at[0] - center[0], at[1] - center[1]];
         // The AA ramp is the shader's `aa_factor`.
         let d = sdf(p);
         let cov = (-d * ramp).clamp(0.0, 1.0);
         if cov <= 0.0 {
             return [0.0; 4];
         }
-        let [u, v] = map.at(p);
+        let [u, v] = [uv_center[0] + p[0] * per[0], uv_center[1] + p[1] * per[1]];
         // Liquid glass: a quarter-circle bevel at the rim shifts the
         // backdrop inward along the outward normal, most at the edge.
         let inward = (-d).max(0.0);
@@ -1031,10 +1036,6 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
             let x = 1.0 - (inward / lens[1]).clamp(0.0, 1.0);
             shift = lens[0] * (1.0 - (1.0 - x * x).max(0.0).sqrt());
         }
-        let per = [
-            map.uv_size[0] / map.size[0].max(1.0),
-            map.uv_size[1] / map.size[1].max(1.0),
-        ];
         let tap = |k: f32| {
             sample(
                 &tex,
@@ -1048,7 +1049,22 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
             texel[0] = tap(1.0 + lens[2])[0];
             texel[2] = tap(1.0 - lens[2])[2];
         }
-        let mut dst = matrix.apply(texel);
+        // The color rows over the straight color; alpha passes through.
+        let a = texel[3];
+        let src = match a > 0.0 {
+            true => [texel[0] / a, texel[1] / a, texel[2] / a],
+            false => [0.0; 3],
+        };
+        let mut dst = [0.0f32; 4];
+        for (c, row) in rows.iter().enumerate() {
+            dst[c] = (row[0] * src[0] + row[1] * src[1] + row[2] * src[2] + row[3]).clamp(0.0, 1.0);
+        }
+        dst[3] = a.clamp(0.0, 1.0);
+        if gamma != 1.0 {
+            for c in dst.iter_mut().take(3) {
+                *c = c.powf(gamma);
+            }
+        }
         let luma = |c: &[f32; 4]| c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
         // The adaptive tint's tone, from the backdrop's mean light.
         if adapt[3] > 0.0 {
@@ -1056,8 +1072,8 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
                 let t = sample(
                     &tex,
                     &samp,
-                    (map.uv_pos[0] + map.uv_size[0] * at[0]).clamp(lo[0], hi[0]),
-                    (map.uv_pos[1] + map.uv_size[1] * at[1]).clamp(lo[1], hi[1]),
+                    (uv_lo[0] + uv_span[0] * at[0]).clamp(lo[0], hi[0]),
+                    (uv_lo[1] + uv_span[1] * at[1]).clamp(lo[1], hi[1]),
                 );
                 let c = match t[3] > 0.0 {
                     true => [t[0] / t[3], t[1] / t[3], t[2] / t[3], 1.0],
@@ -1114,7 +1130,7 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
             dst[3] = dst[3].max(g);
         }
         if noise > 0.0 {
-            let g = grain(p);
+            let g = grain(at);
             for channel in dst.iter_mut().take(3) {
                 *channel = (*channel + noise * g).clamp(0.0, 1.0);
             }
@@ -1380,23 +1396,35 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
 /// shapes, or its own rounded rect when none melt.
 fn glass_sdf(
     p: [f32; 2],
-    center: [f32; 2],
     half: [f32; 2],
     radii: [f32; 4],
     shapes: &[[f32; 4]; 4],
-    shape_radius: [f32; 4],
     merge: [f32; 2],
 ) -> f32 {
     let count = merge[0].round() as usize;
     if count == 0 {
-        return rrect_sdf(p, center, half, radii);
+        return rrect_sdf(p, [0.0; 2], half, radii);
     }
     let shape = |k: usize| {
         let [x, y, w, h] = shapes[k];
         let half = [w * 0.5, h * 0.5];
-        rrect_sdf(p, [x + half[0], y + half[1]], half, [shape_radius[k]; 4])
+        rrect_sdf(p, [x + half[0], y + half[1]], half, [radii[k]; 4])
     };
     (1..count.min(4)).fold(shape(0), |d, k| smooth_min(d, shape(k), merge[1]))
+}
+
+/// A melted shape `(x, y, w, h)` from the center of a glass of half extents
+/// `half`: its origin and extent in 16-bit fractions of the glass, as the
+/// shader's `melted`.
+fn melted(s: [u32; 2], half: [f32; 2]) -> [f32; 4] {
+    let size = [2.0 * half[0], 2.0 * half[1]];
+    let unit = |v: u32| v as f32 / 65535.0;
+    [
+        unit(s[0] & 0xFFFF) * size[0] - half[0],
+        unit(s[0] >> 16) * size[1] - half[1],
+        unit(s[1] & 0xFFFF) * size[0],
+        unit(s[1] >> 16) * size[1],
+    ]
 }
 
 /// Grain in `[-0.5, 0.5]` from an integer hash of the pixel: wrapping
