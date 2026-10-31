@@ -185,7 +185,7 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       failures; properties forwarded onto a component root mount; bare all-defaulted
       record variants (`Sizing::fill`) lower; Toast `open` is one-way (E3103); a rounded
       clip's layer is sized to its text; a themed placeholder draws.
-- [ ] Still awkward, from Larder:
+- [x] Still awkward, from Larder:
   - [x] a user `enum Unit` silently shadows the built-in `Unit` ("expected `Unit`,
         found `Unit`"): a type declared under a built-in type's name is `E2002`;
   - [x] a one-parameter event payload is still a record (`on opened(e) { e.id }`):
