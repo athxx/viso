@@ -17,7 +17,7 @@ use crate::{DrawCommand, TextureId};
 use AttrFormat::{Float1 as F1, Float2 as F2, Float3 as F3, Float4 as F4, Uint1 as U1};
 
 /// The most fields a built-in reads.
-pub(super) const MAX_FIELDS: usize = 16;
+pub(super) const MAX_FIELDS: usize = 20;
 
 /// The fields `builtin` reads, in the order its decoder indexes them.
 pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFormat)] {
@@ -125,6 +125,7 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("lens", F3),
             ("glint", F4),
             ("luminosity", F2),
+            ("adapt", F4),
             ("gamma", F1),
             ("noise", F1),
             ("opacity", F1),
@@ -954,14 +955,25 @@ fn blur(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
 
 /// A frosted material: the blurred backdrop tinted on straight RGBA, grain
 /// from an integer hash of the pixel, then the surface's rounded-rect mask.
+/// Where the adaptive tint reads the backdrop's light: the middle and the
+/// middles of the four quarters, as fractions of the surface.
+const ADAPT_TAPS: [[f32; 2]; 5] = [
+    [0.5, 0.5],
+    [0.25, 0.25],
+    [0.75, 0.25],
+    [0.25, 0.75],
+    [0.75, 0.75],
+];
+
 fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let Some((tex, samp)) = texture_bindings(cx, 0) else {
         return;
     };
     let map = UvMap::of(i, 2, 3);
-    let matrix = Matrix::of(i, 4, 8, 13);
+    let matrix = Matrix::of(i, 4, 8, 14);
     let (radius, lens, glint, luminosity) = (i.f4(9), i.f3(10), i.f4(11), i.f2(12));
-    let (noise, opacity) = (i.f1(14), i.f1(15));
+    let adapt = i.f4(13);
+    let (noise, opacity) = (i.f1(15), i.f1(16));
     if map.size[0] <= 0.0 || map.size[1] <= 0.0 {
         return;
     }
@@ -1016,6 +1028,32 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
         }
         let mut dst = matrix.apply(texel);
         let luma = |c: &[f32; 4]| c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+        // The adaptive tint's tone, from the backdrop's mean light.
+        if adapt[3] > 0.0 {
+            let m = ADAPT_TAPS.iter().fold(0.0, |m, at| {
+                let t = sample(
+                    &tex,
+                    &samp,
+                    (map.uv_pos[0] + map.uv_size[0] * at[0]).clamp(lo[0], hi[0]),
+                    (map.uv_pos[1] + map.uv_size[1] * at[1]).clamp(lo[1], hi[1]),
+                );
+                let c = match t[3] > 0.0 {
+                    true => [t[0] / t[3], t[1] / t[3], t[2] / t[3], 1.0],
+                    false => [0.0; 4],
+                };
+                m + luma(&c) * 0.2
+            });
+            let s = ((m - 0.1) / 0.25).clamp(0.0, 1.0);
+            let tone = 0.12 + (0.92 - 0.12) * (s * s * (3.0 - 2.0 * s));
+            let tl = adapt[0] * 0.2126 + adapt[1] * 0.7152 + adapt[2] * 0.0722;
+            for (c, channel) in dst.iter_mut().take(3).enumerate() {
+                let toned = match tl > 0.001 {
+                    true => (adapt[c] * (tone / tl)).clamp(0.0, 1.0),
+                    false => tone,
+                };
+                *channel += (toned - *channel) * adapt[3];
+            }
+        }
         if luminosity[0] > 0.0 {
             let l = luma(&dst);
             for channel in dst.iter_mut().take(3) {

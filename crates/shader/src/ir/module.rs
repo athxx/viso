@@ -594,6 +594,7 @@ pub fn material_ir() -> ShaderIr {
         IrField::new("lens", IrType::F32X3),
         IrField::new("glint", IrType::F32X4),
         IrField::new("luminosity", IrType::F32X2),
+        IrField::new("adapt", IrType::F32X4),
         IrField::new("gamma", IrType::F32),
         IrField::new("noise", IrType::F32),
         IrField::new("opacity", IrType::F32),
@@ -615,6 +616,12 @@ pub fn material_ir() -> ShaderIr {
             "light direction, strength, line width px",
         ),
         Varying::new("luminosity", IrType::F32X2, "", "amount, its luminance"),
+        Varying::new(
+            "adapt",
+            IrType::F32X4,
+            "",
+            "adaptive tint, straight; a 0 = none",
+        ),
         Varying::new("uv_bounds", IrType::F32X4, "", "backdrop sub-rect (lo, hi)"),
         Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
         Varying::new("half_size", IrType::F32X2, "", ""),
@@ -2508,6 +2515,7 @@ out.radius = float4(inst.radius);
 out.lens = float3(inst.lens);
 out.glint = float4(inst.glint);
 out.luminosity = float2(inst.luminosity);
+out.adapt = float4(inst.adapt);
 out.row0 = float4(inst.row0);
 out.row1 = float4(inst.row1);
 out.row2 = float4(inst.row2);
@@ -2606,6 +2614,25 @@ float4 dst = float4(dot(in.row0, src) + in.offset.r,
 dst = clamp(dst, 0.0, 1.0);
 if (in.gamma != 1.0) {
     dst.rgb = pow(dst.rgb, float3(in.gamma));
+}
+// The adaptive tint: the backdrop's mean light, from five fixed taps every
+// pixel of the surface shares, sets the tint's tone, its hue kept: dark over
+// dark content, light over light.
+if (in.adapt.w > 0.0) {
+    float2 span = in.uv_bounds.zw - in.uv_bounds.xy;
+    float m = 0.0;
+    for (int k = 0; k < 5; ++k) {
+        float2 at = k == 0 ? float2(0.5, 0.5)
+                  : float2(k == 1 || k == 3 ? 0.25 : 0.75, k < 3 ? 0.25 : 0.75);
+        float4 t = tex.sample(samp, clamp(in.uv_bounds.xy + span * at, lo, hi), gradient2d(float2(0.0), float2(0.0)));
+        float3 c = t.a > 0.0 ? t.rgb / t.a : float3(0.0);
+        m = m + dot(c, float3(0.2126, 0.7152, 0.0722)) * 0.2;
+    }
+    float e = clamp((m - 0.1) / 0.25, 0.0, 1.0);
+    float tone = mix(0.12, 0.92, e * e * (3.0 - 2.0 * e));
+    float tl = dot(in.adapt.rgb, float3(0.2126, 0.7152, 0.0722));
+    float3 toned = tl > 0.001 ? clamp(in.adapt.rgb * (tone / tl), 0.0, 1.0) : float3(tone);
+    dst.rgb = mix(dst.rgb, toned, in.adapt.w);
 }
 // Acrylic's luminosity layer: the backdrop's light gives way to a fixed one,
 // so what lies on the glass reads whatever is behind it.

@@ -1362,6 +1362,7 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 | 模糊 | `backdrop_sigma` | 共享 capture + 降采样 ladder（§18） |
 | 透镜 | `lens: Lens { refraction, bevel, dispersion }` | 边缘四分之一圆 bevel，背景向内位移；色散三 tap |
 | 着色 | `color: ColorOp` | 饱和度、tint、亮度融成一个矩阵 |
+| 自适应 tint | `adaptive_tint: Option<Rgba>` | 已模糊背景上 5 个固定点的平均亮度定 tint 的色调，保留色相；各像素读同一批纹素 |
 | 亮度层 | `luminosity: Luminosity { amount, luminance }` | 亚克力：背后的明暗让位给固定亮度 |
 | 高光 | `glint: Glint { strength, light, width }` | 沿光轴两壁的细亮线，朝光一侧更亮 |
 | 颗粒 | `noise` | 按设备像素哈希，静态帧不变 |

@@ -826,6 +826,10 @@ pub struct FrostedMaterial {
     pub glint: Glint,
     /// Acrylic's luminosity layer; [`Luminosity::NONE`] keeps the backdrop's.
     pub luminosity: Luminosity,
+    /// A tint whose tone follows what lies behind: its hue kept, its light
+    /// dark over a dark backdrop and light over a light one, laid over by
+    /// its alpha after `color`. `None` for none.
+    pub adaptive_tint: Option<Rgba>,
     /// Which realization draws the surface. [`MaterialLane::Gpu`] by default —
     /// the portable answer; [`MaterialLane::Native`] reserves the region for the
     /// platform's own material instead of capturing and blurring a backdrop.
@@ -847,6 +851,7 @@ impl FrostedMaterial {
             lens: Lens::NONE,
             glint: Glint::NONE,
             luminosity: Luminosity::NONE,
+            adaptive_tint: None,
             lane: MaterialLane::Gpu,
         }
     }
@@ -855,7 +860,8 @@ impl FrostedMaterial {
     /// relights what lies behind it reads it even unblurred, so it blurs by
     /// just over `least`, the least a capture is opened for.
     pub fn backdrop_sigma(&self, least: f32) -> f32 {
-        match self.lens.is_on() || self.glint.is_on() || self.luminosity.is_on() {
+        let shaded = self.lens.is_on() || self.glint.is_on() || self.luminosity.is_on();
+        match shaded || self.adaptive_tint.is_some_and(|t| t.a > 0.0) {
             true => self.backdrop_sigma.max(least + 0.25),
             false => self.backdrop_sigma,
         }
@@ -2606,6 +2612,9 @@ pub struct MaterialInstance {
     pub glint: [f32; 4],
     /// The luminosity layer: amount and the luminance it gives way to.
     pub luminosity: [f32; 2],
+    /// The adaptive tint: straight linear color and alpha, `0` alpha for
+    /// none.
+    pub adapt: [f32; 4],
     /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
     pub gamma: f32,
     /// Grain amplitude in `0..1`; `0.0` = no noise.

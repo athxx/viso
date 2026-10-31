@@ -1745,6 +1745,7 @@ struct MaterialRecord {
     lens: crate::primitive::Lens,
     glint: crate::primitive::Glint,
     luminosity: crate::primitive::Luminosity,
+    adaptive_tint: Option<crate::primitive::Rgba>,
 }
 
 /// Lay a [`MaterialRecord`] out as GPU instance data over `rect` (target space)
@@ -1797,6 +1798,9 @@ fn material_instance(
             record.luminosity.amount.clamp(0.0, 1.0),
             record.luminosity.luminance.clamp(0.0, 1.0),
         ],
+        adapt: record
+            .adaptive_tint
+            .map_or([0.0; 4], |t| [t.r, t.g, t.b, t.a.clamp(0.0, 1.0)]),
         gamma: record.op.gamma,
         noise: record.noise,
         opacity: record.opacity,
@@ -2975,6 +2979,7 @@ impl Renderer {
                             lens: material.lens,
                             glint: material.glint,
                             luminosity: material.luminosity,
+                            adaptive_tint: material.adaptive_tint,
                         });
                         let bounds =
                             crate::scene::bounds::Bounds::from_world(material.rect, 0.0, 0.0);

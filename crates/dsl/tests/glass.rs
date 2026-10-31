@@ -142,3 +142,38 @@ fn the_standard_glass_is_flat_and_unlit() {
         (0.0, 0.0, 0.0)
     );
 }
+
+const PRESETS: &str = r##"
+export component Presets {
+    view {
+        Column {
+            Column { width: 40dp; height: 40dp; backdrop: Option::Some(Backdrop::regular()); }
+            Column { width: 40dp; height: 40dp; backdrop: Option::Some(Backdrop::clear()); }
+        }
+    }
+}
+"##;
+
+#[test]
+fn the_regular_and_clear_presets_are_the_liquid_glasses_in_every_target() {
+    for mut rt in [Rt::mount(PRESETS), Rt::packaged(PRESETS)] {
+        assert_eq!(rt.fault(), None);
+        rt.relayout();
+        let root = rt.root.expect("mounted");
+        let [regular, clear]: [NodeId; 2] = rt.children(root).try_into().expect("two");
+        assert_eq!(rt.store.backdrop(regular), Some(Backdrop::REGULAR));
+        assert_eq!(rt.store.backdrop(clear), Some(Backdrop::CLEAR));
+
+        let mut out = Vec::new();
+        viso_ui::paint::paint_tree(&rt.store, root, &mut out);
+        let surfaces: Vec<_> = out
+            .iter()
+            .filter_map(|p| match p {
+                Primitive::Frosted(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        assert!(surfaces[0].adaptive_tint.is_some(), "regular adapts");
+        assert_eq!(surfaces[1].adaptive_tint, None, "clear does not");
+    }
+}

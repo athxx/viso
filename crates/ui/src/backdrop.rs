@@ -48,10 +48,18 @@ pub struct Backdrop {
     /// Where the light comes from, in radians: CSS's angle, `0` up and
     /// clockwise.
     pub light: f32,
+    /// Whether it follows what lies behind it and its own size: its tint's
+    /// tone dark over dark content and light over light, its hue kept; its
+    /// bend, bevel and blur deeper the larger it is.
+    pub adaptive: bool,
 }
 
 /// The glint's width in dp; a faint bleed reaches four times as deep.
 const GLINT_WIDTH: f32 = 1.0;
+
+/// The shorter side, in dp, at which adaptive glass is as thick as its
+/// values say: a toolbar button's.
+const THIN: f32 = 44.0;
 
 /// The user's settings every backdrop follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,6 +97,46 @@ impl Backdrop {
         highlight: 0.0,
         // `315deg`, from the upper left, as `to_radians` makes it.
         light: 315.0 * (core::f32::consts::PI / 180.0),
+        adaptive: false,
+    };
+
+    /// Liquid glass that follows what lies behind it and thickens with its
+    /// size: the one to reach for.
+    pub const REGULAR: Backdrop = Backdrop {
+        blur: 6.0,
+        saturation: 1.6,
+        tint: Rgba {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            // `#ffffff59`, as the DSL's `Backdrop::regular()`.
+            a: 89.0 / 255.0,
+        },
+        refraction: 12.0,
+        bevel: 16.0,
+        dispersion: 0.08,
+        highlight: 0.8,
+        adaptive: true,
+        ..Backdrop::GLASS
+    };
+
+    /// Liquid glass that shows more of what lies behind it, dimmed so the
+    /// bright symbols on it read; it does not adapt.
+    pub const CLEAR: Backdrop = Backdrop {
+        blur: 2.0,
+        saturation: 1.3,
+        tint: Rgba {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            // `#00000040`, as the DSL's `Backdrop::clear()`.
+            a: 64.0 / 255.0,
+        },
+        refraction: 12.0,
+        bevel: 16.0,
+        dispersion: 0.08,
+        highlight: 0.9,
+        ..Backdrop::GLASS
     };
 
     /// The frosted surface it draws over a box of `rect` rounded by
@@ -137,6 +185,7 @@ impl Backdrop {
             glass.blur *= FROSTIER;
             glass.tint.a += (1.0 - glass.tint.a) * DENSER;
             glass.luminosity = 0.0;
+            glass.adaptive = false;
             glass.refraction = 0.0;
             glass.dispersion = 0.0;
             glass.highlight = 0.0;
@@ -145,21 +194,38 @@ impl Backdrop {
     }
 
     fn material(self, rect: Rect, radius: f32, opacity: f32) -> FrostedMaterial {
-        let tint = ColorMatrix::tint([self.tint.r, self.tint.g, self.tint.b], self.tint.a);
-        let mut surface =
-            FrostedMaterial::new(rect, Corners::uniform(radius), self.blur.max(0.0) * 0.5);
+        // Adaptive glass is thicker the larger it is: a deeper bend and
+        // bevel, a softer blur.
+        let thick = match self.adaptive {
+            true => (rect.w.min(rect.h) / THIN).clamp(0.8, 2.5),
+            false => 1.0,
+        };
+        let mut surface = FrostedMaterial::new(
+            rect,
+            Corners::uniform(radius),
+            self.blur.max(0.0) * 0.5 * thick.sqrt(),
+        );
+        let saturation = ColorMatrix::saturation(self.saturation.max(0.0));
         surface.color = ColorOp {
-            matrix: ColorMatrix::saturation(self.saturation.max(0.0)).then(&tint),
+            matrix: match self.adaptive {
+                // Its tint is laid over by tone, after the color.
+                true => saturation,
+                false => saturation.then(&ColorMatrix::tint(
+                    [self.tint.r, self.tint.g, self.tint.b],
+                    self.tint.a,
+                )),
+            },
             gamma: 1.0,
         };
+        surface.adaptive_tint = self.adaptive.then_some(self.tint);
         surface.noise = self.noise.clamp(0.0, 1.0);
         surface.luminosity = Luminosity {
             amount: self.luminosity.clamp(0.0, 1.0),
             luminance: 0.2126 * self.tint.r + 0.7152 * self.tint.g + 0.0722 * self.tint.b,
         };
         surface.lens = Lens {
-            refraction: self.refraction.max(0.0),
-            bevel: self.bevel.max(0.0),
+            refraction: self.refraction.max(0.0) * thick,
+            bevel: self.bevel.max(0.0) * thick,
             dispersion: self.dispersion.clamp(0.0, 1.0),
         };
         surface.glint = Glint {
@@ -370,5 +436,31 @@ mod tests {
         };
         store.set_backdrop(panel, Some(dark));
         assert_eq!(surface_of(&store, panel).border.color.r, 1.0);
+    }
+
+    #[test]
+    fn adaptive_glass_tints_by_tone_and_thickens_with_its_size() {
+        let small = Backdrop::REGULAR.material(Rect::new(0.0, 0.0, 44.0, 44.0), 22.0, 1.0);
+        let large = Backdrop::REGULAR.material(Rect::new(0.0, 0.0, 300.0, 200.0), 22.0, 1.0);
+        assert_eq!(small.adaptive_tint, Some(Backdrop::REGULAR.tint));
+        assert_eq!(
+            small.lens.refraction,
+            Backdrop::REGULAR.refraction,
+            "as thick as said"
+        );
+        assert!(large.lens.refraction > small.lens.refraction, "deeper");
+        assert!(large.backdrop_sigma > small.backdrop_sigma, "softer");
+        // Its tint is not also in the fused color.
+        assert_eq!(
+            small.color.matrix,
+            ColorMatrix::saturation(Backdrop::REGULAR.saturation)
+        );
+        let clear = Backdrop::CLEAR.material(Rect::new(0.0, 0.0, 300.0, 200.0), 22.0, 1.0);
+        assert_eq!(clear.adaptive_tint, None);
+        assert_eq!(
+            clear.lens.refraction,
+            Backdrop::CLEAR.refraction,
+            "clear stays as said"
+        );
     }
 }

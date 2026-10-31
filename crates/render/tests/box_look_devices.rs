@@ -96,6 +96,7 @@ fn scene() -> Vec<Primitive> {
         light: 7.0 * core::f32::consts::FRAC_PI_4,
         width: 1.5,
     };
+    glass.adaptive_tint = Some(Rgba::new(0.4, 0.6, 1.0, 0.4));
     glass.luminosity = Luminosity {
         amount: 0.3,
         luminance: 0.6,

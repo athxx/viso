@@ -141,11 +141,13 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 - [ ] A device without the capability (battery saver, a GPU too weak) draws every
       backdrop as its solid `fallback`, opening no capture; reduced motion: no
       elastic morph (with the motion item).
-- [ ] Liquid glass, adaptive: `regular` and `clear` presets. Regular reads the
-      backdrop's mean light from the ladder's coarsest level (no readback): it
-      flips light or dark, deepens its shadow over busy content, and maps its tint
-      to tones by that light; it thickens with size (bevel, bend, blur, shadow),
-      worked out on the CPU. Clear keeps none of that, a dimming layer under it.
+- [x] Liquid glass, adaptive: `Backdrop::regular()` and `Backdrop::clear()`.
+      Regular reads the backdrop's mean light from five fixed taps of its blurred
+      capture every pixel shares (no readback, no pass): its tint's tone goes dark
+      over dark content and light over light, its hue kept; it thickens with size
+      (bend, bevel, blur), worked out on the CPU. Clear does not adapt, a dimming
+      tint under it. Not done: a shadow deepening over busy content, which wants
+      the backdrop read back.
 - [ ] Liquid glass in motion: a press lights the glass from where it lands and the
       glow spreads to glass nearby; glass appears and leaves by its bend (a
       `materialize` transition), not its opacity; siblings in a `GlassGroup` share

@@ -142,3 +142,41 @@ fn the_luminosity_layer_evens_the_backdrop_light() {
     let (white, black) = (red(&px, 36, 32) as i32, red(&px, 44, 32) as i32);
     assert!((white - black).abs() < 24, "{white} {black}");
 }
+
+/// The picture of a white adaptive-tinted surface over a flat `ground`.
+fn adapted(ground: f32) -> Vec<u8> {
+    let mut gpu = CpuRaster::new();
+    let surface = gpu.create_surface(RawWindowHandle::Headless, W, H);
+    let format: TextureFormat = gpu.surface_format(surface);
+    let mut r = Renderer::new(&mut gpu, format);
+    r.set_surface_size([W as f32, H as f32], 1.0);
+    let mut glass = FrostedMaterial::new(Rect::new(16.0, 8.0, 64.0, 48.0), Corners::SHARP, 2.0);
+    glass.adaptive_tint = Some(Rgba::new(1.0, 1.0, 1.0, 0.6));
+    r.upload(
+        &mut gpu,
+        &[
+            quad(
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                Rgba::new(ground, ground, ground, 1.0),
+            ),
+            Primitive::Frosted(Box::new(glass)),
+        ],
+    );
+    r.submit(
+        &mut gpu,
+        surface,
+        [0.0, 0.0, 0.0, 1.0],
+        [W as f32, H as f32],
+    );
+    gpu.read_pixels_bgra8(surface)
+}
+
+#[test]
+fn an_adaptive_tint_goes_dark_over_dark_and_light_over_light() {
+    let (dark, light) = (adapted(0.0), adapted(1.0));
+    let (over_dark, over_light) = (red(&dark, 48, 32) as i32, red(&light, 48, 32) as i32);
+    // A plain white tint at 0.6 would lift black far up; the adaptive one
+    // keeps it a dark glass, and a white ground a light one.
+    assert!(over_dark < 110, "{over_dark}");
+    assert!(over_light > 220, "{over_light}");
+}

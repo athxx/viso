@@ -318,7 +318,9 @@ export record TextShadow {
 // acrylic does. Liquid glass bends what lies behind it inward by
 // `refraction` at the edge, across a rounded `bevel` at the rim, splits the
 // bend's colors by `dispersion` (0..1), and catches a thin `highlight`
-// (0..1) on the walls along the `light` angle.
+// (0..1) on the walls along the `light` angle. `adaptive` glass follows what
+// lies behind it — its tint's tone dark over dark content and light over
+// light — and thickens with its size.
 export record Backdrop {
     blur: Dp = 30dp
     saturation: F32 = 1.8
@@ -330,6 +332,24 @@ export record Backdrop {
     dispersion: F32 = 0.0
     highlight: F32 = 0.0
     light: Angle = 315deg
+    adaptive: Bool = false
+}
+impl Backdrop {
+    // Liquid glass that follows what lies behind it: the one to reach for.
+    fn regular() -> Backdrop {
+        Backdrop {
+            blur: 6dp, saturation: 1.6, tint: #ffffff59, refraction: 12dp, bevel: 16dp,
+            dispersion: 0.08, highlight: 0.8, adaptive: true
+        }
+    }
+    // Liquid glass that shows more of what lies behind it, dimmed so bright
+    // symbols on it read; it does not adapt.
+    fn clear() -> Backdrop {
+        Backdrop {
+            blur: 2dp, saturation: 1.3, tint: #00000040, refraction: 12dp, bevel: 16dp,
+            dispersion: 0.08, highlight: 0.9
+        }
+    }
 }
 
 // The values of the standard widgets' enum properties.
