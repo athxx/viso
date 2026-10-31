@@ -705,10 +705,7 @@ impl Buffer {
             Drawn::Text => (self.text.clone(), self.color),
             Drawn::Placeholder => (
                 self.look.placeholder.clone(),
-                Rgba {
-                    a: self.color.a * PLACEHOLDER_OPACITY,
-                    ..self.color
-                },
+                crate::theme::fade(self.color, PLACEHOLDER_OPACITY),
             ),
             Drawn::Mask => (
                 std::iter::repeat_n(MASK, graphemes(&self.text)).collect(),
@@ -3742,6 +3739,16 @@ mod tests {
         apply(&mut b, EditIntent::Insert("A".into()));
         let drawn = b.request();
         assert_eq!((drawn.text.as_str(), drawn.color.a), ("A", 0.8));
+    }
+
+    #[test]
+    fn a_placeholder_in_a_theme_color_draws_it_dimmed() {
+        let mut b = field("", "Name", false);
+        b.color = crate::theme::ColorToken::Foreground.rgba();
+        let palette = crate::theme::Palette::light();
+        let drawn = palette.resolve(b.request().color);
+        let text = palette.get(crate::theme::ColorToken::Foreground);
+        assert_eq!(drawn.a, text.a * 0.5, "half the theme color's opacity");
     }
 
     #[test]
