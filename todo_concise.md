@@ -186,8 +186,8 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       record variants (`Sizing::fill`) lower; Toast `open` is one-way (E3103); a rounded
       clip's layer is sized to its text; a themed placeholder draws.
 - [ ] Still awkward, from Larder:
-  - [ ] a user `enum Unit` silently shadows the built-in `Unit` ("expected `Unit`,
-        found `Unit`"): warn on shadowing a prelude type, or qualify the message;
+  - [x] a user `enum Unit` silently shadows the built-in `Unit` ("expected `Unit`,
+        found `Unit`"): a type declared under a built-in type's name is `E2002`;
   - [ ] a one-parameter event payload is still a record (`on opened(e) { e.id }`);
   - [ ] no index in `for` / no `enumerate`: numbering rows takes a helper;
   - [ ] `TextInput { invalid: x }` reaching the node (semantics and a default look)

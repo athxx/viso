@@ -561,7 +561,7 @@ See also: `viso check`
 
 **Ambiguous Name** — error, resolve
 
-One name refers to more than one declaration, so the resolver cannot pick one. This covers a name declared twice in the same namespace and scope (including a member that repeats the name of a `fn`, `action`, `task` or `const`), and two source files that derive the same module path, and a bare name written where an enum is expected (`align: center`) that is both a variant of that enum and a value in scope. Names must be unique within a namespace so that every use resolves to exactly one symbol.
+One name refers to more than one declaration, so the resolver cannot pick one. This covers a name declared twice in the same namespace and scope (including a member that repeats the name of a `fn`, `action`, `task` or `const`), and two source files that derive the same module path, and a bare name written where an enum is expected (`align: center`) that is both a variant of that enum and a value in scope, and a type declared under the name of a built-in type (`Unit`, `String`, `List`), which every annotation already means. Names must be unique within a namespace so that every use resolves to exactly one symbol.
 
 ```vs
 component Counter {
@@ -571,7 +571,7 @@ component Counter {
 }
 ```
 
-Fix: Rename or remove one of the declarations so each name is declared once; for colliding module paths, rename or move one of the files; for a bare variant, write `Enum::variant` for the variant or `(name)` for the value.
+Fix: Rename or remove one of the declarations so each name is declared once; for colliding module paths, rename or move one of the files; for a bare variant, write `Enum::variant` for the variant or `(name)` for the value; give a type its own name rather than a built-in one.
 
 ```vs
 state count = 0;

@@ -693,8 +693,9 @@ const TABLE: List<I64> = [0, 1, 2, 3, /* ...over a million more... */];
             member that repeats the name of a `fn`, `action`, `task` or `const`), and two \
             source files that derive the same module path, and a bare name written where an \
             enum is expected (`align: center`) that is both a variant of that enum and a value \
-            in scope. Names must be unique within a namespace so that every use resolves to \
-            exactly one symbol.",
+            in scope, and a type declared under the name of a built-in type (`Unit`, `String`, \
+            `List`), which every annotation already means. Names must be unique within a \
+            namespace so that every use resolves to exactly one symbol.",
         example: Example::Source(
             r#"component Counter {
     state count = 0;
@@ -705,7 +706,8 @@ const TABLE: List<I64> = [0, 1, 2, 3, /* ...over a million more... */];
         ),
         fix: "Rename or remove one of the declarations so each name is declared once; for \
             colliding module paths, rename or move one of the files; for a bare variant, write \
-            `Enum::variant` for the variant or `(name)` for the value.",
+            `Enum::variant` for the variant or `(name)` for the value; give a type its own name \
+            rather than a built-in one.",
         fixed: Some(
             r#"state count = 0;
 state total = 1;

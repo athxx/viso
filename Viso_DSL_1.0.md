@@ -1914,7 +1914,7 @@ Native Schema 由 Rust 侧生成（ADR 0036）：一个 Native Library 是一条
 - 返回类型省略即 `()`；参数与返回类型必须是 Schema 类型：`Bool`、`I64`、`F32`、`F64`、`Duration`、`String`、`()`、`List<T>`、`Option<T>`、`Result<T, E>`、已注册的 Native 类型或同处声明的 `native type`；参数不带默认值；声明不带泛型参数、`where` 子句，`native type` 不带 Trait Bound（Native Schema 无泛型与 Trait 实现），违者 `E6101`；`requires { a::b }` 声明 Capability `a.b`；
 - 编译所用 Registry 已注册声明所在的 Library 时立即检查：路径未注册、`fn`/`action`/`task` 分类或签名哈希不同（参数名不计入签名）、`requires` 与 Schema 的 Capability 集合不同均为 `E6101`，调用使用已注册的 Schema；
 - 未注册该 Library 时，声明本身即其 Schema：调用按声明的类型、Effect 分类与 Capability 检查并 Lower 为该路径的 Native Import（`native fn` 为 Read，不确定、UI 线程）；运行前 `link` 到实现它的 Rust Library，路径缺失或签名不同为 `E6101`；
-- 同一作用域内重名（含与 `fn`/`action`/`task`/`const` 或成员重名）为 `E2002`。
+- 同一作用域内重名（含与 `fn`/`action`/`task`/`const` 或成员重名）为 `E2002`；以内建类型名（`Unit`、`String`、`List` 等）声明类型也是 `E2002`，因为类型标注中这些名字总是指内建类型。
 
 ### 47.3 Native Package
 

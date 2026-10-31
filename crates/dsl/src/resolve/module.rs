@@ -120,6 +120,9 @@ pub enum ResolveErrorKind {
     AmbiguousModule,
     /// A name was declared twice within one namespace.
     DuplicateName,
+    /// A type was declared under the name of a built-in type, which every
+    /// annotation already means.
+    BuiltinTypeName,
     /// The import graph contains a cycle.
     CyclicImport,
     /// A declaration's name is NFC-equal to, but spelled differently from, a name
@@ -136,7 +139,9 @@ impl ResolveErrorKind {
             | ResolveErrorKind::PrivateImport
             | ResolveErrorKind::UnresolvedImport
             | ResolveErrorKind::UnresolvedNative => "E2001",
-            ResolveErrorKind::AmbiguousModule | ResolveErrorKind::DuplicateName => "E2002",
+            ResolveErrorKind::AmbiguousModule
+            | ResolveErrorKind::DuplicateName
+            | ResolveErrorKind::BuiltinTypeName => "E2002",
             ResolveErrorKind::CyclicImport => "E2003",
             ResolveErrorKind::NormalizationConflict => "E1101",
         }
@@ -152,6 +157,7 @@ impl ResolveErrorKind {
             ResolveErrorKind::UnresolvedNative => "native function or type does not exist",
             ResolveErrorKind::AmbiguousModule => "two source units declare the same module",
             ResolveErrorKind::DuplicateName => "name is already declared in this scope",
+            ResolveErrorKind::BuiltinTypeName => "name is already a built-in type",
             ResolveErrorKind::CyclicImport => "modules form an import cycle",
             ResolveErrorKind::NormalizationConflict => {
                 "name normalizes (NFC) to one already declared with a different spelling"

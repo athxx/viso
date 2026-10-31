@@ -75,7 +75,11 @@ fn assert_read(module: Module) {
     read(&mut vm, &mut instance);
     let ints = |v: &[i64]| Value::List(Rc::new(v.iter().map(|&n| Value::Int(n)).collect()));
     let bools = |v: &[bool]| Value::List(Rc::new(v.iter().map(|&b| Value::bool(b)).collect()));
-    assert_eq!(state(&vm, &instance, "lengths"), ints(&[16, 12, 0, 3]), "characters, not bytes");
+    assert_eq!(
+        state(&vm, &instance, "lengths"),
+        ints(&[16, 12, 0, 3]),
+        "characters, not bytes"
+    );
     assert_eq!(
         state(&vm, &instance, "flags"),
         bools(&[true, true, true, false, true, false])
@@ -125,7 +129,10 @@ fn string_methods_are_checked() {
         "export component C { state s: String = \"a\"; computed c: Bool = s.contians(\"a\"); view { Text {} } }",
         &origin(),
     );
-    assert_eq!(document.diagnostics()[0].fixes[0].edits[0].replacement, "contains");
+    assert_eq!(
+        document.diagnostics()[0].fixes[0].edits[0].replacement,
+        "contains"
+    );
     assert_eq!(codes("computed c: Bool = s.contains(1)")[0].0, "E2103");
     assert_eq!(codes("computed c: String = s.trim(1)")[0].0, "E2103");
     assert!(codes("computed c: I64 = s.len() + s.trim().len()").is_empty());

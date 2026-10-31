@@ -398,6 +398,11 @@ fn build_symbol_table(
         });
         let symbol = ModuleSymbol { id, exported };
         out.define(None, name, ns, symbol, &name_tok);
+        if ns == Namespace::Type && is_builtin_type_name(&text) {
+            out.errors.push(
+                ResolveErrorKind::BuiltinTypeName.to_diagnostic(Some(name_tok.text_range()), &text),
+            );
+        }
         if !exported && let Some(last) = out.decls.last_mut() {
             last.export_at = Some(keyword_start(decl.syntax()));
         }
@@ -883,6 +888,12 @@ fn member_identity(
         Member::View(_) | Member::Effect(_) | Member::Native(_) => return None,
     };
     Some(triple)
+}
+
+/// Whether a type annotation spelled `name` always means a built-in type, so
+/// a declaration of that name could never be named.
+fn is_builtin_type_name(name: &str) -> bool {
+    Ty::BUILTIN_NAMES.contains(&name) || Ty::STRUCTURAL_HEADS.iter().any(|(head, _)| *head == name)
 }
 
 /// The name token, symbol kind, and namespace of a top-level declaration, or `None`
@@ -3011,6 +3022,30 @@ mod tests {
                 .flat_map(|m| m.errors.iter())
                 .any(|d| d.code == "E2002" && d.message.contains("`Dup`")),
             "a repeated type name in one module is a collision"
+        );
+    }
+
+    #[test]
+    fn a_type_named_like_a_builtin_is_reported() {
+        let mut interner = NameInterner::new();
+        let app = unit(
+            &mut interner,
+            &["app"],
+            "enum Unit { gram; piece } record List { a: I64 } record Units { a: I64 }",
+        );
+        let mods = resolve_all(vec![app], &mut interner);
+        let named: Vec<_> = mods
+            .iter()
+            .flat_map(|m| m.errors.iter())
+            .filter(|d| d.code == "E2002")
+            .map(|d| d.message.clone())
+            .collect();
+        assert_eq!(
+            named,
+            [
+                "name is already a built-in type: `Unit`",
+                "name is already a built-in type: `List`"
+            ]
         );
     }
 
