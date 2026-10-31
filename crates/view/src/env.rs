@@ -71,6 +71,8 @@ pub fn env_value(field: EnvField, env: &AdaptiveEnv, anchor: Option<AnchorId>) -
         ]),
         EnvField::TextScale => Value::Float(f64::from(e.text_scale)),
         EnvField::ReducedMotion => Value::bool(e.reduced_motion),
+        EnvField::ReducedTransparency => Value::bool(e.reduced_transparency),
+        EnvField::HighContrast => Value::bool(e.high_contrast),
         EnvField::Orientation => Value::Int(match e.orientation() {
             Orientation::Portrait => 0,
             Orientation::Landscape => 1,

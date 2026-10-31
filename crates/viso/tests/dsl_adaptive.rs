@@ -351,6 +351,8 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
             },
             RawEvent::AppearanceChanged(Appearance {
                 reduce_motion: true,
+                reduce_transparency: true,
+                high_contrast: true,
                 text_scale: 1.5,
                 ..Appearance::default()
             }),
@@ -376,6 +378,7 @@ fn the_platform_feeds_the_environment_and_regions_pad_once() {
     assert_eq!(env.keyboard_inset, 300.0);
     assert!(env.reduced_motion);
     assert!(app.store().reduced_motion(), "the store's motion follows");
+    assert!(env.reduced_transparency && env.high_contrast);
     assert_eq!(env.text_scale, 1.5);
     assert_eq!(
         app.store().length_env().text_scale,

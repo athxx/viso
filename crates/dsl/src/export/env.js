@@ -64,6 +64,8 @@ const envField = (tag) => {
     case 8: return bool(matches("(prefers-reduced-motion: reduce)"));
     case 9: return innerWidth > innerHeight ? 1n : 0n;
     case 10: return getComputedStyle(document.documentElement).direction === "rtl" ? 1n : 0n;
+    case 12: return bool(matches("(prefers-reduced-transparency: reduce)"));
+    case 13: return bool(matches("(prefers-contrast: more)") || matches("(forced-colors: active)"));
     default: return null;
   }
 };
@@ -130,7 +132,15 @@ class Env {
     addEventListener("gamepadconnected", update);
     addEventListener("gamepaddisconnected", update);
     if (window.visualViewport) visualViewport.addEventListener("resize", update);
-    for (const q of ["(pointer: fine)", "(pointer: coarse)", "(hover: hover)", "(prefers-reduced-motion: reduce)"]) {
+    for (const q of [
+      "(pointer: fine)",
+      "(pointer: coarse)",
+      "(hover: hover)",
+      "(prefers-reduced-motion: reduce)",
+      "(prefers-reduced-transparency: reduce)",
+      "(prefers-contrast: more)",
+      "(forced-colors: active)",
+    ]) {
       matchMedia(q).addEventListener("change", update);
     }
   }

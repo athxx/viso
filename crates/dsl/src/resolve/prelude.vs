@@ -454,6 +454,8 @@ export record Environment {
     orientation: Orientation
     layout_direction: LayoutDirection
     locale: Locale
+    reduced_transparency: Bool
+    high_contrast: Bool
 }
 
 // The standard theme schema a view reads as `theme`.

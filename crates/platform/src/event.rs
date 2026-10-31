@@ -687,6 +687,8 @@ pub struct Appearance {
     pub high_contrast: bool,
     /// The user asked for reduced motion.
     pub reduce_motion: bool,
+    /// The user asked for less transparency: glass frostier and denser.
+    pub reduce_transparency: bool,
     /// The user's preferred text size relative to the platform's default
     /// size: `1.0` where the platform has no such setting.
     pub text_scale: f32,
@@ -707,6 +709,7 @@ impl Default for Appearance {
             color_scheme: ColorScheme::Light,
             high_contrast: false,
             reduce_motion: false,
+            reduce_transparency: false,
             text_scale: 1.0,
             overlay_scroll_bars: true,
             accent: None,

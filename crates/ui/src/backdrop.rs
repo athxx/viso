@@ -1,6 +1,10 @@
 //! Backdrops: a box of glass, which blurs, saturates and tints what lies
 //! behind it, and may even its light, bend it at the rim and catch a glint.
 //!
+//! A backdrop follows the user's settings: with less transparency asked
+//! for it frosts denser and drops its bend and glint; with more contrast
+//! it goes near black or white with a contrasting rim.
+//!
 //! A backdrop is drawn as the node's frosted surface under its own fill,
 //! outside the layer a translucent node fades through, so the glass fades
 //! by its own opacity and keeps its blur. Glass boxes over the same
@@ -49,6 +53,21 @@ pub struct Backdrop {
 /// The glint's width in dp; a faint bleed reaches four times as deep.
 const GLINT_WIDTH: f32 = 1.0;
 
+/// The user's settings every backdrop follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct GlassAccess {
+    /// Less transparency: a denser frost, no bend, glint or luminosity.
+    pub(crate) reduced_transparency: bool,
+    /// More contrast: near black or white, with a contrasting rim.
+    pub(crate) high_contrast: bool,
+}
+
+/// How much of what lies behind a denser frost still shows: its tint
+/// covers this much more of the rest.
+const DENSER: f32 = 0.7;
+/// How much farther a denser frost blurs.
+const FROSTIER: f32 = 1.5;
+
 impl Backdrop {
     /// The standard glass: a strong blur, deepened colour and a light
     /// frosting.
@@ -74,7 +93,58 @@ impl Backdrop {
 
     /// The frosted surface it draws over a box of `rect` rounded by
     /// `radius`, faded to `opacity`.
-    pub(crate) fn surface(self, rect: Rect, radius: f32, opacity: f32) -> FrostedMaterial {
+    pub(crate) fn surface(
+        self,
+        rect: Rect,
+        radius: f32,
+        opacity: f32,
+        access: GlassAccess,
+    ) -> FrostedMaterial {
+        let glass = self.followed(access);
+        let mut surface = glass.material(rect, radius, opacity);
+        if access.high_contrast {
+            // The rim the opposite of the face.
+            let dark = glass.tint.r + glass.tint.g + glass.tint.b < 1.5;
+            let rim = if dark { 1.0 } else { 0.0 };
+            surface.border = viso_render::Border {
+                width: 1.0,
+                color: Rgba {
+                    r: rim,
+                    g: rim,
+                    b: rim,
+                    a: 1.0,
+                },
+            };
+        }
+        surface
+    }
+
+    /// The glass as the user's settings have it.
+    fn followed(self, access: GlassAccess) -> Backdrop {
+        let mut glass = self;
+        if access.high_contrast {
+            // Near black or white, as its tint leans.
+            let lum = 0.2126 * self.tint.r + 0.7152 * self.tint.g + 0.0722 * self.tint.b;
+            let face = if lum < 0.5 { 0.0 } else { 1.0 };
+            glass.tint = Rgba {
+                r: face,
+                g: face,
+                b: face,
+                a: self.tint.a.max(0.9),
+            };
+        }
+        if access.reduced_transparency || access.high_contrast {
+            glass.blur *= FROSTIER;
+            glass.tint.a += (1.0 - glass.tint.a) * DENSER;
+            glass.luminosity = 0.0;
+            glass.refraction = 0.0;
+            glass.dispersion = 0.0;
+            glass.highlight = 0.0;
+        }
+        glass
+    }
+
+    fn material(self, rect: Rect, radius: f32, opacity: f32) -> FrostedMaterial {
         let tint = ColorMatrix::tint([self.tint.r, self.tint.g, self.tint.b], self.tint.a);
         let mut surface =
             FrostedMaterial::new(rect, Corners::uniform(radius), self.blur.max(0.0) * 0.5);
@@ -106,6 +176,7 @@ impl Backdrop {
 #[derive(Debug, Default)]
 pub(crate) struct Backdrops {
     entries: Vec<(u32, Backdrop)>,
+    pub(crate) access: GlassAccess,
 }
 
 impl Backdrops {
@@ -134,6 +205,26 @@ impl Backdrops {
 }
 
 impl NodeStore {
+    /// Makes every backdrop follow the user's settings: denser and flat
+    /// with `reduced_transparency`, near black or white with a contrasting
+    /// rim with `high_contrast`. A change repaints every glass box.
+    pub fn set_glass_access(&mut self, reduced_transparency: bool, high_contrast: bool) {
+        let access = GlassAccess {
+            reduced_transparency,
+            high_contrast,
+        };
+        if self.backdrops.access == access {
+            return;
+        }
+        self.backdrops.access = access;
+        let glass: Vec<u32> = self.backdrops.entries.iter().map(|e| e.0).collect();
+        for index in glass {
+            if let Some(id) = self.arena().live_id(index) {
+                self.mark_dirty(id, crate::dirty::DirtyClass::PAINT);
+            }
+        }
+    }
+
     /// The backdrop of node `id`'s box.
     pub fn backdrop(&self, id: NodeId) -> Option<Backdrop> {
         self.backdrops.get(id.index())
@@ -224,5 +315,60 @@ mod tests {
             matches!(out[1], Primitive::Layer(_)),
             "then the fading layer"
         );
+    }
+
+    fn liquid() -> Backdrop {
+        Backdrop {
+            refraction: 10.0,
+            highlight: 0.8,
+            luminosity: 0.5,
+            ..Backdrop::GLASS
+        }
+    }
+
+    fn surface_of(store: &NodeStore, panel: NodeId) -> FrostedMaterial {
+        match paint(store, panel).into_iter().next() {
+            Some(Primitive::Frosted(surface)) => *surface,
+            other => panic!("the glass first: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn less_transparency_frosts_denser_and_flat_and_repaints_the_glass() {
+        let mut store = NodeStore::new();
+        let panel = panel(&mut store, 1.0);
+        store.set_backdrop(panel, Some(liquid()));
+        let clear = surface_of(&store, panel);
+        assert!(clear.lens.is_on() && clear.glint.is_on());
+
+        store.clear_dirty();
+        store.set_glass_access(true, false);
+        assert!(store.dirty(panel).contains(crate::dirty::DirtyClass::PAINT));
+        let dense = surface_of(&store, panel);
+        assert!(dense.backdrop_sigma > clear.backdrop_sigma, "frostier");
+        assert!(!dense.lens.is_on() && !dense.glint.is_on() && !dense.luminosity.is_on());
+        assert_eq!(dense.border, viso_render::Border::NONE);
+    }
+
+    #[test]
+    fn more_contrast_turns_the_glass_white_or_black_with_the_opposite_rim() {
+        let mut store = NodeStore::new();
+        let panel = panel(&mut store, 1.0);
+        store.set_glass_access(false, true);
+        // The standard glass's white tint: a white face, a black rim.
+        let light = surface_of(&store, panel);
+        assert_eq!(light.border.width, 1.0);
+        assert_eq!(light.border.color.r, 0.0);
+        let dark = Backdrop {
+            tint: Rgba {
+                r: 0.1,
+                g: 0.1,
+                b: 0.1,
+                a: 0.5,
+            },
+            ..Backdrop::GLASS
+        };
+        store.set_backdrop(panel, Some(dark));
+        assert_eq!(surface_of(&store, panel).border.color.r, 1.0);
     }
 }

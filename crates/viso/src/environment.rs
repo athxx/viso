@@ -33,7 +33,8 @@ impl WindowState {
 
     /// Writes the parts of the system appearance the environment carries; the
     /// text scale also resizes the window's `sp` lengths, reduced motion also
-    /// reduces the motion of its store, the scheme and scroll bar preference
+    /// reduces the motion of its store, reduced transparency and high
+    /// contrast restyle its glass, the scheme and scroll bar preference
     /// restyle its scroll bars, the scheme and accent its focus ring, and the
     /// double-click time how its clicks run on.
     pub(crate) fn report_appearance(&mut self, appearance: Appearance) {
@@ -43,13 +44,21 @@ impl WindowState {
             1.0
         };
         let now = self.states.env().environment();
-        if now.reduced_motion != appearance.reduce_motion || now.text_scale != text_scale {
+        if now.reduced_motion != appearance.reduce_motion
+            || now.text_scale != text_scale
+            || now.reduced_transparency != appearance.reduce_transparency
+            || now.high_contrast != appearance.high_contrast
+        {
             self.states.update_env(|env| {
                 env.reduced_motion = appearance.reduce_motion;
                 env.text_scale = text_scale;
+                env.reduced_transparency = appearance.reduce_transparency;
+                env.high_contrast = appearance.high_contrast;
             });
         }
         self.store.set_reduced_motion(appearance.reduce_motion);
+        self.store
+            .set_glass_access(appearance.reduce_transparency, appearance.high_contrast);
         let dark = appearance.color_scheme == viso_platform::ColorScheme::Dark;
         self.follow_scheme(dark);
         self.store

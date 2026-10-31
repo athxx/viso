@@ -48,7 +48,9 @@ use objc2_ui_kit::UIOpenURLContext;
 use objc2_ui_kit::{
     UIAccessibilityContrast, UIAccessibilityDarkerSystemColorsEnabled,
     UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
-    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityReduceMotionStatusDidChangeNotification,
+    UIAccessibilityIsReduceMotionEnabled, UIAccessibilityIsReduceTransparencyEnabled,
+    UIAccessibilityReduceMotionStatusDidChangeNotification,
+    UIAccessibilityReduceTransparencyStatusDidChangeNotification,
     UIAccessibilitySwitchControlStatusDidChangeNotification,
     UIAccessibilityVoiceOverStatusDidChangeNotification, UIApplication, UIApplicationDelegate,
     UIContentSizeCategory, UIContentSizeCategoryAccessibilityExtraExtraExtraLarge,
@@ -275,6 +277,7 @@ fn appearance_of(traits: &UITraitCollection) -> Appearance {
         high_contrast: contrast == UIAccessibilityContrast::High
             || UIAccessibilityDarkerSystemColorsEnabled(),
         reduce_motion: UIAccessibilityIsReduceMotionEnabled(),
+        reduce_transparency: UIAccessibilityIsReduceTransparencyEnabled(),
         // SAFETY: as above.
         text_scale: text_scale_of(&*unsafe { traits.preferredContentSizeCategory() }),
         overlay_scroll_bars: true,
@@ -449,6 +452,10 @@ impl IosApp {
                 (
                     sel!(accessibilityChanged:),
                     UIAccessibilityDarkerSystemColorsStatusDidChangeNotification,
+                ),
+                (
+                    sel!(accessibilityChanged:),
+                    UIAccessibilityReduceTransparencyStatusDidChangeNotification,
                 ),
                 (
                     sel!(assistiveTechnologyChanged:),

@@ -195,6 +195,10 @@ pub struct Environment {
     pub layout_direction: LayoutDirection,
     /// The user's locale, a BCP 47 tag.
     pub locale: String,
+    /// Whether the user asked for less transparency.
+    pub reduced_transparency: bool,
+    /// Whether the user asked for more contrast.
+    pub high_contrast: bool,
 }
 
 impl Default for Environment {
@@ -209,6 +213,8 @@ impl Default for Environment {
             reduced_motion: false,
             layout_direction: LayoutDirection::Ltr,
             locale: "und".to_owned(),
+            reduced_transparency: false,
+            high_contrast: false,
         }
     }
 }
@@ -249,6 +255,10 @@ impl Environment {
             EnvField::Orientation => self.orientation() != other.orientation(),
             EnvField::LayoutDirection => self.layout_direction != other.layout_direction,
             EnvField::Locale => self.locale != other.locale,
+            EnvField::ReducedTransparency => {
+                self.reduced_transparency != other.reduced_transparency
+            }
+            EnvField::HighContrast => self.high_contrast != other.high_contrast,
             EnvField::Constraints | EnvField::SizeClass | EnvField::Theme => false,
         }
     }

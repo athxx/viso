@@ -31,13 +31,18 @@ pub enum EnvField {
     LayoutDirection,
     /// `env.locale`: the user's locale.
     Locale,
+    /// `env.reduced_transparency`: whether the user asked for less
+    /// transparency.
+    ReducedTransparency,
+    /// `env.high_contrast`: whether the user asked for more contrast.
+    HighContrast,
     /// `theme`: the theme value views read, replaced whole.
     Theme,
 }
 
 impl EnvField {
     /// Every field, in declaration order.
-    pub const ALL: [EnvField; 13] = [
+    pub const ALL: [EnvField; 15] = [
         EnvField::Window,
         EnvField::Constraints,
         EnvField::SizeClass,
@@ -50,11 +55,13 @@ impl EnvField {
         EnvField::Orientation,
         EnvField::LayoutDirection,
         EnvField::Locale,
+        EnvField::ReducedTransparency,
+        EnvField::HighContrast,
         EnvField::Theme,
     ];
 
     /// The fields of the prelude's `Environment` record, in declaration order.
-    pub const ENVIRONMENT: [EnvField; 12] = [
+    pub const ENVIRONMENT: [EnvField; 14] = [
         EnvField::Window,
         EnvField::Constraints,
         EnvField::SizeClass,
@@ -67,6 +74,8 @@ impl EnvField {
         EnvField::Orientation,
         EnvField::LayoutDirection,
         EnvField::Locale,
+        EnvField::ReducedTransparency,
+        EnvField::HighContrast,
     ];
 
     /// The field's source name.
@@ -84,6 +93,8 @@ impl EnvField {
             EnvField::Orientation => "orientation",
             EnvField::LayoutDirection => "layout_direction",
             EnvField::Locale => "locale",
+            EnvField::ReducedTransparency => "reduced_transparency",
+            EnvField::HighContrast => "high_contrast",
             EnvField::Theme => "theme",
         }
     }

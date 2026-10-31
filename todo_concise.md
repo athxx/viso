@@ -134,17 +134,13 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 - [x] Acrylic: `Backdrop` gains `luminosity` (the backdrop's light evened toward
       the tint's, so text on it reads) beside tint and noise, a stage of the one
       composite.
-- [ ] Reduced transparency: an environment flag (system setting, battery saver)
-      makes every backdrop frostier and its tint denser; a device without the
-      capability draws it as its solid `fallback`, opening no capture. Increased
-      contrast: glass goes near black or white with a contrasting border; reduced
-      motion: no elastic morph.
-- [x] Liquid glass: `Backdrop` gains `refraction` and `bevel` (a quarter-circle
-      bevel at the rim bending what lies behind inward), `dispersion` (the color
-      fringe of that bend) and `highlight` (a thin glint on the walls along the
-      `light` angle) — each its own stage of the one pass, a fixed number of taps,
-      the capture not widened; CPU and Metal draw it alike. The web draws the
-      blur and tint alone.
+- [x] Reduced transparency: `env.reduced_transparency` (the system setting on
+      macOS, iOS, Windows and the web) makes every backdrop frostier and its tint
+      denser, without bend, glint or luminosity. Increased contrast
+      (`env.high_contrast`): near black or white with a contrasting rim.
+- [ ] A device without the capability (battery saver, a GPU too weak) draws every
+      backdrop as its solid `fallback`, opening no capture; reduced motion: no
+      elastic morph (with the motion item).
 - [ ] Liquid glass, adaptive: `regular` and `clear` presets. Regular reads the
       backdrop's mean light from the ladder's coarsest level (no readback): it
       flips light or dark, deepens its shadow over busy content, and maps its tint

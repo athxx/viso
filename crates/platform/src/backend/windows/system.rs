@@ -186,6 +186,11 @@ pub(super) fn read_appearance() -> Appearance {
         },
         high_contrast,
         reduce_motion: !animate,
+        // Settings > Personalization > Colors > Transparency effects.
+        reduce_transparency: read_dword(
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            w!("EnableTransparency"),
+        ) == Some(0),
         text_scale: read_text_scale(),
         // Settings > Accessibility > Visual effects > Always show scrollbars.
         overlay_scroll_bars: read_dword(

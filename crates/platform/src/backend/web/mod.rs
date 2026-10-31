@@ -709,6 +709,7 @@ fn report_keyboard(page: &Page) {
 const DARK: &str = "(prefers-color-scheme: dark)";
 const CONTRAST: [&str; 2] = ["(prefers-contrast: more)", "(forced-colors: active)"];
 const REDUCED_MOTION: &str = "(prefers-reduced-motion: reduce)";
+const REDUCED_TRANSPARENCY: &str = "(prefers-reduced-transparency: reduce)";
 
 fn media(query: &str) -> Option<MediaQueryList> {
     dom_window().match_media(query).ok().flatten()
@@ -727,6 +728,7 @@ fn current_appearance() -> Appearance {
         },
         high_contrast: CONTRAST.iter().any(|q| matches(q)),
         reduce_motion: matches(REDUCED_MOTION),
+        reduce_transparency: matches(REDUCED_TRANSPARENCY),
         text_scale: text_scale(),
         overlay_scroll_bars: true,
         accent: None,
@@ -929,7 +931,13 @@ impl WebApp {
                 drive();
             }),
         ];
-        for query in [DARK, CONTRAST[0], CONTRAST[1], REDUCED_MOTION] {
+        for query in [
+            DARK,
+            CONTRAST[0],
+            CONTRAST[1],
+            REDUCED_MOTION,
+            REDUCED_TRANSPARENCY,
+        ] {
             if let Some(list) = media(query) {
                 listeners.push(Listener::new(&list, "change", |_| report_appearance()));
             }

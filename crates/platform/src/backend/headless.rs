@@ -1017,6 +1017,7 @@ mod tests {
             color_scheme: ColorScheme::Dark,
             high_contrast: true,
             reduce_motion: false,
+            reduce_transparency: true,
             text_scale: 1.5,
             overlay_scroll_bars: false,
             accent: Some([1.0, 0.5, 0.0]),

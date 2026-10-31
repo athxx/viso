@@ -45,6 +45,8 @@ env.reduced_motion    : Bool
 env.orientation       : Orientation
 env.layout_direction  : LayoutDirection   // §U10.1
 env.locale            : Locale            // §U10.3
+env.reduced_transparency : Bool
+env.high_contrast     : Bool
 ```
 
 这些符号由标准 Native Schema 注入，Parser 不新增专用关键字。`env` 是 View 执行域的上下文绑定，只能在 View item 的表达式、Property Binding、View `if`/`match`/`for` 条件、View Handler 和调用的纯函数参数中使用；Component 的普通 `state` / `computed` 初始化器与成员 Callable 不能隐式读取局部 Layout Environment，否则报 `E2111`，需要它的值经参数传入。
@@ -161,6 +163,7 @@ Adaptive Environment Read 必须进入 Reactive HIR。编译器必须区分原�
 | `env.input`            | `STYLE / HIT_TEST`                                   |
 | `env.text_scale`       | `MEASURE / LAYOUT / SEMANTICS`                       |
 | `env.reduced_motion`   | `STYLE / PAINT`，不得强制 Layout                     |
+| `env.reduced_transparency` / `env.high_contrast` | `STYLE / PAINT`，不得强制 Layout |
 | `env.orientation`      | 仅通知显式读取者                                     |
 
 关键优化：如果 Window 从 1200dp 缩到 1100dp，但 `env.size_class` 仍为 `Expanded`，只读取 `size_class` 的结构分支 **不得** 因原始宽度变化重新构建。
@@ -236,7 +239,7 @@ Fold/Hinge/Cutout 必须通过 `env.display_features` 暴露为 typed geometry�
 
 `SafeArea` 与 `KeyboardAvoiding` 是纵向排列子节点的 Flex 容器（属性同 `Column`）。其 Padding 由 Runtime 决定：每条边的 Padding 是系统遮挡带伸入该节点盒的深度，遮挡带从窗口根节点的盒的对应边量起，`SafeArea` 的遮挡带为 `env.safe_area` 的四边，`KeyboardAvoiding` 的遮挡带为底边 `env.keyboard_inset`。因此已被祖先（包括 Runtime 为全屏窗口在根上加的 Safe Area 内边距）或外层同类区域让出的部分不再重复 Padding，嵌套区域只 Pad 一次。内容决定尺寸的轴上，尾边按不含该区域自身 Padding 的盒计量，一次布局即收敛。Padding 在布局之后、Anchor 求值之前更新（§96.5），区域位置或遮挡变化时重新计算，未变化时不写入。作者为 `SafeArea` 或 `KeyboardAvoiding` 写 `padding` 报 `E3711`：应 Pad 其内容。
 
-窗口打开时以及每次尺寸、Scale Factor、Safe Area、键盘高度、Display Feature 变化时，Runtime 把窗口的逻辑尺寸与 Scale Factor、`safe_area`、`keyboard_inset`、`display_features` 写入该窗口的环境；系统外观变化时写入 `reduced_motion` 与 `text_scale`，`text_scale` 同时移动该窗口 `sp` 长度的名义倍率；系统语言变化时把 `locale`（BCP 47）与其书写方向 `layout_direction`（Script 子标签优先，否则按语言的常用 Script）写入每个窗口。值未变化的字段不写入，不唤醒读取者。Headless 测试直接设置环境。
+窗口打开时以及每次尺寸、Scale Factor、Safe Area、键盘高度、Display Feature 变化时，Runtime 把窗口的逻辑尺寸与 Scale Factor、`safe_area`、`keyboard_inset`、`display_features` 写入该窗口的环境；系统外观变化时写入 `reduced_motion`、`text_scale`、`reduced_transparency` 与 `high_contrast`，`text_scale` 同时移动该窗口 `sp` 长度的名义倍率；系统语言变化时把 `locale`（BCP 47）与其书写方向 `layout_direction`（Script 子标签优先，否则按语言的常用 Script）写入每个窗口。值未变化的字段不写入，不唤醒读取者。Headless 测试直接设置环境。
 
 平台来源（平台未报告的值保持默认：`text_scale` 1.0、`locale` `und`、无 Display Feature）：
 
@@ -607,7 +610,7 @@ export record Backdrop {
 - `margin` 不折叠；`border` 在 Border Box 内侧描边，不参与布局；
 - `background` 是盒的各层填充，按书写顺序自下而上绘制，每层按 `corner_radius` 取圆角、画在 `border` 之下：`color` 为平涂；`linear` 沿 `angle`（CSS 约定：`0deg` 朝上、顺时针，`180deg` 自上而下）穿过整个盒，`radial` 以盒内比例位置 `x`/`y` 为圆心、到最远角为半径；二者的 `colors` 至少两种（只有一种时为该色平涂，没有时不绘制），`stops` 为各色在 `0..1` 上的位置，空或与 `colors` 不等长时均分，颜色在线性 RGB 中插值；`image` 按 `fit` 放置图片（同 `Image`），按 `opacity` 淡化，解码前不绘制。渐变与图片层铺在盒减去其 `inset` 的区域内，圆角取盒的圆角向内收缩，`inset` 取 dp（`Fill::linear { colors: [#ffffffb0, #ffffff20, #ffffff00], stops: [0.0, 0.5, 0.5], inset: EdgeInsets { top: 1dp, start: 2dp, end: 2dp } }` 即 Aqua 式上半高光）。第一层是 `color` 时它是盒的底色，`transition.background` 在两个底色之间过渡；其他背景变化立即显示；
 - `shadow` 是盒按 `corner_radius` 取圆角、按 `spread` 扩张（负值收缩）、按 `x`/`y` 偏移并按 `blur`（CSS 模糊半径）淡出的投影，画在盒下方，不参与布局与命中；`inset: true` 时落在盒内、`border` 之内，画在背景之上；多个阴影按书写顺序自下而上绘制，外阴影都在盒下、内阴影都在背景之上，因此一个盒可同时有外阴影与内阴影；`theme.elevation.*` 即 `Shadow`，可直接绑定；
-- `backdrop` 使盒成为玻璃：盒背后已绘制的内容按 `blur`（CSS 模糊半径）模糊、按 `saturation` 调整饱和度、按 `tint` 的 alpha 叠上 `tint`，再加 `noise`（0..1）颗粒，按 `corner_radius` 取圆角，画在 `background` 之下；节点自身 `opacity` 小于 1 时玻璃按该 opacity 淡出而保持模糊（嵌套在其他半透明祖先之内的玻璃不模糊）。同一背景上同一模糊的多块玻璃共用一次背景捕获与模糊。`BlurView` 是纵向排列子节点的 Flex 容器（属性同 `Column`），未给 `backdrop` 时为标准玻璃 `Backdrop {}`。`luminosity`（0..1）让背后的明暗向 `tint` 的亮度靠拢，玻璃上的内容在亮暗背景上读起来一致（亚克力）。液态玻璃：`refraction` 是边缘处背后内容向内位移的距离，沿边缘深 `bevel` 的四分之一圆弧斜面逐渐减到零，中部平直；`dispersion`（0..1）按该位移分开 RGB；`highlight`（0..1）是沿 `light` 方向（CSS 角度约定）两侧壁上的一条细亮线，朝光一侧更亮。各项为 0 时不计算；有 `refraction`、`highlight` 或 `luminosity` 的玻璃即使不模糊也读取背后内容。Web 导出为 `backdrop-filter: blur(..) saturate(..)` 加一层 `tint` 平涂，不画 `luminosity`、`refraction`、`dispersion`、`highlight`；
+- `backdrop` 使盒成为玻璃：盒背后已绘制的内容按 `blur`（CSS 模糊半径）模糊、按 `saturation` 调整饱和度、按 `tint` 的 alpha 叠上 `tint`，再加 `noise`（0..1）颗粒，按 `corner_radius` 取圆角，画在 `background` 之下；节点自身 `opacity` 小于 1 时玻璃按该 opacity 淡出而保持模糊（嵌套在其他半透明祖先之内的玻璃不模糊）。同一背景上同一模糊的多块玻璃共用一次背景捕获与模糊。`BlurView` 是纵向排列子节点的 Flex 容器（属性同 `Column`），未给 `backdrop` 时为标准玻璃 `Backdrop {}`。`luminosity`（0..1）让背后的明暗向 `tint` 的亮度靠拢，玻璃上的内容在亮暗背景上读起来一致（亚克力）。液态玻璃：`refraction` 是边缘处背后内容向内位移的距离，沿边缘深 `bevel` 的四分之一圆弧斜面逐渐减到零，中部平直；`dispersion`（0..1）按该位移分开 RGB；`highlight`（0..1）是沿 `light` 方向（CSS 角度约定）两侧壁上的一条细亮线，朝光一侧更亮。各项为 0 时不计算；有 `refraction`、`highlight` 或 `luminosity` 的玻璃即使不模糊也读取背后内容。玻璃自动遵循系统设置，作者无需读取 env：`env.reduced_transparency`（macOS/iOS 辅助功能「降低透明度」、Windows「透明效果」关闭、Web `prefers-reduced-transparency`）时模糊加大、`tint` 更浓，不画 `luminosity`、`refraction`、`dispersion`、`highlight`；`env.high_contrast` 时另把 `tint` 换成按其亮度取的近白或近黑，并加一圈 1dp 的反差边。Web 导出为 `backdrop-filter: blur(..) saturate(..)` 加一层 `tint` 平涂，不画 `luminosity`、`refraction`、`dispersion`、`highlight`；
 - `ripple` 为 `true` 时，按下该节点（或其内未开 `ripple` 的后代）从按下点向外铺开一圈墨迹，约 0.3s 盖满整个盒，按 `corner_radius` 裁圆角，画在 `background` 之上、内容之下；松手或按压被平移手势接管后墨迹边扩边淡出（约 0.2s）。墨迹取盒的反差色：浅色或透明底上为暗墨，深色底上为亮墨。减少动态效果（reduced motion）时墨迹不扩散，一按即满并淡出。未给 `ripple` 时按平台惯例：Android 上 `Button`、`Chip` 默认开启，其他平台默认关闭；Web 导出不带墨迹。手指或触控笔改变控件时伴随系统触觉：`Toggle`/`CheckBox`/可选 `Chip`/`Stepper`/`Select`/`Segmented` 改变值时为 selection 轻触，设了 `step` 的 `Slider` 每到一个刻度一次；按钮点击、鼠标与键盘不触发触觉；
 - `min` 大于 `max` 时以 `min` 为准，Debug Runtime 报告 `E3105`；
 - `start`/`end` 在布局时按 `env.layout_direction` 解析为物理边；
