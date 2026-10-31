@@ -591,6 +591,9 @@ pub fn material_ir() -> ShaderIr {
         IrField::new("row3", IrType::F32X4),
         IrField::new("offset", IrType::F32X4),
         IrField::new("radius", IrType::F32X4),
+        IrField::new("lens", IrType::F32X3),
+        IrField::new("glint", IrType::F32X4),
+        IrField::new("luminosity", IrType::F32X2),
         IrField::new("gamma", IrType::F32),
         IrField::new("noise", IrType::F32),
         IrField::new("opacity", IrType::F32),
@@ -599,6 +602,19 @@ pub fn material_ir() -> ShaderIr {
     static VARYINGS: &[Varying] = &[
         Varying::new("position", IrType::F32X4, " [[position]]", ""),
         Varying::new("uv", IrType::F32X2, "", "backdrop uv"),
+        Varying::new(
+            "lens",
+            IrType::F32X3,
+            "",
+            "refraction px, bevel px, dispersion",
+        ),
+        Varying::new(
+            "glint",
+            IrType::F32X4,
+            "",
+            "light direction, strength, line width px",
+        ),
+        Varying::new("luminosity", IrType::F32X2, "", "amount, its luminance"),
         Varying::new("uv_bounds", IrType::F32X4, "", "backdrop sub-rect (lo, hi)"),
         Varying::new("local", IrType::F32X2, "", "pixel-space sample position"),
         Varying::new("half_size", IrType::F32X2, "", ""),
@@ -2489,6 +2505,9 @@ out.local = pixel;
 out.half_size = size * 0.5;
 out.center = pos + size * 0.5;
 out.radius = float4(inst.radius);
+out.lens = float3(inst.lens);
+out.glint = float4(inst.glint);
+out.luminosity = float2(inst.luminosity);
 out.row0 = float4(inst.row0);
 out.row1 = float4(inst.row1);
 out.row2 = float4(inst.row2);
@@ -2545,7 +2564,36 @@ const MATERIAL_FRAGMENT_BODY: &str = "\
 float2 half_texel = 0.5 / float2(float(tex.get_width()), float(tex.get_height()));
 float2 lo = in.uv_bounds.xy + half_texel;
 float2 hi = max(in.uv_bounds.zw - half_texel, lo);
-float4 texel = tex.sample(samp, clamp(in.uv, lo, hi));
+float d = rrect_sdf(in.local, in.center, in.half_size, in.radius);
+float2 gx = dfdx(in.uv);
+float2 gy = dfdy(in.uv);
+
+// Liquid glass: the surface is flat across the middle with a quarter-circle
+// bevel at the rim; the backdrop seen through the bevel shifts inward along
+// the outward normal, most at the edge, and dispersion splits it per channel.
+float inward = max(-d, 0.0);
+float2 n = float2(0.0);
+if (in.lens.x > 0.0 || in.glint.z > 0.0) {
+    n = float2(rrect_sdf(in.local + float2(0.5, 0.0), in.center, in.half_size, in.radius)
+                 - rrect_sdf(in.local - float2(0.5, 0.0), in.center, in.half_size, in.radius),
+               rrect_sdf(in.local + float2(0.0, 0.5), in.center, in.half_size, in.radius)
+                 - rrect_sdf(in.local - float2(0.0, 0.5), in.center, in.half_size, in.radius));
+    float nl = length(n);
+    n = nl > 0.0 ? n / nl : float2(0.0);
+}
+float shift = 0.0;
+if (in.lens.x > 0.0 && in.lens.y > 0.0) {
+    float x = 1.0 - clamp(inward / in.lens.y, 0.0, 1.0);
+    shift = in.lens.x * (1.0 - sqrt(max(1.0 - x * x, 0.0)));
+}
+float2 per_px = (in.uv_bounds.zw - in.uv_bounds.xy) / max(2.0 * in.half_size, float2(1.0));
+float2 bend = n * shift * per_px;
+float4 texel = tex.sample(samp, clamp(in.uv - bend, lo, hi), gradient2d(gx, gy));
+if (in.lens.z > 0.0 && shift > 0.0) {
+    float4 r = tex.sample(samp, clamp(in.uv - bend * (1.0 + in.lens.z), lo, hi), gradient2d(gx, gy));
+    float4 b = tex.sample(samp, clamp(in.uv - bend * (1.0 - in.lens.z), lo, hi), gradient2d(gx, gy));
+    texel = float4(r.r, texel.g, b.b, texel.a);
+}
 
 // Tint: the same straight-alpha affine matrix the fused color built-in applies,
 // so brightness never depends on coverage.
@@ -2559,12 +2607,33 @@ dst = clamp(dst, 0.0, 1.0);
 if (in.gamma != 1.0) {
     dst.rgb = pow(dst.rgb, float3(in.gamma));
 }
+// Acrylic's luminosity layer: the backdrop's light gives way to a fixed one,
+// so what lies on the glass reads whatever is behind it.
+if (in.luminosity.x > 0.0) {
+    float l = dot(dst.rgb, float3(0.2126, 0.7152, 0.0722));
+    float3 lit = clamp(dst.rgb + (in.luminosity.y - l), 0.0, 1.0);
+    dst.rgb = mix(dst.rgb, lit, in.luminosity.x);
+}
+// The glint: a thin line at the edge with a faint bleed inside it, on the two
+// walls along the light's axis, fainter on the one facing away. It pulls the
+// face toward a bright tone of its own hue.
+if (in.glint.z > 0.0 && in.glint.w > 0.0) {
+    float w = in.glint.w;
+    float rim = clamp(1.0 - inward / w, 0.0, 1.0) + 0.21 * clamp(1.0 - inward / (4.0 * w), 0.0, 1.0);
+    float2 l = in.glint.xy;
+    float lobe = 1.0 - abs(dot(n, float2(-l.y, l.x)));
+    float toward = dot(n, l) >= 0.0 ? 1.0 : 0.35;
+    float g = clamp(in.glint.z * 0.6 * lobe * toward * rim, 0.0, 1.0);
+    float y = dot(dst.rgb, float3(0.2126, 0.7152, 0.0722));
+    float3 tone = clamp(float3(1.0) + (dst.rgb - y) * 2.85, 0.0, 1.0);
+    dst.rgb = mix(dst.rgb, tone, g);
+    dst.a = max(dst.a, g);
+}
 if (in.noise > 0.0) {
     dst.rgb = clamp(dst.rgb + in.noise * grain(in.local), 0.0, 1.0);
 }
 
 // Material mask: the panel's own rounded rect, antialiased over one device pixel.
-float d = rrect_sdf(in.local, in.center, in.half_size, in.radius);
 float cov = clamp(-d * aa_factor(in.local), 0.0, 1.0);
 
 float oa = dst.a * cov * in.opacity;

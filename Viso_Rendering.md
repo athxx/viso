@@ -1336,9 +1336,9 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 | Glassmorphism | backdrop → blur → saturation/tint → 亮边框 + 柔和外阴影 | 同上 + analytic 阴影 |
 | Acrylic | backdrop → blur → luminosity（保留背后亮度）→ tint → noise | 同上，luminosity/tint 合进 fused color op |
 | Mica | 窗口级：系统合成器采样一次壁纸、重模糊、按主题着色；Viso 表面透明 | 0（`MaterialLane::Native`） |
-| Liquid glass | backdrop（轻模糊）→ SDF 边缘折射位移 + 色散 → 镜面边缘高光 → 自适应 tint | 一次 capture（ROI 按最大位移外扩）+ 单 pass 固定 tap 数 |
+| Liquid glass | backdrop（轻模糊）→ 圆弧 bevel 向内折射 + 色散 → tint → 沿光轴的细线 glint（§19.1a） | 一次 capture（ROI 不外扩）+ 单 pass，至多 3 tap |
 
-- **降级**：环境的 reduced transparency（系统设置、省电、设备无该能力）把每个 backdrop 画成其实心 `fallback`，不开 capture；窗口失活时窗口级材质同样回退实色。
+- **降级**：reduced transparency（系统设置、省电）让 backdrop 更磨砂、tint 更浓；设备无该能力时画成实心 `fallback`，不开 capture。increased contrast 让玻璃近黑或近白并加对比边框；reduced motion 关掉弹性形变。窗口失活时窗口级材质回退实色。
 - **不叠玻璃**：glass 上再放 glass 会让上层 capture 重渲下层材质；同一平面的玻璃元素放进一个 `GlassGroup`，共享一次 capture。
 
 ---
@@ -1355,20 +1355,37 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 
 ## 19.1a GPU Liquid glass
 
-在 Frosted 管线（§18）上多一步采样位移，仍是一个 composite：
+液态玻璃不是一种效果，是几个独立阶段叠在 Frosted 管线（§18）的同一个 composite 里，每段由自己的参数开关，关掉的段不花 ALU、不多采样：
+
+| 阶段 | `FrostedMaterial` 字段 | 作用 |
+|---|---|---|
+| 模糊 | `backdrop_sigma` | 共享 capture + 降采样 ladder（§18） |
+| 透镜 | `lens: Lens { refraction, bevel, dispersion }` | 边缘四分之一圆 bevel，背景向内位移；色散三 tap |
+| 着色 | `color: ColorOp` | 饱和度、tint、亮度融成一个矩阵 |
+| 亮度层 | `luminosity: Luminosity { amount, luminance }` | 亚克力：背后的明暗让位给固定亮度 |
+| 高光 | `glint: Glint { strength, light, width }` | 沿光轴两壁的细亮线，朝光一侧更亮 |
+| 颗粒 | `noise` | 按设备像素哈希，静态帧不变 |
 
 ```text
-d      = rounded-rect SDF（负在内），n = ∇d
-edge   = saturate(1 + d / band)            // band：边缘透镜带宽，随盒子尺寸
-offset = -n · refraction · lens(edge)      // lens：凸透镜高度剖面的导数，边缘最强
-color  = sample(backdrop, p + offset ± dispersion·offset)   // RGB 三 tap 时才色散
-spec   = highlight · pow(edge, k) · max(0, dot(n, light))   // 加上对侧较弱的一圈
-out    = tint(color, mean_luma(backdrop)) + spec            // tint 随背后亮度在明暗间切换
+d       = rounded-rect SDF（负在内），inward = max(-d, 0)，n = ∇d（中心差分）
+bevel   = min(lens.bevel, 短边/4)，amount = min(lens.refraction, 短边/2)
+x       = 1 - saturate(inward / bevel)
+shift   = amount · (1 - sqrt(1 - x²))          // 四分之一圆：边缘最陡，与平坦中部相切
+color   = sample(backdrop, uv - n·shift)        // 只向内采样：ROI 不外扩、不放大
+          dispersion > 0：r、b 各按 shift·(1 ± dispersion) 再采一次
+color   = luminosity(tint(color))
+rim     = saturate(1 - inward/w) + 0.21·saturate(1 - inward/4w)    // 细线 + 浅内渗
+lobe    = 1 - |n · light⊥|                      // 沿光轴的两壁，向侧面线性衰减
+g       = strength · 0.6 · lobe · (n·light ≥ 0 ? 1 : 0.35) · rim
+out     = mix(color, saturate(1 + (color - luma)·2.85), g)       // 提亮成同色调的亮色，不是盖白
 ```
 
-- capture ROI 外扩 `refraction`，位移不越界采样；
-- 背后平均亮度取 blur ladder 最粗一级，不额外读回；
-- 按压光（指针处的径向辉光）与合并形状（`GlassGroup` 内各 SDF 的 smooth-min 并集）都在同一 pass 内求值。
+- 有透镜、高光或亮度层的表面即使不模糊也开 capture（sigma 取 ladder 最低档之上一点）；
+- 位移只向内，capture ROI 不变，一组相邻面板仍共享一次 capture 和一条 ladder；
+- 每段参数是 per-instance 的，分支在一次 draw 内一致，不引入发散；
+- 合并形状（`GlassGroup`）：组内各 SDF 取 smooth-min 并集，先在一个低分辨率 matte（RGBA16F：距离、法线×强度、半短边）里求出，几何不变就缓存，最终 pass 一次线性采样复原边缘与法线；单个表面直接解析求 SDF，不走 matte；
+- `regular` 自适应：背后平均亮度取 ladder 最粗一级（不读回），据此切明暗、调阴影深浅、把 tint 映射成随亮度变化的一组色调；尺寸越大越「厚」（bevel、位移、模糊、阴影随之加大），在 CPU 侧算出；`clear` 不自适应，下垫一层压暗；
+- 按压光（指针处的径向辉光，扩散到相邻玻璃）在同一 pass 内求值；出现与消失调的是透镜强度（materialize），不是不透明度。
 
 ## 19.2 HDR / Wide Gamut
 

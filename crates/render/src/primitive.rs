@@ -820,6 +820,12 @@ pub struct FrostedMaterial {
     /// The border/highlight ring, drawn as an analytic rounded rect over the
     /// surface. [`Border::NONE`] for none.
     pub border: Border,
+    /// The rim's bend; [`Lens::NONE`] is flat glass.
+    pub lens: Lens,
+    /// The light the rim catches; [`Glint::NONE`] for none.
+    pub glint: Glint,
+    /// Acrylic's luminosity layer; [`Luminosity::NONE`] keeps the backdrop's.
+    pub luminosity: Luminosity,
     /// Which realization draws the surface. [`MaterialLane::Gpu`] by default —
     /// the portable answer; [`MaterialLane::Native`] reserves the region for the
     /// platform's own material instead of capturing and blurring a backdrop.
@@ -838,7 +844,20 @@ impl FrostedMaterial {
             noise: 0.0,
             opacity: 1.0,
             border: Border::NONE,
+            lens: Lens::NONE,
+            glint: Glint::NONE,
+            luminosity: Luminosity::NONE,
             lane: MaterialLane::Gpu,
+        }
+    }
+
+    /// The sigma its backdrop blurs by: a surface that bends, glints or
+    /// relights what lies behind it reads it even unblurred, so it blurs by
+    /// just over `least`, the least a capture is opened for.
+    pub fn backdrop_sigma(&self, least: f32) -> f32 {
+        match self.lens.is_on() || self.glint.is_on() || self.luminosity.is_on() {
+            true => self.backdrop_sigma.max(least + 0.25),
+            false => self.backdrop_sigma,
         }
     }
 
@@ -869,6 +888,83 @@ impl FrostedMaterial {
             radius: self.radius,
             border: self.border,
         })
+    }
+}
+
+/// Liquid glass's bend: the backdrop seen through a rounded bevel along the
+/// rim, flat across the middle. The bend samples inward, within the capture
+/// the surface already reads, so it widens nothing and never magnifies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Lens {
+    /// How far, in points, the backdrop shifts inward at the very edge.
+    pub refraction: f32,
+    /// How deep, in points, the bevel reaches in from the edge: a quarter
+    /// circle, steep at the edge and level where it meets the flat middle.
+    pub bevel: f32,
+    /// How far the bend splits the colors, as a share of it in `0..1`.
+    pub dispersion: f32,
+}
+
+impl Lens {
+    /// Flat glass: no bend.
+    pub const NONE: Lens = Lens {
+        refraction: 0.0,
+        bevel: 0.0,
+        dispersion: 0.0,
+    };
+
+    pub fn is_on(&self) -> bool {
+        self.refraction > 0.0 && self.bevel > 0.0
+    }
+}
+
+/// The light a glass rim catches: a thin bright line along the edge, on the
+/// two walls that face along the light's axis, brightest on the one facing
+/// the light. It recolors the backdrop toward a bright tone of its own hue
+/// rather than laying white over it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Glint {
+    /// Its strength in `0..1`.
+    pub strength: f32,
+    /// Where the light comes from, in radians: CSS's angle, `0` up and
+    /// clockwise.
+    pub light: f32,
+    /// The line's width in points; a faint bleed reaches four times as deep.
+    pub width: f32,
+}
+
+impl Glint {
+    /// No glint.
+    pub const NONE: Glint = Glint {
+        strength: 0.0,
+        light: 0.0,
+        width: 0.0,
+    };
+
+    pub fn is_on(&self) -> bool {
+        self.strength > 0.0 && self.width > 0.0
+    }
+}
+
+/// Acrylic's luminosity layer: the backdrop's light gives way to a fixed
+/// one, so what lies on the glass reads the same over light and dark.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Luminosity {
+    /// How much of the backdrop's light gives way, `0..1`.
+    pub amount: f32,
+    /// The luminance it gives way to, `0..1`.
+    pub luminance: f32,
+}
+
+impl Luminosity {
+    /// The backdrop's own light.
+    pub const NONE: Luminosity = Luminosity {
+        amount: 0.0,
+        luminance: 0.0,
+    };
+
+    pub fn is_on(&self) -> bool {
+        self.amount > 0.0
     }
 }
 
@@ -2502,6 +2598,14 @@ pub struct MaterialInstance {
     /// Mask radii in points, ordered left-top, right-top, right-bottom,
     /// left-bottom — already normalized against the rect.
     pub radius: [f32; 4],
+    /// The lens: refraction and bevel depth in device pixels, already held
+    /// within the surface, and dispersion.
+    pub lens: [f32; 3],
+    /// The glint: the light's direction (a unit vector), strength, and line
+    /// width in device pixels.
+    pub glint: [f32; 4],
+    /// The luminosity layer: amount and the luminance it gives way to.
+    pub luminosity: [f32; 2],
     /// Per-channel RGB exponent applied after the matrix; `1.0` = none.
     pub gamma: f32,
     /// Grain amplitude in `0..1`; `0.0` = no noise.

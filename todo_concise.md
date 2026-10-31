@@ -133,16 +133,27 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       light border and a soft shadow (exists; pictures and stats in the gallery).
 - [ ] Acrylic: `Backdrop` gains `luminosity` (the backdrop's light kept under the
       tint, so text on it reads) beside tint and noise, in the fused color op.
-- [ ] Reduced transparency: an environment flag (system setting, battery saver, a
-      device without the capability) draws every backdrop as its solid `fallback`,
-      opening no capture.
-- [ ] Liquid glass: `Backdrop` gains `refraction` (lensing of what lies behind,
-      strongest at the rounded edge, from the box's SDF), `dispersion` (the color
-      fringe of that bend) and `highlight` (a specular rim lit from `light`
-      angle); the capture widens by the bend; one pass, a fixed number of taps.
-- [ ] Liquid glass in motion: a press lights the glass from where it lands; glass
-      siblings in a `GlassGroup` share one capture and melt into one shape (a
-      smooth union of their SDFs) as they near.
+- [ ] Reduced transparency: an environment flag (system setting, battery saver)
+      makes every backdrop frostier and its tint denser; a device without the
+      capability draws it as its solid `fallback`, opening no capture. Increased
+      contrast: glass goes near black or white with a contrasting border; reduced
+      motion: no elastic morph.
+- [ ] Liquid glass: `Backdrop` gains `refraction` and `bevel` (a quarter-circle
+      bevel at the rim bending what lies behind inward), `dispersion` (the color
+      fringe of that bend) and `highlight` (a thin glint on the walls along the
+      `light` angle) — each its own stage of the one pass, a fixed number of taps,
+      the capture not widened. Renderer stages (`Lens`, `Glint`, `Luminosity`)
+      done, CPU and Metal alike; the DSL fields to wire.
+- [ ] Liquid glass, adaptive: `regular` and `clear` presets. Regular reads the
+      backdrop's mean light from the ladder's coarsest level (no readback): it
+      flips light or dark, deepens its shadow over busy content, and maps its tint
+      to tones by that light; it thickens with size (bevel, bend, blur, shadow),
+      worked out on the CPU. Clear keeps none of that, a dimming layer under it.
+- [ ] Liquid glass in motion: a press lights the glass from where it lands and the
+      glow spreads to glass nearby; glass appears and leaves by its bend (a
+      `materialize` transition), not its opacity; siblings in a `GlassGroup` share
+      one capture and melt into one shape (a smooth union of their SDFs, from a
+      cached low-resolution matte) within its `spacing`.
 - [ ] Window materials: `Window { material: mica | mica_alt | acrylic | vibrancy }`
       on the platform's compositor — DWM system backdrop on Windows 11, an
       `NSVisualEffectView` behind the surface on macOS — over a transparent surface;

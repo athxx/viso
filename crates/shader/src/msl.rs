@@ -832,6 +832,9 @@ mod tests {
                 "row3",
                 "offset",
                 "radius",
+                "lens",
+                "glint",
+                "luminosity",
                 "gamma",
                 "noise",
                 "opacity"
@@ -839,19 +842,23 @@ mod tests {
         );
         assert_three_legs_agree(MATERIAL_MSL(), &material_schema(), &ir_names);
 
-        // The ColorTransform prefix (4*8 + 5*16 = 112) plus the mask radii (F32X4)
-        // and three bare F32 tail fields: 112 + 16 + 3*4 = 140 bytes, no padding.
+        // The ColorTransform prefix (4*8 + 5*16 = 112) plus the mask radii
+        // (16), the lens (12), the glint (16), the luminosity (8) and three
+        // bare F32 tail fields: 112 + 52 + 3*4 = 176 bytes, no padding.
         let (expected, stride) = material_ir().expected_offsets();
         let schema = material_schema();
         assert_eq!(schema.attributes.len(), expected.len());
-        assert_eq!(stride, 140);
+        assert_eq!(stride, 176);
         assert_eq!(expected[0], ("rect_pos", 0));
         assert_eq!(expected[4], ("row0", 32));
         assert_eq!(expected[8], ("offset", 96));
         assert_eq!(expected[9], ("radius", 112));
-        assert_eq!(expected[10], ("gamma", 128));
-        assert_eq!(expected[11], ("noise", 132));
-        assert_eq!(expected[12], ("opacity", 136));
+        assert_eq!(expected[10], ("lens", 128));
+        assert_eq!(expected[11], ("glint", 140));
+        assert_eq!(expected[12], ("luminosity", 156));
+        assert_eq!(expected[13], ("gamma", 164));
+        assert_eq!(expected[14], ("noise", 168));
+        assert_eq!(expected[15], ("opacity", 172));
     }
 
     /// The grain must never read time, or a static frosted surface would redraw

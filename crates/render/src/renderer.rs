@@ -1742,6 +1742,9 @@ struct MaterialRecord {
     noise: f32,
     /// Surface opacity, group-opacity fold already applied.
     opacity: f32,
+    lens: crate::primitive::Lens,
+    glint: crate::primitive::Glint,
+    luminosity: crate::primitive::Luminosity,
 }
 
 /// Lay a [`MaterialRecord`] out as GPU instance data over `rect` (target space)
@@ -1756,9 +1759,18 @@ fn material_instance(
     rect_size: [f32; 2],
     uv_pos: [f32; 2],
     uv_size: [f32; 2],
+    scale: f32,
 ) -> MaterialInstance {
     let r = record.op.matrix.rows;
     let row = |i: usize| [r[i][0], r[i][1], r[i][2], r[i][3]];
+    // The bevel reaches at most a quarter of the shorter side in, and the
+    // edge's shift never passes the middle.
+    let half_minor = rect_size[0].min(rect_size[1]) * 0.5;
+    let lens = record.lens;
+    let bevel = lens.bevel.max(0.0).min(half_minor * 0.5);
+    let refraction = lens.refraction.max(0.0).min(half_minor);
+    let glint = record.glint;
+    let (sin, cos) = glint.light.sin_cos();
     MaterialInstance {
         rect_pos,
         rect_size,
@@ -1770,6 +1782,21 @@ fn material_instance(
         row3: row(3),
         offset: [r[0][4], r[1][4], r[2][4], r[3][4]],
         radius: record.radius,
+        lens: [
+            refraction * scale,
+            bevel * scale,
+            lens.dispersion.clamp(0.0, 1.0),
+        ],
+        glint: [
+            sin,
+            -cos,
+            glint.strength.clamp(0.0, 1.0),
+            glint.width.max(0.0) * scale,
+        ],
+        luminosity: [
+            record.luminosity.amount.clamp(0.0, 1.0),
+            record.luminosity.luminance.clamp(0.0, 1.0),
+        ],
         gamma: record.op.gamma,
         noise: record.noise,
         opacity: record.opacity,
@@ -2932,11 +2959,12 @@ impl Renderer {
                                 opacity: material.opacity * fold,
                             });
                         }
-                    } else if material.backdrop_sigma > BLUR_MIN_SIGMA
+                    } else if let sigma = material.backdrop_sigma(BLUR_MIN_SIGMA)
+                        && sigma > BLUR_MIN_SIGMA
                         && matches!(target, PassTarget::Main)
-                        && let Some(roi) = self.backdrop_roi(world_clip, material.backdrop_sigma)
+                        && let Some(roi) = self.backdrop_roi(world_clip, sigma)
                     {
-                        let capture = self.join_or_open_backdrop(roi, material.backdrop_sigma);
+                        let capture = self.join_or_open_backdrop(roi, sigma);
                         let index = self.material_records.len();
                         self.material_records.push(MaterialRecord {
                             rect: material.rect,
@@ -2944,6 +2972,9 @@ impl Renderer {
                             op: material.color,
                             noise: material.noise,
                             opacity: material.opacity * fold,
+                            lens: material.lens,
+                            glint: material.glint,
+                            luminosity: material.luminosity,
                         });
                         let bounds =
                             crate::scene::bounds::Bounds::from_world(material.rect, 0.0, 0.0);
@@ -4066,6 +4097,7 @@ impl Renderer {
                         (rect.y - roi.y) / bh * cover[1],
                     ],
                     [rect.w / bw * cover[0], rect.h / bh * cover[1]],
+                    self.scale,
                 );
                 let start = self.material_scratch.len() as u32;
                 self.material_scratch.push(instance);

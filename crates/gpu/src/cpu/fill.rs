@@ -14,7 +14,7 @@ use crate::instance::AttrFormat;
 use crate::resource::{BuiltinShader, SamplerDesc};
 use crate::{DrawCommand, TextureId};
 
-use AttrFormat::{Float1 as F1, Float2 as F2, Float4 as F4, Uint1 as U1};
+use AttrFormat::{Float1 as F1, Float2 as F2, Float3 as F3, Float4 as F4, Uint1 as U1};
 
 /// The most fields a built-in reads.
 pub(super) const MAX_FIELDS: usize = 16;
@@ -122,6 +122,9 @@ pub(super) fn schema(builtin: BuiltinShader) -> &'static [(&'static str, AttrFor
             ("row3", F4),
             ("offset", F4),
             ("radius", F4),
+            ("lens", F3),
+            ("glint", F4),
+            ("luminosity", F2),
             ("gamma", F1),
             ("noise", F1),
             ("opacity", F1),
@@ -185,6 +188,11 @@ impl Inst<'_> {
 
     #[inline]
     pub(super) fn f2(&self, field: usize) -> [f32; 2] {
+        std::array::from_fn(|i| f32::from_le_bytes(self.word(field, i)))
+    }
+
+    #[inline]
+    pub(super) fn f3(&self, field: usize) -> [f32; 3] {
         std::array::from_fn(|i| f32::from_le_bytes(self.word(field, i)))
     }
 
@@ -594,13 +602,13 @@ pub(super) fn draw(
             let masked = radius.iter().any(|&r| r > 0.0);
             let half = [mask_size[0] * 0.5, mask_size[1] * 0.5];
             let center = [mask_pos[0] + half[0], mask_pos[1] + half[1]];
-            let ramp = cx.pixels();
+            let ramp = cx.aa();
             let (pos, size) = (i.f2(0), i.f2(1));
             shade(cx, out, clip, |p| {
                 if !cx.covers(p, pos, size) {
                     return [0.0; 4];
                 }
-                // The mask's AA ramp is one pixel wide, as the shader's.
+                // The mask's AA ramp is the shader's `aa_factor`.
                 let cov = if masked {
                     (-rrect_sdf(p, center, half, radius) * ramp).clamp(0.0, 1.0)
                 } else {
@@ -951,8 +959,9 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
         return;
     };
     let map = UvMap::of(i, 2, 3);
-    let matrix = Matrix::of(i, 4, 8, 10);
-    let (radius, noise, opacity) = (i.f4(9), i.f1(11), i.f1(12));
+    let matrix = Matrix::of(i, 4, 8, 13);
+    let (radius, lens, glint, luminosity) = (i.f4(9), i.f3(10), i.f4(11), i.f2(12));
+    let (noise, opacity) = (i.f1(14), i.f1(15));
     if map.size[0] <= 0.0 || map.size[1] <= 0.0 {
         return;
     }
@@ -962,21 +971,78 @@ fn material(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     ];
     let half = [map.size[0] * 0.5, map.size[1] * 0.5];
     let (lo, hi) = inset_window(map.uv_pos, map.uv_size, &tex);
-    let ramp = cx.pixels();
+    let ramp = cx.aa();
     shade(cx, out, clip, |p| {
-        // The AA ramp is one pixel wide: `pixels` units of the sample position
-        // to one of coverage.
-        let cov = (-rrect_sdf(p, center, half, radius) * ramp).clamp(0.0, 1.0);
+        // The AA ramp is the shader's `aa_factor`.
+        let d = rrect_sdf(p, center, half, radius);
+        let cov = (-d * ramp).clamp(0.0, 1.0);
         if cov <= 0.0 {
             return [0.0; 4];
         }
         let [u, v] = map.at(p);
-        let mut dst = matrix.apply(sample(
-            &tex,
-            &samp,
-            u.clamp(lo[0], hi[0]),
-            v.clamp(lo[1], hi[1]),
-        ));
+        // Liquid glass: a quarter-circle bevel at the rim shifts the
+        // backdrop inward along the outward normal, most at the edge.
+        let inward = (-d).max(0.0);
+        let mut n = [0.0f32; 2];
+        if lens[0] > 0.0 || glint[2] > 0.0 {
+            let at = |dx: f32, dy: f32| rrect_sdf([p[0] + dx, p[1] + dy], center, half, radius);
+            let g = [at(0.5, 0.0) - at(-0.5, 0.0), at(0.0, 0.5) - at(0.0, -0.5)];
+            let len = (g[0] * g[0] + g[1] * g[1]).sqrt();
+            if len > 0.0 {
+                n = [g[0] / len, g[1] / len];
+            }
+        }
+        let mut shift = 0.0;
+        if lens[0] > 0.0 && lens[1] > 0.0 {
+            let x = 1.0 - (inward / lens[1]).clamp(0.0, 1.0);
+            shift = lens[0] * (1.0 - (1.0 - x * x).max(0.0).sqrt());
+        }
+        let per = [
+            map.uv_size[0] / map.size[0].max(1.0),
+            map.uv_size[1] / map.size[1].max(1.0),
+        ];
+        let tap = |k: f32| {
+            sample(
+                &tex,
+                &samp,
+                (u - n[0] * shift * k * per[0]).clamp(lo[0], hi[0]),
+                (v - n[1] * shift * k * per[1]).clamp(lo[1], hi[1]),
+            )
+        };
+        let mut texel = tap(1.0);
+        if lens[2] > 0.0 && shift > 0.0 {
+            texel[0] = tap(1.0 + lens[2])[0];
+            texel[2] = tap(1.0 - lens[2])[2];
+        }
+        let mut dst = matrix.apply(texel);
+        let luma = |c: &[f32; 4]| c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+        if luminosity[0] > 0.0 {
+            let l = luma(&dst);
+            for channel in dst.iter_mut().take(3) {
+                let lit = (*channel + (luminosity[1] - l)).clamp(0.0, 1.0);
+                *channel += (lit - *channel) * luminosity[0];
+            }
+        }
+        // The glint: a thin line at the edge with a faint bleed, on the walls
+        // along the light's axis, pulling the face toward a bright tone of
+        // its own hue.
+        if glint[2] > 0.0 && glint[3] > 0.0 {
+            let w = glint[3];
+            let rim = (1.0 - inward / w).clamp(0.0, 1.0)
+                + 0.21 * (1.0 - inward / (4.0 * w)).clamp(0.0, 1.0);
+            let lobe = 1.0 - (n[0] * -glint[1] + n[1] * glint[0]).abs();
+            let toward = match n[0] * glint[0] + n[1] * glint[1] >= 0.0 {
+                true => 1.0,
+                false => 0.35,
+            };
+            let g = (glint[2] * 0.6 * lobe * toward * rim).clamp(0.0, 1.0);
+            let y = luma(&dst);
+            for channel in dst.iter_mut().take(3) {
+                let tone = (1.0 + (*channel - y) * 2.85).clamp(0.0, 1.0);
+                *channel += (tone - *channel) * g;
+            }
+            dst[3] = dst[3].max(g);
+        }
         if noise > 0.0 {
             let g = grain(p);
             for channel in dst.iter_mut().take(3) {
@@ -1041,7 +1107,6 @@ fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
     let masked = radius.iter().any(|&r| r > 0.0);
     let mask_half = [mask_size[0] * 0.5, mask_size[1] * 0.5];
     let mask_center = [mask_pos[0] + mask_half[0], mask_pos[1] + mask_half[1]];
-    let ramp = cx.pixels();
     let lut = if use_lut != 0 {
         let Some(lut) = texture_bindings(cx, 0) else {
             return;
@@ -1066,7 +1131,7 @@ fn gradient(cx: &Cx<'_>, i: &Inst<'_>, out: &mut dyn Rows, clip: PxRect) {
             let d = (m[0] * m[0] + m[1] * m[1]).sqrt() + q[0].max(q[1]).min(0.0);
             let mut cov = (-d * aa).clamp(0.0, 1.0);
             if masked {
-                cov *= (-rrect_sdf(p, mask_center, mask_half, radius) * ramp).clamp(0.0, 1.0);
+                cov *= (-rrect_sdf(p, mask_center, mask_half, radius) * aa).clamp(0.0, 1.0);
             }
             if cov <= 0.0 {
                 *px = [0.0; 4];
