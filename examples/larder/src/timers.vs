@@ -195,7 +195,7 @@ export component Timers {
                     title: tr("timers.title")
                     subtitle: tr("timers.count", count: running)
                 }
-                NewTimer { on created(e) { emit created(e.label, e.minutes) } }
+                NewTimer { on created({ label, minutes }) { emit created(label, minutes) } }
                 if timers.is_empty() {
                     EmptyState {
                         title: tr("timers.empty_title")
@@ -210,10 +210,10 @@ export component Timers {
                         for timer in timers key timer.id {
                             TimerCard {
                                 timer: timer
-                                on paused(e) { emit paused(e.id) }
-                                on resumed(e) { emit resumed(e.id) }
-                                on reset(e) { emit reset(e.id) }
-                                on removed(e) { emit removed(e.id) }
+                                on paused({ id }) { emit paused(id) }
+                                on resumed({ id }) { emit resumed(id) }
+                                on reset({ id }) { emit reset(id) }
+                                on removed({ id }) { emit removed(id) }
                             }
                         }
                     }

@@ -91,7 +91,7 @@ export component Settings {
                                 width: 200dp
                                 semantics.label: tr("settings.measures")
                                 bind selected <=> measures
-                                on selected_changed(e) { save() }
+                                on selected_changed { save() }
                                 Text(tr("settings.metric"))
                                 Text(tr("settings.imperial"))
                             }
@@ -106,7 +106,7 @@ export component Settings {
                                 step: 1.0
                                 label: tr("settings.servings")
                                 bind value <=> servings
-                                on changed(e) { save() }
+                                on changed { save() }
                             }
                         }
                     }
@@ -120,7 +120,7 @@ export component Settings {
                             Toggle {
                                 semantics.label: tr("settings.compact_lists")
                                 bind checked <=> compact
-                                on changed(e) { save() }
+                                on changed { save() }
                             }
                         }
                         Divider {}
@@ -130,7 +130,7 @@ export component Settings {
                             Toggle {
                                 semantics.label: tr("settings.sounds")
                                 bind checked <=> sounds
-                                on changed(e) { save() }
+                                on changed { save() }
                             }
                         }
                     }

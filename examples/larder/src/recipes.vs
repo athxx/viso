@@ -73,7 +73,7 @@ component CourseFilter {
             Chip {
                 label: tr("recipes.all")
                 selected: picked == Option::None
-                on changed(e) { emit picked_changed(Option::None) }
+                on changed { emit picked_changed(Option::None) }
             }
             for course in all_courses() key course {
                 Chip {
@@ -164,7 +164,7 @@ export component RecipeList {
                         RecipeRow {
                             recipe: recipe
                             compact: compact
-                            on opened(e) { emit opened(e.id) }
+                            on opened({ id }) { emit opened(id) }
                         }
                     }
                 }
@@ -326,12 +326,12 @@ export component RecipeDetail {
                                 people: people
                                 measures: measures
                                 bind serves <=> serves
-                                on shop(e) { emit shop(e.items) }
+                                on shop({ items }) { emit shop(items) }
                             }
                         }
                         Method {
                             recipe: recipe
-                            on timer(e) { emit timer(e.label, e.minutes) }
+                            on timer({ label, minutes }) { emit timer(label, minutes) }
                         }
                     }
                 } else {
@@ -341,11 +341,11 @@ export component RecipeDetail {
                         people: people
                         measures: measures
                         bind serves <=> serves
-                        on shop(e) { emit shop(e.items) }
+                        on shop({ items }) { emit shop(items) }
                     }
                     Method {
                         recipe: recipe
-                        on timer(e) { emit timer(e.label, e.minutes) }
+                        on timer({ label, minutes }) { emit timer(label, minutes) }
                     }
                 }
             }
@@ -391,7 +391,7 @@ component Ingredients {
                         step: 1.0
                         value: serves
                         label: tr("recipe.servings")
-                        on changed(e) { emit serves_changed(e.value) }
+                        on changed({ value }) { emit serves_changed(value) }
                     }
                 }
                 for ingredient in recipe.ingredients key ingredient.name {
@@ -443,7 +443,7 @@ component Method {
                 for step in numbered(recipe.steps) key step.index {
                     StepRow {
                         step: step
-                        on timed(e) { emit timer(e.label, e.minutes) }
+                        on timed({ label, minutes }) { emit timer(label, minutes) }
                     }
                 }
             }

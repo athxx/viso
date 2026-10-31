@@ -172,9 +172,9 @@ export component Planner {
                                         recipes: recipes
                                         plan: plan
                                         day: d
-                                        on picked(e) { pick(e.day, e.course) }
-                                        on opened(e) { emit opened(e.id) }
-                                        on cleared(e) { emit unplanned(e.day, e.course) }
+                                        on picked({ day, course }) { pick(day, course) }
+                                        on opened({ id }) { emit opened(id) }
+                                        on cleared({ day, course }) { emit unplanned(day, course) }
                                     }
                                 }
                             }
@@ -198,7 +198,7 @@ export component Planner {
                                         recipe: meal_at(recipes, plan, day_at(shown_day), c)
                                         course: c
                                         on picked { pick(day_at(shown_day), c) }
-                                        on opened(e) { emit opened(e.id) }
+                                        on opened({ id }) { emit opened(id) }
                                         on cleared { emit unplanned(day_at(shown_day), c) }
                                     }
                                 }
@@ -247,7 +247,7 @@ component DayCells {
                     recipe: meal_at(recipes, plan, day, c)
                     course: c
                     on picked { emit picked(day, c) }
-                    on opened(e) { emit opened(e.id) }
+                    on opened({ id }) { emit opened(id) }
                     on cleared { emit cleared(day, c) }
                 }
             }

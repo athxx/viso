@@ -659,3 +659,59 @@ fn a_component_whose_root_is_a_region_keeps_its_state_static_and_in_region_conte
         assert_eq!(rt.tally(45.0), Some(Value::Int(21)), "a fresh instance");
     }
 }
+
+#[test]
+fn a_record_pattern_without_a_path_destructures_its_payload() {
+    let source = r#"
+record Pair { a: I64; b: I64 }
+
+fn sum(pair: Pair) -> I64 {
+    let { a, b: second } = pair
+    match pair {
+        { a: 0, .. } => second
+        { b, .. } => a + b
+    }
+}
+
+component Item {
+    input id: I64
+    event toggled(id: I64)
+    view {
+        Text { width: 20dp; height: 20dp; on click { emit toggled(id) } }
+    }
+}
+
+export component App {
+    state picked = 0
+    state total = 0
+    view {
+        Column {
+            width: 400dp
+            height: 300dp
+            Item { id: 7; on toggled({ id }) { picked = id; total = sum(Pair { a: id, b: 3 }) } }
+        }
+    }
+}
+"#;
+    for mut rt in [Rt::reloaded(source), Rt::packaged(source)] {
+        rt.click(5.0, 5.0);
+        assert_eq!(rt.state("picked"), Some(Value::Int(7)));
+        assert_eq!(rt.state("total"), Some(Value::Int(10)));
+        assert!(!rt.faulted());
+    }
+    let wrong = |handler: &str| {
+        codes(&format!(
+            "export component C {{ state n = 0; view {{ TextInput {{ {handler} {{ n = 1 }} }} }} }}"
+        ))
+    };
+    assert_eq!(
+        wrong("on submitted({ x })"),
+        ["E2103"],
+        "no record to destructure"
+    );
+    assert_eq!(
+        wrong("on click({ x })"),
+        ["E2001"],
+        "no field `x` in the payload"
+    );
+}

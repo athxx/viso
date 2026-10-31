@@ -188,7 +188,9 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 - [ ] Still awkward, from Larder:
   - [x] a user `enum Unit` silently shadows the built-in `Unit` ("expected `Unit`,
         found `Unit`"): a type declared under a built-in type's name is `E2002`;
-  - [ ] a one-parameter event payload is still a record (`on opened(e) { e.id }`);
+  - [x] a one-parameter event payload is still a record (`on opened(e) { e.id }`):
+        a record pattern without a path destructures it, `on opened({ id }) { open(id) }`
+        (also in `let`, `for`, closures and `match`);
   - [ ] no index in `for` / no `enumerate`: numbering rows takes a helper;
   - [ ] `TextInput { invalid: x }` reaching the node (semantics and a default look)
         without a style selector reading it;

@@ -269,7 +269,7 @@ const ROWS: &[Row] = &[
     row("TuplePattern", E, "match v { (a, b,) => a }", "match v { (a, b => a }", &["E1404"]),
     row("ListPattern", E, "match v { [a, .., b] => a }", "match v { [a, b => a }", &["E1404"]),
     row("ListPatternItem", E, "match v { [x, ..rest] => x }", "match v { [x, ..1] => x }", &["E1402", "E1404", "E1405"]),
-    row("ConstructorPattern", E, "match v { S::busy(n) => n }", "match v { S::busy(n => n }", &["E1404"]),
+    row("ConstructorPattern", E, "match v { S::busy(n) => n, { x, .. } => x }", "match v { S::busy(n => n }", &["E1404"]),
     row("ConstructorPatternPayload", E, "match v { P { x, y: 0, .. } => x }", "match v { P { x: } => x }", &["E1404"]),
     row("QualifiedVariantPattern", E, "match v { a::S::type => 0 }", "match v { S:: => 0 }", &["E1404", "E1405"]),
     row("RecordPatternField", E, "match v { P { type: t } => t }", "match v { P { 1 } => 0 }", &["E1402", "E1403", "E1404"]),

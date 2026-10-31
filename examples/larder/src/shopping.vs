@@ -67,7 +67,7 @@ component AddItem {
                         placeholder: tr("shopping.name")
                         semantics.label: tr("shopping.name")
                         bind value <=> name
-                        on changed(e) { touched = e.value != "" }
+                        on changed({ value }) { touched = value != "" }
                         on submitted { submit() }
                     }
                     Button(tr("shopping.add")) {
@@ -135,7 +135,7 @@ component ItemRow {
         SwipeRow {
             width: fill
             full_swipe: FullSwipe::trailing
-            on full_swiped(e) { emit removed(item.id) }
+            on full_swiped { emit removed(item.id) }
             SwipeActions {
                 edge: SwipeEdge::trailing
                 Button(tr("common.remove")) { on click { emit removed(item.id) } }
@@ -149,7 +149,7 @@ component ItemRow {
                 CheckBox {
                     checked: item.bought
                     semantics.label: item.name
-                    on changed(e) { emit toggled(item.id, e.value) }
+                    on changed({ value }) { emit toggled(item.id, value) }
                 }
                 Column {
                     width: fill
@@ -184,8 +184,8 @@ component AisleGroup {
                 for item in items key item.id {
                     ItemRow {
                         item: item
-                        on toggled(e) { emit toggled(e.id, e.bought) }
-                        on removed(e) { emit removed(e.id) }
+                        on toggled({ id, bought }) { emit toggled(id, bought) }
+                        on removed({ id }) { emit removed(id) }
                     }
                 }
             }
@@ -231,7 +231,7 @@ export component ShoppingList {
                 }
                 AddItem {
                     items: items
-                    on added(e) { emit added(e.name, e.aisle, e.note) }
+                    on added({ name, aisle, note }) { emit added(name, aisle, note) }
                 }
                 if items.is_empty() {
                     EmptyState {
@@ -248,8 +248,8 @@ export component ShoppingList {
                             AisleGroup {
                                 aisle: aisle
                                 items: in_aisle(items, aisle)
-                                on toggled(e) { emit toggled(e.id, e.bought) }
-                                on removed(e) { emit removed(e.id) }
+                                on toggled({ id, bought }) { emit toggled(id, bought) }
+                                on removed({ id }) { emit removed(id) }
                             }
                         }
                     }

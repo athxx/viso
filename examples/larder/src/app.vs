@@ -310,7 +310,7 @@ export component Larder {
                                     loading: loading
                                     failure: failure
                                     compact: prefs.compact_lists
-                                    on opened(e) { open(e.id) }
+                                    on opened({ id }) { open(id) }
                                     on retried { attempt += 1 }
                                     on writing { page = 2 }
                                 }
@@ -322,9 +322,9 @@ export component Larder {
                                             servings: prefs.servings
                                             wide: wide(env.size_class)
                                             on closed { page = 0 }
-                                            on shop(e) { shop(e.items) }
-                                            on timer(e) { timer_from_step(e.label, e.minutes) }
-                                            on planned(e) { plan_tonight(e.id) }
+                                            on shop({ items }) { shop(items) }
+                                            on timer({ label, minutes }) { timer_from_step(label, minutes) }
+                                            on planned({ id }) { plan_tonight(id) }
                                         }
                                     }
                                     Option::None => {
@@ -333,7 +333,7 @@ export component Larder {
                                 }
                                 RecipeEditor {
                                     next_id: 1000 + mine.len()
-                                    on saved(e) { keep(e.recipe) }
+                                    on saved({ recipe }) { keep(recipe) }
                                     on cancelled { page = 0 }
                                 }
                             }
@@ -342,9 +342,9 @@ export component Larder {
                             ShoppingList {
                                 items: shopping
                                 wide: wide(env.size_class)
-                                on added(e) { add_item(e.name, e.aisle, e.note) }
-                                on toggled(e) { mark(e.id, e.bought) }
-                                on removed(e) { drop_item(e.id) }
+                                on added({ name, aisle, note }) { add_item(name, aisle, note) }
+                                on toggled({ id, bought }) { mark(id, bought) }
+                                on removed({ id }) { drop_item(id) }
                                 on cleared { clear_bought() }
                             }
                         }
@@ -353,9 +353,9 @@ export component Larder {
                                 recipes: recipes
                                 plan: plan
                                 wide: wide(env.size_class)
-                                on planned(e) { plan_meal(e.day, e.course, e.recipe) }
-                                on unplanned(e) { unplan(e.day, e.course) }
-                                on opened(e) { open(e.id) }
+                                on planned({ day, course, recipe }) { plan_meal(day, course, recipe) }
+                                on unplanned({ day, course }) { unplan(day, course) }
+                                on opened({ id }) { open(id) }
                                 on shop_week { shop_week() }
                             }
                         }
@@ -363,12 +363,12 @@ export component Larder {
                             Timers {
                                 timers: timers
                                 wide: wide(env.size_class)
-                                on created(e) { add_timer(e.label, e.minutes) }
+                                on created({ label, minutes }) { add_timer(label, minutes) }
                                 on ticked { tick() }
-                                on paused(e) { set_running(e.id, false) }
-                                on resumed(e) { set_running(e.id, true) }
-                                on reset(e) { restart(e.id) }
-                                on removed(e) { drop_timer(e.id) }
+                                on paused({ id }) { set_running(id, false) }
+                                on resumed({ id }) { set_running(id, true) }
+                                on reset({ id }) { restart(id) }
+                                on removed({ id }) { drop_timer(id) }
                             }
                         }
                         Section::settings => {

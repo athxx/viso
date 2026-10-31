@@ -470,6 +470,28 @@ impl InferCx<'_> {
     /// `S::v(p, ..)`, `S::v { f, .. }`, `P { f: p, .. }`) and checks that the
     /// constructor builds the scrutinee type.
     fn bind_constructor(&mut self, pattern: &SyntaxNode, ty: &Ty) {
+        if is_headless(pattern) {
+            let record = match self.settle(ty) {
+                ty @ Ty::Named(id, ..) if self.env.record_fields(id).is_some() => Some(ty),
+                Ty::Unknown => None,
+                other => {
+                    let message = format!(
+                        "a record pattern does not match `{}`",
+                        self.describe(&other)
+                    );
+                    self.diagnostics.push(Diagnostic::error(
+                        "E2103",
+                        pattern.text_range(),
+                        message,
+                    ));
+                    None
+                }
+            };
+            if let Some(record) = record {
+                self.types
+                    .insert((pattern.text_range(), pattern.kind()), record);
+            }
+        }
         let ctor = self.pattern_ctor(pattern);
         if let Some(own) = ctor.as_ref().and_then(Ctor::own_ty)
             && !compatible(&own, ty)
@@ -489,8 +511,8 @@ impl InferCx<'_> {
                 (c.field_tys(ty, self), fields)
             }
             Some(Ctor::Single(_)) => {
-                let fields = match ty {
-                    Ty::Named(id, ..) => self.env.record_fields(*id).map(<[FieldInfo]>::to_vec),
+                let fields = match self.settle(ty) {
+                    Ty::Named(id, ..) => self.env.record_fields(id).map(<[FieldInfo]>::to_vec),
                     _ => None,
                 };
                 (Vec::new(), fields)
@@ -539,6 +561,10 @@ impl InferCx<'_> {
 
     /// The constructor a constructor or qualified-variant pattern names.
     pub(crate) fn pattern_ctor(&self, pattern: &SyntaxNode) -> Option<Ctor> {
+        if is_headless(pattern) {
+            let n = self.env.record_fields(self.pattern_record(pattern)?)?.len();
+            return Some(Ctor::Single(n));
+        }
         let segments: Vec<SyntaxToken> = match pattern.kind() {
             SyntaxKind::QualifiedVariantPattern => ident_tokens(pattern),
             _ => {
@@ -585,6 +611,27 @@ impl InferCx<'_> {
             .iter()
             .position(|v| v.name == variant.text())?;
         Some(Ctor::Variant(owner, index))
+    }
+
+    /// The record a record pattern destructures: the one its path names, or
+    /// for a pattern with no path, the record type it was matched against.
+    fn pattern_record(&self, pattern: &SyntaxNode) -> Option<SymbolId> {
+        if is_headless(pattern) {
+            return match self.types.get(&(pattern.text_range(), pattern.kind()))? {
+                Ty::Named(id, ..) => Some(*id),
+                _ => None,
+            };
+        }
+        pattern
+            .children()
+            .into_iter()
+            .find(|c| c.kind() == SyntaxKind::TypePath)
+            .and_then(|p| {
+                p.descendants()
+                    .into_iter()
+                    .find_map(|n| ident_tokens(&n).into_iter().next())
+            })
+            .and_then(|t| self.symbol_at(t.text_range()))
     }
 
     /// Reports a refutable pattern where only an irrefutable one is allowed
@@ -833,16 +880,8 @@ impl InferCx<'_> {
                             VariantPayload::Record(fs) => Some(fs.clone()),
                             _ => None,
                         }),
-                    Ctor::Single(_) => node
-                        .children()
-                        .into_iter()
-                        .find(|c| c.kind() == SyntaxKind::TypePath)
-                        .and_then(|p| {
-                            p.descendants()
-                                .into_iter()
-                                .find_map(|n| ident_tokens(&n).into_iter().next())
-                        })
-                        .and_then(|t| self.symbol_at(t.text_range()))
+                    Ctor::Single(_) => self
+                        .pattern_record(node)
                         .and_then(|id| self.env.record_fields(id))
                         .map(<[FieldInfo]>::to_vec),
                     _ => None,
@@ -1299,6 +1338,15 @@ pub(crate) fn name_token(node: &SyntaxNode) -> Option<SyntaxToken> {
 }
 
 /// Whether `node` is a rest pattern `..`, bare or wrapped in a `Pattern`.
+/// Whether `node` is a record pattern with no path: `{ x, y }`.
+fn is_headless(node: &SyntaxNode) -> bool {
+    node.kind() == SyntaxKind::ConstructorPattern
+        && !node
+            .children()
+            .iter()
+            .any(|c| c.kind() == SyntaxKind::TypePath)
+}
+
 pub(crate) fn is_rest(node: &SyntaxNode) -> bool {
     node.kind() == SyntaxKind::RestPattern
         || (node.kind() == SyntaxKind::Pattern

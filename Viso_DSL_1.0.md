@@ -2184,7 +2184,7 @@ Canvas {
 
 - 不存在 `on click => increment()`；
 - 即使只有一条语句也必须写 Block；
-- Handler 的可选 Pattern 绑定整个 Event Payload，且必须不可反驳（`E2303`）；自定义 Component Event 的 Payload 是以其参数为字段的 Record；
+- Handler 的可选 Pattern 绑定整个 Event Payload，且必须不可反驳（`E2303`）；自定义 Component Event 的 Payload 是以其参数为字段的 Record，不带 Path 的 Record Pattern 直接取出参数：`on opened({ id }) { open(id) }`；
 - Handler 只能命名节点接受的 Event，否则报 `E3202`：用户 Component 节点接受标准事件（U7.1）与该 Component 声明的 Event；内置 Widget 接受其 Schema 声明的 Event（U3.7、U7.4、U7.5）及标准事件，不参与布局的 `FocusScope`、`KeyShortcut` 与 `Fragment` 不接受标准事件；
 - 忽略 Payload 时省略括号；
 - Handler 自动运行在 Action Transaction 中；
@@ -2996,7 +2996,11 @@ list_pattern               = "[",
 list_pattern_item          = pattern
                            | "..", [ identifier ] ;
 
-constructor_pattern        = type_path, constructor_pattern_payload ;
+constructor_pattern        = type_path, constructor_pattern_payload
+                           | "{",
+                             [ record_pattern_field,
+                               { ",", record_pattern_field }, [ "," ] ],
+                             "}" ;
 
 constructor_pattern_payload = "(",
                               [ pattern, { ",", pattern }, [ "," ] ],
@@ -3040,6 +3044,8 @@ Or Pattern
 分类是语法性的：Tuple/Record 只因其子 Pattern 而 Refutable；即使 Or Pattern 的分支合起来覆盖全部值（例如 `true | false`），它仍是 Refutable。
 
 `let`、`for`（Behavior 与 View）和 Closure 参数只能使用 Irrefutable Pattern，否则报 `E2303`。`match`、`if let`（未来版本）和 Event Payload Handler 可以使用 Refutable Pattern；Event Handler Pattern 不匹配时该 Handler 被跳过。
+
+不带 Path 的 Record Pattern `{ x, y: b, .. }` 匹配其被匹配类型的字段：该类型须是 Record 或 Event Payload，否则报 `E2103`；未知字段报 `E2001`。它在 `let`、`for`、Closure 参数与 Handler 中不可反驳，`match` 中按其子 Pattern 判断。
 
 消歧规则是强制性的：
 
@@ -5210,6 +5216,8 @@ ListPatternItem
 
 ConstructorPattern
     ::= TypePath ConstructorPatternPayload
+     |  "{" ( RecordPatternField
+              ( "," RecordPatternField )* ","? )? "}"
 
 ConstructorPatternPayload
     ::= "(" ( Pattern ( "," Pattern )* ","? )? ")"
@@ -5223,7 +5231,7 @@ RecordPatternField
     ::= Label ":" Pattern | IDENT | ".."
 ```
 
-裸单段 `IDENT` 一律是 Binding Pattern。无 Payload Enum Variant 必须写限定 Path，例如 `State::idle`；带 Payload 的 Constructor 由紧随其后的 `(...)` 或 `{...}` 消除歧义。
+裸单段 `IDENT` 一律是 Binding Pattern。无 Payload Enum Variant 必须写限定 Path，例如 `State::idle`；带 Payload 的 Constructor 由紧随其后的 `(...)` 或 `{...}` 消除歧义。不带 Path 的 `{...}` 是其被匹配类型的 Record Pattern。
 
 ---
 

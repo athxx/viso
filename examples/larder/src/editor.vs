@@ -447,7 +447,7 @@ export component RecipeEditor {
                             IngredientEditor {
                                 draft: draft
                                 removable: ingredients.len() > 1
-                                on edited(e) { ingredients = replaced_ingredient(ingredients, e.draft) }
+                                on edited({ draft }) { ingredients = replaced_ingredient(ingredients, draft) }
                                 on removed(e) { ingredients.retain(|d| d.key != e.key) }
                             }
                         }
@@ -465,7 +465,7 @@ export component RecipeEditor {
                                 draft: step.draft
                                 number: step.number
                                 removable: steps.len() > 1
-                                on edited(e) { steps = replaced_step(steps, e.draft) }
+                                on edited({ draft }) { steps = replaced_step(steps, draft) }
                                 on removed(e) { steps.retain(|d| d.key != e.key) }
                             }
                         }

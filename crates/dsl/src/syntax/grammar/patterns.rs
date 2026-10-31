@@ -5,8 +5,9 @@
 //!
 //! A bare single identifier is always a binding (`IdentPattern`). A payload-free
 //! variant must be qualified (`State::idle`, a `QualifiedVariantPattern`), and a
-//! constructor is recognized by the `(` or `{` that follows its path. The parser
-//! never guesses from capitalization.
+//! constructor is recognized by the `(` or `{` that follows its path. A `{ .. }`
+//! with no path is a record pattern of the type it is matched against. The
+//! parser never guesses from capitalization.
 
 use super::super::kind::SyntaxKind;
 use super::{CompletedMarker, ParseErrorKind, Parser};
@@ -107,6 +108,11 @@ fn primary_pattern_in(p: &mut Parser) -> Option<CompletedMarker> {
         Ident | RawIdent | SelfTypeKw => Some(path_pattern(p)),
         LParen => Some(paren_or_tuple(p)),
         LBracket => Some(list_pattern(p)),
+        LBrace => {
+            let m = p.start();
+            record_pattern_fields(p);
+            Some(m.complete(p, ConstructorPattern))
+        }
         k if k.is_strict_keyword() => {
             // A strict keyword in a binding position: E1301, kept as the name.
             let m = p.start();
@@ -153,15 +159,7 @@ fn path_pattern(p: &mut Parser) -> CompletedMarker {
             }
             p.expect(RParen);
         } else {
-            p.bump_any(); // `{`
-            p.quiet_lines();
-            while !p.at(RBrace) && !p.at_end() {
-                record_pattern_field(p);
-                if !p.eat(Comma) {
-                    break;
-                }
-            }
-            p.expect(RBrace);
+            record_pattern_fields(p);
         }
         m.complete(p, ConstructorPattern)
     } else if len > 1 {
@@ -180,6 +178,21 @@ fn path_pattern(p: &mut Parser) -> CompletedMarker {
         super::name(p);
         m.complete(p, IdentPattern)
     }
+}
+
+/// `"{" RecordPatternField,* "}"`: the fields of a record pattern, after its
+/// path or, with none, of the record type the pattern is matched against.
+fn record_pattern_fields(p: &mut Parser) {
+    use SyntaxKind::*;
+    p.bump_any(); // `{`
+    p.quiet_lines();
+    while !p.at(RBrace) && !p.at_end() {
+        record_pattern_field(p);
+        if !p.eat(Comma) {
+            break;
+        }
+    }
+    p.expect(RBrace);
 }
 
 /// `Label ":" Pattern | IDENT | ".."` — one field of a record constructor
