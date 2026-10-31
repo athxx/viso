@@ -137,6 +137,22 @@ impl PumpQueue {
         }
         self.events.pop_front()
     }
+
+    /// [`next_synthetic`](Self::next_synthetic) for one drive: a wake only if
+    /// none came yet, and a redraw only of a window not in `drawn`, which it
+    /// joins.
+    fn next_once(&mut self, drawn: &mut Vec<WindowId>, woke: &mut bool) -> Option<RawEvent> {
+        if !*woke && self.woken.swap(false, Ordering::AcqRel) {
+            *woke = true;
+            return Some(RawEvent::Wakeup);
+        }
+        if let Some(at) = self.redraws.iter().position(|w| !drawn.contains(w)) {
+            let window = self.redraws.remove(at)?;
+            drawn.push(window);
+            return Some(RawEvent::RedrawRequested { window });
+        }
+        self.events.pop_front()
+    }
 }
 
 /// A window's saved frame while it is fullscreen.
@@ -275,13 +291,20 @@ fn drive(shared: &Shared) {
 /// Drain the queue through the handler. Each event is popped under a short
 /// borrow released before `handle` runs, so the handler may queue more.
 ///
+/// Each window draws at most once a drive, and the loop wakes at most once:
+/// an animating window asks for its next frame as it draws this one, and that
+/// frame belongs to the modal loop's next tick or the pump — taking it here
+/// would keep the drive from ever returning to the OS.
+///
 /// # Safety
 ///
 /// The app and handler behind `drive` must be live and not borrowed anywhere
 /// else for the call.
 unsafe fn drain_and_drive(drive: Drive, shared: &Shared) {
+    let mut drawn = Vec::new();
+    let mut woke = false;
     loop {
-        let event = shared.borrow_mut().next_synthetic();
+        let event = shared.borrow_mut().next_once(&mut drawn, &mut woke);
         let Some(event) = event else { break };
         // SAFETY: per the function contract.
         let (app, handler) = unsafe { drive.get() };

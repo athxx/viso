@@ -2405,9 +2405,11 @@ impl Renderer {
 
     /// Sets the clock user programs read, the seconds since the window
     /// opened, for the frames submitted from now on. A frame that only moves
-    /// it uploads nothing.
+    /// it uploads nothing and redraws what reads it.
     pub fn set_time(&mut self, seconds: f32) {
-        self.programs.set_time(seconds);
+        if self.programs.set_time(seconds) && self.programs.clock_instances() > 0 {
+            self.clock_moved();
+        }
     }
 
     /// Whether the frame last uploaded draws a program reading `time`, so

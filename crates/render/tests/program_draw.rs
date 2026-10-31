@@ -707,6 +707,17 @@ fn a_brush_reading_the_clock_redraws_as_it_moves_and_uploads_nothing() {
     assert!((red(&f) - 225).abs() <= 1, "{}", red(&f));
     assert_eq!(f.pixel(24, 6), bgra(GREEN));
 
+    // With nothing uploaded, the moved clock still redraws its box, and
+    // only its box.
+    f.renderer.set_time(0.5);
+    f.renderer
+        .submit(&mut f.gpu, f.surface, WHITE, [W as f32, H as f32]);
+    let damage = f.renderer.damage_stats().damage_px;
+    assert!(damage >= 100 && damage < 400, "{damage}");
+    // Half the light, sRGB 188.
+    assert!((red(&f) - 188).abs() <= 1, "{}", red(&f));
+    assert_eq!(f.pixel(24, 6), bgra(GREEN));
+
     // Off the target, clipped away, or gone, the box is not drawn and no
     // longer keeps frames coming.
     let away = shaded(&clocked, 0, rect(200.0, 200.0, 10.0, 10.0), RED);

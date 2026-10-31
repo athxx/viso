@@ -121,6 +121,17 @@ mod tests {
         (r.x + r.w * 0.5, r.y + r.h * 0.5)
     }
 
+    /// The picture moves on screen: a frame that only moves the clock
+    /// uploads nothing, yet still presents what reads it.
+    #[test]
+    fn the_moving_picture_reaches_the_screen() {
+        let (early, _) = drive(vec![redraw()], 6);
+        let (late, _) = drive(vec![redraw()], 12);
+        let (_, _, early) = early.pixels().expect("a surface");
+        let (_, _, late) = late.pixels().expect("a surface");
+        assert_ne!(early, late, "later frames show the picture moved on");
+    }
+
     /// The gallery's frame, as `golden/materials.png` holds it.
     #[test]
     fn the_gallery_frame_matches_its_golden() {

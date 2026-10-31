@@ -65,7 +65,7 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey,
     NSCurrentLocaleDidChangeNotification, NSDate, NSDefaultRunLoopMode, NSLocale, NSNotification,
     NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange,
-    NSRangePointer, NSRect, NSSize, NSString, NSURL,
+    NSRangePointer, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer, NSURL,
 };
 
 use crate::RawWindowHandle;
@@ -134,6 +134,21 @@ impl PumpQueue {
         }
         if let Some(w) = self.redraws.pop_front() {
             return Some(RawEvent::RedrawRequested { window: w });
+        }
+        self.events.pop_front()
+    }
+
+    /// [`pop`](Self::pop) for one drive: a wake only if none came yet, and a
+    /// redraw only of a window not in `drawn`, which it joins.
+    fn pop_once(&mut self, drawn: &mut Vec<WindowId>, woke: &mut bool) -> Option<RawEvent> {
+        if !*woke && self.woken.swap(false, Ordering::AcqRel) {
+            *woke = true;
+            return Some(RawEvent::Wakeup);
+        }
+        if let Some(at) = self.redraws.iter().position(|w| !drawn.contains(w)) {
+            let window = self.redraws.remove(at)?;
+            drawn.push(window);
+            return Some(RawEvent::RedrawRequested { window });
         }
         self.events.pop_front()
     }
@@ -301,13 +316,20 @@ impl Drop for DriveGuard {
 /// `handle` runs, so the handler may re-enter the queue (e.g. request another
 /// redraw) without a borrow conflict.
 ///
+/// Each window draws at most once a drive, and the loop wakes at most once:
+/// an animating window asks for its next frame as it draws this one, and that
+/// frame belongs to the next callback or the pump — taking it here would keep
+/// the drive from ever returning to AppKit.
+///
 /// SAFETY: the caller passes the drive stored in `PumpQueue::drive`, which is
 /// set only while a pump turn has handed the thread to AppKit and holds no
 /// borrow of the app or handler. This runs synchronously inside that turn, so
 /// the `&mut` reborrows are the only live ones.
 unsafe fn drain_and_drive(drive: Drive, shared: &Shared) {
+    let mut drawn = Vec::new();
+    let mut woke = false;
     loop {
-        let event = shared.borrow_mut().pop();
+        let event = shared.borrow_mut().pop_once(&mut drawn, &mut woke);
         let Some(event) = event else { break };
         // SAFETY: per the function contract.
         let (app, handler) = unsafe { drive.get() };
@@ -1248,6 +1270,9 @@ struct DelegateIvars {
     features: RefCell<Vec<DisplayFeature>>,
     /// The frames of a CPU-drawn window, whose metrics it reports.
     pixels: RefCell<Option<Rc<LayerScanout>>>,
+    /// The beat that keeps an animating window drawing while a live resize's
+    /// modal loop has parked the pump and the pointer holds still.
+    live_beat: RefCell<Option<Retained<NSTimer>>>,
 }
 
 define_class!(
@@ -1256,6 +1281,25 @@ define_class!(
     #[name = "VisoWindowDelegate"]
     #[ivars = DelegateIvars]
     struct WindowDelegate;
+
+    impl WindowDelegate {
+        /// A beat of the live resize: the frames the window asked for since
+        /// the last, drawn inside the modal loop.
+        #[unsafe(method(liveBeat:))]
+        fn live_beat(&self, _timer: &NSTimer) {
+            let shared = self.ivars().shared.clone();
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                let drive = shared.try_borrow().ok().and_then(|q| q.drive);
+                if let Some(drive) = drive {
+                    // SAFETY: `drive` is what `MacApp::run` installed for the
+                    // AppKit turn the modal loop runs inside, on the main
+                    // thread, while the pump holds no borrow of the app or
+                    // handler. See `drain_and_drive`.
+                    unsafe { drain_and_drive(drive, &shared) };
+                }
+            }));
+        }
+    }
 
     unsafe impl NSObjectProtocol for WindowDelegate {}
 
@@ -1282,6 +1326,41 @@ define_class!(
                 q.should_exit = true;
             }));
             true
+        }
+
+        #[unsafe(method(windowWillStartLiveResize:))]
+        fn window_will_start_live_resize(&self, notification: &NSNotification) {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                let nswin = notification
+                    .object()
+                    .and_then(|o| o.downcast::<NSWindow>().ok());
+                let screen = nswin.and_then(|w| w.screen());
+                let fps = screen.map_or(60, |s| s.maximumFramesPerSecond());
+                let interval = 1.0 / fps.max(1) as f64;
+                // SAFETY: the target answers `liveBeat:`, which takes the
+                // timer; the timer runs on the main run loop it joins here.
+                let timer = unsafe {
+                    let timer = NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+                        interval,
+                        self,
+                        sel!(liveBeat:),
+                        None,
+                        true,
+                    );
+                    NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+                    timer
+                };
+                if let Some(old) = self.ivars().live_beat.replace(Some(timer)) {
+                    old.invalidate();
+                }
+            }));
+        }
+
+        #[unsafe(method(windowDidEndLiveResize:))]
+        fn window_did_end_live_resize(&self, _notification: &NSNotification) {
+            if let Some(timer) = self.ivars().live_beat.take() {
+                timer.invalidate();
+            }
         }
 
         #[unsafe(method(windowDidResize:))]
@@ -1465,6 +1544,7 @@ impl WindowDelegate {
             is_fullscreen: Cell::new(false),
             features: RefCell::new(Vec::new()),
             pixels: RefCell::new(None),
+            live_beat: RefCell::new(None),
         });
         // SAFETY: `this` is freshly allocated with its ivars set; `NSObject`'s
         // `init` is its designated initializer.
@@ -3809,6 +3889,42 @@ mod tests {
         seen: Vec<RawEvent>,
         /// A window to re-enqueue once, on the first `handle` call, or `None`.
         reenqueue_once: Option<(Shared, WindowId)>,
+    }
+
+    /// A window that asks for its next frame as it draws each one.
+    struct Animating {
+        shared: Shared,
+        frames: u32,
+    }
+
+    impl AppHandler for Animating {
+        fn handle(&mut self, _app: &mut dyn PlatformApp, event: RawEvent) -> ControlFlow {
+            if let RawEvent::RedrawRequested { window } = event {
+                self.frames += 1;
+                self.shared.borrow_mut().redraws.push_back(window);
+            }
+            ControlFlow::Poll
+        }
+    }
+
+    #[test]
+    fn an_animating_window_draws_once_a_drive_and_keeps_its_next_frame() {
+        let shared: Shared = Rc::new(RefCell::new(PumpQueue::default()));
+        shared.borrow_mut().redraws.push_back(WindowId(1));
+        let mut handler = Animating {
+            shared: shared.clone(),
+            frames: 0,
+        };
+        let mut app = HeadlessApp::new();
+        let drive = Drive::new(&mut app, &mut handler);
+        // SAFETY: both outlive the call, with no other borrow.
+        unsafe { drain_and_drive(drive, &shared) };
+        assert_eq!(handler.frames, 1, "the drive returns");
+        assert_eq!(
+            shared.borrow().redraws.iter().copied().collect::<Vec<_>>(),
+            [WindowId(1)],
+            "the next frame waits for the pump"
+        );
     }
 
     impl AppHandler for RecordingHandler {

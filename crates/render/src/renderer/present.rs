@@ -663,6 +663,21 @@ impl Renderer {
         merger.finish()
     }
 
+    /// The clock moved on, so every draw of a program reading it is drawn
+    /// again with the next frame.
+    pub(super) fn clock_moved(&mut self) {
+        let keyed = self.scene.paint_order.len().min(self.present.keys.len());
+        for i in 0..keyed {
+            let StoreRef::Shader(id) = self.scene.paint_order[i].store else {
+                continue;
+            };
+            let reads = self.scene.shaders.get(id);
+            if reads.is_some_and(|e| self.programs.clock(e.program).is_some()) {
+                self.rekey(i);
+            }
+        }
+    }
+
     /// Texture `texture`, the caller's, was written where it lies — a video's
     /// next picture, an animation's next frame — so what samples it is drawn
     /// again with the next frame.

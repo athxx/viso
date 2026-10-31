@@ -262,9 +262,11 @@ impl ProgramTable {
         }
     }
 
-    /// Sets the clock the next frame's draws read.
-    pub(crate) fn set_time(&mut self, seconds: f32) {
+    /// Sets the clock the next frame's draws read; whether it moved.
+    pub(crate) fn set_time(&mut self, seconds: f32) -> bool {
+        let moved = self.time != seconds;
         self.time = seconds;
+        moved
     }
 
     /// This frame's boxes of programs reading `time`.
