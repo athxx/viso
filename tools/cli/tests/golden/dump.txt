@@ -96,7 +96,7 @@ ui-ir 1
 == src/counter.vs (module counter)
 view Counter
   n0 Column flex @16:9
-    style axis=column gap=8dp
+    style axis=column width=fill(1) height=fill(1) gap=8dp
     n1 Text title leaf @18:13
       bind text: label  MEASURE | LAYOUT | PAINT | SEMANTICS
       control text: label

@@ -200,7 +200,7 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 
 ## C9 — Close
 
-- [ ] Appendix C / `docs/diagnostics.md` / CLI goldens current; spec, UI and
+- [x] Appendix C / `docs/diagnostics.md` / CLI goldens current; spec, UI and
       Implementation docs read through once for stale syntax.
-- [ ] `viso-ide` tree-sitter grammar and highlight tests: newline items, string
+- [x] `viso-ide` tree-sitter grammar and highlight tests: newline items, string
       holes, primary arguments, slots.
