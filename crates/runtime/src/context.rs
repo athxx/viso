@@ -240,6 +240,14 @@ impl<'a> RuntimeCx<'a> {
         self.app.window(window).and_then(|w| w.chrome_geom())
     }
 
+    /// The material the compositor shows behind `window`: none when the
+    /// window is gone or the platform draws none.
+    pub fn window_material(&self, window: WindowId) -> viso_platform::WindowMaterial {
+        self.app
+            .window(window)
+            .map_or(viso_platform::WindowMaterial::None, |w| w.material())
+    }
+
     /// Replace what the system clipboard holds with `data`.
     pub fn set_clipboard(&mut self, data: viso_platform::ClipboardData) {
         self.app.set_clipboard(data);

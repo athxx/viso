@@ -3217,6 +3217,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "viso-example-materials"
+version = "0.0.0"
+dependencies = [
+ "viso",
+ "viso-image",
+]
+
+[[package]]
 name = "viso-example-persist"
 version = "0.0.0"
 dependencies = [

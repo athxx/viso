@@ -49,6 +49,7 @@ members = [
     "examples/images",
     "examples/video",
     "examples/10-custom-shader",
+    "examples/materials",
     "examples/11-native-widget",
     "examples/11-native-widget/gauge",
     "examples/pointer",

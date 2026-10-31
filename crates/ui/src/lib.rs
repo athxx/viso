@@ -268,4 +268,6 @@ pub use viso_render::{
 };
 pub use viso_text::selection::Selection;
 pub use viso_text::{CaretAffinity, TextOffset, TextPosition};
-pub use window::{ChromeContext, WindowChrome, WindowConfig, WindowIdSlot, WindowOpenRequest};
+pub use window::{
+    ChromeContext, WindowChrome, WindowConfig, WindowIdSlot, WindowMaterial, WindowOpenRequest,
+};

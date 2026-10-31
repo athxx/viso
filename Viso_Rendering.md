@@ -1339,7 +1339,9 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 | Liquid glass | backdrop（轻模糊）→ 圆弧 bevel 向内折射 + 色散 → tint → 沿光轴的细线 glint（§19.1a） | 一次 capture（ROI 不外扩）+ 单 pass，至多 3 tap |
 
 - **降级**：reduced transparency（系统设置、省电）让 backdrop 更磨砂、tint 更浓；设备无该能力时画成实心 `fallback`，不开 capture。increased contrast 让玻璃近黑或近白并加对比边框；reduced motion 关掉弹性形变。窗口失活时窗口级材质回退实色。
-- **不叠玻璃**：glass 上再放 glass 会让上层 capture 重渲下层材质；同一平面的玻璃元素放进一个 `GlassGroup`，共享一次 capture。
+- **不叠玻璃**：glass 上再放 glass 会让上层 capture 重渲下层材质；同一平面的相同玻璃放进一个 `glass_merge` 容器，融成一个表面、共享一次 capture。
+- **示例**：`examples/materials` 把六种观感并排放在一幅移动的画面上，侧栏露出窗口级材质；headless 测试固定画面并断言每块玻璃一次 composite、capture 不超过玻璃与其模糊外扩。
+- **尚未做**：合成出的 composite 不经 store diff，每帧都按已变化计，采样到另一块玻璃的 capture 因而每帧计为 dirty（`backdrop_dirty_rois`）。
 
 ---
 
@@ -1351,7 +1353,12 @@ backdrop -> blur -> saturation/tint -> optional noise -> material mask -> border
 
 不得为了 Liquid Glass 把平台私有 API 泄漏到通用 Render IR。
 
-窗口级材质（Mica、Mica Alt、Acrylic、vibrancy）走 Native lane：Windows 11 的 DWM system backdrop、macOS 表面后的 `NSVisualEffectView`；表面以透明背景合成。其他平台、或系统不支持时，画成主题的实心回退色。
+窗口级材质（`WindowConfig::material`：`Mica`、`MicaAlt`、`Acrylic`、`Vibrancy`）走 Native lane，由系统合成器绘制，Viso 每帧不付代价：
+
+- Windows 11 22H2 起：窗口以 `WS_EX_NOREDIRECTIONBITMAP` 创建，`DwmExtendFrameIntoClientArea(-1)` 加 `DWMWA_SYSTEMBACKDROP_TYPE`（`Mica`/`Vibrancy` → `DWMSBT_MAINWINDOW`，`MicaAlt` → `DWMSBT_TABBEDWINDOW`，`Acrylic` → `DWMSBT_TRANSIENTWINDOW`）；D3D12 见到无重定向表面的窗口时改用 `CreateSwapChainForComposition`（`DXGI_ALPHA_MODE_PREMULTIPLIED`，仍为 flip-sequential，保留局部重绘），经 DirectComposition 的 target/visual 显示；
+- macOS：内容视图与一个 `NSVisualEffectView`（`Mica` → under-window background，`MicaAlt` → window background，`Acrylic` → popover，`Vibrancy` → sidebar；blending behind-window）同放在一个容器视图里，效果视图在下；窗口 `opaque = NO`、背景透明，Metal 层的 `opaque` 随窗口；
+- 两者都随窗口的激活状态由系统切换失活外观（DWM 的实色回退、`followsWindowActiveState`）；
+- 平台报告实际显示的材质（`Window::material`），显示时帧清屏为透明，App 未绘制处露出材质；其他平台、CPU 帧、旧版 Windows 上为 `None`，清屏为主题背景色，即实心回退。
 
 ## 19.1a GPU Liquid glass
 

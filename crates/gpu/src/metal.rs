@@ -1008,6 +1008,13 @@ impl GpuBackend for MetalBackend {
             {
                 let _: () = msg_send![view, setWantsLayer: true];
                 let _: () = msg_send![view, setLayer: &*layer];
+                // A window over a system material is not opaque: the layer
+                // then composites its alpha over the material.
+                let window: *mut AnyObject = msg_send![view, window];
+                if !window.is_null() {
+                    let opaque: bool = msg_send![&*window, isOpaque];
+                    layer.setOpaque(opaque);
+                }
             }
             #[cfg(not(target_os = "macos"))]
             {

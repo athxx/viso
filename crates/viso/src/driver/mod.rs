@@ -227,6 +227,9 @@ pub(crate) struct WindowState {
     /// allowed — the build-time half of the chrome data contract, paired with the
     /// later-frame [`chrome_buttons`](Self::chrome_buttons) width.
     pub(crate) chrome: WindowChrome,
+    /// The compositor shows a system material behind the window: frames clear
+    /// to transparent over it instead of the theme's background.
+    pub(crate) see_through: bool,
     /// The root node of this window's self-drawn caption bar, captured when the
     /// tree was built (`None` for a native-chrome window that draws no caption).
     /// Held so a fullscreen transition can hide the caption in place — on macOS

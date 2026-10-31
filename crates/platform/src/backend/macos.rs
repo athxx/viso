@@ -49,14 +49,15 @@ use objc2::{AnyThread, ClassType, DefinedClass, MainThreadOnly, define_class, ms
 use objc2_app_kit::{
     NSAllRomanInputSourcesLocaleIdentifier, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSBackingStoreType, NSBitmapFormat, NSBitmapImageRep, NSColor,
-    NSColorSpace, NSCursor, NSDeviceRGBColorSpace, NSDragOperation, NSDraggingContext,
-    NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession, NSDraggingSource,
-    NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSImage, NSMenu, NSMenuItem,
-    NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardTypeString,
+    NSApplicationTerminateReply, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapFormat,
+    NSBitmapImageRep, NSColor, NSColorSpace, NSCursor, NSDeviceRGBColorSpace, NSDragOperation,
+    NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession,
+    NSDraggingSource, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSImage, NSMenu,
+    NSMenuItem, NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardTypeString,
     NSPasteboardTypeURL, NSPreferredScrollerStyleDidChangeNotification, NSScreen, NSScroller,
     NSScrollerStyle, NSSystemColorsDidChangeNotification, NSTextInputClient, NSTrackingArea,
-    NSTrackingAreaOptions, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSTrackingAreaOptions, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
     NSWindowTitleVisibility, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
@@ -71,7 +72,7 @@ use crate::RawWindowHandle;
 use crate::clipboard::{ClipboardData, ClipboardKinds, ClipboardReply, PasteReply};
 use crate::control::{
     ControlFlow, EditLabels, EditMenu, EditMenuAction, LogicalRect, PlatformError, SurroundingText,
-    TextEntry, WindowChrome, WindowConfig, WindowId,
+    TextEntry, WindowChrome, WindowConfig, WindowId, WindowMaterial,
 };
 use crate::cursor::{CursorCache, CursorImage};
 use crate::drop::{DropAction, DropActions, DropKinds, DropOffer, DropPhase, DropReply, RawDrop};
@@ -655,7 +656,28 @@ impl PlatformApp for MacApp {
             view.ivars().pixels.replace(Some(pixels.clone()));
             delegate.ivars().pixels.replace(Some(pixels.clone()));
         }
-        window.setContentView(Some(&view));
+        let material = match pixels {
+            Some(_) => WindowMaterial::None,
+            None => config.material,
+        };
+        match material_view(self.mtm, material, content_rect) {
+            // The material fills the window under the content view, both in
+            // a plain container that follows the window's size.
+            Some(effect) => {
+                let container = NSView::initWithFrame(NSView::alloc(self.mtm), content_rect);
+                let fill = NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable;
+                effect.setAutoresizingMask(fill);
+                view.setAutoresizingMask(fill);
+                container.addSubview(&effect);
+                container.addSubview(&view);
+                window.setContentView(Some(&container));
+                // The Metal layer follows the window's opacity.
+                window.setOpaque(false);
+                window.setBackgroundColor(Some(&NSColor::clearColor()));
+            }
+            None => window.setContentView(Some(&view)),
+        }
         if let (Some(e), Some(_)) = (&emulated, &pixels) {
             let (w, h) = panel_points(e.size, e.zoom, backing);
             window.setContentSize(NSSize::new(w, h));
@@ -687,6 +709,7 @@ impl PlatformApp for MacApp {
             chrome: config.chrome,
             access,
             pixels,
+            material,
         });
         // The first frame is scheduled by the runtime after launch (paired with a
         // FirstFrame redraw reason), keeping a single beat source across backends.
@@ -1056,6 +1079,8 @@ pub struct MacWindow {
     /// only for `SelfDrawn` (a `Native` window's OS title bar owns its own
     /// buttons, outside our layout).
     chrome: WindowChrome,
+    /// The material shown behind the content view.
+    material: WindowMaterial,
     /// The content view's accessibility adapter.
     access: MacAccess,
     /// The frames of a CPU-drawn window.
@@ -1200,6 +1225,10 @@ impl Window for MacWindow {
             return None;
         }
         traffic_lights_geom(&self.window)
+    }
+
+    fn material(&self) -> WindowMaterial {
+        self.material
     }
 }
 
@@ -1737,11 +1766,43 @@ fn defang_titlebar_container(window: &NSWindow) {
 /// always live near the top) so the app never aligns its caption to a bogus
 /// box.
 fn traffic_lights_geom(window: &NSWindow) -> Option<LogicalRect> {
+    let content = window.contentView()?;
+    // A window with a material holds the (flipped) content view, last, in a
+    // container over the material.
+    let content = match content.isFlipped() {
+        true => content,
+        false => content.subviews().lastObject()?,
+    };
+    traffic_lights_in(window, &content)
+}
+
+/// The visual effect view that draws `material` behind a window's content
+/// of `frame`, following the window's active state: none for no material.
+fn material_view(
+    mtm: MainThreadMarker,
+    material: WindowMaterial,
+    frame: NSRect,
+) -> Option<Retained<NSVisualEffectView>> {
+    let material = match material {
+        WindowMaterial::None => return None,
+        WindowMaterial::Mica => NSVisualEffectMaterial::UnderWindowBackground,
+        WindowMaterial::MicaAlt => NSVisualEffectMaterial::WindowBackground,
+        WindowMaterial::Acrylic => NSVisualEffectMaterial::Popover,
+        WindowMaterial::Vibrancy => NSVisualEffectMaterial::Sidebar,
+    };
+    let effect = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), frame);
+    effect.setMaterial(material);
+    effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+    effect.setState(NSVisualEffectState::FollowsWindowActiveState);
+    Some(effect)
+}
+
+/// The traffic lights' box in `content`'s (flipped, top-left) space.
+fn traffic_lights_in(window: &NSWindow, content: &NSView) -> Option<LogicalRect> {
     use objc2_app_kit::NSWindowButton;
     let close = window.standardWindowButton(NSWindowButton::CloseButton)?;
     let mini = window.standardWindowButton(NSWindowButton::MiniaturizeButton)?;
     let zoom = window.standardWindowButton(NSWindowButton::ZoomButton)?;
-    let content = window.contentView()?;
     let h = content.frame().size.height;
 
     // Convert a button's frame into the content view's (flipped, top-left)
@@ -1753,7 +1814,7 @@ fn traffic_lights_geom(window: &NSWindow) -> Option<LogicalRect> {
         let superview = unsafe { btn.superview() }?;
         let frame = btn.frame();
         // SAFETY: both views are live and in one window; the rect is a plain value.
-        let r: NSRect = unsafe { msg_send![&*content, convertRect: frame, fromView: &*superview] };
+        let r: NSRect = unsafe { msg_send![content, convertRect: frame, fromView: &*superview] };
         let top = r.origin.y;
         let left = r.origin.x;
         let right = r.origin.x + r.size.width;

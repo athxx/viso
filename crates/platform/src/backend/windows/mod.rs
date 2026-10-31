@@ -41,13 +41,14 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW,
     QS_ALLINPUT, RegisterClassExW, SW_SHOW, SW_SHOWMAXIMIZED, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOZORDER, SetWindowPos, SetWindowTextW, ShowWindow, TranslateAcceleratorW,
-    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_QUIT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+    TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_QUIT, WNDCLASSEXW,
+    WS_EX_NOREDIRECTIONBITMAP, WS_OVERLAPPEDWINDOW,
 };
 use ::windows::core::{PCWSTR, w};
 
 use super::drive::Drive;
 use super::win32_translate as translate;
-use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId};
+use crate::control::{ControlFlow, PlatformError, WindowConfig, WindowId, WindowMaterial};
 use crate::event::{Appearance, CursorIcon, PointerButtons, PointerKind, RawEvent};
 use crate::handler::AppHandler;
 use crate::menu::Menu;
@@ -620,9 +621,15 @@ impl PlatformApp for WinApp {
             });
         // SAFETY: the class is registered; `title` outlives the call; `param`
         // is a leaked `Rc<WindowState>` the procedure takes ownership of.
+        // A window over a material has no redirection surface: the GPU
+        // presents through DirectComposition, its alpha over the material.
+        let ex_style = match config.material {
+            WindowMaterial::None => WINDOW_EX_STYLE(0),
+            _ => WS_EX_NOREDIRECTIONBITMAP,
+        };
         let created = unsafe {
             CreateWindowExW(
-                WINDOW_EX_STYLE(0),
+                ex_style,
                 CLASS_NAME,
                 PCWSTR(title.as_ptr()),
                 WS_OVERLAPPEDWINDOW,
@@ -667,6 +674,10 @@ impl PlatformApp for WinApp {
         }
         let dark = self.shared.borrow().appearance.color_scheme == crate::ColorScheme::Dark;
         system::set_dark_title(hwnd, dark);
+        let material = match system::set_material(hwnd, config.material) {
+            true => config.material,
+            false => WindowMaterial::None,
+        };
         state.size.set(state.client_size());
         let access = access::attach(hwnd);
         drop::register(&state);
@@ -688,7 +699,11 @@ impl PlatformApp for WinApp {
         }
         state.ready.set(true);
         self.shared.borrow_mut().push_redraw(id);
-        self.windows.push(WinWindow { state, access });
+        self.windows.push(WinWindow {
+            state,
+            access,
+            material,
+        });
         Ok(id)
     }
 
@@ -943,11 +958,17 @@ pub struct WinWindow {
     state: Rc<WindowState>,
     /// The window's accessibility adapter.
     access: accesskit_windows::SubclassingAdapter,
+    /// The material DWM shows behind it.
+    material: WindowMaterial,
 }
 
 impl Window for WinWindow {
     fn id(&self) -> WindowId {
         self.state.id
+    }
+
+    fn material(&self) -> WindowMaterial {
+        self.material
     }
 
     fn request_redraw(&self) {

@@ -415,7 +415,7 @@ facade 的 feature 少而稳定，普通应用不手工设置任何 feature：�
               （label, button, image, scroll, virtual_list, grid, tabs, modal,
               sheet, popup, toast, navigation_stack, text_input, form, data_grid …）
 窗口与菜单    window, WindowBuilder, WindowHandle, WindowConfig, WindowChrome,
-              Menu, MenuCommandId, Accel, SystemAction
+              WindowMaterial, Menu, MenuCommandId, Accel, SystemAction
 几何          Point, Rect, Vec2
 宏            ui!, component!, view!
 ```
@@ -6139,7 +6139,7 @@ Heap allocations/frame                   0
 - layout 与内容：`FlexStyle`、`LeafStyle`、`GridStyle`、`GridPlacement`、`TrackSizing` / `TrackMax`、`AdaptiveColumns`、`VirtualListStyle`、`SpanStyle`、`TextRequest`、`CursorIcon`、`InputKind`；
 - semantics：`Role`、`Semantics`；
 - 官方 widget 及其 style、builder 函数与控件 handle / handle slot（Tier 1–4，以及 Avatar、Badge、Chip、Calendar、DatePicker、TimePicker、ColorPicker、NumberField、SearchField、SegmentedControl、RangeSlider、Stepper、Spinner、ProgressIndicator 等）；forms（`Form`、`Field`、`Fieldset`）；`DataGrid`；
-- 窗口与菜单：`window`、`WindowBuilder`、`WindowConfig`、`WindowChrome`、`WindowHandle`、`Menu`、`MenuCommandId`、`Accel`、`SystemAction`；
+- 窗口与菜单：`window`、`WindowBuilder`、`WindowConfig`、`WindowChrome`、`WindowMaterial`、`WindowHandle`、`Menu`、`MenuCommandId`、`Accel`、`SystemAction`；
 - 几何：`viso_math` 的 `Point`、`Rect`、`Vec2`；
 - 宏：`ui!`、`component!`、`view!`。
 

@@ -129,8 +129,8 @@ the downsampled ladder, kept across frames while what lies behind holds still.
 - [x] Skeuomorphism / Aqua: gloss, glow and bevel from layered fills, inset and
       outer shadows and an embossed `text_shadow`; a fill layer takes `inset` (a
       highlight inside the box). No offscreen pass but a blurred text shadow.
-- [ ] Background blur, glassmorphism: `backdrop` blur + saturation + tint + noise, a
-      light border and a soft shadow (exists; pictures and stats in the gallery).
+- [x] Background blur, glassmorphism: `backdrop` blur + saturation + tint + noise, a
+      light border and a soft shadow; pictured and counted in the gallery.
 - [x] Acrylic: `Backdrop` gains `luminosity` (the backdrop's light evened toward
       the tint's, so text on it reads) beside tint and noise, a stage of the one
       composite.
@@ -156,13 +156,17 @@ the downsampled ladder, kept across frames while what lies behind holds still.
       (at once under reduced motion), not its opacity; a box's `glass_merge` melts
       equal glass children, up to four a draw, into one surface — an analytic smooth
       union of their SDFs in the one pass, no matte, one capture.
-- [ ] Window materials: `Window { material: mica | mica_alt | acrylic | vibrancy }`
-      on the platform's compositor — DWM system backdrop on Windows 11, an
-      `NSVisualEffectView` behind the surface on macOS — over a transparent surface;
-      elsewhere, and while the window is inactive, its solid fallback. Costs Viso
-      nothing per frame.
-- [ ] `examples/materials`: the six side by side over a moving picture, headless
-      pictures, frame stats (captures, capture pixels) asserted.
+- [x] Window materials: `WindowConfig { material: Mica | MicaAlt | Acrylic |
+      Vibrancy }` on the platform's compositor — DWM system backdrop on Windows 11
+      22H2+ with a DirectComposition swapchain, an `NSVisualEffectView` under the
+      content on macOS — the frame cleared transparent over it; elsewhere the
+      theme's background. The system switches the inactive look. Costs Viso nothing
+      per frame. (Windows path cross-checked, not run on this host.)
+- [x] `examples/materials`: the six side by side over a moving `.vs` brush, a
+      sidebar over the window material; golden picture, composites and capture
+      pixels asserted, a still picture and a held glow draw nothing.
+- [ ] Captures over other glass: a synthesized composite is never diffed, so a
+      capture sampling another glass counts dirty every frame.
 
 ## C8 — Real-scale app
 

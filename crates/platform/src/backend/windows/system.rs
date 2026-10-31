@@ -7,7 +7,11 @@ use std::time::Duration;
 
 use ::windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use ::windows::Win32::Globalization::GetUserDefaultLocaleName;
-use ::windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+use ::windows::Win32::Graphics::Dwm::{
+    DWM_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_TABBEDWINDOW, DWMSBT_TRANSIENTWINDOW,
+    DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea,
+    DwmSetWindowAttribute,
+};
 use ::windows::Win32::Graphics::Gdi::{
     CreateBitmap, DeleteObject, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR,
     MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
@@ -15,6 +19,7 @@ use ::windows::Win32::Graphics::Gdi::{
 use ::windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use ::windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
 use ::windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+use ::windows::Win32::UI::Controls::MARGINS;
 use ::windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, GWL_STYLE, GetWindowLongPtrW, GetWindowPlacement, HCURSOR, HWND_TOP,
@@ -264,6 +269,42 @@ pub(super) fn set_dark_title(hwnd: HWND, dark: bool) {
             size_of::<BOOL>() as u32,
         )
     };
+}
+
+/// Asks DWM to draw `material` behind `hwnd`'s whole client area: whether
+/// it does, as Windows 11 22H2 and later do.
+pub(super) fn set_material(hwnd: HWND, material: crate::WindowMaterial) -> bool {
+    use crate::WindowMaterial as M;
+    let kind: DWM_SYSTEMBACKDROP_TYPE = match material {
+        M::None => return false,
+        M::Mica | M::Vibrancy => DWMSBT_MAINWINDOW,
+        M::MicaAlt => DWMSBT_TABBEDWINDOW,
+        M::Acrylic => DWMSBT_TRANSIENTWINDOW,
+    };
+    let sheet = |edge: i32| MARGINS {
+        cxLeftWidth: edge,
+        cxRightWidth: edge,
+        cyTopHeight: edge,
+        cyBottomHeight: edge,
+    };
+    // SAFETY: `hwnd` is live; `kind` is the type this attribute takes and
+    // outlives the call.
+    unsafe {
+        if DwmExtendFrameIntoClientArea(hwnd, &sheet(-1)).is_err() {
+            return false;
+        }
+        let shown = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            (&raw const kind).cast::<c_void>(),
+            size_of::<DWM_SYSTEMBACKDROP_TYPE>() as u32,
+        )
+        .is_ok();
+        if !shown {
+            let _ = DwmExtendFrameIntoClientArea(hwnd, &sheet(0));
+        }
+        shown
+    }
 }
 
 /// Re-read the settings a broadcast may have changed. Every top-level window

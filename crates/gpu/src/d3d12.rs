@@ -63,6 +63,9 @@ use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL_11_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob,
 };
 use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::DirectComposition::{
+    DCompositionCreateDevice2, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+};
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::Threading::{
@@ -263,6 +266,28 @@ struct D3D12Surface {
     /// presents newer.
     presents: u64,
     presented: [u64; SWAP_BUFFERS as usize],
+    /// The composition tree showing a window over a system material, kept
+    /// alive with the swapchain it shows.
+    _composition: Option<Composition>,
+}
+
+/// A DirectComposition visual holding a swapchain as a window's content: its
+/// premultiplied alpha composites over what the compositor draws behind.
+struct Composition {
+    _device: IDCompositionDevice,
+    _target: IDCompositionTarget,
+    _visual: IDCompositionVisual,
+}
+
+/// Whether `hwnd` has no redirection surface: a window over a system
+/// material, which shows its frames through DirectComposition.
+fn composed(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, WS_EX_NOREDIRECTIONBITMAP,
+    };
+    // SAFETY: reading a live window's extended style.
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+    style & WS_EX_NOREDIRECTIONBITMAP.0 != 0
 }
 
 /// An upload-heap buffer texture uploads are copied out of.
@@ -2448,6 +2473,7 @@ impl GpuBackend for D3D12Backend {
             panic!("D3D12Backend cannot present to {raw:?}");
         };
         let hwnd = HWND(hwnd);
+        let composed = composed(hwnd);
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: width.max(1),
             Height: height.max(1),
@@ -2463,25 +2489,58 @@ impl GpuBackend for D3D12Backend {
             // Sequential, not discard: a back buffer keeps the frame it last
             // showed, so a frame redraws only what changed since.
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            AlphaMode: match composed {
+                true => DXGI_ALPHA_MODE_PREMULTIPLIED,
+                false => DXGI_ALPHA_MODE_IGNORE,
+            },
             Flags: SWAP_FLAGS.0 as u32,
         };
         // SAFETY: the platform layer hands over a live window that outlives the
         // surface; the swapchain presents from this backend's queue.
-        let (swapchain, waitable) = unsafe {
-            let swapchain: IDXGISwapChain3 = self
-                .factory
-                .CreateSwapChainForHwnd(&self.queue, hwnd, &desc, None, None)
-                .and_then(|s| s.cast())
-                .expect("failed to create a DXGI swapchain");
-            let _ = self
-                .factory
-                .MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+        let (swapchain, waitable, composition) = unsafe {
+            let (swapchain, composition) = match composed {
+                true => {
+                    let swapchain: IDXGISwapChain3 = self
+                        .factory
+                        .CreateSwapChainForComposition(&self.queue, &desc, None)
+                        .and_then(|s| s.cast())
+                        .expect("failed to create a composition swapchain");
+                    let device: IDCompositionDevice =
+                        DCompositionCreateDevice2(None::<&windows::core::IUnknown>)
+                            .expect("failed to open DirectComposition");
+                    let target = device
+                        .CreateTargetForHwnd(hwnd, true)
+                        .expect("failed to target the window");
+                    let visual = device.CreateVisual().expect("failed to create a visual");
+                    visual
+                        .SetContent(&swapchain)
+                        .and_then(|()| target.SetRoot(&visual))
+                        .and_then(|()| device.Commit())
+                        .expect("failed to show the swapchain");
+                    let composition = Composition {
+                        _device: device,
+                        _target: target,
+                        _visual: visual,
+                    };
+                    (swapchain, Some(composition))
+                }
+                false => {
+                    let swapchain: IDXGISwapChain3 = self
+                        .factory
+                        .CreateSwapChainForHwnd(&self.queue, hwnd, &desc, None, None)
+                        .and_then(|s| s.cast())
+                        .expect("failed to create a DXGI swapchain");
+                    let _ = self
+                        .factory
+                        .MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+                    (swapchain, None)
+                }
+            };
             swapchain
                 .SetMaximumFrameLatency(1)
                 .expect("set the swapchain frame latency");
             let waitable = swapchain.GetFrameLatencyWaitableObject();
-            (swapchain, waitable)
+            (swapchain, waitable, composition)
         };
         let rtvs = std::array::from_fn(|_| self.allocate_rtv());
         let buffers = self.fetch_buffers(&swapchain, &rtvs);
@@ -2499,6 +2558,7 @@ impl GpuBackend for D3D12Backend {
                 stale: extent != (width, height),
                 presents: 0,
                 presented: [0; SWAP_BUFFERS as usize],
+                _composition: composition,
             })
             .into()
     }

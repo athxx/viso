@@ -26,8 +26,8 @@ use super::{
 };
 use crate::text_content::{self, ParagraphSlot, TextShaper};
 use crate::{
-    WindowChrome, WindowConfig, app_menu, edit_menu, environment, footprint, playback, shaders,
-    videos,
+    WindowChrome, WindowConfig, WindowMaterial, app_menu, edit_menu, environment, footprint,
+    playback, shaders, videos,
 };
 
 impl WindowState {
@@ -73,6 +73,7 @@ impl WindowState {
             chrome_buttons: None,
             draggable_cache: Vec::new(),
             chrome: WindowChrome::Native,
+            see_through: false,
             caption: None,
             access: None,
             safe_area_root: None,
@@ -186,6 +187,7 @@ impl WindowState {
         // caption widget reads through `BuildCx::chrome` (driven by data,
         // not `target_os`).
         ws.chrome = chrome;
+        ws.see_through = cx.window_material(window) != viso_platform::WindowMaterial::None;
         // Seed the native traffic-light box synchronously, before the single
         // build reads it: the facade queried `RuntimeCx::window_chrome_geom` the
         // instant the window existed, so a self-drawn caption decides at build
@@ -1626,6 +1628,13 @@ pub(crate) fn to_platform_config(cfg: &WindowConfig) -> viso_platform::WindowCon
         position: None,
         maximized: false,
         cpu_frames: cpu_frames(),
+        material: match cfg.material {
+            WindowMaterial::None => viso_platform::WindowMaterial::None,
+            WindowMaterial::Mica => viso_platform::WindowMaterial::Mica,
+            WindowMaterial::MicaAlt => viso_platform::WindowMaterial::MicaAlt,
+            WindowMaterial::Acrylic => viso_platform::WindowMaterial::Acrylic,
+            WindowMaterial::Vibrancy => viso_platform::WindowMaterial::Vibrancy,
+        },
     }
 }
 

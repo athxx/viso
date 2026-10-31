@@ -95,7 +95,7 @@ pub use viso_ui::{InspectSnapshot, snapshot_ui};
 // the open-drain point. Re-export it under the facade so app code names one
 // `viso::WindowConfig`, never the internal `viso_platform::WindowConfig` (kept
 // private to this module for the drain translation).
-pub use viso_ui::{WindowChrome, WindowConfig};
+pub use viso_ui::{WindowChrome, WindowConfig, WindowMaterial};
 
 // The DSL entry points `ui!`, `component!` and `view!` live in the compile-time-only
 // `viso-ui-macros` crate, which depends on neither crate its expansion builds

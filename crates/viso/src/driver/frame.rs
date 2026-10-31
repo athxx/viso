@@ -2070,8 +2070,11 @@ impl<A: Application> viso_runtime::FrameDriver for AppDriver<A> {
                             #[cfg(any(feature = "hot-reload", feature = "headless"))]
                             let before = gpu.renderer.damage_stats();
                             // The window shows the theme's background under
-                            // what its views draw.
-                            let under = ws.store.palette().get(viso_ui::ColorToken::Background);
+                            // what its views draw, or the system material.
+                            let under = match ws.see_through {
+                                true => viso_ui::Rgba::TRANSPARENT,
+                                false => ws.store.palette().get(viso_ui::ColorToken::Background),
+                            };
                             gpu.renderer.submit(
                                 &mut gpu.backend,
                                 surface,

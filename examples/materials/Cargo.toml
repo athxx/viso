@@ -1,0 +1,20 @@
+[package]
+name = "viso-example-materials"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Six looks side by side over a moving picture — skeuomorphism, Aqua,
+# background blur, glassmorphism, acrylic and liquid glass — beside a
+# sidebar over the window's own system material. Paint data and backdrop
+# passes only; the tests hold the frame to its golden and count the passes.
+[dependencies]
+viso = { workspace = true }
+
+[dev-dependencies]
+viso = { workspace = true, features = ["headless"] }
+viso-image = { workspace = true }
+
+[lints]
+workspace = true

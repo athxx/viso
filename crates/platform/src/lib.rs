@@ -81,7 +81,7 @@ pub use clipboard::{ClipboardData, ClipboardImage, ClipboardKinds, ClipboardRepl
 pub use control::{
     ControlFlow, DEFAULT_FRAME_BUDGET, EditLabels, EditMenu, EditMenuAction, InputKind,
     LogicalRect, Loupe, PlatformCaps, PlatformError, SurroundingText, TextEntry, WindowChrome,
-    WindowConfig, WindowId, WindowMode,
+    WindowConfig, WindowId, WindowMaterial, WindowMode,
 };
 pub use cursor::{CursorError, CursorImage, CustomCursor, MAX_CURSOR_SIDE, ScaledCursor};
 pub use drop::{
@@ -408,6 +408,14 @@ pub trait Window {
     /// default is `None` for backends with no self-drawn chrome (headless).
     fn chrome_geom(&self) -> Option<LogicalRect> {
         None
+    }
+
+    /// The material the compositor shows behind this window: the one its
+    /// config asked for where the platform draws it, otherwise
+    /// [`None`](WindowMaterial::None). While one is shown the window's
+    /// surface is transparent where the app draws nothing.
+    fn material(&self) -> WindowMaterial {
+        WindowMaterial::None
     }
 }
 

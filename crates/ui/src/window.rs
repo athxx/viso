@@ -74,6 +74,34 @@ pub struct WindowConfig {
     /// nothing. Ignored where windows have no frame of their own (mobile,
     /// the browser).
     pub persist: Option<String>,
+    /// The system material the compositor draws behind the window, where the
+    /// platform has one (Windows 11, macOS): the window's background then
+    /// shows it wherever the app draws nothing, and the theme's background
+    /// elsewhere. See [`WindowMaterial`].
+    pub material: WindowMaterial,
+}
+
+/// A material the system compositor draws behind a window, from the desktop
+/// behind it, following the window's active state; the app's frames pay
+/// nothing for it. Where the platform has none (Linux, mobile, the web, a
+/// CPU-drawn build, Windows before 11 22H2), the window shows the theme's
+/// background instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowMaterial {
+    /// The app draws the whole window over the theme's background.
+    #[default]
+    None,
+    /// The desktop's colors, heavily blurred and dimmed, for a long-lived
+    /// main window: Windows Mica, macOS's under-window background.
+    Mica,
+    /// Mica more strongly tinted, for a window with tabs: Windows Mica Alt,
+    /// macOS's window background.
+    MicaAlt,
+    /// A lighter frost of what lies behind, for transient windows: Windows
+    /// Acrylic, a macOS popover.
+    Acrylic,
+    /// macOS's sidebar vibrancy; Mica on Windows.
+    Vibrancy,
 }
 
 impl Default for WindowConfig {
@@ -89,6 +117,7 @@ impl Default for WindowConfig {
             chrome: WindowChrome::SelfDrawn,
             caption: true,
             persist: Some("main".to_owned()),
+            material: WindowMaterial::None,
         }
     }
 }

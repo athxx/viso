@@ -283,6 +283,34 @@ pub struct WindowConfig {
     /// platform has one (macOS, and a KMS display, which always does), in
     /// place of the native surface a GPU renders into.
     pub cpu_frames: bool,
+    /// The compositor's material behind the window's content, where the
+    /// platform has it: the window's surface is then transparent where the
+    /// app draws nothing. [`Window::material`](crate::Window::material)
+    /// reports whether it is shown.
+    pub material: WindowMaterial,
+}
+
+/// A material the system compositor draws behind a window, from the desktop
+/// behind it: the app's frames pay nothing for it. Windows 11 (22H2 and later)
+/// draws the DWM system backdrops, macOS an `NSVisualEffectView` behind the
+/// content (each following the window's active state); elsewhere, and on CPU
+/// frames, the window has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowMaterial {
+    /// No material: the app draws the whole window.
+    #[default]
+    None,
+    /// The desktop's colors, heavily blurred and dimmed, for a long-lived
+    /// main window: Windows Mica, macOS's under-window background.
+    Mica,
+    /// Mica more strongly tinted, for a window with tabs: Windows Mica Alt,
+    /// macOS's window background.
+    MicaAlt,
+    /// A lighter frost of what lies behind, for transient windows: Windows
+    /// Acrylic, a macOS popover.
+    Acrylic,
+    /// macOS's sidebar vibrancy; Mica on Windows.
+    Vibrancy,
 }
 
 impl Default for WindowConfig {
@@ -294,6 +322,7 @@ impl Default for WindowConfig {
             position: None,
             maximized: false,
             cpu_frames: false,
+            material: WindowMaterial::None,
         }
     }
 }
